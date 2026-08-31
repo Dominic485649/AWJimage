@@ -63,3 +63,27 @@ if(NOT WINIT_CONTENT MATCHES "AWJ_NATIVE_FILE_DND_V2")
     endif()
     file(WRITE "${WINIT_EVENT_LOOP}" "${WINIT_PATCHED}")
 endif()
+
+# Slint 1.17.1 can schedule an AccessKit tree rebuild while a window adapter is
+# still alive but its component has already been destroyed. Backport upstream
+# slint-ui/slint#12938 so that teardown produces an empty accessibility update
+# instead of calling WindowInner::component() and aborting on its unwrap().
+set(WINIT_ACCESSKIT "${SOURCE_DIR}/internal/backends/winit/accesskit.rs")
+if(NOT EXISTS "${WINIT_ACCESSKIT}")
+    message(FATAL_ERROR "Slint Winit AccessKit source not found.")
+endif()
+file(READ "${WINIT_ACCESSKIT}" WINIT_ACCESSKIT_CONTENT)
+if(NOT WINIT_ACCESSKIT_CONTENT MATCHES "AWJ_SLINT_ACCESSKIT_COMPONENT_LIFETIME_FIX")
+    set(WINIT_ACCESSKIT_NEEDLE
+        "        let root_item = ItemRc::new_root(window_inner.component());")
+    set(WINIT_ACCESSKIT_REPLACEMENT
+        "        // AWJ_SLINT_ACCESSKIT_COMPONENT_LIFETIME_FIX: backport slint-ui/slint#12938.\n        let Some(component) = window_inner.try_component() else {\n            return TreeUpdate {\n                nodes: Default::default(),\n                tree: Default::default(),\n                tree_id: TreeId::ROOT,\n                focus: self.root_node_id,\n            };\n        };\n        let root_item = ItemRc::new_root(component);")
+    string(REPLACE
+        "${WINIT_ACCESSKIT_NEEDLE}"
+        "${WINIT_ACCESSKIT_REPLACEMENT}"
+        WINIT_ACCESSKIT_PATCHED "${WINIT_ACCESSKIT_CONTENT}")
+    if(WINIT_ACCESSKIT_PATCHED STREQUAL WINIT_ACCESSKIT_CONTENT)
+        message(FATAL_ERROR "Could not backport Slint AccessKit component-lifetime fix.")
+    endif()
+    file(WRITE "${WINIT_ACCESSKIT}" "${WINIT_ACCESSKIT_PATCHED}")
+endif()
