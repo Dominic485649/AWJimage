@@ -562,9 +562,10 @@ int run_update_helper(DWORD parent_pid) noexcept {
     CloseHandle(launched->hThread);
     auto new_process = handle(launched->hProcess);
     const bool signaled = WaitForSingleObject(health.get(), 30000) == WAIT_OBJECT_0;
-    const bool stayed_alive =
+    const bool process_alive_after_grace =
         signaled && WaitForSingleObject(new_process.get(), 3000) == WAIT_TIMEOUT;
-    if (!stayed_alive) {
+    if (classify_update_health_observation(signaled, process_alive_after_grace) !=
+        UpdateHealthObservation::ready) {
       TerminateProcess(new_process.get(), 36);
       WaitForSingleObject(new_process.get(), 10000);
       (void)restore_backups(install, stage);

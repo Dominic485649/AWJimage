@@ -281,6 +281,80 @@ int test_persistence_decisions() {
   return 0;
 }
 
+int test_update_health_protocol() {
+  // 1.0.9 风格的旧 helper 会把已经验签并验证成员哈希的目标版本传给新二进制。
+  // UI 的 pending 缓存可以缺失或落后，但不能因此否定新二进制本身已经启动成功。
+  const auto matching =
+      decide_update_health_handshake("1.0.11", "1.0.11", "1.0.11");
+  if (!matching.signal_ready || !matching.clear_matching_pending) {
+    return fail("a verified matching target must signal and clear matching pending state.");
+  }
+
+  const auto missing =
+      decide_update_health_handshake("1.0.11", "1.0.11", "");
+  if (!missing.signal_ready || missing.clear_matching_pending) {
+    return fail("missing UI pending state must not block a verified target health signal.");
+  }
+
+  const auto stale =
+      decide_update_health_handshake("1.0.11", "1.0.11", "1.0.10");
+  if (!stale.signal_ready || stale.clear_matching_pending) {
+    return fail("stale UI pending state must not block or be cleared by a verified target.");
+  }
+
+  const auto wrong_target =
+      decide_update_health_handshake("1.0.10", "1.0.11", "1.0.11");
+  if (wrong_target.signal_ready || wrong_target.clear_matching_pending) {
+    return fail("a helper/build target-version mismatch must fail closed.");
+  }
+
+  if (classify_update_health_observation(false, false) !=
+      UpdateHealthObservation::event_not_signaled) {
+    return fail("a missing health signal must remain a rollback outcome.");
+  }
+  if (classify_update_health_observation(true, false) !=
+      UpdateHealthObservation::process_exited_early) {
+    return fail("a process that exits during the grace period must roll back.");
+  }
+  if (classify_update_health_observation(true, true) !=
+      UpdateHealthObservation::ready) {
+    return fail("only a signaled and still-running health process may commit.");
+  }
+  return 0;
+}
+
+int test_1_0_11_migration_selection() {
+  Manifest manifest{.schema = supported_manifest_schema, .sequence = 11};
+  auto target = entry(v(1, 0, 11), Channel::prerelease);
+  target.minimum_updater_version = v(1, 0, 9);
+  manifest.entries.push_back(target);
+
+  for (const auto updater : {v(1, 0, 9), v(1, 0, 10)}) {
+    const auto picked = select_candidate(
+        manifest,
+        {.current_version = updater,
+         .updater_version = updater,
+         .preference = ChannelPreference::stable_and_prerelease});
+    if (!picked || picked->version != v(1, 0, 11)) {
+      return fail("deployed 1.0.9/1.0.10 updaters must be able to select 1.0.11.");
+    }
+  }
+
+  Manifest gated{.schema = supported_manifest_schema, .sequence = 12};
+  auto gated_target = entry(v(1, 0, 11), Channel::prerelease);
+  gated_target.minimum_updater_version = v(1, 0, 10);
+  gated.entries.push_back(gated_target);
+  if (select_candidate(
+          gated,
+          {.current_version = v(1, 0, 9),
+           .updater_version = v(1, 0, 9),
+           .preference = ChannelPreference::stable_and_prerelease})
+          .has_value()) {
+    return fail("minimum_updater_version 1.0.10 must fail closed for a 1.0.9 client.");
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -293,6 +367,8 @@ int main() {
   if (const int rc = test_schema_and_duplicates()) return rc;
   if (const int rc = test_check_scheduling()) return rc;
   if (const int rc = test_persistence_decisions()) return rc;
+  if (const int rc = test_update_health_protocol()) return rc;
+  if (const int rc = test_1_0_11_migration_selection()) return rc;
   std::cout << "update model tests passed\n";
   return 0;
 }

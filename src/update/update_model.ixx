@@ -393,4 +393,41 @@ PersistenceDecision decide_persistence(const CheckResult& result) noexcept {
   }
 }
 
+// --- 更新健康检查 -----------------------------------------------------------
+
+// helper 在启动新二进制之前已经重新验证了签名 keyring / manifest、目标版本和
+// AWJ.exe/AWJ.com 成员哈希。新进程的健康握手因此只需要确认 helper 传入的已验证
+// 目标版本确实就是当前 build；AWJ.jsonc 里的 pending_update_version 只是 UI 缓存，
+// 不能反过来否定已经通过认证并成功启动的新二进制。
+struct UpdateHealthHandshakeDecision {
+  bool signal_ready{};
+  bool clear_matching_pending{};
+};
+
+UpdateHealthHandshakeDecision decide_update_health_handshake(
+    std::string_view verified_target_version, std::string_view build_version,
+    std::string_view pending_version) noexcept {
+  if (verified_target_version.empty() ||
+      verified_target_version != build_version) {
+    return {};
+  }
+  return {.signal_ready = true,
+          .clear_matching_pending = pending_version == build_version};
+}
+
+enum class UpdateHealthObservation {
+  event_not_signaled,
+  process_exited_early,
+  ready,
+};
+
+UpdateHealthObservation classify_update_health_observation(
+    bool event_signaled, bool process_alive_after_grace) noexcept {
+  if (!event_signaled) return UpdateHealthObservation::event_not_signaled;
+  if (!process_alive_after_grace) {
+    return UpdateHealthObservation::process_exited_early;
+  }
+  return UpdateHealthObservation::ready;
+}
+
 }  // namespace awj::update

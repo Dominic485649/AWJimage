@@ -6372,18 +6372,20 @@ int run_studio_ui(const wchar_t* health_event,
     apply_ui_language(app->get_language_index());
     restore_cached_update_history(*state);
     bool health_check_ready = false;
-    if (health_event != nullptr && installed_version != nullptr &&
-        awj::wide_from_utf8(AWJ_BUILD_VERSION) == installed_version &&
-        state->pending_update_version == AWJ_BUILD_VERSION) {
-      clear_pending_update(*state);
-      if (auto saved = write_studio_config_file(
-              capture_studio_config(*app, state.get()),
-              *state->config_defaults);
-          saved) {
-        health_check_ready = true;
-      } else {
-        config_warning = std::format(
-            "更新已启动，但清除待更新状态失败：{}", saved.error());
+    if (health_event != nullptr && installed_version != nullptr) {
+      const auto health = awj::update::decide_update_health_handshake(
+          awj::utf8_from_wide(installed_version), AWJ_BUILD_VERSION,
+          state->pending_update_version);
+      health_check_ready = health.signal_ready;
+      if (health.clear_matching_pending) {
+        clear_pending_update(*state);
+        if (auto saved = write_studio_config_file(
+                capture_studio_config(*app, state.get()),
+                *state->config_defaults);
+            !saved) {
+          config_warning = std::format(
+              "更新已启动，但清除待更新状态失败：{}", saved.error());
+        }
       }
     }
     state->last_config_snapshot = capture_studio_config(*app, state.get());
