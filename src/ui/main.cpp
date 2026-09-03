@@ -51,6 +51,7 @@
 
 #include "awj_studio.h"
 #include "changelog_history.h"
+#include "shell_context_menu.hpp"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -3116,62 +3117,6 @@ std::wstring command_line_from_args(std::span<const std::wstring> args) {
   return command;
 }
 
-struct ShellConvertCommand {
-  std::wstring_view key{};
-  std::wstring_view label{};
-  std::wstring_view format{};
-  bool append_png_suffix{};
-};
-
-constexpr std::wstring_view shell_image_menu_key =
-    L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJImage";
-constexpr std::wstring_view shell_icofile_menu_key =
-    L"Software\\Classes\\icofile\\shell\\AWJImage";
-constexpr std::wstring_view shell_directory_menu_key =
-    L"Software\\Classes\\Directory\\shell\\AWJImage";
-constexpr std::wstring_view shell_legacy_subcommands_key =
-    L"Software\\Classes\\AWJImage.ContextMenu";
-
-constexpr std::wstring_view shell_supported_image_extensions[] = {
-    L".jpg",    L".jpeg", L".jpe", L".jfif", L".png",  L".webp",
-    L".bmp",    L".dib",  L".rle", L".ico",  L".tif",  L".tiff",
-    L".gif",    L".jxl",  L".avif", L".awsraw", L".dng", L".cr2",
-    L".cr3",    L".nef",  L".arw", L".rw2",  L".orf",  L".raf",
-    L".pef",    L".srw",  L".x3f", L".3fr",  L".erf",  L".kdc",
-    L".mrw",    L".raw",  L".heic", L".heif", L".jxr",  L".wdp",
-    L".hdp"};
-
-constexpr ShellConvertCommand shell_convert_commands[] = {
-    {.key = L"png", .label = L"转换为 PNG", .format = L"png"},
-    {.key = L"webp", .label = L"转换为 WebP", .format = L"webp"},
-    {.key = L"avif", .label = L"转换为 AVIF", .format = L"avif"},
-    {.key = L"avif-png", .label = L"转换为 AVIF.png", .format = L"avif", .append_png_suffix = true},
-    {.key = L"jxl", .label = L"转换为 JXL", .format = L"jxl"},
-    {.key = L"jpgli", .label = L"转换为 JPGLI", .format = L"jpgli"},
-};
-
-std::expected<void, std::string> set_registry_string(HKEY root,
-                                                     std::wstring_view subkey,
-                                                     std::wstring_view value_name,
-                                                     std::wstring_view value) {
-  HKEY raw_key = nullptr;
-  const auto created = RegCreateKeyExW(root, std::wstring{subkey}.c_str(), 0, nullptr,
-                                       REG_OPTION_NON_VOLATILE, KEY_WRITE, nullptr,
-                                       &raw_key, nullptr);
-  if (created != ERROR_SUCCESS) {
-    return std::unexpected{std::format("写入右键菜单注册表失败，错误码 {}。", created)};
-  }
-  const auto bytes = static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t));
-  const auto set = RegSetValueExW(raw_key, value_name.empty() ? nullptr : std::wstring{value_name}.c_str(),
-                                  0, REG_SZ,
-                                  reinterpret_cast<const BYTE*>(value.data()), bytes);
-  RegCloseKey(raw_key);
-  if (set != ERROR_SUCCESS) {
-    return std::unexpected{std::format("写入右键菜单注册表值失败，错误码 {}。", set)};
-  }
-  return {};
-}
-
 std::expected<std::filesystem::path, std::string> awj_exe_path_for_shell_menu() {
   auto executable = awj::executable_path();
   if (!executable) {
@@ -3197,127 +3142,39 @@ std::expected<std::filesystem::path, std::string> awj_exe_path_for_shell_menu() 
   return path;
 }
 
-std::size_t menu_param_index_for_format(std::wstring_view format) noexcept {
-  if (format == L"webp") return 1;
-  if (format == L"jxl") return 2;
-  if (format == L"jpgli") return 3;
-  if (format == L"png") return 4;
-  return 0;
+awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams& params) {
+  const auto text = [](const std::string& value) {
+    return awj::wide_from_utf8(trim_copy(value));
+  };
+  return awj::shell_context_menu::FormatParams{
+      .quality_text = text(params.quality_text),
+      .bit_depth_text = text(params.bit_depth_text),
+      .speed_text = text(params.speed_text),
+      .avif_encoder_index = params.avif_encoder_index,
+      .avif_color_representation_index = params.avif_color_representation_index,
+      .chroma_index = params.chroma_index,
+      .alpha_policy_index = params.alpha_policy_index,
+      .jpegli_progressive_index = params.jpegli_progressive_index,
+      .jpegli_optimize_huffman = params.jpegli_optimize_huffman,
+      .jpegli_xyb = params.jpegli_xyb,
+      .strip_metadata = params.strip_metadata,
+      .allow_wic_fallback = params.allow_wic_fallback,
+      .close_on_finish = params.close_on_finish,
+      .install_avif_png_command = params.install_avif_png_command,
+      .size_limit_index = params.size_limit_index,
+      .max_width_text = text(params.max_width_text),
+      .max_height_text = text(params.max_height_text),
+      .max_long_edge_text = text(params.max_long_edge_text),
+      .max_short_edge_text = text(params.max_short_edge_text)};
 }
 
-std::wstring menu_chroma_arg(int index) {
-  switch (index) {
-    case 1: return L"444";
-    case 2: return L"422";
-    case 3: return L"420";
-    default: return L"auto";
+awj::shell_context_menu::MenuParams shell_menu_params(
+    const std::array<MenuFormatParams, 5>& menu_params) {
+  awj::shell_context_menu::MenuParams converted{};
+  for (std::size_t i = 0; i < menu_params.size(); ++i) {
+    converted[i] = shell_format_params(menu_params[i]);
   }
-}
-
-std::wstring menu_alpha_arg(int index) {
-  switch (index) {
-    case 0: return L"force";
-    case 2: return L"off";
-    default: return L"auto";
-  }
-}
-
-std::wstring menu_avif_encoder_arg(int index) {
-  switch (index) {
-    case 1: return L"svt";
-    case 2: return L"aom";
-    case 3: return L"zenrav1e";
-    default: return L"auto";
-  }
-}
-
-std::wstring menu_avif_color_representation_arg(int index) {
-  switch (index) {
-    case 1: return L"source";
-    case 2: return L"rgb";
-    default: return L"yuv";
-  }
-}
-
-void append_shell_arg(std::wstring& command, std::wstring_view arg) {
-  command.push_back(L' ');
-  command += quote_windows_command_arg(arg);
-}
-
-void append_shell_option(std::wstring& command, std::wstring_view option,
-                         std::wstring_view value) {
-  append_shell_arg(command, option);
-  append_shell_arg(command, value);
-}
-
-std::wstring shell_convert_command_line(const std::filesystem::path& awj_exe,
-                                        std::wstring_view format,
-                                        const MenuFormatParams& params,
-                                        bool append_png_suffix = false) {
-  auto command = quote_windows_command_arg(awj_exe.wstring(), true);
-  append_shell_arg(command, L"--shell-window");
-  append_shell_arg(command, L"--shell-convert");
-  append_shell_option(command, L"--format", format);
-  append_shell_option(command, L"--collision", L"number");
-
-  const bool is_avif = format == L"avif";
-  const bool is_webp = format == L"webp";
-  const bool is_jxl = format == L"jxl";
-  const bool is_jpgli = format == L"jpgli";
-  const bool is_png = format == L"png";
-  if (!is_png && !trim_copy(params.quality_text).empty()) {
-    append_shell_option(command, L"--quality", awj::wide_from_utf8(params.quality_text));
-  }
-  if ((is_avif || is_webp || is_jpgli || is_png) &&
-      !trim_copy(params.bit_depth_text).empty()) {
-    append_shell_option(command, L"--bit-depth", awj::wide_from_utf8(params.bit_depth_text));
-  }
-  if ((is_avif || is_webp || is_jxl) && !trim_copy(params.speed_text).empty()) {
-    append_shell_option(command, L"--speed", awj::wide_from_utf8(params.speed_text));
-  }
-  append_shell_arg(command, params.strip_metadata ? L"--strip" : L"--keep-metadata");
-  append_shell_arg(command, params.allow_wic_fallback ? L"--allow-wic-fallback"
-                                                      : L"--no-wic-fallback");
-  append_shell_arg(command, params.close_on_finish ? L"--close-on-finish"
-                                                   : L"--no-close-on-finish");
-  switch (params.size_limit_index) {
-    case 1:
-      append_shell_option(command, L"--image-size-limit", L"none");
-      break;
-    case 2:
-      append_shell_option(command, L"--image-size-limit", L"manual");
-      if (!trim_copy(params.max_width_text).empty()) append_shell_option(command, L"--max-width", awj::wide_from_utf8(params.max_width_text));
-      if (!trim_copy(params.max_height_text).empty()) append_shell_option(command, L"--max-height", awj::wide_from_utf8(params.max_height_text));
-      if (!trim_copy(params.max_long_edge_text).empty()) append_shell_option(command, L"--max-long-edge", awj::wide_from_utf8(params.max_long_edge_text));
-      if (!trim_copy(params.max_short_edge_text).empty()) append_shell_option(command, L"--max-short-edge", awj::wide_from_utf8(params.max_short_edge_text));
-      break;
-    default:
-      append_shell_option(command, L"--image-size-limit", L"auto");
-      break;
-  }
-  if (is_avif) {
-    append_shell_option(command, L"--avif-encoder", menu_avif_encoder_arg(params.avif_encoder_index));
-    append_shell_option(command, L"--avif-color-representation",
-                        menu_avif_color_representation_arg(
-                            params.avif_color_representation_index));
-    append_shell_option(command, L"--chroma", menu_chroma_arg(params.chroma_index));
-    append_shell_option(command, L"--alpha", menu_alpha_arg(params.alpha_policy_index));
-    if (append_png_suffix) {
-      append_shell_arg(command, L"--append-png-suffix");
-    }
-  } else if (is_jpgli) {
-    append_shell_option(command, L"--chroma", menu_chroma_arg(params.chroma_index));
-    append_shell_option(command, L"--jpegli-progressive-level",
-                        std::to_wstring(std::clamp(params.jpegli_progressive_index, 0, 2)));
-    append_shell_arg(command, params.jpegli_optimize_huffman
-                                  ? L"--jpegli-optimize-huffman"
-                                  : L"--no-jpegli-optimize-huffman");
-    if (params.jpegli_xyb) {
-      append_shell_arg(command, L"--jpegli-xyb");
-    }
-  }
-  command += L" -i \"%1\" %*";
-  return command;
+  return converted;
 }
 
 std::wstring shell_batch_name(awj::OutputFormat format, bool append_png_suffix) {
@@ -3463,181 +3320,29 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   return true;
 }
 
-std::wstring shell_menu_icon_value(const std::filesystem::path& awj_exe) {
-  return quote_windows_command_arg(awj_exe.wstring(), true) + L",0";
-}
-
-std::wstring shell_extension_menu_key(std::wstring_view extension) {
-  return std::format(L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\AWJImage", extension);
-}
-
-std::expected<void, std::string> install_shell_subcommands(
-    std::wstring_view parent_key, const std::filesystem::path& awj_exe,
-    std::wstring_view icon_value,
+std::expected<void, std::string> install_shell_context_menu(
     const std::array<MenuFormatParams, 5>& menu_params) {
-  const auto shell_key = std::format(L"{}\\shell", parent_key);
-  for (const auto& entry : shell_convert_commands) {
-    if (entry.append_png_suffix && !menu_params[0].install_avif_png_command) {
-      continue;
-    }
-    const auto verb_key = std::format(L"{}\\{}", shell_key, entry.key);
-    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"", entry.label); !result) {
-      return result;
-    }
-    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"MUIVerb", entry.label); !result) {
-      return result;
-    }
-    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"Icon", icon_value); !result) {
-      return result;
-    }
-    if (auto result = set_registry_string(HKEY_CURRENT_USER, verb_key, L"MultiSelectModel", L"Player"); !result) {
-      return result;
-    }
-    const auto command_key = verb_key + L"\\command";
-    if (auto result = set_registry_string(HKEY_CURRENT_USER, command_key, L"",
-                                          shell_convert_command_line(awj_exe, entry.format, menu_params[menu_param_index_for_format(entry.format)], entry.append_png_suffix)); !result) {
-      return result;
-    }
-  }
-  return {};
-}
-
-std::expected<void, std::string> install_shell_context_menu_for(
-    std::wstring_view parent_key, const std::filesystem::path& awj_exe,
-    std::wstring_view icon_value,
-    const std::array<MenuFormatParams, 5>& menu_params) {
-  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{parent_key}.c_str());
-  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"MUIVerb", L"AWJimage 转换"); !result) {
-    return result;
-  }
-  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"Icon", icon_value); !result) {
-    return result;
-  }
-  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"SubCommands", L""); !result) {
-    return result;
-  }
-  if (auto result = set_registry_string(HKEY_CURRENT_USER, parent_key, L"MultiSelectModel", L"Player"); !result) {
-    return result;
-  }
-  if (auto result = install_shell_subcommands(parent_key, awj_exe, icon_value, menu_params); !result) {
-    return result;
-  }
-  return {};
-}
-
-std::expected<void, std::string> install_shell_context_menu(const std::array<MenuFormatParams, 5>& menu_params) {
   auto awj_exe = awj_exe_path_for_shell_menu();
-  if (!awj_exe) {
-    return std::unexpected{awj_exe.error()};
-  }
-  const auto icon_value = shell_menu_icon_value(*awj_exe);
-  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_legacy_subcommands_key}.c_str());
-  if (auto result = install_shell_context_menu_for(shell_image_menu_key, *awj_exe, icon_value, menu_params); !result) {
-    return result;
-  }
-  for (const auto extension : shell_supported_image_extensions) {
-    const auto key = shell_extension_menu_key(extension);
-    if (auto result = install_shell_context_menu_for(key, *awj_exe, icon_value, menu_params); !result) {
-      return result;
-    }
-  }
-  if (auto result = install_shell_context_menu_for(shell_icofile_menu_key, *awj_exe, icon_value, menu_params); !result) {
-    return result;
-  }
-  if (auto result = install_shell_context_menu_for(shell_directory_menu_key, *awj_exe, icon_value, menu_params); !result) {
-    return result;
-  }
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  return {};
+  if (!awj_exe) return std::unexpected{awj_exe.error()};
+  return awj::shell_context_menu::install(*awj_exe, shell_menu_params(menu_params));
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {
-  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_image_menu_key}.c_str());
-  for (const auto extension : shell_supported_image_extensions) {
-    const auto key = shell_extension_menu_key(extension);
-    RegDeleteTreeW(HKEY_CURRENT_USER, key.c_str());
-  }
-  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_icofile_menu_key}.c_str());
-  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_directory_menu_key}.c_str());
-  RegDeleteTreeW(HKEY_CURRENT_USER, std::wstring{shell_legacy_subcommands_key}.c_str());
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  return {};
-}
-
-bool registry_key_exists(std::wstring_view subkey) {
-  HKEY raw_key = nullptr;
-  const auto opened = RegOpenKeyExW(HKEY_CURRENT_USER, std::wstring{subkey}.c_str(),
-                                    0, KEY_READ, &raw_key);
-  if (opened != ERROR_SUCCESS) {
-    return false;
-  }
-  RegCloseKey(raw_key);
-  return true;
-}
-
-std::optional<std::wstring> registry_string_value(std::wstring_view subkey,
-                                                  std::wstring_view value_name) {
-  std::wstring subkey_storage{subkey};
-  std::wstring name_storage;
-  const wchar_t* name = nullptr;
-  if (!value_name.empty()) {
-    name_storage = std::wstring{value_name};
-    name = name_storage.c_str();
-  }
-  DWORD type = 0;
-  DWORD bytes = 0;
-  const auto query = RegGetValueW(HKEY_CURRENT_USER, subkey_storage.c_str(),
-                                  name, RRF_RT_REG_SZ, &type, nullptr, &bytes);
-  if (query != ERROR_SUCCESS || bytes < sizeof(wchar_t)) {
-    return std::nullopt;
-  }
-  std::wstring value(bytes / sizeof(wchar_t), L'\0');
-  const auto read = RegGetValueW(HKEY_CURRENT_USER, subkey_storage.c_str(),
-                                 name, RRF_RT_REG_SZ, &type, value.data(), &bytes);
-  if (read != ERROR_SUCCESS) {
-    return std::nullopt;
-  }
-  while (!value.empty() && value.back() == L'\0') {
-    value.pop_back();
-  }
-  return value;
+  return awj::shell_context_menu::remove();
 }
 
 std::optional<std::string> shell_context_menu_warning(
     const std::array<MenuFormatParams, 5>& menu_params) {
-  if (!registry_key_exists(shell_image_menu_key) &&
-      !registry_key_exists(shell_icofile_menu_key) &&
-      !registry_key_exists(shell_directory_menu_key) &&
-      !registry_key_exists(shell_legacy_subcommands_key)) {
-    return std::nullopt;
-  }
-  if (registry_key_exists(shell_legacy_subcommands_key)) {
-    return "检测到旧版右键菜单，点击移除后重新安装。";
-  }
   auto awj_exe = awj_exe_path_for_shell_menu();
   if (!awj_exe) {
     return "无法检查右键菜单程序路径，请移除后重新安装。";
   }
-  const auto command_key = std::format(L"{}\\shell\\avif\\command", shell_image_menu_key);
-  const auto command = registry_string_value(command_key, L"");
-  const auto expected = shell_convert_command_line(*awj_exe, L"avif", menu_params[0]);
-  const auto multi = registry_string_value(shell_image_menu_key, L"MultiSelectModel");
-  if (!command || *command != expected || !multi || *multi != L"Player") {
-    return "右键菜单与当前版本/菜单参数不一致，点击移除旧菜单。";
+  auto checked = awj::shell_context_menu::warning(*awj_exe,
+                                                   shell_menu_params(menu_params));
+  if (!checked) {
+    return "检查右键菜单注册表失败：" + checked.error();
   }
-  const auto png_key =
-      std::format(L"{}\\shell\\avif-png\\command", shell_image_menu_key);
-  const auto png_command = registry_string_value(png_key, L"");
-  if (menu_params[0].install_avif_png_command) {
-    const auto png_expected =
-        shell_convert_command_line(*awj_exe, L"avif", menu_params[0], true);
-    if (!png_command || *png_command != png_expected) {
-      return "右键菜单与当前 AVIF.png 设置不一致，请重新安装右键菜单。";
-    }
-  } else if (png_command) {
-    return "右键菜单仍含 AVIF.png 命令，请重新安装右键菜单。";
-  }
-  return std::nullopt;
+  return *checked;
 }
 
 std::expected<std::shared_ptr<StudioChildProcess>, std::string>

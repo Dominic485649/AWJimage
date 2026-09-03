@@ -1228,6 +1228,15 @@ avif_enable_common_options(awj_update_manifest_sign)
 target_link_libraries(awj_update_manifest_sign PRIVATE unofficial-sodium::sodium)
 
 if(WIN32)
+    add_library(awj_shell_context_menu STATIC
+        src/ui/shell_context_menu.cpp)
+    avif_enable_common_options(awj_shell_context_menu)
+    target_include_directories(awj_shell_context_menu PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
+    target_link_libraries(awj_shell_context_menu PUBLIC shlwapi shell32)
+endif()
+
+if(WIN32)
     add_executable(AWJ WIN32
         src/app/main.cpp
         src/cli/main.cpp
@@ -1284,6 +1293,7 @@ if(TARGET slint_cpp)
 endif()
 if(WIN32)
     target_link_libraries(AWJ PRIVATE
+        awj_shell_context_menu
         dwmapi
         gdi32
         ole32
@@ -1301,6 +1311,25 @@ endif()
 avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
+
+if(BUILD_TESTING AND WIN32)
+    add_executable(awj_shell_context_menu_logic_tests
+        tests/shell_context_menu_logic_tests.cpp)
+    avif_enable_common_options(awj_shell_context_menu_logic_tests)
+    target_link_libraries(awj_shell_context_menu_logic_tests PRIVATE awj_shell_context_menu)
+    awj_set_runtime_directory(awj_shell_context_menu_logic_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME shell_context_menu_logic COMMAND awj_shell_context_menu_logic_tests)
+
+    add_executable(awj_shell_context_menu_registry_tests
+        tests/shell_context_menu_registry_tests.cpp)
+    avif_enable_common_options(awj_shell_context_menu_registry_tests)
+    target_link_libraries(awj_shell_context_menu_registry_tests PRIVATE awj_shell_context_menu)
+    add_dependencies(awj_shell_context_menu_registry_tests AWJ)
+    awj_set_runtime_directory(awj_shell_context_menu_registry_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME shell_context_menu_registry
+        COMMAND awj_shell_context_menu_registry_tests "$<TARGET_FILE:AWJ>")
+    set_tests_properties(shell_context_menu_registry PROPERTIES TIMEOUT 45)
+endif()
 
 if(BUILD_TESTING)
     add_executable(awj_ui_smoke_tests
