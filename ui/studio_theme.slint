@@ -1,0 +1,35 @@
+export global StudioTheme {
+    pure public function page-bg(dark: bool) -> color { return dark ? #10151e : #f3f7fd; }
+    pure public function mica-tint(dark: bool) -> color { return dark ? #151c28 : #edf4ff; }
+    pure public function nav-bg(dark: bool) -> color { return dark ? #141b25 : #f8fbff; }
+    pure public function chrome-bg(dark: bool) -> color { return dark ? #18202c : #ffffff; }
+    pure public function panel-bg(dark: bool) -> color { return dark ? #1b2330 : #ffffff; }
+    pure public function panel-bg-soft(dark: bool) -> color { return dark ? #202a39 : #f8fbff; }
+    pure public function panel-border(dark: bool) -> color { return dark ? #303b4c : #dde7f3; }
+    pure public function field-bg(dark: bool) -> color { return dark ? #222c3b : #fbfdff; }
+    pure public function field-border(dark: bool) -> color { return dark ? #3a4658 : #e2eaf4; }
+    pure public function text-strong(dark: bool) -> color { return dark ? #f5f8fc : #111827; }
+    pure public function text-body(dark: bool) -> color { return dark ? #dce5f1 : #334155; }
+    pure public function text-muted(dark: bool) -> color { return dark ? #a0aec2 : #64748b; }
+    pure public function text-soft(dark: bool) -> color { return dark ? #748299 : #94a3b8; }
+    pure public function accent-strong(dark: bool) -> color { return dark ? #5aa2ff : #0b5ed7; }
+    pure public function accent-soft(dark: bool) -> color { return dark ? #14325b : #e7f1ff; }
+    pure public function success-soft(dark: bool) -> color { return dark ? #143522 : #eaf8ef; }
+    pure public function hint-blue(dark: bool) -> color { return dark ? #7dd3fc : #0369a1; }
+    pure public function hint-orange(dark: bool) -> color { return dark ? #fbbf24 : #b45309; }
+    pure public function hint-green(dark: bool) -> color { return dark ? #86efac : #15803d; }
+    pure public function hint-cyan(dark: bool) -> color { return dark ? #67e8f9 : #0f766e; }
+    pure public function hint-red(dark: bool) -> color { return dark ? #fda4af : #dc2626; }
+    pure public function hint-violet(dark: bool) -> color { return dark ? #c4b5fd : #7c3aed; }
+    pure public function progress-track(dark: bool) -> color { return dark ? #293445 : #dbe7f5; }
+    pure public function combo-bg(dark: bool) -> color { return dark ? #222c3b : #fbfdff; }
+    pure public function combo-bg-hover(dark: bool) -> color { return dark ? #293548 : #f3f8ff; }
+    pure public function combo-bg-disabled(dark: bool) -> color { return dark ? #1d2532 : #eef2f7; }
+    pure public function combo-selected-bg(dark: bool) -> color { return dark ? #14325b : #e7f1ff; }
+    pure public function combo-border(dark: bool) -> color { return dark ? #3a4658 : #dfe8f3; }
+    pure public function combo-border-hover(dark: bool) -> color { return dark ? #4d6684 : #b9d6f7; }
+
+    out property <color> accent: #0d6efd;
+    out property <color> success: #22b84c;
+    out property <color> warning: #d97706;
+}

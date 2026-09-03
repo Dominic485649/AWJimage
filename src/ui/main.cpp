@@ -7,7 +7,6 @@
 #include <scn/scan.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
-#include <shobjidl.h>
 #include <slint.h>
 #include <windows.h>
 #include <windowsx.h>
@@ -51,6 +50,9 @@
 
 #include "awj_studio.h"
 #include "changelog_history.h"
+#include "file_drop_win32.h"
+#include "import_service.h"
+#include "path_picker_win32.h"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -274,6 +276,8 @@ struct StudioConfigSnapshot {
 struct UiState {
   std::jthread worker{};
   std::jthread update_worker{};
+  std::unique_ptr<awj::ui_import::Dispatcher> import_dispatcher{};
+  std::optional<awj::ui_drop::Registration> native_drop{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
@@ -334,63 +338,8 @@ LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
 int preferred_large_image_action_index(
     const awj::BatchLargeImageItem& item) noexcept;
 
-struct ComApartment {
-  ComApartment()
-      : init{CoInitializeEx(
-            nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE)} {}
-
-  ~ComApartment() {
-    if (should_uninitialize()) {
-      CoUninitialize();
-    }
-  }
-
-  [[nodiscard]] bool usable() const noexcept {
-    return SUCCEEDED(init) || init == RPC_E_CHANGED_MODE;
-  }
-
-  [[nodiscard]] bool should_uninitialize() const noexcept {
-    return SUCCEEDED(init);
-  }
-
-  HRESULT init{};
-};
-
-template <class Interface>
-struct ComReleaseDeleter {
-  void operator()(Interface* value) const noexcept {
-    if (value != nullptr) {
-      value->Release();
-    }
-  }
-};
-
-struct CoTaskMemDeleter {
-  void operator()(wchar_t* value) const noexcept {
-    if (value != nullptr) {
-      CoTaskMemFree(value);
-    }
-  }
-};
-
 std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
-}
-
-std::vector<std::string> native_drop_paths(const slint::SharedString& value) {
-  std::vector<std::string> paths;
-  const auto text = shared_to_string(value);
-  std::size_t begin = 0;
-  while (begin <= text.size()) {
-    const auto end = text.find('\n', begin);
-    auto path = text.substr(begin, end == std::string::npos ? std::string::npos
-                                                              : end - begin);
-    if (!path.empty() && path.back() == '\r') path.pop_back();
-    if (!path.empty()) paths.push_back(std::move(path));
-    if (end == std::string::npos) break;
-    begin = end + 1;
-  }
-  return paths;
 }
 
 slint::SharedString to_shared(std::string_view text);
@@ -2045,6 +1994,24 @@ std::expected<bool, std::string> append_queue_image_path(
   }
 }
 
+std::expected<bool, std::string> append_prepared_import_file(
+    UiState& state, const awj::ui_import::File& file) {
+  try {
+    if (queue_contains_path(state, file.path)) return false;
+    state.queue_items.push_back(QueueImageItem{
+        .id = state.next_queue_id++,
+        .path = file.path,
+        .source_root = file.source_root,
+        .relative_dir = file.source_root.empty()
+                            ? std::filesystem::path{}
+                            : queue_relative_dir_for(file.source_root, file.path),
+        .bytes = file.bytes});
+    return true;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"添加导入结果时内存不足。"};
+  }
+}
+
 bool add_queue_from_path(AwjStudio& app, UiState& state,
                          const std::filesystem::path& picked,
                          bool pick_folder, bool update_input_path = true) {
@@ -2374,6 +2341,74 @@ bool post_to_ui(slint::ComponentWeakHandle<AwjStudio> weak, Function&& fn) {
   } catch (...) {
     return false;
   }
+}
+
+void apply_import_result(AwjStudio& app, UiState& state,
+                         awj::ui_import::Request request,
+                         awj::ui_import::Result result) {
+  if (result.cancelled) {
+    app.set_status_text(to_shared("导入扫描已取消。"));
+    return;
+  }
+  {
+    std::scoped_lock lock{state.mutex};
+    if (state.worker_active) {
+      app.set_status_text(to_shared("编码已开始，本次后台导入结果未加入队列。"));
+      return;
+    }
+  }
+  std::size_t added = 0;
+  std::size_t queue_duplicates = 0;
+  for (const auto& file : result.files) {
+    auto appended = append_prepared_import_file(state, file);
+    if (appended && *appended) {
+      ++added;
+    } else if (appended) {
+      ++queue_duplicates;
+    } else if (result.errors.size() < 16) {
+      result.errors.push_back(appended.error());
+    }
+  }
+  if (request.update_input_path && added > 0 && !request.input_hint.empty()) {
+    set_input_path_preserving_output(app, request.input_hint);
+  }
+  refresh_queue_rows(app, state);
+  app.set_status_text(
+      to_shared(awj::ui_import::summary_text(result, added, queue_duplicates)));
+}
+
+bool enqueue_import(const std::shared_ptr<UiState>& state,
+                    awj::ui_import::Request request) {
+  {
+    std::scoped_lock run_lock{state->mutex};
+    if (state->worker_active) return false;
+  }
+  return state->import_dispatcher &&
+         state->import_dispatcher->enqueue(std::move(request));
+}
+
+void start_import_dispatcher(slint::ComponentWeakHandle<AwjStudio> weak,
+                             const std::shared_ptr<UiState>& state) {
+  state->import_dispatcher = std::make_unique<awj::ui_import::Dispatcher>(
+      [] {
+        return awj::ui_import::Options{
+            .is_supported = [](const std::filesystem::path& path) {
+              return awj::is_supported_image_extension(path);
+            },
+            .stop_requested = {},
+            .maximum_file_bytes = static_cast<std::uintmax_t>(
+                awj::encoding_defaults::effective_max_input_file_bytes())};
+      },
+      [weak, state](awj::ui_import::Request request,
+                    awj::ui_import::Result result) mutable {
+        post_to_ui(
+            weak,
+            [state, request = std::move(request), result = std::move(result)](
+                AwjStudio& app) mutable {
+              apply_import_result(app, *state, std::move(request),
+                                  std::move(result));
+            });
+      });
 }
 
 // 把一个 worker 线程体包进 catch-all。
@@ -4617,82 +4652,6 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   return std::unexpected{"Studio 配置解析文件系统访问失败。"};
 }
 
-enum class PathPickerMode { image_file, folder };
-
-std::optional<std::filesystem::path> choose_path(PathPickerMode mode) {
-  ComApartment apartment;
-  if (!apartment.usable()) {
-    return std::nullopt;
-  }
-
-  // 文件选择器是 COM 对象，unique_ptr 的 deleter 让后续任何早退路径都能配对
-  // Release。
-  IFileDialog* raw_dialog = nullptr;
-  HRESULT hr =
-      CoCreateInstance(CLSID_FileOpenDialog, nullptr, CLSCTX_INPROC_SERVER,
-                       IID_PPV_ARGS(&raw_dialog));
-  std::unique_ptr<IFileDialog, ComReleaseDeleter<IFileDialog>> dialog{
-      raw_dialog};
-  if (FAILED(hr) || dialog == nullptr) {
-    return std::nullopt;
-  }
-
-  DWORD options{};
-  hr = dialog->GetOptions(&options);
-  if (FAILED(hr)) {
-    return std::nullopt;
-  }
-  options |= FOS_FORCEFILESYSTEM | FOS_PATHMUSTEXIST;
-  options |= mode == PathPickerMode::folder ? FOS_PICKFOLDERS
-                                            : FOS_FILEMUSTEXIST;
-  hr = dialog->SetOptions(options);
-  if (FAILED(hr)) {
-    return std::nullopt;
-  }
-
-  if (mode == PathPickerMode::image_file) {
-    const COMDLG_FILTERSPEC filters[] = {
-        {L"图片文件",
-         L"*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.webp;*.bmp;*.dib;*.rle;*.tif;*."
-         L"tiff;*.gif;*.ico;*.jxl;*.avif;*.awsraw;*.dng;*.cr2;*.cr3;*.nef;*.arw;*."
-         L"rw2;*.orf;*.raf;*.pef;*.srw;*.x3f;*.3fr;*.erf;*.kdc;*.mrw;*.raw;*."
-         L"heic;*.heif;*.jxr;*.wdp;*.hdp"},
-        {L"所有文件", L"*.*"}};
-    hr = dialog->SetFileTypes(static_cast<UINT>(std::size(filters)), filters);
-    if (FAILED(hr)) {
-      return std::nullopt;
-    }
-  }
-
-  hr = dialog->Show(nullptr);
-  if (FAILED(hr)) {
-    return std::nullopt;
-  }
-
-  IShellItem* raw_item = nullptr;
-  hr = dialog->GetResult(&raw_item);
-  std::unique_ptr<IShellItem, ComReleaseDeleter<IShellItem>> item{raw_item};
-  if (FAILED(hr) || item == nullptr) {
-    return std::nullopt;
-  }
-
-  PWSTR raw_path = nullptr;
-  hr = item->GetDisplayName(SIGDN_FILESYSPATH, &raw_path);
-  std::unique_ptr<wchar_t, CoTaskMemDeleter> path{raw_path};
-  if (FAILED(hr) || path == nullptr) {
-    return std::nullopt;
-  }
-
-  // SIGDN_FILESYSPATH 返回 CoTaskMemAlloc 缓冲区，复制进 filesystem::path
-  // 后立即交还给 COM 分配器。
-  return std::filesystem::path{path.get()};
-}
-
-std::optional<std::filesystem::path> choose_path(bool pick_folder) {
-  return choose_path(pick_folder ? PathPickerMode::folder
-                                 : PathPickerMode::image_file);
-}
-
 std::filesystem::path effective_output_dir(const AwjStudio& app) {
   auto output = std::filesystem::path{
       awj::wide_from_utf8(shared_to_string(app.get_output_dir()))};
@@ -5576,15 +5535,9 @@ slint::language::DragAction handle_queue_drag_can_drop(
     int target_slot) {
   const auto user_data = event.data.user_data();
   const auto* payload = std::any_cast<QueueDragPayload>(&user_data);
-  if (payload == nullptr) {
-    const auto text = event.data.plain_text();
-    if (!text || native_drop_paths(*text).empty()) {
-      return slint::language::DragAction::None;
-    }
-    std::scoped_lock lock{state->mutex};
-    return state->worker_active ? slint::language::DragAction::None
-                                : slint::language::DragAction::Copy;
-  }
+  // Windows Explorer 外部文件由原生 OLE IDropTarget 处理；这里仅处理 AWJ 队列内部
+  // DataTransfer user_data，避免再次依赖 Slint 的 plain_text 路径序列化。
+  if (payload == nullptr) return slint::language::DragAction::None;
   std::scoped_lock lock{state->mutex};
   if (state->worker_active) {
     return slint::language::DragAction::None;
@@ -5604,36 +5557,7 @@ slint::language::DragAction handle_queue_drag_dropped(
   {
     const auto user_data = event.data.user_data();
     const auto* payload = std::any_cast<QueueDragPayload>(&user_data);
-    if (payload == nullptr) {
-      const auto text = event.data.plain_text();
-      if (!text) {
-        return slint::language::DragAction::None;
-      }
-      const auto paths = native_drop_paths(*text);
-      if (paths.empty()) {
-        app.set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
-        return slint::language::DragAction::None;
-      }
-      {
-        std::scoped_lock lock{state->mutex};
-        if (state->worker_active) {
-          app.set_status_text(to_shared("当前任务正在运行，无法添加队列。"));
-          return slint::language::DragAction::None;
-        }
-      }
-      for (const auto& raw : paths) {
-        const auto path = awj::normalize_path_argument(
-            awj::wide_from_utf8(raw), "拖入队列");
-        if (!path) {
-          app.set_status_text(to_shared(path.error()));
-          continue;
-        }
-        std::error_code ec;
-        const bool folder = std::filesystem::is_directory(*path, ec) && !ec;
-        add_queue_from_path(app, *state, *path, folder, false);
-      }
-      return slint::language::DragAction::Copy;
-    }
+    if (payload == nullptr) return slint::language::DragAction::None;
     std::scoped_lock lock{state->mutex};
     if (state->worker_active) {
       return slint::language::DragAction::None;
@@ -6346,6 +6270,7 @@ int run_studio_ui(const wchar_t* health_event,
     sync_update_history(state->update_history_rows,
                         awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
+    start_import_dispatcher(weak, state);
 
     app->set_task_rows(state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
@@ -6910,8 +6835,17 @@ int run_studio_ui(const wchar_t* health_event,
             return;
           }
           const bool pick_folder = (*app)->get_input_mode_index() != 0;
-          if (auto path = choose_path(pick_folder)) {
-            add_queue_from_path(**app, *state, *path, pick_folder);
+          if (auto path = awj::ui_path_picker::choose_path(pick_folder)) {
+            awj::ui_import::Request job{
+                .roots = {{.path = *path, .force_directory = pick_folder}},
+                .origin = pick_folder ? awj::ui_import::Origin::folder_dialog
+                                      : awj::ui_import::Origin::file_dialog,
+                .input_hint = *path,
+                .update_input_path = true};
+            if (enqueue_import(state, std::move(job))) {
+              (*app)->set_status_text(to_shared(pick_folder ? "正在扫描文件夹…"
+                                                            : "正在导入文件…"));
+            }
           }
         }
       });
@@ -6932,54 +6866,20 @@ int run_studio_ui(const wchar_t* health_event,
                 return;
               }
               (*app)->set_input_path(to_shared(awj::path_to_utf8(*path)));
-              // 手工输入按真实文件系统类型判断，和旁边的选择器模式无关。
-              add_queue_from_path(**app, *state, *path, false);
+              awj::ui_import::Request job{.roots = {{.path = *path}},
+                            .origin = awj::ui_import::Origin::command_line,
+                            .input_hint = *path,
+                            .update_input_path = true};
+              if (enqueue_import(state, std::move(job))) {
+                (*app)->set_status_text(to_shared("正在导入输入路径…"));
+              }
             }
           });
         });
 
-    app->on_input_path_dropped(
-        [weak, state](slint::language::DropEvent event) {
-          run_ui_callback(weak, "拖入输入路径失败", [&] {
-            if (auto app = weak.lock()) {
-              if (reject_when_worker_active(**app, state,
-                                            "当前任务正在运行，无法添加队列")) {
-                return;
-              }
-              const auto text = event.data.plain_text();
-              if (!text) {
-                (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
-                return;
-              }
-              const auto paths = native_drop_paths(*text);
-              if (paths.empty()) {
-                (*app)->set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
-                return;
-              }
-              bool update_input_path = true;
-              std::string first_error;
-              for (const auto& raw : paths) {
-                const auto path = awj::normalize_path_argument(
-                    awj::wide_from_utf8(raw), "拖入输入路径");
-                if (!path) {
-                  if (first_error.empty()) {
-                    first_error = path.error();
-                  }
-                  continue;
-                }
-                std::error_code ec;
-                const bool folder = std::filesystem::is_directory(*path, ec) && !ec;
-                if (add_queue_from_path(**app, *state, *path, folder,
-                                        update_input_path)) {
-                  update_input_path = false;
-                }
-              }
-              if (!first_error.empty()) {
-                (*app)->set_status_text(to_shared(first_error));
-              }
-            }
-          });
-        });
+    // Windows Explorer 外部路径由原生 OLE IDropTarget 处理。
+    // 保留 Slint callback 作为公开 API 兼容点，但 Windows 不再从 DropEvent.data.plain_text()
+    // 解析文件系统路径。Linux 分支仍保留原有 DropArea 行为。
 
     app->on_queue_menu_action(
         [weak, state](int index, slint::SharedString action_text) {
@@ -7047,7 +6947,7 @@ int run_studio_ui(const wchar_t* health_event,
                                         "当前任务正在运行，无法选择输出目录")) {
             return;
           }
-          if (auto folder = choose_path(true)) {
+          if (auto folder = awj::ui_path_picker::choose_path(true)) {
             post_to_ui(weak, [folder = *folder](AwjStudio& app) {
               app.set_output_dir(to_shared(awj::path_to_utf8(folder)));
             });
@@ -7080,47 +6980,8 @@ int run_studio_ui(const wchar_t* health_event,
           });
         });
 
-    app->on_output_path_dropped(
-        [weak, state](slint::language::DropEvent event) {
-          run_ui_callback(weak, "拖入输出目录失败", [&] {
-            if (auto app = weak.lock()) {
-              if (reject_when_worker_active(**app, state,
-                                            "当前任务正在运行，无法修改输出目录")) {
-                return;
-              }
-              const auto text = event.data.plain_text();
-              if (!text) {
-                (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
-                return;
-              }
-              const auto paths = native_drop_paths(*text);
-              if (paths.size() != 1) {
-                (*app)->set_status_text(to_shared("输出目录一次只能拖入一个文件或文件夹。"));
-                return;
-              }
-              const auto path = awj::normalize_path_argument(
-                  awj::wide_from_utf8(paths.front()), "拖入输出目录");
-              if (!path) {
-                (*app)->set_status_text(to_shared(path.error()));
-                return;
-              }
-              std::error_code ec;
-              if (!std::filesystem::exists(*path, ec) || ec) {
-                (*app)->set_status_text(to_shared("拖入的输出目标不存在或无法访问。"));
-                return;
-              }
-              const auto output = std::filesystem::is_directory(*path, ec) && !ec
-                                      ? *path
-                                      : path->parent_path();
-              if (output.empty()) {
-                (*app)->set_status_text(to_shared("无法从拖入目标确定输出目录。"));
-                return;
-              }
-              (*app)->set_output_dir(to_shared(awj::path_to_utf8(output)));
-              (*app)->set_status_text(to_shared("已更新输出目录。"));
-            }
-          });
-        });
+    // Windows 的 HWND 已由 AWJ 原生 IDropTarget 接管，Slint DropEvent 不再承担
+    // Explorer 文件系统路径传输。输出目录仍通过选择器或文本框修改。
 
     app->on_browse_large_image_file([weak, state] {
       run_ui_callback(weak, "添加大图文件失败", [&] {
@@ -7129,7 +6990,7 @@ int run_studio_ui(const wchar_t* health_event,
                                         "当前任务正在运行，无法添加大图任务")) {
             return;
           }
-          if (auto path = choose_path(false)) {
+          if (auto path = awj::ui_path_picker::choose_path(false)) {
             add_manual_large_images_from_picker(**app, *state, *path, false);
           }
         }
@@ -7143,7 +7004,7 @@ int run_studio_ui(const wchar_t* health_event,
                                         "当前任务正在运行，无法添加大图任务")) {
             return;
           }
-          if (auto folder = choose_path(true)) {
+          if (auto folder = awj::ui_path_picker::choose_path(true)) {
             add_manual_large_images_from_picker(**app, *state, *folder, true);
           }
         }
@@ -7297,6 +7158,52 @@ int run_studio_ui(const wchar_t* health_event,
     }
 
     app->show();
+    {
+      const HWND hwnd = app->window().win32_hwnd();
+      auto registration = awj::ui_drop::install(
+          hwnd,
+          awj::ui_drop::Callbacks{
+              .can_accept = [state] {
+                std::scoped_lock lock{state->mutex};
+                return !state->worker_active;
+              },
+              .hover_changed = [weak](awj::ui_drop::HoverState hover) {
+                run_ui_callback(weak, "更新外部拖放状态失败", [&] {
+                  if (auto app = weak.lock()) {
+                    (*app)->set_external_drag_active(hover.active);
+                    (*app)->set_external_drag_valid(hover.valid);
+                    (*app)->set_external_drag_item_count(
+                        static_cast<int>(std::min<std::size_t>(
+                            hover.item_count,
+                            static_cast<std::size_t>(std::numeric_limits<int>::max()))));
+                  }
+                });
+              },
+              .paths_dropped = [weak, state](std::vector<std::filesystem::path> paths) {
+                run_ui_callback(weak, "接收 Windows 原生拖放失败", [&] {
+                  if (paths.empty()) return;
+                  awj::ui_import::Request job;
+                  job.origin = awj::ui_import::Origin::drag_drop;
+                  job.input_hint = paths.front();
+                  job.update_input_path = true;
+                  job.roots.reserve(paths.size());
+                  for (auto& path : paths) {
+                    job.roots.push_back({.path = std::move(path)});
+                  }
+                  if (enqueue_import(state, std::move(job))) {
+                    if (auto app = weak.lock()) {
+                      (*app)->set_status_text(to_shared("正在导入拖入的文件与文件夹…"));
+                    }
+                  }
+                });
+              }});
+      if (registration) {
+        state->native_drop.emplace(std::move(*registration));
+      } else {
+        app->set_status_text(to_shared(std::format(
+            "Windows 原生拖放未启用：{}", registration.error())));
+      }
+    }
     if (health_check_ready) {
       auto event = adopt_win32_handle(
           OpenEventW(EVENT_MODIFY_STATE, FALSE, health_event));
@@ -7312,6 +7219,12 @@ int run_studio_ui(const wchar_t* health_event,
     // 无论保存成功与否都要放行关窗，否则窗口会关不掉。
     app->window().on_close_requested([weak, state] {
       run_ui_callback(weak, "关闭窗口时保存配置失败", [&] {
+        // 必须在 Slint/Winit 销毁 HWND 前撤销 AWJ 的 IDropTarget；Winit 后续 WM_DESTROY
+        // 再调用 RevokeDragDrop 时只会看到已撤销状态，不再持有 AWJ COM 对象。
+        state->native_drop.reset();
+        if (state->import_dispatcher) {
+          state->import_dispatcher->request_stop();
+        }
         force_stop_current_worker(state);
         if (state->update_worker.joinable()) {
           state->update_worker.request_stop();
@@ -7341,6 +7254,10 @@ int run_studio_ui(const wchar_t* health_event,
     if (state->update_worker.joinable()) {
       state->update_worker.request_stop();
       state->update_worker.join();
+    }
+    if (state->import_dispatcher) {
+      state->import_dispatcher->request_stop();
+      state->import_dispatcher->join();
     }
     return 0;
   } catch (const std::exception&) {

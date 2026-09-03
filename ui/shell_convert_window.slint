@@ -1,0 +1,149 @@
+import { ListView } from "std-widgets.slint";
+import { TaskRow, SoftButton } from "studio_components.slint";
+
+export component ShellConvertWindow inherits Window {
+    title: @tr("AWJimage 右键转换");
+    icon: @image-url("logo.png");
+    default-font-family: root.ui-font-family;
+    preferred-width: 840px;
+    preferred-height: 560px;
+    min-width: 680px;
+    min-height: 440px;
+
+    in property <[TaskRow]> task-rows;
+    in-out property <string> status-text: @tr("正在准备任务…");
+    in-out property <float> progress: 0.0;
+    in-out property <bool> running: true;
+    in-out property <bool> dark-mode: false;
+    in-out property <string> ui-font-family: "";
+    callback cancel-requested();
+    callback force-terminate-requested();
+    callback open-output-requested();
+
+    property <color> page-bg: root.dark-mode ? #10151e : #f3f7fd;
+    property <color> panel-bg: root.dark-mode ? #1b2330 : #ffffff;
+    property <color> panel-border: root.dark-mode ? #303b4c : #dde7f3;
+    property <color> row-bg: root.dark-mode ? #202a39 : #ffffff;
+    property <color> text-strong: root.dark-mode ? #f5f8fc : #111827;
+    property <color> text-body: root.dark-mode ? #dce5f1 : #334155;
+    property <color> text-muted: root.dark-mode ? #a0aec2 : #64748b;
+    property <color> accent: #0d6efd;
+    property <color> progress-track: root.dark-mode ? #293445 : #dbe7f5;
+    property <color> warning-color: root.dark-mode ? #f59e0b : #d97706;
+
+    background: root.page-bg;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+
+        Text {
+            text: @tr("右键转换");
+            color: root.text-strong;
+            font-size: 22px;
+            font-weight: 800;
+            horizontal-alignment: left;
+        }
+        Text {
+            text: root.status-text;
+            color: root.text-muted;
+            font-size: 12px;
+            horizontal-alignment: left;
+            overflow: elide;
+        }
+        Rectangle {
+            height: 6px;
+            border-radius: 3px;
+            background: root.progress-track;
+            Rectangle {
+                width: max(0px, min(parent.width, parent.width * root.progress));
+                height: parent.height;
+                border-radius: 3px;
+                background: root.accent;
+                animate width { duration: 160ms; easing: ease-out; }
+            }
+        }
+
+        Rectangle {
+            vertical-stretch: 1;
+            border-radius: 8px;
+            background: root.panel-bg;
+            border-color: root.panel-border;
+            border-width: 1px;
+            clip: true;
+            VerticalLayout {
+                spacing: 0px;
+
+                Rectangle {
+                    height: 34px;
+                    background: root.dark-mode ? #222c3b : #f8fbff;
+                    HorizontalLayout {
+                        padding-left: 14px;
+                        padding-right: 14px;
+                        spacing: 12px;
+                        Text { text: "#"; width: 32px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        Text { text: @tr("文件"); horizontal-stretch: 1; color: root.text-muted; font-size: 11px; vertical-alignment: center; }
+                        Text { text: @tr("大小"); width: 82px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                        Text { text: @tr("状态与输出"); width: 164px; color: root.text-muted; font-size: 11px; vertical-alignment: center; }
+                    }
+                }
+
+                Rectangle {
+                    vertical-stretch: 1;
+                    background: root.panel-bg;
+
+                    if root.task-rows.length == 0: Text {
+                        text: @tr("正在准备任务…");
+                        color: root.text-muted;
+                        font-size: 12px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+
+                    if root.task-rows.length > 0: ListView {
+                        for row[i] in root.task-rows: Rectangle {
+                            height: 64px;
+                            background: i / 2 * 2 == i ? root.row-bg : root.panel-bg;
+                            HorizontalLayout {
+                                padding-left: 14px;
+                                padding-right: 14px;
+                                spacing: 12px;
+                                Text { text: row.order; width: 32px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                                VerticalLayout {
+                                    horizontal-stretch: 1;
+                                    alignment: center;
+                                    spacing: 3px;
+                                    Text { text: row.filename; color: root.text-body; font-size: 13px; font-weight: 700; overflow: elide; horizontal-alignment: left; }
+                                    Text { text: row.folder; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: left; }
+                                }
+                                Text { text: row.size; width: 82px; color: root.text-muted; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+                                VerticalLayout {
+                                    width: 164px;
+                                    alignment: center;
+                                    spacing: 3px;
+                                    Text { text: row.status; color: row.warning ? root.warning-color : root.text-body; font-size: 12px; overflow: elide; horizontal-alignment: left; }
+                                    Text { text: row.output.is-empty ? row.log : row.output; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: left; }
+                                }
+                            }
+                            Rectangle {
+                                y: parent.height - 1px;
+                                width: parent.width;
+                                height: 1px;
+                                background: root.panel-border;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            height: 40px;
+            spacing: 10px;
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+            SoftButton { dark-mode: root.dark-mode; text: @tr("打开输出目录"); width: 132px; height: 40px; enabled: !root.running; clicked => { root.open-output-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: @tr("强制终止"); variant: "danger"; width: 112px; height: 40px; enabled: root.running; clicked => { root.force-terminate-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: root.running ? @tr("停止任务") : @tr("button" => "关闭"); variant: "outline"; width: 92px; height: 40px; clicked => { root.cancel-requested(); } }
+        }
+    }
+}

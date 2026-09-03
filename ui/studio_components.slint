@@ -1,0 +1,752 @@
+import { ScrollView } from "std-widgets.slint";
+
+export struct TaskRow {
+    order: string,
+    filename: string,
+    folder: string,
+    size: string,
+    status: string,
+    output: string,
+    log: string,
+    warning: bool,
+    locked: bool,
+    state: int,
+    input-path: string,
+    output-path: string,
+    encoder: string,
+    threads: string,
+    stage-timings: string,
+}
+
+export struct LargeImageRow {
+    filename: string,
+    dimensions: string,
+    reason: string,
+    actions: string,
+    status: string,
+    grid-available: bool,
+    zenrav1e-available: bool,
+}
+
+export struct UpdateHistoryRow {
+    version: string,
+    channel: string,
+    published-at: string,
+    release-url: string,
+    changelog-zh-cn: string,
+    changelog-en: string,
+}
+
+export struct ComboOption {
+    text: string,
+    enabled: bool,
+}
+
+export component SoftComboBox inherits Rectangle {
+    in property <[ComboOption]> model;
+    in-out property <int> current-index;
+    in property <bool> enabled: true;
+    in property <string> accessible-name: @tr("选项");
+    out property <bool> has-hover <=> touch.has-hover;
+    out property <bool> has-focus: combo-focus.has-focus || root.popup-had-focus;
+    in property <color> normal-background: #fbfdff;
+    in property <color> hover-background: #f3f8ff;
+    in property <color> disabled-background: #eef2f7;
+    in property <color> selected-background: #e7f1ff;
+    in property <color> normal-border: #dfe8f3;
+    in property <color> hover-border: #b9d6f7;
+    in property <color> normal-text: #334155;
+    in property <color> disabled-text: #94a3b8;
+    in property <color> muted-text: #64748b;
+    in property <color> selected-text: #0b5ed7;
+    in property <int> close-generation: 0;
+    in property <bool> defer-current-index: false;
+    in property <bool> retain-focus-when-disabled: false;
+    in property <bool> center-text: false;
+    in property <string> hover-help-text: "";
+    in property <int> hover-help-option-index: -1;
+    in property <bool> hover-help-always: false;
+    in property <length> viewport-height: 100000px;
+    in property <int> max-visible-items: 0;
+    property <length> popup-gap: 8px;
+    property <int> popup-visible-items: root.max-visible-items > 0
+        ? min(max(root.model.length, 1), root.max-visible-items)
+        : max(root.model.length, 1);
+    property <length> popup-content-height: max(root.model.length, 1) * 36px + 8px;
+    property <length> popup-height: root.popup-visible-items * 36px + 8px;
+    property <length> popup-scroll-y: -max(0, min(root.bounded-highlight-index, root.model.length - root.popup-visible-items)) * 36px;
+    property <bool> popup-upwards: touch.absolute-position.y + root.height + root.popup-gap + root.popup-height > root.viewport-height && touch.absolute-position.y >= root.popup-height + root.popup-gap;
+    property <bool> popup-open: false;
+    property <bool> popup-opening: false;
+    property <bool> popup-animate-open: false;
+    property <bool> popup-had-focus: false;
+    out property <int> hover-index: -1;
+    property <int> highlight-index: root.hover-index >= 0 ? root.hover-index : root.current-index;
+    property <int> bounded-highlight-index: max(0, min(root.highlight-index, max(root.model.length - 1, 0)));
+    callback selection-accepted(int, length, length);
+    callback popup-requested();
+    callback popup-finished();
+
+    function enabled-index(index: int, step: int) -> int {
+        if (index < 0 || index >= root.model.length) {
+            return root.current-index;
+        }
+        if (root.model[index].enabled) {
+            return index;
+        }
+        let adjacent = index + step;
+        if (adjacent >= 0 && adjacent < root.model.length && root.model[adjacent].enabled) {
+            return adjacent;
+        }
+        return root.current-index;
+    }
+
+    function open-popup() {
+        if (!root.enabled || root.model.length == 0) {
+            return;
+        }
+        root.hover-index = root.enabled-index(root.current-index, 1);
+        root.popup-opening = false;
+        root.popup-open = true;
+        root.popup-animate-open = false;
+        popup.show();
+        root.popup-opening = true;
+    }
+
+    function finish-popup(restore-focus: bool) {
+        if (root.popup-open) {
+            root.popup-finished();
+        }
+        root.popup-open = false;
+        root.popup-opening = false;
+        root.popup-animate-open = false;
+        root.popup-had-focus = false;
+        root.hover-index = -1;
+        popup.close();
+        if (restore-focus && root.enabled) {
+            combo-focus.focus();
+        }
+    }
+
+    function accept-index(index: int, x: length, y: length) {
+        if (index < 0 || index >= root.model.length || !root.model[index].enabled) {
+            return;
+        }
+        root.selection-accepted(index, x, y);
+        if (!root.defer-current-index) {
+            root.current-index = index;
+        }
+        root.finish-popup(true);
+    }
+
+    function select-closed(index: int, step: int) {
+        let target = root.enabled-index(index, step);
+        if (target != root.current-index && target >= 0 && target < root.model.length) {
+            root.selection-accepted(target, touch.absolute-position.x + root.width / 2, touch.absolute-position.y + root.height / 2);
+            if (!root.defer-current-index) {
+                root.current-index = target;
+            }
+        }
+    }
+
+    open-animation-timer := Timer {
+        interval: 50ms;
+        running: root.popup-opening;
+        triggered => {
+            root.popup-animate-open = true;
+            root.popup-opening = false;
+        }
+    }
+
+    min-width: 128px;
+    min-height: 38px;
+
+    horizontal-stretch: 1;
+    vertical-stretch: 0;
+    forward-focus: combo-focus;
+    accessible-role: combobox;
+    accessible-enabled: root.enabled;
+    accessible-expandable: true;
+    accessible-label: root.accessible-name;
+    accessible-value: root.model.length > 0 ? root.model[root.current-index].text : "";
+    accessible-expanded: root.popup-open;
+    accessible-action-default => { root.open-popup(); }
+    accessible-action-expand => { root.open-popup(); }
+    border-radius: 6px;
+    border-width: root.has-focus ? 2px : 1px;
+    border-color: root.has-focus ? #0d6efd : (root.has-hover ? root.hover-border : root.normal-border);
+    background: root.enabled ? (root.has-hover ? root.hover-background : root.normal-background) : root.disabled-background;
+    clip: true;
+    animate background, border-color { duration: 150ms; easing: ease-out; }
+
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 8px;
+        Text {
+            text: root.model[root.current-index].text;
+            color: root.enabled ? root.normal-text : root.disabled-text;
+            font-size: 13px;
+            vertical-alignment: center;
+            horizontal-alignment: root.center-text ? center : left;
+            horizontal-stretch: 1;
+            overflow: elide;
+            opacity: root.center-text ? 0.0 : 1.0;
+            animate color { duration: 150ms; easing: ease-out; }
+        }
+        Rectangle {
+            width: 14px;
+            height: 14px;
+            y: (parent.height - 14px) / 2;
+            Text {
+                text: root.popup-open ? "▲" : "▼";
+                color: root.muted-text;
+                font-size: 10px;
+                font-weight: 700;
+                width: 14px;
+                height: 14px;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+                y: root.popup-open ? 1px : 0px;
+                animate y { duration: 120ms; easing: ease-out; }
+            }
+        }
+    }
+
+    if root.center-text: Text {
+        x: 0px;
+        y: 0px;
+        width: parent.width;
+        height: parent.height;
+        text: root.model[root.current-index].text;
+        color: root.enabled ? root.normal-text : root.disabled-text;
+        font-size: 13px;
+        vertical-alignment: center;
+        horizontal-alignment: center;
+        overflow: elide;
+        animate color { duration: 150ms; easing: ease-out; }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        if !root.hover-help-text.is-empty && (root.hover-help-always || root.current-index == root.hover-help-option-index): Tooltip {
+            text: @markdown("\{root.hover-help-text}");
+        }
+        clicked => {
+            if (root.enabled) {
+                combo-focus.focus();
+                root.open-popup();
+            }
+        }
+        scroll-event(event) => {
+            if (!root.enabled || !root.has-focus || root.popup-open) {
+                return reject;
+            }
+            if (event.delta-y < -2px) {
+                root.select-closed(root.current-index + 1, 1);
+                return accept;
+            }
+            if (event.delta-y > 2px) {
+                root.select-closed(root.current-index - 1, -1);
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    combo-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled || root.retain-focus-when-disabled;
+        key-pressed(event) => {
+            if (!root.enabled) {
+                return reject;
+            }
+            if (event.text == Key.UpArrow) {
+                root.select-closed(root.current-index - 1, -1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.select-closed(root.current-index + 1, 1);
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                root.select-closed(0, 1);
+                return accept;
+            }
+            if (event.text == Key.End) {
+                root.select-closed(root.model.length - 1, -1);
+                return accept;
+            }
+            if (event.text == Key.Return || event.text == " ") {
+                root.open-popup();
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    changed close-generation => {
+        root.finish-popup(false);
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: root.popup-upwards ? -root.popup-height - root.popup-gap : root.height + root.popup-gap;
+        width: root.width;
+        height: root.popup-height;
+        close-policy: close-on-click-outside;
+        forward-focus: popup-focus;
+
+        popup-focus := FocusScope {
+            width: parent.width;
+            height: parent.height;
+            init => {
+                self.focus();
+                root.popup-had-focus = true;
+                root.popup-open = true;
+            }
+            focus-changed-event => {
+                if (self.has-focus) {
+                    root.popup-had-focus = true;
+                    root.popup-open = true;
+                } else if (root.popup-had-focus && root.popup-open) {
+                    root.finish-popup(false);
+                }
+            }
+            key-pressed(event) => {
+                if (event.text == Key.UpArrow) {
+                    root.hover-index = root.enabled-index(root.bounded-highlight-index - 1, -1);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    root.hover-index = root.enabled-index(root.bounded-highlight-index + 1, 1);
+                    return accept;
+                }
+                if (event.text == Key.Home) {
+                    root.hover-index = root.enabled-index(0, 1);
+                    return accept;
+                }
+                if (event.text == Key.End) {
+                    root.hover-index = root.enabled-index(root.model.length - 1, -1);
+                    return accept;
+                }
+                if (event.text == Key.Return || event.text == " ") {
+                    root.accept-index(root.bounded-highlight-index, touch.absolute-position.x + root.width / 2, touch.absolute-position.y + root.height / 2);
+                    return accept;
+                }
+                if (event.text == Key.Escape) {
+                    root.finish-popup(true);
+                    return accept;
+                }
+                return reject;
+            }
+
+            popup-container := Rectangle {
+                width: parent.width;
+                height: root.popup-animate-open ? parent.height : 0px;
+                y: root.popup-upwards ? parent.height - popup-container.height : 0px;
+                animate height { duration: 260ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: root.normal-border;
+                background: root.normal-background;
+                clip: true;
+
+                popup-list := ScrollView {
+                    width: parent.width;
+                    height: parent.height;
+                    viewport-width: self.width;
+                    viewport-height: root.popup-content-height;
+                    viewport-y: root.popup-scroll-y;
+
+                    Rectangle {
+                        width: popup-list.width;
+                        height: root.popup-content-height;
+                        background: transparent;
+
+                        Rectangle {
+                            x: 4px;
+                            y: 4px + root.bounded-highlight-index * 36px;
+                            width: parent.width - 8px;
+                            height: 36px;
+                            border-radius: 6px;
+                            background: root.model[root.bounded-highlight-index].enabled ? (root.bounded-highlight-index == root.current-index ? root.selected-background : root.hover-background) : transparent;
+                            animate y, background { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                        }
+
+                        VerticalLayout {
+                            padding: 4px;
+                            for option[index] in root.model: Rectangle {
+                                height: 36px;
+                                border-radius: 6px;
+                                background: transparent;
+
+                                Text {
+                                    x: 10px;
+                                    width: parent.width - 20px;
+                                    text: option.text;
+                                    color: !option.enabled ? root.disabled-text : (index == root.current-index ? root.selected-text : root.normal-text);
+                                    font-size: 13px;
+                                    vertical-alignment: center;
+                                    overflow: elide;
+                                }
+
+                                item-touch := TouchArea {
+                                    if !root.hover-help-text.is-empty && index == root.hover-help-option-index: Tooltip {
+                                        text: @markdown("\{root.hover-help-text}");
+                                    }
+                                    changed has-hover => {
+                                        if (item-touch.has-hover && option.enabled) {
+                                            root.hover-index = index;
+                                        } else if (root.hover-index == index) {
+                                            root.hover-index = -1;
+                                        }
+                                    }
+                                    clicked => {
+                                        if (option.enabled) {
+                                            root.accept-index(index, item-touch.absolute-position.x + item-touch.mouse-x, item-touch.absolute-position.y + item-touch.mouse-y);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component SoftButton inherits Rectangle {
+    in property <string> text;
+    in property <string> accessible-name: root.text;
+    in property <bool> enabled: true;
+    in property <bool> checked: false;
+    in property <bool> checkable: false;
+    in property <string> variant: "outline"; // "outline" | "primary" | "danger" | "action"
+    in property <bool> dark-mode: false;
+
+    property <color> combo-bg: root.dark-mode ? #222c3b : #fbfdff;
+    property <color> combo-bg-hover: root.dark-mode ? #293548 : #f3f8ff;
+    property <color> combo-bg-disabled: root.dark-mode ? #1d2532 : #eef2f7;
+    property <color> combo-selected-bg: root.dark-mode ? #14325b : #e7f1ff;
+    property <color> combo-border: root.dark-mode ? #3a4658 : #dfe8f3;
+    property <color> combo-border-hover: root.dark-mode ? #4d6684 : #b9d6f7;
+    property <color> text-body: root.dark-mode ? #dce5f1 : #334155;
+    property <color> text-soft: root.dark-mode ? #748299 : #94a3b8;
+    property <color> accent-strong: root.dark-mode ? #5aa2ff : #0d6efd;
+
+    out property <bool> has-hover <=> touch.has-hover;
+    out property <bool> has-focus <=> button-focus.has-focus;
+    out property <bool> pressed: touch.pressed || root.keyboard-pressed;
+    property <bool> keyboard-pressed: false;
+    callback clicked();
+
+    min-height: 32px;
+    vertical-stretch: 0;
+    forward-focus: button-focus;
+    accessible-role: button;
+    accessible-enabled: root.enabled;
+    accessible-label: root.accessible-name;
+    accessible-checkable: root.checkable;
+    accessible-checked: root.checked;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    border-radius: 6px;
+    border-width: root.variant == "outline" ? 1px : 0px;
+    border-color: root.enabled ? (root.has-hover ? root.combo-border-hover : root.combo-border) : root.combo-border;
+
+    background: !root.enabled ?
+        root.combo-bg-disabled :
+        (root.variant == "primary" ?
+            (root.has-hover ? #0b5ed7 : #0d6efd) :
+            (root.variant == "danger" ?
+                (root.has-hover ? #b91c1c : #dc2626) :
+                (root.variant == "action" ?
+                    (root.has-hover ? #0b5ed7 : #0d6efd) :
+                    (root.checked ?
+                        root.combo-selected-bg :
+                        (root.has-hover ? root.combo-bg-hover : root.combo-bg)
+                    )
+                )
+            )
+        );
+
+    animate background, border-color, border-radius { duration: 150ms; easing: ease-out; }
+
+    Rectangle {
+        x: 0px;
+        y: root.pressed ? 1.5px : 0px;
+        width: parent.width;
+        height: parent.height;
+        animate y { duration: 60ms; easing: ease-out; }
+
+        Text {
+            x: 8px;
+            width: parent.width - 16px;
+            text: root.text;
+            color: !root.enabled ? root.text-soft : (root.checked ? root.accent-strong : (root.variant == "primary" || root.variant == "danger" || root.variant == "action" ? #ffffff : root.text-body));
+            font-size: 13px;
+            font-weight: root.variant == "primary" || root.variant == "action" || root.variant == "danger" || root.checked ? 700 : 500;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            overflow: elide;
+            animate color { duration: 150ms; easing: ease-out; }
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            if (root.enabled) {
+                button-focus.focus();
+                root.clicked();
+            }
+        }
+    }
+
+    button-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.keyboard-pressed = true;
+                root.clicked();
+                return accept;
+            }
+            return reject;
+        }
+        key-released(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.keyboard-pressed = false;
+                return accept;
+            }
+            return reject;
+        }
+    }
+
+    if root.has-focus && root.enabled: Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: 4px;
+        border-width: 2px;
+        border-color: root.variant == "primary" || root.variant == "danger" || root.variant == "action" ? #ffffff : #0d6efd;
+        background: transparent;
+    }
+}
+
+export component NavItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> selected;
+    in property <int> tab-index: 0;
+    in property <bool> enabled: true;
+    in property <brush> normal-background: transparent;
+    in property <brush> hover-background: #eef6ff;
+    in property <brush> selected-background: #0f7c8c;
+    in property <color> normal-text: #334155;
+    in property <color> selected-text: #ffffff;
+    out property <bool> has-hover <=> touch.has-hover;
+    out property <bool> has-focus <=> nav-focus.has-focus;
+    callback clicked();
+    callback navigate(string);
+
+    height: root.enabled ? 46px : 0px;
+    visible: root.enabled;
+    forward-focus: nav-focus;
+    accessible-role: tab;
+    accessible-enabled: root.enabled;
+    accessible-label: root.label;
+    accessible-item-index: root.tab-index;
+    accessible-item-selectable: true;
+    accessible-item-selected: root.selected;
+    accessible-action-default => { root.clicked(); }
+    border-radius: 6px;
+    background: root.selected ? root.selected-background : ((root.has-hover || root.has-focus) ? root.hover-background : root.normal-background);
+    animate background { duration: 150ms; easing: ease-out; }
+
+    // Dynamic vertical stripe on the left edge
+    Rectangle {
+        x: 8px;
+        y: (parent.height - (root.selected ? 20px : 0px)) / 2;
+        width: 4px;
+        height: root.selected ? 20px : 0px;
+        border-radius: 2px;
+        background: #ffffff;
+        animate height, y { duration: 180ms; easing: ease-out; }
+    }
+
+    Text {
+        text: root.label;
+        color: root.selected ? root.selected-text : root.normal-text;
+        font-size: 16px;
+        font-weight: 700;
+        x: (parent.width - self.width) / 2 + (root.selected ? 6px : (root.has-hover ? 4px : 0px));
+        vertical-alignment: center;
+        animate x, color { duration: 150ms; easing: ease-out; }
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { nav-focus.focus(); root.clicked(); }
+    }
+
+    nav-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            if (event.text == Key.UpArrow) { root.navigate("up"); return accept; }
+            if (event.text == Key.DownArrow) { root.navigate("down"); return accept; }
+            if (event.text == Key.Home) { root.navigate("home"); return accept; }
+            if (event.text == Key.End) { root.navigate("end"); return accept; }
+            return reject;
+        }
+    }
+
+}
+
+export component QueueMenuItem inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> danger: false;
+    in property <bool> dark-mode: false;
+    out property <bool> has-focus <=> menu-focus.has-focus;
+    callback clicked();
+    callback navigate(string);
+    callback dismiss();
+
+    height: 38px;
+    forward-focus: menu-focus;
+    accessible-role: button;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+    border-radius: 6px;
+    background: root.enabled && (touch.has-hover || root.has-focus) ? (root.dark-mode ? #243248 : #e7f1ff) : transparent;
+    animate background { duration: 120ms; easing: ease-out; }
+
+    Text {
+        x: 10px;
+        width: parent.width - 20px;
+        text: root.text;
+        color: !root.enabled ? (root.dark-mode ? #657186 : #94a3b8) : (root.danger ? (root.dark-mode ? #fb7185 : #dc2626) : (root.dark-mode ? #dce5f1 : #334155));
+        font-size: 13px;
+        font-weight: root.danger ? 700 : 500;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            if (root.enabled) {
+                menu-focus.focus();
+                root.clicked();
+            }
+        }
+    }
+
+    menu-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == " " || event.text == Key.Return) {
+                root.clicked();
+                return accept;
+            }
+            if (event.text == Key.UpArrow) { root.navigate("up"); return accept; }
+            if (event.text == Key.DownArrow) { root.navigate("down"); return accept; }
+            if (event.text == Key.Home) { root.navigate("home"); return accept; }
+            if (event.text == Key.End) { root.navigate("end"); return accept; }
+            if (event.text == Key.Escape) { root.dismiss(); return accept; }
+            return reject;
+        }
+    }
+
+    if root.has-focus && root.enabled: Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: 4px;
+        border-width: 2px;
+        border-color: #0d6efd;
+        background: transparent;
+    }
+}
+
+// 参数提示：控件右侧的说明文字。
+//
+// 分为两个内容区：上方是结论，加粗上色，可以由两段不同颜色拼接（例如"首选 AVIF" +
+// "极高压缩率 · 支持 HDR · 最高 12-bit"）；下方是细节，用弱色。窄窗口下两处都可换行。
+//
+// 之所以是两行而不是一段富文本：Slint 的 Text 不支持行内彩色片段，要给句子里的
+// 关键词单独上色，只能把它拆成独立的 Text。这个结构在保留自动换行的同时做到了
+// 这一点，而且不需要自己实现流式排版。位置沿用 0.9 的做法，仍在控件右侧。
+//
+// 高度由内容决定，调用方给所在行设 min-height 而不是固定 height，
+// 否则细节文字换行后会被裁掉。
+export component ParamHint inherits VerticalLayout {
+    // 结论行的第一段，通常是"建议怎么选"。
+    in property <string> lead;
+    in property <color> lead-color;
+    // 结论行的第二段，可留空；用另一种颜色承载关键数字或能力。
+    in property <string> accent;
+    in property <color> accent-color;
+    // 细节行，可留空。
+    in property <string> detail;
+    in property <color> detail-color;
+
+    spacing: 3px;
+    alignment: start;
+    cross-axis-alignment: stretch;
+    min-width: 0px;
+    horizontal-stretch: 1;
+    height: self.preferred-height;
+
+    HorizontalLayout {
+        width: 100%;
+        spacing: 4px;
+        cross-axis-alignment: center;
+        if root.lead != "": Text {
+            text: root.lead;
+            color: root.lead-color;
+            font-size: 12px;
+            font-weight: 700;
+            wrap: word-wrap;
+            min-width: 0px;
+            horizontal-stretch: 0;
+            vertical-alignment: center;
+        }
+        if root.accent != "": Text {
+            text: root.accent;
+            color: root.accent-color;
+            font-size: 12px;
+            font-weight: 700;
+            wrap: word-wrap;
+            min-width: 0px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
+    }
+
+    if root.detail != "": Text {
+        text: root.detail;
+        color: root.detail-color;
+        font-size: 12px;
+        wrap: word-wrap;
+        min-width: 0px;
+        width: 100%;
+        horizontal-stretch: 1;
+        height: self.preferred-height;
+    }
+}

@@ -21,6 +21,12 @@ msgstr "System default font"
 msgid "就绪"
 msgstr "Ready"
 
+msgid "释放以加入图片队列"
+msgstr "Drop to add images to the queue"
+
+msgid "当前不能接收外部文件"
+msgstr "External files cannot be accepted right now"
+
 msgid "主导航"
 msgstr "Main navigation"
 

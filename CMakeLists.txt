@@ -699,6 +699,9 @@ function(avif_add_slint_sources target slint_file)
         DEPENDS
             Slint::slint-compiler
             "${slint_absolute}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/studio_components.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/studio_theme.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/shell_convert_window.slint"
             "${awj_translation_po}"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo.png"
         COMMENT "Generating ${slint_base}.h"
@@ -1231,6 +1234,9 @@ if(WIN32)
     add_executable(AWJ WIN32
         src/app/main.cpp
         src/cli/main.cpp
+        src/ui/import_service.cpp
+        src/ui/file_drop_win32.cpp
+        src/ui/path_picker_win32.cpp
         src/ui/main.cpp
         src/ui/AWJ.manifest
         src/ui/AWJ.rc)
@@ -1238,6 +1244,7 @@ else()
     add_executable(AWJ
         src/app/main.cpp
         src/cli/main.cpp
+        src/ui/import_service.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
@@ -1303,6 +1310,21 @@ avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
 
 if(BUILD_TESTING)
+    add_executable(awj_import_service_tests
+        tests/import_service_tests.cpp
+        src/ui/import_service.cpp)
+    avif_enable_common_options(awj_import_service_tests)
+    add_test(NAME import_service_core COMMAND awj_import_service_tests)
+
+    if(WIN32)
+        add_executable(awj_file_drop_win32_tests
+            tests/file_drop_win32_tests.cpp
+            src/ui/file_drop_win32.cpp)
+        avif_enable_common_options(awj_file_drop_win32_tests)
+        target_link_libraries(awj_file_drop_win32_tests PRIVATE ole32 shell32)
+        add_test(NAME file_drop_win32_core COMMAND awj_file_drop_win32_tests)
+    endif()
+
     add_executable(awj_ui_smoke_tests
         tests/ui_smoke_tests.cpp)
     avif_enable_common_options(awj_ui_smoke_tests)
