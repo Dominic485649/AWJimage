@@ -93,11 +93,11 @@ msgstr "Visual quality"
 msgid "空由质量决定，1-100"
 msgstr "Empty follows quality, 1-100"
 
-msgid "推荐值为50"
-msgstr "Recommended value: 50"
+msgid "建议留空"
+msgstr "Recommended: leave blank"
 
-msgid "填写后会对同一张图反复编码，用 GMSD / MS-SSIM 搜索目标画质，效果类似质量驱动的 VBR，但耗时会翻数倍。"
-msgstr "Once set, the same image is encoded over and over, searching for the target quality with GMSD / MS-SSIM. It behaves like quality-driven VBR, but takes several times as long."
+msgid "留空时由普通质量参数直接控制。若确实需要启用视觉质量搜索，建议从 50 左右开始；填写后会对同一张图反复编码，并用 GMSD / MS-SSIM 搜索目标画质，耗时会显著增加。"
+msgstr "Leave blank to let the regular quality setting control the encode directly. If you explicitly need visual-quality search, start around 50; once set, AWJ repeatedly encodes the same image and searches for the target quality with GMSD / MS-SSIM, which can significantly increase processing time."
 
 msgid "速度"
 msgstr "Speed"

@@ -689,10 +689,10 @@ export component AwjStudio inherits Window {
                                             LineEdit { accessible-label: @tr("视觉质量"); text <=> root.visual-quality-text; placeholder-text: @tr("空由质量决定，1-100"); input-type: number; enabled: !root.running && root.format-index != 4; opacity: root.format-index == 4 ? 0.56 : 1.0; width: root.parameter-control-width; height: root.parameter-control-height; }
                                             ParamHint {
                                                 horizontal-stretch: 1;
-                                                lead: @tr("推荐值为50");
+                                                lead: @tr("建议留空");
                                                 lead-color: root.hint-red;
-                                                detail: @tr("填写后会对同一张图反复编码，用 GMSD / MS-SSIM 搜索目标画质，效果类似质量驱动的 VBR，但耗时会翻数倍。");
-                                                detail-color: root.text-muted;
+                                                detail: @tr("留空时由普通质量参数直接控制。若确实需要启用视觉质量搜索，建议从 50 左右开始；填写后会对同一张图反复编码，并用 GMSD / MS-SSIM 搜索目标画质，耗时会显著增加。");
+                                                detail-color: root.text-body;
                                             }
                                         }
 
