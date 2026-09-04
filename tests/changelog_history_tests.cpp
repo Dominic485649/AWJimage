@@ -1,9 +1,29 @@
+#include <fstream>
 #include <iostream>
+#include <iterator>
+#include <string>
 #include <string_view>
 
 #include "changelog_history.h"
 
-int main() {
+std::string read_normalized(const char* path) {
+  std::ifstream file(path, std::ios::binary);
+  std::string input((std::istreambuf_iterator<char>(file)),
+                    std::istreambuf_iterator<char>());
+  std::string normalized;
+  normalized.reserve(input.size());
+  for (std::size_t i = 0; i < input.size(); ++i) {
+    if (input[i] == '\r') {
+      if (i + 1 < input.size() && input[i + 1] == '\n') ++i;
+      normalized.push_back('\n');
+    } else {
+      normalized.push_back(input[i]);
+    }
+  }
+  return normalized;
+}
+
+int main(int argc, char** argv) {
   constexpr std::string_view zh =
       "## 1.0.4 - 2026-08-21\n\n- 新日志\n\n"
       "## 0.1 - 2026-05-16\n\n- 旧日志\n";
@@ -31,6 +51,17 @@ int main() {
       awj::embedded_changelog::zh);
   if (embedded.size() != all_zh.size() || embedded.empty()) {
     std::cerr << "embedded changelog does not include every historical entry\n";
+    return 1;
+  }
+  if (argc != 3) {
+    std::cerr << "expected source changelog paths\n";
+    return 1;
+  }
+  const auto source_zh = read_normalized(argv[1]);
+  const auto source_en = read_normalized(argv[2]);
+  if (source_zh != awj::embedded_changelog::zh ||
+      source_en != awj::embedded_changelog::en) {
+    std::cerr << "embedded changelog bytes do not equal normalized source bytes\n";
     return 1;
   }
   return 0;

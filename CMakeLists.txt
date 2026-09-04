@@ -1147,7 +1147,15 @@ if(BUILD_TESTING)
     add_test(NAME update_archive_security COMMAND awj_update_archive_tests)
     add_test(NAME update_security_state COMMAND awj_update_security_state_tests)
     add_test(NAME update_keyring_security COMMAND awj_update_keyring_tests)
-    add_test(NAME changelog_history_complete COMMAND awj_changelog_history_tests)
+    add_test(NAME changelog_history_complete
+        COMMAND awj_changelog_history_tests
+            "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.md"
+            "${CMAKE_CURRENT_SOURCE_DIR}/CHANGELOG.en.md")
+    add_test(NAME changelog_chunk_boundary
+        COMMAND ${CMAKE_COMMAND}
+            "-DEMBED_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_changelog.cmake"
+            "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/changelog-chunk-boundary-test"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/changelog_chunk_boundary_test.cmake")
     add_test(NAME hdr_tonemap_cpu COMMAND awj_hdr_tonemap_tests)
     add_test(NAME config_defaults_core COMMAND awj_config_defaults_tests)
     add_test(NAME process_core COMMAND awj_process_tests)
