@@ -20,7 +20,13 @@ constexpr std::wstring_view kImageParent =
     L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJimage.Convert";
 constexpr std::wstring_view kDirectoryParent =
     L"Software\\Classes\\Directory\\shell\\AWJimage.Convert";
+// Windows 10.0.26200 Shell was empirically verified to materialize a real
+// cascade when ExtendedSubCommandsKey is a REG_SZ pointer to this shared tree.
+// Current Microsoft Learn documents the child-key form instead, so this is a
+// Windows compatibility contract, not a claim about documented behavior.
 constexpr std::wstring_view kSharedTree =
+    L"Software\\Classes\\AWJimage.ContextMenu.v3";
+constexpr std::wstring_view kLegacySharedTreeV2 =
     L"Software\\Classes\\AWJimage.ContextMenu.v2";
 constexpr std::wstring_view kLegacyImageParent =
     L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJImage";
@@ -44,12 +50,12 @@ constexpr std::wstring_view kSupportedExtensions[] = {
     L".hdp"};
 
 constexpr CommandSpec kCommands[] = {
-    {.canonical_verb = L"AWJimage.Convert.png", .label = L"转换为 PNG", .format = L"png", .params_index = 4},
-    {.canonical_verb = L"AWJimage.Convert.webp", .label = L"转换为 WebP", .format = L"webp", .params_index = 1},
-    {.canonical_verb = L"AWJimage.Convert.avif", .label = L"转换为 AVIF", .format = L"avif", .params_index = 0},
-    {.canonical_verb = L"AWJimage.Convert.avif-png", .label = L"转换为 AVIF.png", .format = L"avif", .params_index = 0, .append_png_suffix = true},
-    {.canonical_verb = L"AWJimage.Convert.jxl", .label = L"转换为 JXL", .format = L"jxl", .params_index = 2},
-    {.canonical_verb = L"AWJimage.Convert.jpgli", .label = L"转换为 JPGLI", .format = L"jpgli", .params_index = 3},
+    {.canonical_verb = L"AWJimage.Convert.10.png", .label = L"转换为 PNG", .format = L"png", .params_index = 4},
+    {.canonical_verb = L"AWJimage.Convert.20.webp", .label = L"转换为 WebP", .format = L"webp", .params_index = 1},
+    {.canonical_verb = L"AWJimage.Convert.30.avif", .label = L"转换为 AVIF", .format = L"avif", .params_index = 0},
+    {.canonical_verb = L"AWJimage.Convert.40.avif-png", .label = L"转换为 AVIF.png", .format = L"avif", .params_index = 0, .append_png_suffix = true},
+    {.canonical_verb = L"AWJimage.Convert.50.jxl", .label = L"转换为 JXL", .format = L"jxl", .params_index = 2},
+    {.canonical_verb = L"AWJimage.Convert.60.jpgli", .label = L"转换为 JPGLI", .format = L"jpgli", .params_index = 3},
 };
 
 bool missing_registry_status(LSTATUS status) noexcept {
@@ -240,6 +246,67 @@ std::expected<std::vector<std::wstring>, std::string> child_keys(
   return names;
 }
 
+std::expected<std::vector<std::wstring>, std::string> value_names(
+    std::wstring_view subkey) {
+  auto key = open_key(subkey, KEY_READ | KEY_QUERY_VALUE);
+  if (!key) return std::unexpected{key.error()};
+  DWORD max_name = 0;
+  DWORD count = 0;
+  const auto info = RegQueryInfoKeyW(key->get(), nullptr, nullptr, nullptr, nullptr,
+                                     nullptr, nullptr, &count, &max_name, nullptr,
+                                     nullptr, nullptr);
+  if (info != ERROR_SUCCESS) {
+    return std::unexpected{registry_error("枚举右键菜单值", subkey, info)};
+  }
+  std::vector<std::wstring> names;
+  names.reserve(count);
+  std::vector<wchar_t> buffer(static_cast<std::size_t>(max_name) + 1, L'\0');
+  for (DWORD index = 0; index < count; ++index) {
+    DWORD length = max_name + 1;
+    const auto status = RegEnumValueW(key->get(), index, buffer.data(), &length,
+                                      nullptr, nullptr, nullptr, nullptr);
+    if (status != ERROR_SUCCESS) {
+      return std::unexpected{registry_error("枚举右键菜单值", subkey, status)};
+    }
+    names.emplace_back(buffer.data(), length);
+  }
+  std::ranges::sort(names);
+  return names;
+}
+
+std::wstring parent_key_of(std::wstring_view key) {
+  const auto slash = key.find_last_of(L'\\');
+  return slash == std::wstring_view::npos ? std::wstring{}
+                                           : std::wstring{key.substr(0, slash)};
+}
+
+std::wstring leaf_key_name(std::wstring_view key) {
+  const auto slash = key.find_last_of(L'\\');
+  return std::wstring{slash == std::wstring_view::npos ? key : key.substr(slash + 1)};
+}
+
+std::vector<std::wstring> expected_children(const RegistrySchema& schema,
+                                            std::wstring_view key) {
+  std::vector<std::wstring> result;
+  for (const auto& candidate : schema.keys) {
+    if (parent_key_of(candidate) == key) result.push_back(leaf_key_name(candidate));
+  }
+  std::ranges::sort(result);
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
+std::vector<std::wstring> expected_value_names(const RegistrySchema& schema,
+                                               std::wstring_view key) {
+  std::vector<std::wstring> result;
+  for (const auto& value : schema.values) {
+    if (value.key == key) result.push_back(value.name);
+  }
+  std::ranges::sort(result);
+  result.erase(std::unique(result.begin(), result.end()), result.end());
+  return result;
+}
+
 std::wstring quote_windows_arg(std::wstring_view arg, bool always_quote = false) {
   if (!always_quote && !arg.empty() &&
       arg.find_first_of(L" \t\n\v\"") == std::wstring_view::npos) {
@@ -365,6 +432,10 @@ std::expected<void, std::string> cleanup_owned_roots() {
 }
 
 std::expected<void, std::string> apply_schema(const RegistrySchema& schema) {
+  for (const auto& key_path : schema.keys) {
+    auto key = create_key(key_path);
+    if (!key) return std::unexpected{key.error()};
+  }
   for (const auto& value : schema.values) {
     if (value.kind == RegistryValueKind::string) {
       if (auto written = set_string(value.key, value.name, value.string_value); !written) {
@@ -390,16 +461,6 @@ std::expected<bool, std::string> verify_spec(const RegistryValueSpec& spec) {
   return *value && **value == spec.dword_value;
 }
 
-std::vector<std::wstring> expected_command_keys(const MenuParams& menu_params) {
-  std::vector<std::wstring> names;
-  for (const auto& command : kCommands) {
-    if (command.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
-    names.emplace_back(command.canonical_verb);
-  }
-  std::ranges::sort(names);
-  return names;
-}
-
 }  // namespace
 
 std::span<const std::wstring_view> supported_extensions() noexcept {
@@ -413,6 +474,7 @@ std::span<const CommandSpec> command_specs() noexcept {
 std::wstring image_parent_key() { return std::wstring{kImageParent}; }
 std::wstring directory_parent_key() { return std::wstring{kDirectoryParent}; }
 std::wstring shared_tree_key() { return std::wstring{kSharedTree}; }
+std::wstring legacy_shared_tree_key() { return std::wstring{kLegacySharedTreeV2}; }
 
 std::wstring extension_parent_key(std::wstring_view extension) {
   return std::format(L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\{}",
@@ -426,6 +488,7 @@ std::vector<std::wstring> legacy_root_keys() {
   roots.emplace_back(kLegacyIcoFileParent);
   roots.emplace_back(kLegacyDirectoryParent);
   roots.emplace_back(kLegacySharedTree);
+  roots.emplace_back(kLegacySharedTreeV2);
   for (const auto extension : kSupportedExtensions) {
     roots.push_back(std::format(
         L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\AWJImage",
@@ -537,14 +600,21 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
 
   const auto icon = icon_value(awj_exe);
   const auto shared = shared_tree_key();
+  const auto shared_shell = shared + L"\\shell";
+  schema.keys.push_back(shared);
+  schema.keys.push_back(shared_shell);
   append_owned_markers(schema.values, shared);
+
   for (const auto& command : kCommands) {
     if (command.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
-    const auto verb_key = std::format(L"{}\\shell\\{}", shared, command.canonical_verb);
+    const auto verb_key = std::format(L"{}\\{}", shared_shell, command.canonical_verb);
+    const auto command_key = verb_key + L"\\command";
+    schema.keys.push_back(verb_key);
+    schema.keys.push_back(command_key);
     append_string_spec(schema.values, verb_key, L"MUIVerb", std::wstring{command.label});
     append_string_spec(schema.values, verb_key, L"Icon", icon);
-    append_string_spec(schema.values, verb_key, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-    const auto command_key = verb_key + L"\\command";
+    append_string_spec(schema.values, verb_key, L"MultiSelectModel",
+                       std::wstring{kMultiSelectModel});
     append_string_spec(
         schema.values, command_key, L"",
         build_convert_command_line(awj_exe, command.format,
@@ -553,11 +623,12 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
   }
 
   for (const auto& parent : schema.parent_roots) {
+    schema.keys.push_back(parent);
     append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
     append_string_spec(schema.values, parent, L"Icon", icon);
+    append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
     append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
                        std::wstring{shared_tree_reference});
-    append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
     append_owned_markers(schema.values, parent);
   }
   return schema;
@@ -587,6 +658,7 @@ std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
   const auto schema = build_registry_schema(awj_exe, menu_params, *plan);
   if (auto applied = apply_schema(schema); !applied) {
     auto rollback = cleanup_owned_roots();
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     if (!rollback) {
       return std::unexpected{applied.error() + " 回滚右键菜单注册失败：" + rollback.error()};
     }
@@ -625,12 +697,35 @@ std::expected<std::optional<std::string>, std::string> warning(
   auto plan = detect_install_plan();
   if (!plan) return std::unexpected{plan.error()};
   const auto schema = build_registry_schema(awj_exe, menu_params, *plan);
+  for (const auto& key_path : schema.keys) {
+    auto exists = key_exists(key_path);
+    if (!exists) return std::unexpected{exists.error()};
+    if (!*exists) {
+      return std::optional<std::string>{
+          "右键菜单子键结构不完整，请重新安装右键菜单。"};
+    }
+  }
   for (const auto& spec : schema.values) {
     auto verified = verify_spec(spec);
     if (!verified) return std::unexpected{verified.error()};
     if (!*verified) {
       return std::optional<std::string>{
           "右键菜单与当前版本、程序路径或菜单参数不一致，请重新安装右键菜单。"};
+    }
+  }
+
+  for (const auto& key_path : schema.keys) {
+    auto actual_values = value_names(key_path);
+    if (!actual_values) return std::unexpected{actual_values.error()};
+    if (*actual_values != expected_value_names(schema, key_path)) {
+      return std::optional<std::string>{
+          "右键菜单含未预期的注册表值（包括父 Default/SubCommands 等），请重新安装右键菜单。"};
+    }
+    auto actual_children = child_keys(key_path);
+    if (!actual_children) return std::unexpected{actual_children.error()};
+    if (*actual_children != expected_children(schema, key_path)) {
+      return std::optional<std::string>{
+          "右键菜单含未预期或缺失的子键，请重新安装右键菜单。"};
     }
   }
 
@@ -651,20 +746,6 @@ std::expected<std::optional<std::string>, std::string> warning(
   if (*icofile_exists) {
     return std::optional<std::string>{
         "右键菜单仍含不需要的 icofile 专用注册，请重新安装右键菜单。"};
-  }
-
-  const auto shell_key = shared_tree_key() + L"\\shell";
-  auto shell_exists = key_exists(shell_key);
-  if (!shell_exists) return std::unexpected{shell_exists.error()};
-  if (!*shell_exists) {
-    return std::optional<std::string>{
-        "右键菜单共享命令树不完整，请重新安装右键菜单。"};
-  }
-  auto actual_commands = child_keys(shell_key);
-  if (!actual_commands) return std::unexpected{actual_commands.error()};
-  if (*actual_commands != expected_command_keys(menu_params)) {
-    return std::optional<std::string>{
-        "右键菜单共享命令树与当前 AVIF.png 设置不一致，请重新安装右键菜单。"};
   }
   return std::optional<std::string>{};
 }

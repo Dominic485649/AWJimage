@@ -12,12 +12,12 @@
 
 namespace awj::shell_context_menu {
 
-inline constexpr std::uint32_t schema_version = 2;
+inline constexpr std::uint32_t schema_version = 3;
 inline constexpr std::wstring_view owner_value_name = L"AWJimage.Owner";
 inline constexpr std::wstring_view schema_value_name = L"AWJimage.SchemaVersion";
 inline constexpr std::wstring_view owner_value = L"AWJimage";
 inline constexpr std::wstring_view parent_canonical_verb = L"AWJimage.Convert";
-inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v2";
+inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v3";
 
 struct FormatParams {
   std::wstring quality_text{};
@@ -84,6 +84,7 @@ struct RegistryValueSpec {
 struct RegistrySchema {
   InstallPlan plan{};
   std::vector<std::wstring> parent_roots{};
+  std::vector<std::wstring> keys{};
   std::vector<RegistryValueSpec> values{};
 
   bool operator==(const RegistrySchema&) const = default;
@@ -95,6 +96,7 @@ std::wstring image_parent_key();
 std::wstring directory_parent_key();
 std::wstring extension_parent_key(std::wstring_view extension);
 std::wstring shared_tree_key();
+std::wstring legacy_shared_tree_key();
 std::vector<std::wstring> legacy_root_keys();
 std::vector<std::wstring> owned_root_keys();
 InstallPlan build_install_plan(std::span<const ExtensionPerception> perceptions);

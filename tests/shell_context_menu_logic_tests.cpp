@@ -90,13 +90,15 @@ int main() {
       ++pointer_values;
       if (value.kind != RegistryValueKind::string ||
           value.string_value != shared_tree_reference ||
-          contains(value.key, L"ExtendedSubCommandsKey\\")) {
-        return fail("ExtendedSubCommandsKey was not modeled as a shared-tree pointer value");
+          value.key == shared_tree_key()) {
+        return fail("ExtendedSubCommandsKey pointer schema is incorrect");
       }
     }
-    if (contains(value.key, L"AWJimage.Convert.avif-png\\command")) ++avif_png_commands;
+    if (contains(value.key, L"AWJimage.Convert.40.avif-png\\command")) ++avif_png_commands;
   }
-  if (pointer_values != schema_without_png.parent_roots.size() || avif_png_commands != 0) {
+  if (pointer_values != schema_without_png.parent_roots.size() || avif_png_commands != 0 ||
+      std::ranges::find(schema_without_png.keys, shared_tree_key()) == schema_without_png.keys.end() ||
+      std::ranges::find(schema_without_png.keys, shared_tree_key() + L"\\shell") == schema_without_png.keys.end()) {
     return fail("shared-tree pointer or AVIF.png-off schema is incorrect");
   }
 
@@ -104,7 +106,7 @@ int main() {
   const auto schema_with_png = build_registry_schema(exe, params_with_png, plan);
   bool found_avif_png = false;
   for (const auto& value : schema_with_png.values) {
-    if (contains(value.key, L"AWJimage.Convert.avif-png\\command") &&
+    if (contains(value.key, L"AWJimage.Convert.40.avif-png\\command") &&
         value.name.empty() && contains(value.string_value, L"--append-png-suffix")) {
       found_avif_png = true;
     }
@@ -167,7 +169,8 @@ int main() {
   auto sorted = owned;
   std::ranges::sort(sorted);
   if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end() ||
-      std::ranges::find(owned, shared_tree_key()) == owned.end()) {
+      std::ranges::find(owned, shared_tree_key()) == owned.end() ||
+      std::ranges::find(owned, legacy_shared_tree_key()) == owned.end()) {
     return fail("owned-root cleanup plan is not stable/unique");
   }
   return 0;

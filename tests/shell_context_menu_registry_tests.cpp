@@ -40,10 +40,13 @@ bool key_exists(std::wstring_view key) {
 bool seed_legacy_key() {
   constexpr std::wstring_view paths[] = {
       L"Software\\Classes\\AWJImage.ContextMenu\\shell\\legacy-probe",
+      L"Software\\Classes\\AWJimage.ContextMenu.v2\\shell\\legacy-probe",
       L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJImage",
       L"Software\\Classes\\SystemFileAssociations\\.jpg\\shell\\AWJImage",
       L"Software\\Classes\\icofile\\shell\\AWJImage",
+      L"Software\\Classes\\icofile\\shell\\AWJimage.Convert",
       L"Software\\Classes\\Directory\\shell\\AWJImage",
+      L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJimage.Convert\\ExtendedSubCommandsKey\\Shell\\legacy-probe",
   };
   const wchar_t value[] = L"legacy";
   for (const auto path : paths) {
@@ -134,7 +137,8 @@ std::wstring quote_arg(std::wstring_view arg) {
 }
 
 bool run_command_probe(std::wstring command,
-                       const std::vector<std::filesystem::path>& inputs) {
+                       const std::vector<std::filesystem::path>& inputs,
+                       const std::filesystem::path& current_directory = {}) {
   const auto marker = command.find(L"-i \"%1\" %*");
   if (marker == std::wstring::npos || inputs.empty()) return false;
   std::wstring expanded = command.substr(0, marker);
@@ -148,8 +152,10 @@ bool run_command_probe(std::wstring command,
   writable.push_back(L'\0');
   STARTUPINFOW startup{.cb = sizeof(startup)};
   PROCESS_INFORMATION process{};
+  const auto cwd = current_directory.empty() ? std::wstring{} : current_directory.wstring();
   if (!CreateProcessW(nullptr, writable.data(), nullptr, nullptr, FALSE,
-                      CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process)) {
+                      CREATE_NO_WINDOW, nullptr,
+                      cwd.empty() ? nullptr : cwd.c_str(), &startup, &process)) {
     return false;
   }
   CloseHandle(process.hThread);
@@ -173,6 +179,25 @@ bool write_one_pixel_bmp(const std::filesystem::path& path) {
   file.write(reinterpret_cast<const char*>(bmp.data()),
              static_cast<std::streamsize>(bmp.size()));
   return file.good();
+}
+
+std::filesystem::path expected_output(
+    const std::filesystem::path& input,
+    const awj::shell_context_menu::CommandSpec& spec) {
+  std::wstring extension;
+  if (spec.format == L"png") extension = L".png";
+  else if (spec.format == L"webp") extension = L".webp";
+  else if (spec.format == L"avif") {
+    extension = spec.append_png_suffix ? L".avif.png" : L".avif";
+  } else if (spec.format == L"jxl") extension = L".jxl";
+  else if (spec.format == L"jpgli") extension = L".jpg";
+  return input.parent_path() / (input.stem().wstring() + extension);
+}
+
+bool nonempty_file(const std::filesystem::path& path) {
+  std::error_code ec;
+  return std::filesystem::is_regular_file(path, ec) && !ec &&
+         std::filesystem::file_size(path, ec) > 0 && !ec;
 }
 
 awj::shell_context_menu::MenuParams make_params() {
@@ -229,9 +254,11 @@ int wmain(int argc, wchar_t** argv) {
     }
     const auto pointer = read_string(parent, L"ExtendedSubCommandsKey");
     const auto multi = read_string(parent, L"MultiSelectModel");
-    if (!pointer || *pointer != shared_tree_reference || !multi || *multi != L"Player") {
+    const auto parent_default = read_string(parent, L"");
+    if (!pointer || *pointer != shared_tree_reference || parent_default ||
+        !multi || *multi != L"Player") {
       final_cleanup();
-      return fail("parent does not use shared ExtendedSubCommandsKey/Player schema");
+      return fail("parent does not use empirically verified ExtendedSubCommandsKey pointer/Player schema");
     }
   }
   if (key_exists(extension_parent_key(L".jpg")) ||
@@ -279,8 +306,23 @@ int wmain(int argc, wchar_t** argv) {
     return true;
   };
 
-  if (!write_dword(shared_tree_key(), schema_value_name, schema_version + 1) ||
+  if (!write_dword(image_parent_key(), schema_value_name, schema_version + 1) ||
       !expect_stale_then_reinstall("schema-version drift was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  if (!write_string(image_parent_key(), L"", L"unexpected-default") ||
+      !expect_stale_then_reinstall("parent Default drift was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  if (!write_string(image_parent_key(), L"SubCommands", L"unexpected") ||
+      !expect_stale_then_reinstall("unexpected parent SubCommands drift was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  if (!write_string(image_parent_key() + L"\\command", L"", L"unexpected") ||
+      !expect_stale_then_reinstall("unexpected parent command subkey was not detected")) {
     final_cleanup();
     return 1;
   }
@@ -291,6 +333,29 @@ int wmain(int argc, wchar_t** argv) {
   }
   if (!write_string(extension_parent_key(L".jpg"), L"MUIVerb", L"unexpected") ||
       !expect_stale_then_reinstall("unexpected image fallback root was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  if (!write_string(image_parent_key(), L"ExtendedSubCommandsKey", L"AWJimage.Wrong") ||
+      !expect_stale_then_reinstall("ExtendedSubCommandsKey pointer drift was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  if (!write_string(shared_tree_key(), L"UnexpectedValue", L"unexpected") ||
+      !expect_stale_then_reinstall("unexpected shared-tree value was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  if (!write_string(shared_tree_key() + L"\\shell\\AWJimage.Convert.99.unknown",
+                    L"MUIVerb", L"unexpected") ||
+      !expect_stale_then_reinstall("unexpected shared-tree command was not detected")) {
+    final_cleanup();
+    return 1;
+  }
+  const auto png_command_key = shared_tree_key() +
+      L"\\shell\\AWJimage.Convert.10.png\\command";
+  if (!write_string(png_command_key, L"", L"unexpected") ||
+      !expect_stale_then_reinstall("shared-tree command-line drift was not detected")) {
     final_cleanup();
     return 1;
   }
@@ -306,6 +371,31 @@ int wmain(int argc, wchar_t** argv) {
     return fail(healthy ? **healthy : healthy.error());
   }
 
+  auto params_without_avif_png = params;
+  params_without_avif_png[0].install_avif_png_command = false;
+  auto installed_without_avif_png = install(awj_exe, params_without_avif_png);
+  if (!installed_without_avif_png) {
+    final_cleanup();
+    return fail(installed_without_avif_png.error());
+  }
+  const auto avif_png_key = shared_tree_key() +
+      L"\\shell\\AWJimage.Convert.40.avif-png";
+  if (key_exists(avif_png_key)) {
+    final_cleanup();
+    return fail("AVIF.png command survived disabled reinstall");
+  }
+  auto healthy_without_avif_png = warning(awj_exe, params_without_avif_png);
+  if (!healthy_without_avif_png || *healthy_without_avif_png) {
+    final_cleanup();
+    return fail(healthy_without_avif_png ? **healthy_without_avif_png
+                                        : healthy_without_avif_png.error());
+  }
+  installed = install(awj_exe, params);
+  if (!installed) {
+    final_cleanup();
+    return fail(installed.error());
+  }
+
   const auto temp = std::filesystem::temp_directory_path() / L"awj-shell-context-menu-registry-test";
   std::error_code ec;
   std::filesystem::remove_all(temp, ec);
@@ -313,6 +403,15 @@ int wmain(int argc, wchar_t** argv) {
   if (ec) {
     final_cleanup();
     return fail("failed to create shell test directory");
+  }
+  const auto cwd_one = temp / L"cwd one 空格";
+  const auto cwd_two = temp / L"cwd-two Ω";
+  std::filesystem::create_directories(cwd_one, ec);
+  if (!ec) std::filesystem::create_directories(cwd_two, ec);
+  if (ec) {
+    std::filesystem::remove_all(temp, ec);
+    final_cleanup();
+    return fail("failed to create independent CWD probes");
   }
   std::vector<std::filesystem::path> inputs;
   inputs.reserve(100);
@@ -328,19 +427,20 @@ int wmain(int argc, wchar_t** argv) {
 
   const std::vector<std::filesystem::path> one_input{inputs.front()};
   std::wstring png_player_command;
-  const auto shared = shared_tree_key();
+  const auto shell = shared_tree_key() + L"\\shell";
   for (const auto& spec : command_specs()) {
-    const auto command_key = std::format(L"{}\\shell\\{}\\command", shared,
+    const auto command_key = std::format(L"{}\\{}\\command", shell,
                                          spec.canonical_verb);
     const auto command = read_string(command_key, L"");
-    const auto verb_key = std::format(L"{}\\shell\\{}", shared, spec.canonical_verb);
+    const auto verb_key = std::format(L"{}\\{}", shell, spec.canonical_verb);
     const auto multi = read_string(verb_key, L"MultiSelectModel");
-    if (!command || !multi || *multi != L"Player" ||
-        command->find(L"%*") == std::wstring::npos ||
-        !run_command_probe(*command, one_input)) {
+    const bool launched = command && multi && *multi == L"Player" &&
+        command->find(L"%*") != std::wstring::npos &&
+        run_command_probe(*command, one_input);
+    if (!launched || !nonempty_file(expected_output(inputs.front(), spec))) {
       std::filesystem::remove_all(temp, ec);
       final_cleanup();
-      return fail("registered format command did not safely launch AWJ");
+      return fail("registered format command did not launch AWJ and produce output");
     }
     if (spec.format == L"png" && !spec.append_png_suffix) {
       png_player_command = *command;
@@ -350,6 +450,36 @@ int wmain(int argc, wchar_t** argv) {
     std::filesystem::remove_all(temp, ec);
     final_cleanup();
     return fail("registered PNG command did not accept 100-item Player arguments");
+  }
+
+  const auto unicode_input = temp / L"输入 图像 空格.bmp";
+  if (!write_one_pixel_bmp(unicode_input) ||
+      !run_command_probe(png_player_command, {unicode_input}, cwd_one) ||
+      !nonempty_file(unicode_input.parent_path() /
+                     (unicode_input.stem().wstring() + L".png"))) {
+    std::filesystem::remove_all(temp, ec);
+    final_cleanup();
+    return fail("registered command failed from first independent CWD/Unicode path");
+  }
+  const auto unicode_input_two = temp / L"第二 输入 Ω.bmp";
+  if (!write_one_pixel_bmp(unicode_input_two) ||
+      !run_command_probe(png_player_command, {unicode_input_two}, cwd_two) ||
+      !nonempty_file(unicode_input_two.parent_path() /
+                     (unicode_input_two.stem().wstring() + L".png"))) {
+    std::filesystem::remove_all(temp, ec);
+    final_cleanup();
+    return fail("registered command failed from second independent CWD/Unicode path");
+  }
+
+  const auto folder_input = temp / L"folder 输入 空格 Ω";
+  std::filesystem::create_directories(folder_input, ec);
+  const auto folder_image = folder_input / L"目录图像.bmp";
+  if (ec || !write_one_pixel_bmp(folder_image) ||
+      !run_command_probe(png_player_command, {folder_input}, cwd_one) ||
+      !nonempty_file(temp / L"AWJOutput" / L"目录图像.png")) {
+    std::filesystem::remove_all(temp, ec);
+    final_cleanup();
+    return fail("registered PNG command failed for Directory shell input");
   }
   std::filesystem::remove_all(temp, ec);
 

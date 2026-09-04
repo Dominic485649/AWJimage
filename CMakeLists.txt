@@ -1329,6 +1329,20 @@ if(BUILD_TESTING AND WIN32)
     add_test(NAME shell_context_menu_registry
         COMMAND awj_shell_context_menu_registry_tests "$<TARGET_FILE:AWJ>")
     set_tests_properties(shell_context_menu_registry PROPERTIES TIMEOUT 45)
+
+    add_executable(awj_shell_context_menu_explorer_tests
+        tests/shell_context_menu_explorer_tests.cpp)
+    avif_enable_common_options(awj_shell_context_menu_explorer_tests)
+    target_link_libraries(awj_shell_context_menu_explorer_tests PRIVATE
+        awj_shell_context_menu
+        ole32)
+    add_dependencies(awj_shell_context_menu_explorer_tests AWJ)
+    awj_set_runtime_directory(awj_shell_context_menu_explorer_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME shell_context_menu_explorer
+        COMMAND awj_shell_context_menu_explorer_tests "$<TARGET_FILE:AWJ>")
+    set_tests_properties(shell_context_menu_registry shell_context_menu_explorer
+        PROPERTIES RESOURCE_LOCK awj_shell_registry)
+    set_tests_properties(shell_context_menu_explorer PROPERTIES TIMEOUT 180)
 endif()
 
 if(BUILD_TESTING)
