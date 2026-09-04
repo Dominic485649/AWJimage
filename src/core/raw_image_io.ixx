@@ -5,6 +5,7 @@ module;
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -264,7 +265,8 @@ std::expected<void, std::string> write_wgc_scrgb_half_stream_file(
         return std::unexpected{"WGC stdin 数据短于声明的 16-bit RGBA 帧。"};
       }
       if (auto written = raw_image_detail::write_all(
-              output.get(), buffer.data(), static_cast<std::uint64_t>(received), path);
+              output.get(), buffer.data(), static_cast<std::uint64_t>(received),
+              path);
           !written) {
         return std::unexpected{written.error()};
       }

@@ -21,7 +21,57 @@ get_filename_component(output_dir "${OUTPUT}" DIRECTORY)
 file(MAKE_DIRECTORY "${output_dir}")
 file(WRITE "${OUTPUT}" "#pragma once\n"
     "#include <string_view>\n\n"
-    "namespace awj::embedded_changelog {\n"
-    "inline constexpr std::string_view zh = R\"${delimiter_zh}(${changelog_zh})${delimiter_zh}\";\n"
-    "inline constexpr std::string_view en = R\"${delimiter_en}(${changelog_en})${delimiter_en}\";\n"
-    "}  // namespace awj::embedded_changelog\n")
+    "namespace awj::embedded_changelog {\n")
+
+# MSVC rejects a single string literal larger than roughly 16 KiB. Keep each
+# raw-string fragment below that limit while only splitting at UTF-8 newlines.
+function(append_chunked_string_view output text delimiter)
+    string(LENGTH "${text}" text_length)
+    set(offset 0)
+    file(APPEND "${output}" "    ")
+    if(text_length EQUAL 0)
+        file(APPEND "${output}" "R\"${delimiter}()${delimiter}\";\n")
+        return()
+    endif()
+    set(first_fragment TRUE)
+    while(offset LESS text_length)
+        math(EXPR remaining "${text_length} - ${offset}")
+        set(fragment_length 4096)
+        if(remaining LESS fragment_length)
+            set(fragment_length ${remaining})
+        endif()
+
+        # Changelog lines are short, but find a newline defensively so a
+        # multibyte UTF-8 code point is never split between literals.
+        math(EXPR fragment_end "${offset} + ${fragment_length}")
+        if(fragment_end LESS text_length)
+            while(fragment_end GREATER offset)
+                math(EXPR last_index "${fragment_end} - 1")
+                string(SUBSTRING "${text}" ${last_index} 1 last_character)
+                if(last_character STREQUAL "\n")
+                    break()
+                endif()
+                math(EXPR fragment_end "${fragment_end} - 1")
+            endwhile()
+            if(fragment_end EQUAL offset)
+                set(fragment_end "${offset} + ${fragment_length}")
+                math(EXPR fragment_end "${offset} + ${fragment_length}")
+            endif()
+        endif()
+        math(EXPR actual_length "${fragment_end} - ${offset}")
+        string(SUBSTRING "${text}" ${offset} ${actual_length} fragment)
+        if(NOT first_fragment)
+            file(APPEND "${output}" "\n    ")
+        endif()
+        file(APPEND "${output}" "R\"${delimiter}(${fragment})${delimiter}\"")
+        set(first_fragment FALSE)
+        set(offset ${fragment_end})
+    endwhile()
+    file(APPEND "${output}" ";\n")
+endfunction()
+
+file(APPEND "${OUTPUT}" "inline constexpr std::string_view zh =\n")
+append_chunked_string_view("${OUTPUT}" "${changelog_zh}" "${delimiter_zh}")
+file(APPEND "${OUTPUT}" "inline constexpr std::string_view en =\n")
+append_chunked_string_view("${OUTPUT}" "${changelog_en}" "${delimiter_en}")
+file(APPEND "${OUTPUT}" "}  // namespace awj::embedded_changelog\n")

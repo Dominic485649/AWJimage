@@ -1098,6 +1098,12 @@ if(BUILD_TESTING)
         avif_enable_common_options(awj_cli_config_entry)
         target_link_libraries(awj_cli_config_entry PRIVATE awj_base)
 
+        add_executable(awj_shell_context_menu_tests
+            tests/shell_context_menu_tests.cpp)
+        avif_enable_common_options(awj_shell_context_menu_tests)
+        target_include_directories(awj_shell_context_menu_tests PRIVATE
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
+
         add_executable(awj_cli_native_avif_aom_tests tests/cli_native_avif_aom_tests.cpp)
         avif_enable_common_options(awj_cli_native_avif_aom_tests)
         target_link_libraries(awj_cli_native_avif_aom_tests PRIVATE awj_native_backend)
@@ -1132,6 +1138,7 @@ if(BUILD_TESTING)
             awj_native_pipeline_tests
             awj_pipeline_security_tests
             awj_cli_config_entry
+            awj_shell_context_menu_tests
             awj_cli_native_avif_aom_tests)
     endif()
     if(AWJ_JPEGLI_AVAILABLE)
@@ -1161,6 +1168,7 @@ if(BUILD_TESTING)
     add_test(NAME bmp_codec_core COMMAND awj_bmp_codec_tests)
     if(WIN32)
         add_test(NAME jxr_codec_core COMMAND awj_jxr_codec_tests)
+        add_test(NAME shell_context_menu_model COMMAND awj_shell_context_menu_tests)
     endif()
     if(AWJ_JPEGLI_AVAILABLE)
         add_test(NAME jpegli_codec_core COMMAND awj_jpegli_codec_tests)
@@ -1285,6 +1293,7 @@ endif()
 if(WIN32)
     target_link_libraries(AWJ PRIVATE
         dwmapi
+        advapi32
         gdi32
         ole32
         shell32

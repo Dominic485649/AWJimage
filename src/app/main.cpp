@@ -30,6 +30,7 @@ int run_cli(int argc, char* argv[]);
 int run_studio_ui();
 #endif
 int run_shell_convert_window(int argc, wchar_t* argv[]);
+int run_shell_context_menu_helper(int argc, wchar_t* argv[]);
 
 #ifdef _WIN32
 namespace {
@@ -274,6 +275,13 @@ int wmain(int argc, wchar_t* argv[]) {
     release_explorer_console_if_lonely();
     return run_guarded("update-health-check", [argv] {
       return run_studio_ui(argv[2], argv[3]);
+    });
+  }
+  if (argc == 2 &&
+      (std::wcscmp(argv[1], L"--shell-context-menu-helper") == 0 ||
+       std::wcscmp(argv[1], L"--shell-context-menu-remove-helper") == 0)) {
+    return run_guarded("shell-context-menu-helper", [argc, argv] {
+      return run_shell_context_menu_helper(argc, argv);
     });
   }
   if (awj::update::launch_update_recovery_if_needed()) {
