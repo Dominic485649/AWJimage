@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.11 - 2026-09-05
+
+- Prerelease: Windows Explorer external file/folder drops now use native OLE `IDropTarget` + `CF_HDROP`. File selection, folder selection, Explorer drops, and command-line inputs converge on one C++ import pipeline, while Slint components/theme and the C++ import/path-picker/platform bridges are split by responsibility without changing queue deduplication, ordering, collision, or encoding semantics.
+- Studio visual-quality guidance now says `Recommended: leave blank`. Blank input continues to use the regular quality parameter directly; when visual-quality search is explicitly needed, starting around 50 is recommended, with clear notice that repeated GMSD / MS-SSIM search encodes are significantly more expensive. The 1–100 range, blank default, search algorithm, and encoding behavior are unchanged.
+- Normalized the Windows classic shell context menu to an HKCU-only, no-elevation static cascade with one vendor-qualified command/order source, perceived-type fallbacks, legacy/optional-command cleanup, transactional rollback, and strict drift validation. The final cascade uses the `ExtendedSubCommandsKey` REG_SZ shared-tree pointer layout empirically verified on the current Windows Shell, with the compatibility/documentation gap versus current Microsoft Learn explicitly retained.
+- Embedded CHANGELOG generation now uses UTF-8-safe chunked literals to avoid MSVC C2026 oversized-string failures, with byte-exact reconstruction tests for both languages and synthetic multibyte UTF-8 boundary coverage.
+- Fixed the Windows 1.0.9→1.0.10 updater rollback caused by health readiness depending on mutable `pending_update_version` cache state. Readiness is now bound to the helper-verified target version matching the running build version, while signed keyring/manifest checks, asset/member hashes, transaction/session validation, the 30-second event wait, 3-second stay-alive gate, and rollback remain intact. 1.0.11 remains a prerelease and preserves the existing updater compatibility floor so deployed 1.0.9/1.0.10 clients can directly select it.
+- Release validation for this version continues to respect the safety boundary: F6, screenshot/screen-capture, capture, and raw-WGC functional tests were not executed. Directory Opus is outside this work item's acceptance scope.
+
 ## 1.0.10 - 2026-09-01
 
 - Prerelease: reworked Studio tooltip and output-format interactions so tooltip lifetime no longer repeatedly drives repainting. Queue output order is now AVIF, AVIF.png, WebP, JXL, JPGLI, PNG, with an explicit UI-to-backend format mapping that preserves existing backend format indices. PNG is editable in parameter settings while retaining fixed lossless semantics; queue action buttons remain equal-width in one- or two-row layouts, and the visual-quality UI now documents 50 as the recommended value.

@@ -1,5 +1,14 @@
 # 更新日志
 
+## 1.0.11 - 2026-09-05
+
+- prerelease：Windows Explorer 外部文件/文件夹拖放改为原生 OLE `IDropTarget` + `CF_HDROP`，并把文件选择、文件夹选择、Explorer 拖放与命令行入口统一到同一 C++ import pipeline；同时按职责拆分 Slint 组件/主题与 C++ 的导入、路径选择和平台桥接，保持队列去重、排序、碰撞与编码语义一致。
+- Studio 的视觉质量提示改为“建议留空”：留空时继续由普通质量参数直接控制；若确实需要启用视觉质量搜索，建议从 50 左右开始，并明确 GMSD / MS-SSIM 的反复编码搜索会显著增加耗时；visual_quality 的 1–100 范围、默认空值、搜索算法和编码行为均未改变。
+- 规范化 Windows classic shell 右键菜单为 HKCU-only、无需提权的静态级联注册，统一 vendor-qualified 命令与菜单顺序、perceived-type fallback、旧 schema/可选命令清理、事务回滚和 drift 验证；最终级联采用在当前 Windows Shell 实机验证可工作的 `ExtendedSubCommandsKey` REG_SZ shared-tree pointer 兼容布局，并保留其与当前 Microsoft Learn 文档布局存在差异的兼容性说明。
+- embedded CHANGELOG 生成改为 UTF-8-safe 的分块字面量，避免 MSVC C2026 超长字符串，同时验证中英文嵌入内容可逐字节重建，并覆盖多字节 UTF-8 落在分块边界附近的情况。
+- 修复 1.0.9→1.0.10 Windows 自动更新在 health-check 阶段错误依赖可变 `pending_update_version` 缓存而触发安全回滚的问题。新二进制的 readiness 现在绑定 helper 已验证的目标版本与当前 build version；签名 keyring/manifest、资产与成员哈希、transaction/session、30 秒 event、3 秒 stay-alive 和 rollback 安全门槛保持不变。1.0.11 仍为 prerelease，并保持现有 updater 兼容下限以允许已部署的 1.0.9/1.0.10 直接选择更新。
+- 本版本发行验证继续遵守安全边界：未执行 F6、截图、截屏、capture 或 raw-WGC 功能测试；Directory Opus 不属于本轮验收范围。
+
 ## 1.0.10 - 2026-09-01
 
 - prerelease：重做 Studio 悬浮提示与输出格式选择交互，避免 tooltip 生命周期反复触发重绘；队列输出顺序统一为 AVIF、AVIF.png、WebP、JXL、JPGLI、PNG，并通过显式 UI→后端格式映射保持既有格式索引兼容。参数设置加入 PNG，PNG 保持固定无损语义；队列操作按钮在单行/双行布局下保持等宽，并补充视觉质量推荐值 50 等界面文案调整。
