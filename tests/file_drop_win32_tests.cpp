@@ -128,6 +128,39 @@ class StaticDropTarget final : public IDropTarget {
 }  // namespace
 
 int main() {
+  using awj::ui_drop::InstallRetryAction;
+  if (awj::ui_drop::install_retry_action(false, 0, 3) != InstallRetryAction::retry ||
+      awj::ui_drop::install_retry_action(false, 1, 3) != InstallRetryAction::retry ||
+      awj::ui_drop::install_retry_action(false, 2, 3) != InstallRetryAction::exhausted ||
+      awj::ui_drop::install_retry_action(true, 0, 3) != InstallRetryAction::install ||
+      awj::ui_drop::install_retry_action(true, 2, 3) != InstallRetryAction::install ||
+      awj::ui_drop::install_retry_action(false, 0, 0) != InstallRetryAction::exhausted) {
+    return fail("native drop install retry policy mismatch");
+  }
+
+  if (awj::ui_drop::install(nullptr, {})) {
+    return fail("invalid HWND was accepted for native drop registration");
+  }
+
+  std::size_t retry_attempts = 0;
+  std::size_t install_signals = 0;
+  bool install_finished = false;
+  for (const bool hwnd_ready : {false, false, true, true}) {
+    if (install_finished) continue;
+    const auto action = awj::ui_drop::install_retry_action(
+        hwnd_ready, retry_attempts, 4);
+    ++retry_attempts;
+    if (action == InstallRetryAction::install) {
+      ++install_signals;
+      install_finished = true;
+    } else if (action == InstallRetryAction::exhausted) {
+      install_finished = true;
+    }
+  }
+  if (install_signals != 1 || !install_finished) {
+    return fail("native drop retry orchestration did not install exactly once");
+  }
+
   const std::wstring long_path = L"C:\\" + std::wstring(280, L'x') + L".png";
   const std::vector<std::wstring> expected{
       L"C:\\Images\\a.png", L"C:\\图片\\测试 文件.avif", long_path};

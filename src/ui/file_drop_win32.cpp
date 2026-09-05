@@ -152,6 +152,16 @@ class DropTarget final : public IDropTarget {
 
 }  // namespace
 
+InstallRetryAction install_retry_action(bool hwnd_ready,
+                                        std::size_t attempts_so_far,
+                                        std::size_t max_attempts) noexcept {
+  if (hwnd_ready) return InstallRetryAction::install;
+  if (max_attempts == 0 || attempts_so_far + 1 >= max_attempts) {
+    return InstallRetryAction::exhausted;
+  }
+  return InstallRetryAction::retry;
+}
+
 std::expected<std::size_t, std::string> hdrop_item_count(IDataObject* data_object) {
   MediumGuard guard;
   auto hdrop = get_hdrop(data_object, guard);

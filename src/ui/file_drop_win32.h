@@ -13,6 +13,12 @@
 
 namespace awj::ui_drop {
 
+enum class InstallRetryAction {
+  retry,
+  install,
+  exhausted,
+};
+
 struct HoverState {
   bool active{};
   bool valid{};
@@ -48,6 +54,13 @@ class Registration {
 // Installation performs a fail-closed ownership transfer: OleInitialize is balanced,
 // the expected Winit registration must be revocable, then AWJ registers its own target.
 std::expected<Registration, std::string> install(HWND hwnd, Callbacks callbacks);
+
+// Pure retry policy used by the Slint UI-thread timer. attempts_so_far counts
+// prior timer callbacks; a ready HWND is always installed immediately, while an
+// unavailable HWND is retried only within the caller-provided finite budget.
+InstallRetryAction install_retry_action(bool hwnd_ready,
+                                        std::size_t attempts_so_far,
+                                        std::size_t max_attempts) noexcept;
 
 // Exposed for focused CF_HDROP tests; does no file-system scanning.
 std::expected<std::vector<std::filesystem::path>, std::string> extract_hdrop_paths(IDataObject* data_object);

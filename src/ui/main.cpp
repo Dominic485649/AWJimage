@@ -279,6 +279,9 @@ struct UiState {
   std::jthread update_worker{};
   std::unique_ptr<awj::ui_import::Dispatcher> import_dispatcher{};
   std::optional<awj::ui_drop::Registration> native_drop{};
+  slint::Timer native_drop_timer{};
+  std::size_t native_drop_attempts{};
+  bool native_drop_registration_finished{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
@@ -2410,6 +2413,116 @@ void start_import_dispatcher(slint::ComponentWeakHandle<AwjStudio> weak,
                                   std::move(result));
             });
       });
+}
+
+constexpr std::chrono::milliseconds native_drop_retry_interval{20};
+constexpr std::size_t native_drop_max_attempts = 100;
+
+awj::ui_drop::Callbacks make_native_drop_callbacks(
+    slint::ComponentWeakHandle<AwjStudio> weak,
+    std::weak_ptr<UiState> weak_state) {
+  return awj::ui_drop::Callbacks{
+      .can_accept = [weak_state] {
+        const auto state = weak_state.lock();
+        if (!state) return false;
+        std::scoped_lock lock{state->mutex};
+        return !state->worker_active;
+      },
+      .hover_changed = [weak](awj::ui_drop::HoverState hover) {
+        run_ui_callback(weak, "更新外部拖放状态失败", [&] {
+          if (auto app = weak.lock()) {
+            (*app)->set_external_drag_active(hover.active);
+            (*app)->set_external_drag_valid(hover.valid);
+            (*app)->set_external_drag_item_count(
+                static_cast<int>(std::min<std::size_t>(
+                    hover.item_count,
+                    static_cast<std::size_t>(std::numeric_limits<int>::max()))));
+          }
+        });
+      },
+      .paths_dropped = [weak, weak_state](
+                           std::vector<std::filesystem::path> paths) mutable {
+        run_ui_callback(weak, "接收 Windows 原生拖放失败", [&] {
+          const auto state = weak_state.lock();
+          if (!state || paths.empty()) return;
+          awj::ui_import::Request job;
+          job.origin = awj::ui_import::Origin::drag_drop;
+          job.input_hint = paths.front();
+          job.update_input_path = true;
+          job.roots.reserve(paths.size());
+          for (auto& path : paths) {
+            job.roots.push_back({.path = std::move(path)});
+          }
+          if (enqueue_import(state, std::move(job))) {
+            if (auto app = weak.lock()) {
+              (*app)->set_status_text(to_shared("正在导入拖入的文件与文件夹…"));
+            }
+          }
+        });
+      }};
+}
+
+void start_native_drop_registration(slint::ComponentWeakHandle<AwjStudio> weak,
+                                    const std::shared_ptr<UiState>& state) {
+  state->native_drop_attempts = 0;
+  state->native_drop_registration_finished = false;
+  const std::weak_ptr<UiState> weak_state = state;
+
+  try {
+    state->native_drop_timer.start(
+        slint::TimerMode::Repeated, native_drop_retry_interval,
+        [weak, weak_state] {
+          const auto state = weak_state.lock();
+          if (!state) return;
+          try {
+            if (state->native_drop_registration_finished || state->native_drop) {
+              state->native_drop_timer.stop();
+              return;
+            }
+
+            auto app = weak.lock();
+            if (!app) {
+              state->native_drop_registration_finished = true;
+              state->native_drop_timer.stop();
+              return;
+            }
+
+            const HWND hwnd = (*app)->window().win32_hwnd();
+            const bool hwnd_ready = hwnd != nullptr && IsWindow(hwnd);
+            const auto action = awj::ui_drop::install_retry_action(
+                hwnd_ready, state->native_drop_attempts, native_drop_max_attempts);
+            ++state->native_drop_attempts;
+
+            if (action == awj::ui_drop::InstallRetryAction::retry) return;
+
+            state->native_drop_timer.stop();
+            state->native_drop_registration_finished = true;
+            if (action == awj::ui_drop::InstallRetryAction::exhausted) {
+              (*app)->set_status_text(to_shared(
+                  "Windows 原生拖放未启用：等待 Windows 窗口句柄就绪超时。"));
+              return;
+            }
+
+            auto registration = awj::ui_drop::install(
+                hwnd, make_native_drop_callbacks(weak, weak_state));
+            if (registration) {
+              state->native_drop.emplace(std::move(*registration));
+            } else {
+              (*app)->set_status_text(to_shared(std::format(
+                  "Windows 原生拖放未启用：{}", registration.error())));
+            }
+          } catch (...) {
+            state->native_drop_registration_finished = true;
+            state->native_drop_timer.stop();
+            report_ui_callback_failure(weak, "注册 Windows 原生拖放失败",
+                                       "发生未预期异常。");
+          }
+        });
+  } catch (...) {
+    state->native_drop_registration_finished = true;
+    report_ui_callback_failure(weak, "安排 Windows 原生拖放注册失败",
+                               "无法启动事件循环重试。");
+  }
 }
 
 // 把一个 worker 线程体包进 catch-all。
@@ -6865,52 +6978,7 @@ int run_studio_ui(const wchar_t* health_event,
     }
 
     app->show();
-    {
-      const HWND hwnd = app->window().win32_hwnd();
-      auto registration = awj::ui_drop::install(
-          hwnd,
-          awj::ui_drop::Callbacks{
-              .can_accept = [state] {
-                std::scoped_lock lock{state->mutex};
-                return !state->worker_active;
-              },
-              .hover_changed = [weak](awj::ui_drop::HoverState hover) {
-                run_ui_callback(weak, "更新外部拖放状态失败", [&] {
-                  if (auto app = weak.lock()) {
-                    (*app)->set_external_drag_active(hover.active);
-                    (*app)->set_external_drag_valid(hover.valid);
-                    (*app)->set_external_drag_item_count(
-                        static_cast<int>(std::min<std::size_t>(
-                            hover.item_count,
-                            static_cast<std::size_t>(std::numeric_limits<int>::max()))));
-                  }
-                });
-              },
-              .paths_dropped = [weak, state](std::vector<std::filesystem::path> paths) {
-                run_ui_callback(weak, "接收 Windows 原生拖放失败", [&] {
-                  if (paths.empty()) return;
-                  awj::ui_import::Request job;
-                  job.origin = awj::ui_import::Origin::drag_drop;
-                  job.input_hint = paths.front();
-                  job.update_input_path = true;
-                  job.roots.reserve(paths.size());
-                  for (auto& path : paths) {
-                    job.roots.push_back({.path = std::move(path)});
-                  }
-                  if (enqueue_import(state, std::move(job))) {
-                    if (auto app = weak.lock()) {
-                      (*app)->set_status_text(to_shared("正在导入拖入的文件与文件夹…"));
-                    }
-                  }
-                });
-              }});
-      if (registration) {
-        state->native_drop.emplace(std::move(*registration));
-      } else {
-        app->set_status_text(to_shared(std::format(
-            "Windows 原生拖放未启用：{}", registration.error())));
-      }
-    }
+    start_native_drop_registration(weak, state);
     if (health_check_ready) {
       auto event = adopt_win32_handle(
           OpenEventW(EVENT_MODIFY_STATE, FALSE, health_event));
@@ -6926,8 +6994,10 @@ int run_studio_ui(const wchar_t* health_event,
     // 无论保存成功与否都要放行关窗，否则窗口会关不掉。
     app->window().on_close_requested([weak, state] {
       run_ui_callback(weak, "关闭窗口时保存配置失败", [&] {
-        // 必须在 Slint/Winit 销毁 HWND 前撤销 AWJ 的 IDropTarget；Winit 后续 WM_DESTROY
-        // 再调用 RevokeDragDrop 时只会看到已撤销状态，不再持有 AWJ COM 对象。
+        // 必须在 Slint/Winit 销毁 HWND 前停止尚未完成的注册重试并撤销 AWJ 的
+        // IDropTarget；Timer/Registration 都在 UI/OLE 线程创建和销毁。
+        state->native_drop_registration_finished = true;
+        state->native_drop_timer.stop();
         state->native_drop.reset();
         if (state->import_dispatcher) {
           state->import_dispatcher->request_stop();
