@@ -1,6 +1,6 @@
 # 1.0.12 验证记录
 
-本文件与 `png-quality-1.0.12.md`、`resource-budget-1.0.12.md` 配套。原始日志保存在本机 `build/evidence/1.0.12`，Linux 构建位于 WSL 原生目录 `/home/dominic/awj-1.0.12`。本轮只准备本地发行包，未发布 Release。
+本文件与 `png-quality-1.0.12.md`、`resource-budget-1.0.12.md` 配套。原始日志保存在本机 `build/evidence/1.0.12`，Linux 构建位于 WSL 原生目录 `/home/dominic/awj-1.0.12`。本地发行包与文案经审阅后，于 2026-09-11 发布正式版。
 
 ## 稳定性
 
@@ -32,4 +32,12 @@
 - Windows：MSVC 19.51.36256.0，Release；45 项自动检查通过（`windows-final-layout-ctest.log`），另行执行真实 Explorer 测试并通过，总计 46 项。测试工具后续仅修正渲染缩放输入，再次运行 UI smoke 通过，产品二进制未变化。
 - Linux：Clang 20.1.2、Release/O3；27 项自动检查通过（`linux-final-ctest.log`），渲染工具调整后 UI smoke 再次通过。ELF 不动态依赖 libstdc++/libgcc，仍依赖系统 Vulkan、fontconfig、freetype 和 libc。
 - 最终 Explorer 注册表前后 SHA-256 均为 `c06f0086fa973b03d58bf113ff6f5b31af02577093103c35455603b2ac2cb7a7`，86 个根均与测试前一致。
-- 发行归档使用现有打包脚本的本地候选模式。成员、大小、SHA-256 与打包验证结果记录在 `build/release/1.0.12` 交付目录；本轮不创建 Release，也不生成或上传签名更新清单。
+- 发行归档使用现有打包脚本的本地候选模式。成员、大小、SHA-256 与打包验证结果记录在 `build/release/1.0.12` 交付目录；发布使用同一份已审阅归档，未重新打包。
+
+## 正式发布
+
+- [1.0.12 Release](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.12) 为 stable、Latest、immutable；tag 指向构建源码 `24ac989f5a05cca7453f3c78a724b0a3818c8665`。
+- GitHub 资产仅包含 `AWJ_Win.7z` 与 `AWJ_Linux.7z`。公开链接回下载后，大小、SHA-256 与已审阅归档完全一致，两包 `7z t` 通过。
+- Windows：11,471,674 bytes，SHA-256 `41a5fdc6e4535f2954c2e9de942a79ff1d91532c6eef04ab8492f6516c5413b2`。
+- Linux：18,007,499 bytes，SHA-256 `75cc653f3dde21460b906167bd78c1f0aa72643b3cf5fbc883c1ad8c97065745`。
+- v2 更新清单使用 `release-2026` 签名，sequence 从 7 递增至 8，新增 stable 1.0.12 并保留全部历史条目；逐项核对两份归档和七个成员。keyring root 签名及发布密钥有效期检查通过；清单在公开下载验证后提交。
