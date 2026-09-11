@@ -3,6 +3,7 @@
 #endif
 #ifdef _WIN32
 #include <windows.h>
+#include "../ui/shell_context_menu.hpp"
 #else
 #include <sys/types.h>
 #endif
@@ -251,6 +252,11 @@ int run_guarded(const char* stage, Entry&& entry) noexcept {
 int wmain(int argc, wchar_t* argv[]) {
   // 最先装崩溃留痕：后面任何一步失败都还能留下一行原因。
   install_crash_diagnostics();
+  if (argc == 2 && std::wcscmp(argv[1], L"--cleanup-legacy-machine-menu") == 0) {
+    const auto result = awj::shell_context_menu::remove_legacy_machine_commands();
+    if (!result) std::fprintf(stderr, "%s\n", result.error().c_str());
+    return result ? 0 : 1;
+  }
   const auto parse_pid = [](const wchar_t* text) -> DWORD {
     if (text == nullptr || *text == L'\0') return 0;
     wchar_t* end = nullptr;

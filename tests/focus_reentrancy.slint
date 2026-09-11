@@ -1,0 +1,16 @@
+// Native window activation can deliver focus-lost while a callback moves focus.
+export component FocusReentrancy inherits Window {
+    in-out property <bool> armed: false;
+    out property <int> transitions: 0;
+    public function prepare() { first.focus(); root.armed = true; }
+    first := FocusScope {
+        focus-lost(reason) => {
+            if root.armed {
+                root.armed = false;
+                root.transitions += 1;
+                second.focus();
+            }
+        }
+    }
+    second := FocusScope { }
+}

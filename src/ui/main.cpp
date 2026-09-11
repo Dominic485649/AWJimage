@@ -77,10 +77,9 @@ import awj.update_windows;
 namespace {
 
 awj::LargeImageDecision manual_large_image_decision(
-    awj::ImageDimensions dimensions, bool grid_available,
-    bool zenrav1e_available) {
+    awj::ImageDimensions dimensions, bool grid_available) {
   auto decision =
-      awj::classify_large_image(dimensions, grid_available, zenrav1e_available);
+      awj::classify_large_image(dimensions, grid_available);
   decision.klass = awj::LargeImageClass::large_mode_required;
   if (decision.reason == awj::LargeImageReason::none) {
     decision.reason_text = "用户手动加入大图队列。";
@@ -243,7 +242,6 @@ struct StudioConfigSnapshot {
   bool allow_wic_fallback{};
   bool visual_quality_gpu{true};
   bool visual_quality_fallback{true};
-  bool experimental_encoders{true};
   std::array<MenuFormatParams, 5> menu_params{};
 
   std::string update_channel{"stable"};
@@ -339,9 +337,6 @@ struct UiState {
 
 LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
                                    std::string_view status);
-int preferred_large_image_action_index(
-    const awj::BatchLargeImageItem& item) noexcept;
-
 std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
 }
@@ -350,7 +345,7 @@ slint::SharedString to_shared(std::string_view text);
 
 std::expected<void, std::string> add_manual_large_image_path(
     UiState& state, const std::filesystem::path& path, bool allow_wic_fallback,
-    bool grid_available, bool zenrav1e_available) {
+    bool grid_available) {
   try {
     std::error_code ec;
     if (!std::filesystem::is_regular_file(path, ec) || ec) {
@@ -376,8 +371,7 @@ std::expected<void, std::string> add_manual_large_image_path(
     }
     const auto index = state.large_image_items.size();
     awj::ImageFile file{.index = index, .path = path, .bytes = bytes};
-    auto decision = manual_large_image_decision(*dimensions, grid_available,
-                                                zenrav1e_available);
+    auto decision = manual_large_image_decision(*dimensions, grid_available);
     auto item = awj::BatchLargeImageItem{.file = std::move(file),
                                          .dimensions = *dimensions,
                                          .decision = std::move(decision)};
@@ -697,7 +691,7 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_chroma_index(params.chroma_index);
   app.set_menu_alpha_policy_index(params.alpha_policy_index);
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
-  app.set_menu_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_menu_jpegli_xyb(params.jpegli_xyb);
   app.set_menu_strip_metadata(params.strip_metadata);
   app.set_menu_allow_wic_fallback(params.allow_wic_fallback);
@@ -743,7 +737,6 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .allow_wic_fallback = app.get_allow_wic_fallback(),
       .visual_quality_gpu = app.get_visual_quality_gpu(),
       .visual_quality_fallback = app.get_visual_quality_fallback(),
-      .experimental_encoders = app.get_experimental_encoders(),
       .menu_params = menu_params_snapshot(app, state)};
   // 后台状态只在 UiState 中维护；所有写入仍由 UI 线程走统一的原子提交。
   if (state != nullptr) {
@@ -1174,6 +1167,11 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_string(menu_config_key(prefix, "bit_depth_text"), param.bit_depth_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "speed_text"), param.speed_text)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "avif_encoder_index"), 0, 3, param.avif_encoder_index)); !r) return r;
+    if (param.avif_encoder_index == 1 || param.avif_encoder_index == 3) {
+      return std::unexpected{std::format("{} 对应的编码器已移除，请将该字段修正为 0（auto）或 2（AOM）。",
+          menu_config_key(prefix, "avif_encoder_index"))};
+    }
+    if (param.avif_encoder_index == 2) param.avif_encoder_index = 1;
     if (auto r = one(apply_int(menu_config_key(prefix, "avif_color_representation_index"), 0, 2, param.avif_color_representation_index)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "chroma_index"), 0, 3, param.chroma_index)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "alpha_policy_index"), 0, 2, param.alpha_policy_index)); !r) return r;
@@ -1251,12 +1249,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   if (auto result = apply(apply_config_bool(
           app, *values, "visual_quality_fallback",
           &AwjStudio::set_visual_quality_fallback));
-      !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_bool(
-          app, *values, "experimental_encoders",
-          &AwjStudio::set_experimental_encoders));
       !result) {
     return result;
   }
@@ -1496,8 +1488,6 @@ std::expected<void, std::string> write_studio_config_file(
            defaults.visual_quality_gpu);
   add_bool("visual_quality_fallback", current.visual_quality_fallback,
            defaults.visual_quality_fallback);
-  add_bool("experimental_encoders", current.experimental_encoders,
-           defaults.experimental_encoders);
 
   add_string("update_channel", current.update_channel,
              defaults.update_channel);
@@ -1555,7 +1545,8 @@ std::expected<void, std::string> write_studio_config_file(
     add_string(menu_config_key(prefix, "quality_text"), value.quality_text, fallback.quality_text);
     add_string(menu_config_key(prefix, "bit_depth_text"), value.bit_depth_text, fallback.bit_depth_text);
     add_string(menu_config_key(prefix, "speed_text"), value.speed_text, fallback.speed_text);
-    add_int(menu_config_key(prefix, "avif_encoder_index"), value.avif_encoder_index, fallback.avif_encoder_index);
+    add_int(menu_config_key(prefix, "avif_encoder_index"), value.avif_encoder_index == 1 ? 2 : value.avif_encoder_index,
+            fallback.avif_encoder_index == 1 ? 2 : fallback.avif_encoder_index);
     add_int(menu_config_key(prefix, "avif_color_representation_index"), value.avif_color_representation_index, fallback.avif_color_representation_index);
     add_int(menu_config_key(prefix, "chroma_index"), value.chroma_index, fallback.chroma_index);
     add_int(menu_config_key(prefix, "alpha_policy_index"), value.alpha_policy_index, fallback.alpha_policy_index);
@@ -1599,6 +1590,10 @@ std::expected<void, std::string> write_studio_config_file(
   return std::unexpected{"写入 Studio 配置时发生文件系统错误。"};
 }
 
+std::expected<void, std::string> synchronize_shell_context_menu(
+    const std::array<MenuFormatParams, 5>& menu_params, bool force_install = false);
+std::expected<void, std::string> validate_menu_params(const std::array<MenuFormatParams, 5>& params);
+
 std::expected<void, std::string> persist_studio_config_if_changed(
     AwjStudio& app, UiState& state) {
   if (!state.config_defaults) {
@@ -1612,6 +1607,18 @@ std::expected<void, std::string> persist_studio_config_if_changed(
   if (auto saved = write_studio_config_file(current, *state.config_defaults);
       !saved) {
     return std::unexpected{saved.error()};
+  }
+  if (!state.last_config_snapshot || current.menu_params != state.last_config_snapshot->menu_params) {
+    auto valid = validate_menu_params(current.menu_params);
+    auto synchronized = valid ? synchronize_shell_context_menu(current.menu_params) : valid;
+    if (!synchronized) {
+      if (state.last_config_snapshot) {
+        auto restored = write_studio_config_file(*state.last_config_snapshot, *state.config_defaults);
+        if (!restored) return std::unexpected{synchronized.error() + " 配置恢复失败：" + restored.error()};
+      }
+      return synchronized;
+    }
+    app.set_context_menu_warning({});
   }
   state.last_config_snapshot = std::move(current);
   return {};
@@ -1826,45 +1833,21 @@ void set_combo_options(
   (app.*setter)(model);
 }
 
-bool avif_encoder_enabled_for_ui(awj::AvifEncoderMode mode,
-                                 bool enable_experimental) {
-  if (mode == awj::AvifEncoderMode::automatic) {
-    return true;
-  }
-  auto capabilities =
-      awj::avif_encoder_capabilities_for_current_build(enable_experimental);
-  const auto it =
-      std::ranges::find(capabilities, mode, &awj::AvifEncoderCapability::mode);
-  return it != capabilities.end() && it->enabled &&
-         (!it->experimental || it->feature_enabled);
-}
-
-std::vector<ComboOption> avif_encoder_options(bool enable_experimental) {
-  return {
-      combo_option("自动"),
-      combo_option("svt-av1-hdr",
-                   avif_encoder_enabled_for_ui(awj::AvifEncoderMode::svt,
-                                               enable_experimental)),
-      combo_option("aom", avif_encoder_enabled_for_ui(awj::AvifEncoderMode::aom,
-                                                      enable_experimental)),
-      combo_option("zenrav1e",
-                   avif_encoder_enabled_for_ui(awj::AvifEncoderMode::zenrav1e,
-                                               enable_experimental))};
+std::vector<ComboOption> avif_encoder_options() {
+  return {combo_option("自动"), combo_option("aom",
+      awj::avif_libavif_encoder_available(awj::AvifEncoderMode::aom))};
 }
 
 struct LargeImageManualAvailability {
   bool grid{};
-  bool zenrav1e{};
 };
 
-LargeImageManualAvailability large_image_manual_availability(
-    bool enable_experimental) {
+LargeImageManualAvailability large_image_manual_availability() {
   const auto capabilities =
-      awj::avif_encoder_capabilities_for_current_build(enable_experimental);
+      awj::avif_encoder_capabilities_for_current_build();
   LargeImageManualAvailability result{};
   for (const auto& capability : capabilities) {
-    const bool enabled = capability.enabled && (!capability.experimental ||
-                                                capability.feature_enabled);
+    const bool enabled = capability.enabled;
     if (!enabled) {
       continue;
     }
@@ -1872,9 +1855,7 @@ LargeImageManualAvailability large_image_manual_availability(
         capability.supports_avif_grid) {
       result.grid = true;
     }
-    if (capability.mode == awj::AvifEncoderMode::zenrav1e) {
-      result.zenrav1e = true;
-    }
+
   }
   return result;
 }
@@ -2082,7 +2063,7 @@ void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,
                                          const std::filesystem::path& picked,
                                          bool folder) {
   const auto availability =
-      large_image_manual_availability(app.get_experimental_encoders());
+      large_image_manual_availability();
   const bool allow_wic_fallback = app.get_allow_wic_fallback();
   std::vector<std::filesystem::path> paths;
   if (folder) {
@@ -2107,7 +2088,7 @@ void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,
   for (const auto& path : paths) {
     auto result =
         add_manual_large_image_path(state, path, allow_wic_fallback,
-                                    availability.grid, availability.zenrav1e);
+                                    availability.grid);
     if (result) {
       ++added;
     } else {
@@ -2131,7 +2112,7 @@ void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,
 }
 
 void refresh_avif_encoder_options(AwjStudio& app) {
-  const auto options = avif_encoder_options(app.get_experimental_encoders());
+  const auto options = avif_encoder_options();
   set_combo_options(app, options, &AwjStudio::set_avif_encoder_options);
   const auto selected = app.get_avif_encoder_index();
   if (selected < 0 || static_cast<std::size_t>(selected) >= options.size() ||
@@ -2428,11 +2409,29 @@ awj::ui_drop::Callbacks make_native_drop_callbacks(
         std::scoped_lock lock{state->mutex};
         return !state->worker_active;
       },
+      .target_at = [weak](POINT point, std::size_t count) {
+        auto app = weak.lock();
+        if (!app || (*app)->get_selected_page() != 1 || count == 0) return 0;
+        const float scale = (*app)->window().scale_factor();
+        if (scale <= 0) return 0;
+        const float x = point.x / scale;
+        const float y = point.y / scale;
+        auto regions = (*app)->get_drop_regions();
+        for (std::size_t i = 0; i < regions->row_count(); ++i) {
+          const auto region = regions->row_data(i);
+          if (region && x >= region->x && y >= region->y &&
+              x < region->x + region->width && y < region->y + region->height) {
+            return i == 1 && count != 1 ? 0 : static_cast<int>(i + 1);
+          }
+        }
+        return 0;
+      },
       .hover_changed = [weak](awj::ui_drop::HoverState hover) {
         run_ui_callback(weak, "更新外部拖放状态失败", [&] {
           if (auto app = weak.lock()) {
             (*app)->set_external_drag_active(hover.active);
             (*app)->set_external_drag_valid(hover.valid);
+            (*app)->set_external_drag_target(hover.target);
             (*app)->set_external_drag_item_count(
                 static_cast<int>(std::min<std::size_t>(
                     hover.item_count,
@@ -2441,10 +2440,30 @@ awj::ui_drop::Callbacks make_native_drop_callbacks(
         });
       },
       .paths_dropped = [weak, weak_state](
-                           std::vector<std::filesystem::path> paths) mutable {
+                           std::vector<std::filesystem::path> paths, int target) mutable {
+        bool accepted = false;
         run_ui_callback(weak, "接收 Windows 原生拖放失败", [&] {
           const auto state = weak_state.lock();
           if (!state || paths.empty()) return;
+          if (target == 2) {
+            auto app = weak.lock();
+            if (!app || paths.size() != 1) return;
+            std::scoped_lock lock{state->mutex};
+            if (state->worker_active) return;
+            std::error_code ec;
+            const auto path = std::filesystem::absolute(paths.front(), ec);
+            if (ec) return;
+            auto output = path;
+            if (!std::filesystem::is_directory(path, ec)) {
+              if (ec || !std::filesystem::is_regular_file(path, ec) || ec) return;
+              output = path.parent_path();
+            }
+            if (ec || output.empty()) return;
+            (*app)->set_output_dir(to_shared(awj::path_to_utf8(output)));
+            accepted = true;
+            return;
+          }
+          if (target != 1 && target != 3) return;
           awj::ui_import::Request job;
           job.origin = awj::ui_import::Origin::drag_drop;
           job.input_hint = paths.front();
@@ -2454,11 +2473,13 @@ awj::ui_drop::Callbacks make_native_drop_callbacks(
             job.roots.push_back({.path = std::move(path)});
           }
           if (enqueue_import(state, std::move(job))) {
+            accepted = true;
             if (auto app = weak.lock()) {
               (*app)->set_status_text(to_shared("正在导入拖入的文件与文件夹…"));
             }
           }
         });
+        return accepted;
       }};
 }
 
@@ -2756,50 +2777,24 @@ bool large_image_grid_available(const awj::BatchLargeImageItem& item) noexcept {
   return plan.has_value();
 }
 
-bool large_image_zenrav1e_available(
-    const awj::BatchLargeImageItem& item) noexcept {
-  return item.decision.available_zenrav1e &&
-         item.dimensions.width <=
-             awj::encoding_defaults::avif_single_image_max_dimension &&
-         item.dimensions.height <=
-             awj::encoding_defaults::avif_single_image_max_dimension;
-}
+
 
 bool large_image_action_available(const awj::BatchLargeImageItem& item,
                                   std::string_view action) noexcept {
   if (action == "grid") {
     return large_image_grid_available(item);
   }
-  if (action == "zenrav1e") {
-    return large_image_zenrav1e_available(item);
-  }
+
   return false;
 }
 
-int preferred_large_image_action_index(
-    const awj::BatchLargeImageItem& item) noexcept {
-  if (large_image_zenrav1e_available(item)) {
-    return 0;
-  }
-  if (large_image_grid_available(item)) {
-    return 1;
-  }
-  return 0;
-}
+
 
 std::string large_image_actions_summary(const awj::BatchLargeImageItem& item) {
   const auto grid = large_image_grid_available(item)
                         ? std::string{"grid 可用"}
                         : std::string{"grid 不可用"};
-  std::string zenrav1e;
-  if (large_image_zenrav1e_available(item)) {
-    zenrav1e = "zenrav1e 可用";
-  } else if (item.decision.available_zenrav1e) {
-    zenrav1e = "zenrav1e 超出边长";
-  } else {
-    zenrav1e = "zenrav1e 不可用";
-  }
-  return std::format("{} / {}", grid, zenrav1e);
+  return grid;
 }
 
 void add_large_image_task_row(
@@ -2839,8 +2834,7 @@ LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
           item.decision.reason_text)),
       .actions = to_shared(actions),
       .status = to_shared(status),
-      .grid_available = large_image_grid_available(item),
-      .zenrav1e_available = large_image_zenrav1e_available(item)};
+      .grid_available = large_image_grid_available(item)};
 }
 
 bool push_large_image_row(UiState& state,
@@ -2916,9 +2910,7 @@ std::string large_image_action_status(const awj::BatchLargeImageItem& item,
     return std::format("已选择 grid · {}x{} 分块 · tile {}x{}", plan->cols,
                        plan->rows, plan->tile_width, plan->tile_height);
   }
-  if (action == "zenrav1e") {
-    return "已选择 zenrav1e · 单项编码";
-  }
+
   return "未知处理方式";
 }
 
@@ -3081,7 +3073,7 @@ std::wstring bytes_argument(std::uint64_t bytes) {
 std::vector<std::wstring> cli_arguments_from_config(
     const awj::AppConfig& cfg, std::wstring_view cancel_event_name) {
   std::vector<std::wstring> args;
-  args.reserve(80 + cfg.svtav1hdr_params.size() * 2);
+  args.reserve(80);
 
   push_cli_option(args, L"--input", cfg.input_path);
   if (!cfg.output_dir.empty()) {
@@ -3119,7 +3111,6 @@ std::vector<std::wstring> cli_arguments_from_config(
   if (!cfg.studio_large_action.empty()) {
     push_cli_option(args, L"--studio-large-action", cfg.studio_large_action);
   }
-  push_cli_option(args, L"--large-image-priority", cfg.large_image_priority);
   if (cfg.unlock_max_input_file_bytes) {
     args.push_back(L"--unlock-max-input-file-bytes");
   }
@@ -3144,8 +3135,6 @@ std::vector<std::wstring> cli_arguments_from_config(
 
   args.push_back(cfg.allow_wic_fallback ? L"--allow-wic-fallback"
                                         : L"--no-wic-fallback");
-  args.push_back(cfg.enable_experimental_encoders ? L"--experimental-encoders"
-                                                  : L"--no-experimental-encoders");
   args.push_back(cfg.experimental_clamped_grid_padding
                      ? L"--experimental-clamped-grid-padding"
                      : L"--no-experimental-clamped-grid-padding");
@@ -3174,25 +3163,6 @@ std::vector<std::wstring> cli_arguments_from_config(
     }
   }
 
-  if (cfg.svtav1hdr_crf) {
-    push_cli_option(args, L"--svtav1hdr-crf",
-                    std::to_wstring(*cfg.svtav1hdr_crf));
-  }
-  if (cfg.svtav1hdr_preset) {
-    push_cli_option(args, L"--svtav1hdr-preset",
-                    std::to_wstring(*cfg.svtav1hdr_preset));
-  }
-  if (!cfg.svtav1hdr_tune.empty()) {
-    push_cli_option(args, L"--svtav1hdr-tune",
-                    awj::wide_from_utf8(cfg.svtav1hdr_tune));
-  }
-  if (cfg.svtav1hdr_keyint) {
-    push_cli_option(args, L"--svtav1hdr-keyint",
-                    std::to_wstring(*cfg.svtav1hdr_keyint));
-  }
-  for (const auto& param : cfg.svtav1hdr_params) {
-    push_cli_option(args, L"--svtav1hdr-params", param);
-  }
   if (cfg.color_primaries) {
     push_cli_option(args, L"--color-primaries",
                     std::to_wstring(*cfg.color_primaries));
@@ -3208,12 +3178,8 @@ std::vector<std::wstring> cli_arguments_from_config(
   if (cfg.color_range) {
     push_cli_option(args, L"--color-range", std::to_wstring(*cfg.color_range));
   }
-  if (!cfg.mastering_display.empty()) {
-    push_cli_option(args, L"--mastering-display", cfg.mastering_display);
-  }
-  if (!cfg.content_light.empty()) {
-    push_cli_option(args, L"--content-light", cfg.content_light);
-  }
+
+
 
   return args;
 }
@@ -3468,11 +3434,13 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   return true;
 }
 
-std::expected<void, std::string> install_shell_context_menu(
-    const std::array<MenuFormatParams, 5>& menu_params) {
+std::expected<void, std::string> synchronize_shell_context_menu(
+    const std::array<MenuFormatParams, 5>& menu_params, bool force_install) {
   auto awj_exe = awj_exe_path_for_shell_menu();
   if (!awj_exe) return std::unexpected{awj_exe.error()};
-  return awj::shell_context_menu::install(*awj_exe, shell_menu_params(menu_params));
+  auto names = awj::injected_user_preset_names();
+  if (!names) return std::unexpected{names.error()};
+  return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names, force_install);
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {
@@ -3485,8 +3453,9 @@ std::optional<std::string> shell_context_menu_warning(
   if (!awj_exe) {
     return "无法检查右键菜单程序路径，请移除后重新安装。";
   }
-  auto checked = awj::shell_context_menu::warning(*awj_exe,
-                                                   shell_menu_params(menu_params));
+  auto names = awj::injected_user_preset_names();
+  if (!names) return names.error();
+  auto checked = awj::shell_context_menu::warning(*awj_exe, shell_menu_params(menu_params), *names);
   if (!checked) {
     return "检查右键菜单注册表失败：" + checked.error();
   }
@@ -3852,17 +3821,9 @@ awj::AlphaModePolicy alpha_policy_from_index(int index) {
 }
 
 awj::AvifEncoderMode avif_encoder_from_index(int index) {
-  switch (index) {
-    case 1:
-      return awj::AvifEncoderMode::svt;
-    case 2:
-      return awj::AvifEncoderMode::aom;
-    case 3:
-      return awj::AvifEncoderMode::zenrav1e;
-    case 0:
-    default:
-      return awj::AvifEncoderMode::automatic;
-  }
+  return index == 0 ? awj::AvifEncoderMode::automatic
+       : index == 1 ? awj::AvifEncoderMode::aom
+                    : static_cast<awj::AvifEncoderMode>(-1);
 }
 
 std::expected<awj::AppConfig, std::string> config_from_menu_params(
@@ -3993,9 +3954,7 @@ void apply_parameter_params_to_ui(AwjStudio& app,
                                   int format_index) {
   const auto format = output_format_from_index(format_index);
   const bool png_lossless = format == awj::OutputFormat::png;
-  app.set_quality_text(to_shared(
-      png_lossless ? text_from_int(awj::default_quality_for(format))
-                   : params.quality_text));
+  app.set_quality_text(to_shared(params.quality_text));
   app.set_visual_quality_text(
       to_shared(png_lossless ? std::string{} : params.visual_quality_text));
   app.set_bit_depth_text(to_shared(params.bit_depth_text));
@@ -4007,7 +3966,7 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_chroma_index(params.chroma_index);
   app.set_alpha_policy_index(params.alpha_policy_index);
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
-  app.set_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_jpegli_xyb(params.jpegli_xyb);
   app.set_threads_text(to_shared(params.threads_text));
   app.set_memory_limit_text(to_shared(params.memory_limit_text));
@@ -4017,7 +3976,6 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
   app.set_quality_follows_format(
-      png_lossless ||
       params.quality_text == text_from_int(awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
       (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
@@ -4042,7 +4000,6 @@ void store_current_parameter_params(AwjStudio& app, UiState& state) {
   auto params = capture_parameter_params_from_ui(app);
   const auto format = output_format_from_index(index);
   if (format == awj::OutputFormat::png) {
-    params.quality_text = text_from_int(awj::default_quality_for(format));
     params.visual_quality_text.clear();
   }
   if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
@@ -4096,7 +4053,6 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_max_long_edge_text({});
   app.set_max_short_edge_text({});
   app.set_format_index(0);
-  app.set_experimental_encoders(defaults.enable_experimental_encoders);
   app.set_visual_quality_gpu(defaults.visual_quality_gpu);
   app.set_visual_quality_fallback(defaults.visual_quality_fallback);
   app.set_allow_wic_fallback(defaults.allow_wic_fallback);
@@ -4187,9 +4143,7 @@ std::expected<awj::AppConfig, std::string> config_from_parameter_params(
     awj::OutputFormat format, const ParameterFormatParams& params) {
   const bool png_lossless = format == awj::OutputFormat::png;
   MenuFormatParams menu{
-      .quality_text = png_lossless
-                          ? text_from_int(awj::default_quality_for(format))
-                          : params.quality_text,
+      .quality_text = params.quality_text,
       .bit_depth_text = params.bit_depth_text,
       .speed_text = params.speed_text,
       .avif_encoder_index = params.avif_encoder_index,
@@ -4226,17 +4180,7 @@ std::expected<awj::AppConfig, std::string> config_from_parameter_params(
 }
 
 int avif_encoder_index_from_mode(awj::AvifEncoderMode mode) noexcept {
-  switch (mode) {
-    case awj::AvifEncoderMode::svt:
-      return 1;
-    case awj::AvifEncoderMode::aom:
-      return 2;
-    case awj::AvifEncoderMode::zenrav1e:
-      return 3;
-    case awj::AvifEncoderMode::automatic:
-    default:
-      return 0;
-  }
+  return mode == awj::AvifEncoderMode::aom ? 1 : 0;
 }
 
 int chroma_index_from_mode(awj::ChromaMode mode) noexcept {
@@ -4434,18 +4378,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.allow_wic_fallback = app.get_allow_wic_fallback();
   cfg.output_format = format;
   cfg.append_png_suffix = queue_choice.append_png_suffix;
-  cfg.enable_experimental_encoders = app.get_experimental_encoders();
-  if (cfg.avif_encoder == awj::AvifEncoderMode::zenrav1e) {
-    const auto capabilities = awj::avif_encoder_capabilities_for_current_build(
-        cfg.enable_experimental_encoders);
-    const auto it =
-        std::ranges::find(capabilities, awj::AvifEncoderMode::zenrav1e,
-                          &awj::AvifEncoderCapability::mode);
-    if (it == capabilities.end() || !it->enabled ||
-        (it->experimental && !it->feature_enabled)) {
-      return std::unexpected{"zenrav1e 当前构建不可用，无法选择。"};
-    }
-  }
+
   cfg.collision_mode = collision_from_index(app.get_collision_index());
   cfg.visual_quality_gpu = app.get_visual_quality_gpu();
   cfg.visual_quality_fallback = app.get_visual_quality_fallback();
@@ -6102,6 +6035,13 @@ int run_studio_ui(const wchar_t* health_event,
     if (auto loaded = apply_studio_config_file(*app, *state); !loaded) {
       config_warning = std::format("读取 Studio 配置失败：{}", loaded.error());
     }
+    if (auto recovered = awj::recover_user_preset_change([&] {
+          return synchronize_shell_context_menu(state->menu_params);
+        }); !recovered) config_warning = recovered.error();
+    if (auto synced = synchronize_shell_context_menu(state->menu_params); !synced)
+      config_warning = synced.error();
+    if (auto legacy = awj::shell_context_menu::legacy_machine_commands(); legacy)
+      app->set_legacy_machine_menu_present(!legacy->empty());
     reload_user_preset_options(*app, *state);
     if (!state->user_preset_errors.empty() && !config_warning) {
       config_warning = std::format("有 {} 个用户预设未加载：{}",
@@ -6429,6 +6369,8 @@ int run_studio_ui(const wchar_t* health_event,
                   : to_shared(state->user_presets[static_cast<std::size_t>(
                                                      index - 1)]
                                   .description));
+          (*app)->set_preset_editor_existing(index > 0);
+          (*app)->set_preset_editor_shell_menu(index > 0 && state->user_presets[static_cast<std::size_t>(index - 1)].shell_menu);
           (*app)->set_preset_editor_error({});
           (*app)->set_preset_editor_open(true);
         }
@@ -6442,6 +6384,23 @@ int run_studio_ui(const wchar_t* health_event,
           (*app)->set_preset_editor_error({});
         }
       });
+    });
+
+    app->on_delete_parameter_preset([weak, state] {
+      auto app = weak.lock();
+      if (!app || (*app)->get_running()) return;
+      const auto index = state->parameter_preset_index;
+      if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)], [state] {
+        return synchronize_shell_context_menu(state->menu_params);
+      });
+      if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
+      state->parameter_preset_index = 0;
+      (*app)->set_queue_preset_index(0);
+      reload_user_preset_options(**app, *state);
+      select_parameter_preset(**app, *state, 0);
+      (*app)->set_preset_editor_open(false);
+      (*app)->set_status_text(to_shared("用户预设已删除。"));
     });
 
     app->on_save_parameter_preset([weak, state](slint::SharedString name,
@@ -6461,18 +6420,22 @@ int run_studio_ui(const wchar_t* health_event,
           (*app)->set_preset_editor_error(to_shared(preset.error()));
           return;
         }
-        auto saved = awj::save_user_preset(*preset, false);
-        if (!saved && saved.error() == "同名预设已存在；请确认覆盖。") {
-          const auto question = awj::wide_from_utf8(
-              std::format("预设“{}”已存在。是否覆盖？", preset->name));
-          if (MessageBoxW(nullptr, question.c_str(), L"AWJ Studio",
-                          MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2) == IDYES) {
-            saved = awj::save_user_preset(*preset, true);
-          } else {
-            (*app)->set_preset_editor_error(to_shared("已取消覆盖同名预设。"));
-            return;
+        preset->shell_menu = (*app)->get_preset_editor_shell_menu();
+          const auto edit_index = state->parameter_preset_index;
+          if (edit_index > 0 && edit_index <= static_cast<int>(state->user_presets.size())) {
+            const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 1)];
+            preset->source_path = original.source_path;
+            const auto original_ui = parameter_params_from_user_preset(original);
+            for (std::size_t i = 0; i < preset->formats.size(); ++i) {
+              if (active_parameter_params(*state)[i].memory_limit_text == original_ui[i].memory_limit_text)
+                preset->formats[i].memory_limit_bytes = original.formats[i].memory_limit_bytes;
+              if (active_parameter_params(*state)[i].speed_text == original_ui[i].speed_text)
+                preset->formats[i].speed = original.formats[i].speed;
+            }
           }
-        }
+          auto saved = awj::save_user_preset(*preset, edit_index > 0, [state] {
+            return synchronize_shell_context_menu(state->menu_params);
+          });
         if (!saved) {
           (*app)->set_preset_editor_error(to_shared(saved.error()));
           return;
@@ -6511,7 +6474,7 @@ int run_studio_ui(const wchar_t* health_event,
             (*app)->set_status_text(to_shared(saved.error()));
             return;
           }
-          if (auto result = install_shell_context_menu(state->menu_params); !result) {
+          if (auto result = synchronize_shell_context_menu(state->menu_params, true); !result) {
             (*app)->set_context_menu_status(to_shared(result.error()));
             (*app)->set_status_text(to_shared(result.error()));
             return;
@@ -6552,18 +6515,16 @@ int run_studio_ui(const wchar_t* health_event,
             (*app)->set_status_text(to_shared(valid.error()));
             return;
           }
-          auto current = capture_studio_config(**app, state.get());
-          if (auto saved = write_studio_config_file(current, *state->config_defaults); !saved) {
+          if (auto saved = persist_studio_config_if_changed(**app, *state); !saved) {
             (*app)->set_context_menu_status(to_shared(saved.error()));
             (*app)->set_status_text(to_shared(saved.error()));
             return;
           }
-          state->last_config_snapshot = std::move(current);
-          if (auto warning = shell_context_menu_warning(state->menu_params)) {
-            (*app)->set_context_menu_warning(to_shared(*warning));
-          } else {
-            (*app)->set_context_menu_warning({});
+          if (auto synced = synchronize_shell_context_menu(state->menu_params); !synced) {
+            (*app)->set_context_menu_warning(to_shared(synced.error()));
+            return;
           }
+          (*app)->set_context_menu_warning({});
           (*app)->set_context_menu_status(to_shared("菜单参数已保存。"));
           (*app)->set_status_text(to_shared("菜单参数已保存。"));
         }
@@ -6580,18 +6541,29 @@ int run_studio_ui(const wchar_t* health_event,
     });
 
     app->on_context_menu_warning_clicked([weak, state] {
-      run_ui_callback(weak, "移除旧右键菜单失败", [&] {
-        if (auto app = weak.lock()) {
-          if (auto result = remove_shell_context_menu(); !result) {
-            (*app)->set_context_menu_status(to_shared(result.error()));
-            (*app)->set_status_text(to_shared(result.error()));
-            return;
-          }
-          (*app)->set_context_menu_warning({});
-          (*app)->set_context_menu_status(to_shared("旧右键菜单已移除。"));
-          (*app)->set_status_text(to_shared("旧右键菜单已移除。"));
+      if (auto app = weak.lock(); app && !(*app)->get_running()) {
+        auto result = synchronize_shell_context_menu(state->menu_params);
+        (*app)->set_context_menu_warning(result ? slint::SharedString{} : to_shared(result.error()));
+        (*app)->set_status_text(to_shared(result ? "右键菜单已修复。" : result.error()));
+      }
+    });
+    app->on_cleanup_legacy_machine_menu([weak] {
+      if (auto app = weak.lock(); app && !(*app)->get_running()) {
+        auto exe = awj::executable_path();
+        if (!exe) { (*app)->set_status_text(to_shared(exe.error())); return; }
+        SHELLEXECUTEINFOW launch{sizeof(launch)};
+        launch.fMask = SEE_MASK_NOCLOSEPROCESS;
+        launch.lpVerb = L"runas";
+        launch.lpFile = exe->c_str();
+        launch.lpParameters = L"--cleanup-legacy-machine-menu";
+        launch.nShow = SW_HIDE;
+        if (!ShellExecuteExW(&launch)) {
+          (*app)->set_status_text(to_shared("历史系统菜单清理未启动或已取消。"));
+          return;
         }
-      });
+        if (launch.hProcess) CloseHandle(launch.hProcess);
+        (*app)->set_status_text(to_shared("已请求清理历史系统菜单。"));
+      }
     });
 
     app->on_toggle_template_token([weak, state](slint::SharedString token) {
@@ -6881,7 +6853,7 @@ int run_studio_ui(const wchar_t* health_event,
               }
               item = state->large_image_items[static_cast<std::size_t>(index)];
             }
-            if (action != "grid" && action != "zenrav1e") {
+            if (action != "grid") {
               (*app)->set_status_text(to_shared("未知的大图处理方式"));
               return;
             }
@@ -7058,7 +7030,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
         args.emplace_back(argv[i]);
       }
     }
-    auto parsed = awj::parse_arguments(args);
+    auto parsed = awj::parse_arguments_with_user_preset(args);
     if (!parsed || parsed->should_exit) {
       const auto text = parsed ? std::string{"右键转换参数无效。"} : parsed.error();
       MessageBoxW(nullptr, awj::wide_from_utf8(text).c_str(), L"AWJimage", MB_OK | MB_ICONERROR);
@@ -7984,7 +7956,6 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   apply_bool("allow_wic_fallback", &AwjStudio::set_allow_wic_fallback);
   apply_bool("visual_quality_gpu", &AwjStudio::set_visual_quality_gpu);
   apply_bool("visual_quality_fallback", &AwjStudio::set_visual_quality_fallback);
-  apply_bool("experimental_encoders", &AwjStudio::set_experimental_encoders);
   try {
     static_cast<void>(slint::select_bundled_translation(
         app.get_language_index() == 1 ? "en" : "zh-CN"));
@@ -8055,7 +8026,6 @@ std::expected<void, std::string> persist_linux_update_config(
   document["allow_wic_fallback"] = app.get_allow_wic_fallback();
   document["visual_quality_gpu"] = app.get_visual_quality_gpu();
   document["visual_quality_fallback"] = app.get_visual_quality_fallback();
-  document["experimental_encoders"] = app.get_experimental_encoders();
   document["update_channel"] = state.update_channel;
   document["show_update_changelog"] = state.show_update_changelog;
   document["hide_update_changelog_after_exit"] =
@@ -8280,7 +8250,7 @@ void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
   app.set_menu_chroma_index(params.chroma_index);
   app.set_menu_alpha_policy_index(params.alpha_policy_index);
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
-  app.set_menu_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_menu_jpegli_xyb(params.jpegli_xyb);
   app.set_menu_strip_metadata(params.strip_metadata);
   app.set_menu_install_avif_png_command(params.install_avif_png_command);
@@ -8508,27 +8478,19 @@ bool linux_large_image_grid_available(const awj::BatchLargeImageItem& item) noex
   return plan.has_value();
 }
 
-bool linux_large_image_zenrav1e_available(const awj::BatchLargeImageItem& item) noexcept {
-  return item.decision.available_zenrav1e &&
-         item.dimensions.width <= awj::encoding_defaults::avif_single_image_max_dimension &&
-         item.dimensions.height <= awj::encoding_defaults::avif_single_image_max_dimension;
-}
+
 
 LargeImageRow make_linux_large_image_row(const awj::BatchLargeImageItem& item,
                                          std::string_view status) {
   const auto grid = linux_large_image_grid_available(item) ? "grid 可用" : "grid 不可用";
-  const auto zen = linux_large_image_zenrav1e_available(item)
-                       ? "zenrav1e 可用"
-                       : (item.decision.available_zenrav1e ? "zenrav1e 超出边长" : "zenrav1e 不可用");
   return LargeImageRow{
       .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
       .dimensions = to_shared(std::format("{} x {}", item.dimensions.width, item.dimensions.height)),
       .reason = to_shared(std::format("{} · {}", awj::large_image_reason_name(item.decision.reason),
                                       item.decision.reason_text)),
-      .actions = to_shared(std::format("{} / {}", grid, zen)),
+      .actions = to_shared(grid),
       .status = to_shared(status),
-      .grid_available = linux_large_image_grid_available(item),
-      .zenrav1e_available = linux_large_image_zenrav1e_available(item)};
+      .grid_available = linux_large_image_grid_available(item)};
 }
 
 void set_linux_large_image_status(LinuxUiState& state, int index, std::string_view status) {
@@ -8884,12 +8846,7 @@ std::wstring collision_arg(int index) {
   }
 }
 std::wstring avif_encoder_arg(int index) {
-  switch (index) {
-    case 1: return L"svt";
-    case 2: return L"aom";
-    case 3: return L"zenrav1e";
-    default: return L"auto";
-  }
+  return index == 0 ? L"auto" : index == 1 ? L"aom" : L"invalid";
 }
 
 std::wstring avif_color_representation_arg(int index) {
@@ -9017,9 +8974,7 @@ void apply_linux_parameter_params(AwjStudio& app,
                                   int format_index) {
   const auto format = linux_output_format_from_index(format_index);
   const bool png_lossless = format == awj::OutputFormat::png;
-  app.set_quality_text(to_shared(
-      png_lossless ? std::format("{}", awj::default_quality_for(format))
-                   : params.quality_text));
+  app.set_quality_text(to_shared(params.quality_text));
   app.set_visual_quality_text(
       to_shared(png_lossless ? std::string{} : params.visual_quality_text));
   app.set_bit_depth_text(to_shared(params.bit_depth_text));
@@ -9030,7 +8985,7 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_chroma_index(params.chroma_index);
   app.set_alpha_policy_index(params.alpha_policy_index);
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
-  app.set_jpegli_optimize_huffman(params.jpegli_optimize_huffman);
+  app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_jpegli_xyb(params.jpegli_xyb);
   app.set_threads_text(to_shared(params.threads_text));
   app.set_memory_limit_text(to_shared(params.memory_limit_text));
@@ -9040,7 +8995,6 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
   app.set_quality_follows_format(
-      png_lossless ||
       params.quality_text == std::format("{}", awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
       (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
@@ -9066,7 +9020,6 @@ void store_current_linux_parameter_params(AwjStudio& app, LinuxUiState& state) {
   auto params = capture_linux_parameter_params(app);
   const auto format = linux_output_format_from_index(index);
   if (format == awj::OutputFormat::png) {
-    params.quality_text = std::format("{}", awj::default_quality_for(format));
     params.visual_quality_text.clear();
   }
   if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
@@ -9117,9 +9070,7 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
     push_option(args, L"--visual-quality", visual_quality);
   } else {
     push_option(args, L"--quality",
-                png_lossless
-                    ? std::to_wstring(awj::default_quality_for(format))
-                    : awj::wide_from_utf8(params.quality_text));
+                awj::wide_from_utf8(params.quality_text));
   }
   push_option(args, L"--threads", awj::wide_from_utf8(params.threads_text));
   push_option(args, L"--memory-limit",
@@ -9155,8 +9106,6 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
     push_option(args, L"--output", wide_from_shared(app->get_output_dir()));
     push_option(args, L"--template", wide_from_shared(app->get_template_text()));
     push_option(args, L"--collision", collision_arg(app->get_collision_index()));
-    push_flag(args, app->get_experimental_encoders(), L"--experimental-encoders",
-              L"--no-experimental-encoders");
     if (!trim_copy(visual_quality).empty()) {
       push_flag(args, app->get_visual_quality_gpu(), L"--visual-quality-gpu",
                 L"--no-visual-quality-gpu");
@@ -9179,12 +9128,7 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
 }
 
 int linux_avif_encoder_index(awj::AvifEncoderMode value) noexcept {
-  switch (value) {
-    case awj::AvifEncoderMode::svt: return 1;
-    case awj::AvifEncoderMode::aom: return 2;
-    case awj::AvifEncoderMode::zenrav1e: return 3;
-    default: return 0;
-  }
+  return value == awj::AvifEncoderMode::aom ? 1 : 0;
 }
 
 int linux_chroma_index(awj::ChromaMode value) noexcept {
@@ -9389,23 +9333,6 @@ std::expected<awj::UserPreset, std::string> linux_user_preset_from_parameters(
   return preset;
 }
 
-std::expected<bool, std::string> confirm_linux_preset_overwrite(
-    std::string_view name) {
-  const auto question = shell_quote(std::format("预设“{}”已存在，是否覆盖？", name));
-  if (command_exists("zenity")) {
-    const int status = std::system(
-        std::format("zenity --question --title='AWJ Studio' --text={} >/dev/null 2>&1",
-                    question).c_str());
-    return status == 0;
-  }
-  if (command_exists("kdialog")) {
-    const int status = std::system(
-        std::format("kdialog --title 'AWJ Studio' --yesno {} >/dev/null 2>&1",
-                    question).c_str());
-    return status == 0;
-  }
-  return std::unexpected{"同名预设已存在；请安装 zenity 或 kdialog 以确认覆盖，或改用新名称。"};
-}
 std::string xml_escape(std::string_view text) {
   std::string out;
   out.reserve(text.size());
@@ -9488,7 +9415,7 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
   const bool is_jxl = format_index == 2;
   const bool is_jpgli = format_index == 3;
   const bool is_png = format_index == 4;
-  if (!is_png && !trim_copy(params.quality_text).empty()) {
+  if (!trim_copy(params.quality_text).empty()) {
     append_linux_shell_option(command, "--quality", trim_copy(params.quality_text));
   }
   if ((is_avif || is_webp || is_jpgli || is_png) &&
@@ -9546,7 +9473,7 @@ std::expected<void, std::string> validate_linux_menu_params(
     const bool is_jxl = format_index == 2;
     const bool is_jpgli = format_index == 3;
     const bool is_png = format_index == 4;
-    if (!is_png) push_option(args, L"--quality", awj::wide_from_utf8(trim_copy(params.quality_text)));
+    push_option(args, L"--quality", awj::wide_from_utf8(trim_copy(params.quality_text)));
     if (is_avif || is_webp || is_jpgli || is_png) {
       push_option(args, L"--bit-depth", awj::wide_from_utf8(trim_copy(params.bit_depth_text)));
     }
@@ -9835,6 +9762,9 @@ void initialize_ui(AwjStudio& app) {
 int run_studio_ui() {
   try {
     auto app = AwjStudio::create();
+    app->set_shell_menu_injection_supported(false);
+    if (auto recovered = awj::recover_user_preset_change(); !recovered)
+      app->set_status_text(to_shared(recovered.error()));
     auto state = std::make_shared<LinuxUiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
@@ -10074,6 +10004,8 @@ int run_studio_ui() {
             index == 0 ? slint::SharedString{}
                        : to_shared(state->user_presets[static_cast<std::size_t>(index - 1)]
                                        .description));
+        (*app)->set_preset_editor_existing(index > 0);
+        (*app)->set_preset_editor_shell_menu(index > 0 && state->user_presets[static_cast<std::size_t>(index - 1)].shell_menu);
         (*app)->set_preset_editor_error({});
         (*app)->set_preset_editor_open(true);
       }
@@ -10084,6 +10016,21 @@ int run_studio_ui() {
         (*app)->set_preset_editor_error({});
       }
     });
+    app->on_delete_parameter_preset([weak, state] {
+      auto app = weak.lock();
+      if (!app || (*app)->get_running()) return;
+      const auto index = state->parameter_preset_index;
+      if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)]);
+      if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
+      state->parameter_preset_index = 0;
+      (*app)->set_queue_preset_index(0);
+      reload_linux_user_preset_options(**app, *state);
+      select_linux_parameter_preset(**app, *state, 0);
+      (*app)->set_preset_editor_open(false);
+      (*app)->set_status_text(to_shared("用户预设已删除。"));
+    });
+
     app->on_save_parameter_preset(
         [weak, state](slint::SharedString name, slint::SharedString description) {
           auto app = weak.lock();
@@ -10096,19 +10043,20 @@ int run_studio_ui() {
             (*app)->set_preset_editor_error(to_shared(preset.error()));
             return;
           }
-          auto saved = awj::save_user_preset(*preset, false);
-          if (!saved && saved.error() == "同名预设已存在；请确认覆盖。") {
-            auto confirmed = confirm_linux_preset_overwrite(preset->name);
-            if (!confirmed) {
-              (*app)->set_preset_editor_error(to_shared(confirmed.error()));
-              return;
+          preset->shell_menu = (*app)->get_preset_editor_shell_menu();
+          const auto edit_index = state->parameter_preset_index;
+          if (edit_index > 0 && edit_index <= static_cast<int>(state->user_presets.size())) {
+            const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 1)];
+            preset->source_path = original.source_path;
+            const auto original_ui = linux_parameter_params_from_user_preset(original);
+            for (std::size_t i = 0; i < preset->formats.size(); ++i) {
+              if (active_linux_parameter_params(*state)[i].memory_limit_text == original_ui[i].memory_limit_text)
+                preset->formats[i].memory_limit_bytes = original.formats[i].memory_limit_bytes;
+              if (active_linux_parameter_params(*state)[i].speed_text == original_ui[i].speed_text)
+                preset->formats[i].speed = original.formats[i].speed;
             }
-            if (!*confirmed) {
-              (*app)->set_preset_editor_error(to_shared("已取消覆盖同名预设。"));
-              return;
-            }
-            saved = awj::save_user_preset(*preset, true);
           }
+          auto saved = awj::save_user_preset(*preset, edit_index > 0);
           if (!saved) {
             (*app)->set_preset_editor_error(to_shared(saved.error()));
             return;
@@ -10510,8 +10458,7 @@ int run_studio_ui() {
         return;
       }
       const auto item = state->large_image_items[static_cast<std::size_t>(index)];
-      const bool available = (action == "grid" && linux_large_image_grid_available(item)) ||
-                             (action == "zenrav1e" && linux_large_image_zenrav1e_available(item));
+      const bool available = action == "grid" && linux_large_image_grid_available(item);
       if (!available) {
         (*app)->set_status_text(to_shared(std::format("{} 不可用", action)));
         return;

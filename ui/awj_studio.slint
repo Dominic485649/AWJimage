@@ -1,9 +1,14 @@
+import { ParameterPage } from "parameter_page.slint";
+import { MenuParameterPage } from "menu_parameter_page.slint";
+import { QueuePage } from "queue_page.slint";
+import { SettingsPage } from "settings_page.slint";
+import { PresetEditor } from "preset_editor.slint";
 export { ShellConvertWindow } from "shell_convert_window.slint";
 import { Button, CheckBox, LineEdit, Palette, ScrollView, ListView, TextEdit } from "std-widgets.slint";
-import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, NavItem, QueueMenuItem, ParamHint } from "studio_components.slint";
+import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, NavItem, QueueMenuItem, ParamHint } from "studio_components.slint";
 import { StudioTheme } from "studio_theme.slint";
 // 保持原 awj_studio.slint 的 C++ 公共类型名不变；组件实现已拆到独立文件。
-export { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption }
+export { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption }
 
 export component AwjStudio inherits Window {
     title: "AWJ Studio";
@@ -11,7 +16,7 @@ export component AwjStudio inherits Window {
     default-font-family: root.ui-font-family;
     preferred-width: 1220px;
     preferred-height: 800px;
-    min-width: 820px;
+    min-width: 760px;
     min-height: 560px;
 
     in-out property <string> input-path: "";
@@ -23,13 +28,18 @@ export component AwjStudio inherits Window {
     in property <[ComboOption]> parameter-preset-options: [{ text: @tr("内置默认"), enabled: true }];
     in property <string> parameter-preset-description: "";
     in-out property <bool> preset-editor-open: false;
+    in-out property <bool> preset-editor-existing: false;
+    in-out property <bool> preset-editor-shell-menu: false;
+    in property <bool> shell-menu-injection-supported: true;
+    in-out property <bool> legacy-machine-menu-present: false;
+    callback delete-parameter-preset();
+    callback cleanup-legacy-machine-menu();
     in-out property <string> preset-editor-name: "";
     in-out property <string> preset-editor-description: "";
     in-out property <string> preset-editor-error: "";
     in-out property <int> avif-encoder-index: 0;
     in-out property <int> avif-color-representation-index: 0;
-    in property <[ComboOption]> avif-encoder-options: [{ text: @tr("自动"), enabled: true }, { text: "svt-av1-hdr", enabled: true }, { text: "aom", enabled: true }, { text: "zenrav1e", enabled: false }];
-    in-out property <bool> experimental-encoders: true;
+    in property <[ComboOption]> avif-encoder-options: [{ text: @tr("自动"), enabled: true }, { text: "aom", enabled: true }];
     in-out property <string> avif-quality-default: "";
     in-out property <string> webp-quality-default: "";
     in-out property <string> jxl-quality-default: "";
@@ -129,6 +139,8 @@ export component AwjStudio inherits Window {
     in-out property <bool> running: false;
     // Windows Explorer 外部拖放由 C++ 原生 IDropTarget 驱动；这里只接收可视状态，
     // 不再从 Slint DropEvent/DataTransfer 解析文件系统路径。
+    in-out property <[DropRegion]> drop-regions: [];
+    in-out property <int> external-drag-target: 0;
     in-out property <bool> external-drag-active: false;
     in-out property <bool> external-drag-valid: false;
     in-out property <int> external-drag-item-count: 0;
@@ -170,8 +182,6 @@ export component AwjStudio inherits Window {
     in-out property <bool> queue-menu-opening: false;
 
     in-out property <int> selected-page: 1;
-    property <int> chroma-index-before-forced: 0;
-    property <bool> chroma-forced-by-avif-encoder: false;
     property <bool> dark-mode: root.theme-index == 2 || (root.theme-index == 0 && root.system-dark-mode);
     property <bool> pending-theme-dark-mode: root.pending-theme-index == 2 || (root.pending-theme-index == 0 && root.system-dark-mode);
     property <color> pending-theme-page-bg: StudioTheme.page-bg(root.pending-theme-dark-mode);
@@ -282,20 +292,9 @@ export component AwjStudio inherits Window {
 
     changed format-index => {
         root.format-defaults-requested(root.format-index);
-        if (!(root.format-index == 0 && root.avif-encoder-index == 1) && root.chroma-forced-by-avif-encoder) {
-            root.chroma-index = root.chroma-index-before-forced;
-            root.chroma-forced-by-avif-encoder = false;
-        }
-        if (root.format-index == 0 && root.avif-encoder-index == 1 && !root.chroma-forced-by-avif-encoder) {
-            root.chroma-index-before-forced = root.chroma-index;
-            root.chroma-index = 3;
-            root.chroma-forced-by-avif-encoder = true;
-        }
     }
 
-    changed experimental-encoders => {
-        root.format-defaults-requested(root.format-index);
-    }
+
 
     changed jpegli-progressive-index => {
         if (root.jpegli-progressive-index > 0) {
@@ -319,18 +318,7 @@ export component AwjStudio inherits Window {
         }
     }
 
-    changed avif-encoder-index => {
-        if (root.format-index == 0 && root.avif-encoder-index == 1) {
-            if (!root.chroma-forced-by-avif-encoder) {
-                root.chroma-index-before-forced = root.chroma-index;
-                root.chroma-forced-by-avif-encoder = true;
-            }
-            root.chroma-index = 3;
-        } else if (root.chroma-forced-by-avif-encoder) {
-            root.chroma-index = root.chroma-index-before-forced;
-            root.chroma-forced-by-avif-encoder = false;
-        }
-    }
+
 
     changed quality-text => {
         root.quality-follows-format =
@@ -567,867 +555,214 @@ export component AwjStudio inherits Window {
                 vertical-stretch: 1;
                 background: transparent;
 
-                if root.selected-page == 0: Rectangle {
-                    horizontal-stretch: 1;
-                    vertical-stretch: 1;
-                    background: transparent;
-
-                    Rectangle {
-                        horizontal-stretch: 1;
-                        vertical-stretch: 1;
-                        border-radius: 8px;
-                        background: root.panel-bg;
-                        border-color: root.panel-border;
-                        border-width: 1px;
-                        animate background, border-color { duration: 180ms; easing: ease-out; }
-
-                        ScrollView {
-                            horizontal-stretch: 1;
-                            vertical-stretch: 1;
-                            viewport-width: parent.width;
-                            VerticalLayout {
-                                padding: 22px;
-                                spacing: 10px;
-                                    VerticalLayout {
-                                        spacing: 10px;
-
-                                        HorizontalLayout {
-                                            height: 36px;
-                                            spacing: 10px;
-                                            Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; horizontal-stretch: 1; }
-                                            parameter-preset := SoftComboBox {
-                                                accessible-name: @tr("参数预设");
-                                                viewport-height: root.height;
-                                                close-generation: root.combo-close-generation;
-                                                popup-requested => { root.combo-popup-requested(); }
-                                                popup-finished => { root.combo-popup-finished(); }
-                                                model: root.parameter-preset-options;
-                                                current-index <=> root.parameter-preset-index;
-                                                enabled: !root.running;
-                                                width: 190px;
-                                                height: 36px;
-                                                normal-background: root.combo-bg;
-                                                hover-background: root.combo-bg-hover;
-                                                disabled-background: root.combo-bg-disabled;
-                                                selected-background: root.combo-selected-bg;
-                                                normal-border: root.combo-border;
-                                                hover-border: root.combo-border-hover;
-                                                normal-text: root.text-body;
-                                                disabled-text: root.text-soft;
-                                                muted-text: root.text-muted;
-                                                selected-text: root.text-body;
-                                                hover-help-text: root.parameter-preset-description;
-                                                hover-help-always: true;
-                                                selection-accepted(index, click-x, click-y) => {
-                                                    root.parameter-preset-selected(index);
-                                                }
-                                            }
-                                            SoftButton {
-                                                dark-mode: root.dark-mode;
-                                                text: @tr("保存预设");
-                                                variant: "outline";
-                                                width: 96px;
-                                                height: 36px;
-                                                enabled: !root.running;
-                                                clicked => { root.open-preset-editor(); }
-                                            }
-                                        }
-                                        HorizontalLayout {
-                                            min-height: 72px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("编辑格式"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("编辑格式"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("首选 AVIF");
-                                                lead-color: root.hint-orange;
-                                                accent: @tr("极高压缩率 · 支持 HDR · 最高 12-bit");
-                                                accent-color: root.hint-blue;
-                                                detail: @tr("AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG 为无损输出，也可在参数设置中独立编辑。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        if root.format-index == 0: HorizontalLayout {
-                                            min-height: 72px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("编码器"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("AVIF 编码器"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("保持“自动”就是最优解");
-                                                lead-color: root.hint-orange;
-                                                accent: @tr("优先 aom，超限自动切 zenrav1e");
-                                                accent-color: root.hint-blue;
-                                                detail: @tr("aom 支持高位深与 420/422/444，是默认主力。svt-av1-hdr 各项指标均不及 libaom，仅作备选。zenrav1e 能吃下超大图，但不适合当常规默认。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            min-height: 78px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("质量"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("质量"); text <=> root.quality-text; placeholder-text: root.visual-quality-text.is-empty ? "1-100/q90/0.9" : @tr("由视觉质量自动控制"); enabled: !root.running && root.visual-quality-text.is-empty && root.format-index != 4; width: root.parameter-control-width; opacity: root.format-index == 4 || !root.visual-quality-text.is-empty ? 0.56 : 1.0; height: root.parameter-control-height; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("1-100，越大越好；填 100 及以上为无损");
-                                                lead-color: root.hint-violet;
-                                                detail: @tr("AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。PNG 固定为无损，质量值为 100。JPEG 转 JXL 默认走无损转封装。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            min-height: 64px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("视觉质量"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("视觉质量"); text <=> root.visual-quality-text; placeholder-text: @tr("空由质量决定，1-100"); input-type: number; enabled: !root.running && root.format-index != 4; opacity: root.format-index == 4 ? 0.56 : 1.0; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("建议留空");
-                                                lead-color: root.hint-red;
-                                                detail: @tr("留空时由普通质量参数直接控制。若确实需要启用视觉质量搜索，建议从 50 左右开始；填写后会对同一张图反复编码，并用 GMSD / MS-SSIM 搜索目标画质，耗时会显著增加。");
-                                                detail-color: root.text-body;
-                                            }
-                                        }
-
-                                        if root.format-index == 0 || root.format-index == 1 || root.format-index == 2: HorizontalLayout {
-                                            min-height: 56px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("速度"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("速度"); text <=> root.speed-text; placeholder-text: @tr("默认/可选0-10"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("0-10，越大越快");
-                                                lead-color: root.hint-green;
-                                                detail: @tr("默认值是速度与画质的平衡点，自动映射到各编码器的 preset / effort / cpu-used。同一质量下数值越小压缩效率越高。不支持调速的格式会自动隐藏这一行。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        Text { text: @tr("资源限制"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
-
-                                        HorizontalLayout {
-                                            min-height: 64px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("线程"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("线程"); text <=> root.threads-text; placeholder-text: @tr("自动/线程数"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("留空 = 自动");
-                                                lead-color: root.hint-cyan;
-                                                accent: @tr("核心多时预留 4 个");
-                                                accent-color: root.hint-blue;
-                                                detail: @tr("填数字即为总线程上限。自动策略给桌面和 UI 留余量：逻辑核心 ≥12 预留 4 个，5-11 预留 2 个，2-4 预留 1 个，单核仍用 1 个。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            min-height: 64px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("内存"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("内存限制"); text <=> root.memory-limit-text; placeholder-text: @tr("例如 4（单位 GiB）"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("留空 = 自动");
-                                                lead-color: root.hint-cyan;
-                                                accent: @tr("min(总内存 80%, 可用 50%)");
-                                                accent-color: root.hint-blue;
-                                                detail: @tr("填数字即为内存占用上限，单位 GiB。设置页可以解除内存限制，解除后覆盖这一项。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        HorizontalLayout {
-                                            min-height: 56px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("尺寸限制"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("图片尺寸限制"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: @tr("无限制"), enabled: true }, { text: @tr("手动"), enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("自动 = 保证还能正确解码");
-                                                lead-color: root.hint-cyan;
-                                                detail: @tr("按格式与解码能力限制边长，也可以切换成无限制。手动时取宽、高、长边、短边里最严格的一项。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        if root.size-limit-index == 2: HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("手动尺寸"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("最大宽度"); text <=> root.max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                            LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                            LineEdit { accessible-label: @tr("最大长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                            LineEdit { accessible-label: @tr("最大短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                        }
-
-                                        Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
-
-                                        if root.format-index == 0: HorizontalLayout {
-                                            min-height: 56px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("位深"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            LineEdit { accessible-label: @tr("位深"); text <=> root.bit-depth-text; placeholder-text: @tr("保持原片"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("自动至少 10-bit");
-                                                lead-color: root.hint-orange;
-                                                detail: @tr("源 ≤10-bit 提升到 10-bit，源 ≥12-bit 收到 12-bit；显式填写则以填写值为准。AVIF 支持 8 / 10 / 12-bit。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        if root.format-index == 0: HorizontalLayout {
-                                            min-height: 64px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("颜色表示"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("AVIF 颜色表示"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "YUV", enabled: true }, { text: @tr("跟随源"), enabled: true }, { text: "RGB(A) / GBR(A) Identity", enabled: true }]; current-index <=> root.avif-color-representation-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("默认 YUV");
-                                                lead-color: root.hint-blue;
-                                                detail: @tr("YUV 始终使用非 Identity 矩阵；跟随源仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；RGB(A)/GBR(A) 强制 4:4:4 并自动选择 AOM。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        if (root.format-index == 0 && root.avif-encoder-index != 1) || root.format-index == 3: HorizontalLayout {
-                                            min-height: 64px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("色度采样"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("色度采样"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("自动 = 跟随源");
-                                                lead-color: root.hint-blue;
-                                                detail: root.format-index == 3
-                                                    ? @tr("JPGLI 支持 444 / 422 / 420，自动时用 Jpegli 默认采样。")
-                                                    : @tr("一律以 YUV 编码：源是 420 / 422 / 444 就原样保留，RGB 与 RGBA 视作 444，灰度按 420 处理。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                        if root.format-index == 3: HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("渐进"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("JPGLI 渐进级别"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("关闭"), enabled: true }, { text: @tr("普通"), enabled: true }, { text: @tr("更细"), enabled: true }]; current-index <=> root.jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                        }
-
-                                        if root.format-index == 3 && root.jpegli-progressive-index == 0: HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("哈夫曼"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            CheckBox { text: @tr("优化哈夫曼表"); checked <=> root.jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
-                                        }
-
-                                        if root.format-index == 3: HorizontalLayout {
-                                            height: 48px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: "XYB"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            CheckBox { text: @tr("启用 XYB"); checked <=> root.jpegli-xyb; enabled: !root.running; width: root.parameter-control-width; }
-                                        }
-
-                                        if root.format-index == 0: HorizontalLayout {
-                                            min-height: 56px;
-                                            spacing: 10px;
-                                            cross-axis-alignment: center;
-                                            Text { text: @tr("透明通道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox { accessible-name: @tr("透明通道"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("强制开启"), enabled: true }, { text: @tr("自动"), enabled: true }, { text: @tr("关闭"), enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                            ParamHint {
-                                                horizontal-stretch: 1;
-                                                lead: @tr("自动 = 源真的用到才保留");
-                                                lead-color: root.hint-orange;
-                                                detail: @tr("源没有 alpha，或者 alpha 全不透明，都会去掉这一层。保留时 alpha 与颜色用同一个质量值压缩；编码器不支持有损 alpha 时，只有 alpha 退回无损，颜色仍按质量压缩。");
-                                                detail-color: root.text-muted;
-                                            }
-                                        }
-
-                                    }
-                            }
-                        }
-                    }
-                }
+                if root.selected-page == 0: ParameterPage {
+    alpha-policy-index <=> root.alpha-policy-index;
+    avif-color-representation-index <=> root.avif-color-representation-index;
+    avif-encoder-index <=> root.avif-encoder-index;
+    avif-encoder-options : root.avif-encoder-options;
+    bit-depth-text <=> root.bit-depth-text;
+    chroma-index <=> root.chroma-index;
+    combo-bg : root.combo-bg;
+    combo-bg-disabled : root.combo-bg-disabled;
+    combo-bg-hover : root.combo-bg-hover;
+    combo-border : root.combo-border;
+    combo-border-hover : root.combo-border-hover;
+    combo-close-generation <=> root.combo-close-generation;
+    combo-popup-finished() => { root.combo-popup-finished(); }
+    combo-popup-requested() => { root.combo-popup-requested(); }
+    combo-selected-bg : root.combo-selected-bg;
+    dark-mode : root.dark-mode;
+    format-index <=> root.format-index;
+    window-height : root.height;
+    hint-blue : root.hint-blue;
+    hint-cyan : root.hint-cyan;
+    hint-green : root.hint-green;
+    hint-orange : root.hint-orange;
+    hint-red : root.hint-red;
+    hint-violet : root.hint-violet;
+    jpegli-optimize-huffman <=> root.jpegli-optimize-huffman;
+    jpegli-progressive-index <=> root.jpegli-progressive-index;
+    jpegli-xyb <=> root.jpegli-xyb;
+    max-height-text <=> root.max-height-text;
+    max-long-edge-text <=> root.max-long-edge-text;
+    max-short-edge-text <=> root.max-short-edge-text;
+    max-width-text <=> root.max-width-text;
+    memory-limit-text <=> root.memory-limit-text;
+    open-preset-editor() => { root.open-preset-editor(); }
+    panel-bg : root.panel-bg;
+    panel-border : root.panel-border;
+    parameter-control-height : root.parameter-control-height;
+    parameter-control-width : root.parameter-control-width;
+    parameter-preset-description : root.parameter-preset-description;
+    parameter-preset-index <=> root.parameter-preset-index;
+    parameter-preset-options : root.parameter-preset-options;
+    parameter-preset-selected(a0) => { root.parameter-preset-selected(a0); }
+    quality-text <=> root.quality-text;
+    running <=> root.running;
+    size-limit-index <=> root.size-limit-index;
+    speed-text <=> root.speed-text;
+    text-body : root.text-body;
+    text-muted : root.text-muted;
+    text-soft : root.text-soft;
+    text-strong : root.text-strong;
+    threads-text <=> root.threads-text;
+    visual-quality-text <=> root.visual-quality-text;
+}
 
 
-                if root.selected-page == 3: Rectangle {
-                    horizontal-stretch: 1;
-                    vertical-stretch: 1;
-                    border-radius: 8px;
-                    background: root.panel-bg;
-                    border-color: root.panel-border;
-                    border-width: 1px;
-                    ScrollView {
-                        horizontal-stretch: 1;
-                        vertical-stretch: 1;
-                        viewport-width: parent.width;
-                        VerticalLayout {
-                            padding: 22px;
-                            spacing: 10px;
-                            HorizontalLayout {
-                                height: 40px;
-                                spacing: 10px;
-                                Rectangle {
-                                    horizontal-stretch: 3;
-                                    height: 40px;
-                                    background: transparent;
-                                    HorizontalLayout {
-                                        spacing: 10px;
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.install-context-menu-requested(); } }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "outline"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.remove-context-menu-requested(); } }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("保存参数"); variant: "action"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.save-menu-params-requested(); } }
-                                    }
-                                }
-                                if !root.context-menu-warning.is-empty: Rectangle {
-                                    horizontal-stretch: 1;
-                                    height: 40px;
-                                    background: transparent;
-                                    Text { text: root.context-menu-warning; color: #dc2626; font-size: 13px; vertical-alignment: center; overflow: elide; }
-                                    TouchArea { clicked => { root.context-menu-warning-clicked(); } }
-                                }
-                            }
+                if root.selected-page == 3: MenuParameterPage {
+    legacy-machine-menu-present: root.legacy-machine-menu-present;
+    cleanup-legacy-machine-menu => { root.cleanup-legacy-machine-menu(); }
+    text-strong: root.text-strong;
+    parameter-preset-options: root.parameter-preset-options;
+    parameter-preset-description: root.parameter-preset-description;
+    hint-violet: root.hint-violet;
+    hint-red: root.hint-red;
+    hint-orange: root.hint-orange;
+    hint-green: root.hint-green;
+    hint-cyan: root.hint-cyan;
+    hint-blue: root.hint-blue;
+    avif-encoder-options : root.avif-encoder-options;
+    combo-bg : root.combo-bg;
+    combo-bg-disabled : root.combo-bg-disabled;
+    combo-bg-hover : root.combo-bg-hover;
+    combo-border : root.combo-border;
+    combo-border-hover : root.combo-border-hover;
+    combo-close-generation <=> root.combo-close-generation;
+    combo-popup-finished() => { root.combo-popup-finished(); }
+    combo-popup-requested() => { root.combo-popup-requested(); }
+    combo-selected-bg : root.combo-selected-bg;
+    context-menu-warning <=> root.context-menu-warning;
+    context-menu-warning-clicked() => { root.context-menu-warning-clicked(); }
+    dark-mode : root.dark-mode;
+    window-height : root.height;
+    install-context-menu-requested() => { root.install-context-menu-requested(); }
+    menu-allow-wic-fallback <=> root.menu-allow-wic-fallback;
+    menu-alpha-policy-index <=> root.menu-alpha-policy-index;
+    menu-avif-color-representation-index <=> root.menu-avif-color-representation-index;
+    menu-avif-encoder-index <=> root.menu-avif-encoder-index;
+    menu-bit-depth-text <=> root.menu-bit-depth-text;
+    menu-chroma-index <=> root.menu-chroma-index;
+    menu-close-on-finish <=> root.menu-close-on-finish;
+    menu-format-index <=> root.menu-format-index;
+    menu-install-avif-png-command <=> root.menu-install-avif-png-command;
+    menu-jpegli-optimize-huffman <=> root.menu-jpegli-optimize-huffman;
+    menu-jpegli-progressive-index <=> root.menu-jpegli-progressive-index;
+    menu-jpegli-xyb <=> root.menu-jpegli-xyb;
+    menu-max-height-text <=> root.menu-max-height-text;
+    menu-max-long-edge-text <=> root.menu-max-long-edge-text;
+    menu-max-short-edge-text <=> root.menu-max-short-edge-text;
+    menu-max-width-text <=> root.menu-max-width-text;
+    menu-quality-text <=> root.menu-quality-text;
+    menu-size-limit-index <=> root.menu-size-limit-index;
+    menu-speed-text <=> root.menu-speed-text;
+    menu-strip-metadata <=> root.menu-strip-metadata;
+    page-gap : root.page-gap;
+    panel-bg : root.panel-bg;
+    panel-border : root.panel-border;
+    parameter-control-height : root.parameter-control-height;
+    parameter-control-width : root.parameter-control-width;
+    remove-context-menu-requested() => { root.remove-context-menu-requested(); }
+    running <=> root.running;
+    save-menu-params-requested() => { root.save-menu-params-requested(); }
+    text-body : root.text-body;
+    text-muted : root.text-muted;
+    text-soft : root.text-soft;
+    wic-ui-visible <=> root.wic-ui-visible;
+}
 
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("编辑格式"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键输出格式"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.menu-format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: @tr("此格式只决定正在编辑哪组右键参数；右键子菜单决定最终输出格式。这里的参数只用于右键菜单，不影响左侧的普通参数设置。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            if root.menu-format-index == 0: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("编码器"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键 AVIF 编码器"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.menu-avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                            }
-                            if root.menu-format-index == 0: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("颜色表示"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键 AVIF 颜色表示"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "YUV", enabled: true }, { text: @tr("跟随源"), enabled: true }, { text: "RGB(A) / GBR(A) Identity", enabled: true }]; current-index <=> root.menu-avif-color-representation-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("质量"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { accessible-label: @tr("右键质量"); text <=> root.menu-quality-text; placeholder-text: "1-100/q90/0.9"; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                Text { text: @tr("右键转换固定使用编码质量；PNG 始终无损。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("位深"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { accessible-label: @tr("右键位深"); text <=> root.menu-bit-depth-text; placeholder-text: @tr("留空保持原片"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                Text { text: @tr("不适用的格式会在保存/转换时忽略或按格式规则校验。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("速度"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { accessible-label: @tr("右键速度"); text <=> root.menu-speed-text; placeholder-text: @tr("0-10，留空默认"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
-                                Text { text: @tr("AVIF/WebP/JXL 可用；其他格式会忽略。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("色度采样"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键色度采样"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.menu-chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: @tr("AVIF/JPGLI 可用；其他格式会忽略。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("透明通道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键透明通道"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("强制"), enabled: true }, { text: @tr("自动"), enabled: true }, { text: @tr("关闭"), enabled: true }]; current-index <=> root.menu-alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: @tr("仅 AVIF 可用；JPGLI 不支持强制保留透明通道。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("渐进"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键 JPGLI 渐进级别"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("关闭"), enabled: true }, { text: @tr("普通"), enabled: true }, { text: @tr("更细"), enabled: true }]; current-index <=> root.menu-jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: @tr("关闭为顺序 JPEG；普通和更细使用渐进编码。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("哈夫曼表"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                CheckBox { text: @tr("优化哈夫曼表"); checked <=> root.menu-jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
-                                Text { text: @tr("渐进 JPEG 会自动启用哈夫曼表优化。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            if root.menu-format-index == 3: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: "XYB"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                CheckBox { text: @tr("启用 XYB"); checked <=> root.menu-jpegli-xyb; enabled: !root.running; width: root.parameter-control-width; }
-                                Text { text: @tr("JPGLI 实验选项。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("尺寸限制"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                            SoftComboBox { accessible-name: @tr("右键图片尺寸限制"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: @tr("无限制"), enabled: true }, { text: @tr("手动"), enabled: true }]; current-index <=> root.menu-size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-                                Text { text: @tr("手动限制会取宽、高、长边、短边中最严格的缩小比例。"); horizontal-stretch: 1; color: root.text-body; font-size: 12px; wrap: word-wrap; vertical-alignment: center; }
-                            }
-                            if root.menu-size-limit-index == 2: HorizontalLayout { height: 48px; spacing: 10px;
-                                Text { text: @tr("手动尺寸"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                LineEdit { accessible-label: @tr("右键最大宽度"); text <=> root.menu-max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                LineEdit { accessible-label: @tr("右键最大高度"); text <=> root.menu-max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                LineEdit { accessible-label: @tr("右键最大长边"); text <=> root.menu-max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                                LineEdit { accessible-label: @tr("右键最大短边"); text <=> root.menu-max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-                            }
-                            HorizontalLayout { spacing: root.page-gap;
-                                CheckBox { text: @tr("移除元数据"); checked <=> root.menu-strip-metadata; enabled: !root.running; }
-                                if root.wic-ui-visible: CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.menu-allow-wic-fallback; enabled: !root.running; }
-                                CheckBox { text: @tr("完成后关闭窗口"); checked <=> root.menu-close-on-finish; enabled: !root.running; }
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
-                            }
-                            if root.menu-format-index == 0: HorizontalLayout { height: 40px; spacing: root.page-gap;
-                                CheckBox { text: @tr("额外添加 .png 后缀"); checked <=> root.menu-install-avif-png-command; enabled: !root.running; }
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
-                            }
-                        }
-                    }
-                }
-
-                if root.selected-page == 1: VerticalLayout {
-                    spacing: 8px;
-
-                    Rectangle {
-                        border-radius: 8px;
-                        background: root.panel-bg;
-                        border-color: root.panel-border;
-                        border-width: 1px;
-                        animate background, border-color { duration: 180ms; easing: ease-out; }
-
-                        VerticalLayout {
-                            padding: 16px;
-                            spacing: 8px;
-
-                            VerticalLayout {
-                                spacing: 8px;
-                                horizontal-stretch: 1;
-
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: @tr("输入路径"); width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    input-path-drop := DropArea {
-                                        enabled: !root.running;
-                                        min-width: 120px;
-                                        horizontal-stretch: 1;
-                                        height: root.control-button-height;
-                                        can-drop(event) => { return DragAction.copy; }
-                                        dropped(event) => { root.input-path-dropped(event); return event.proposed-action; }
-                                        LineEdit { accessible-label: @tr("输入路径"); text <=> root.input-path; placeholder-text: @tr("输入图片文件或文件夹路径，回车加入队列"); enabled: !root.running; width: parent.width; height: parent.height; accepted(text) => { root.input-path-accepted(text); } }
-                                    }
-                                    Rectangle {
-                                        width: root.control-button-width * 2 + 10px;
-                                        height: root.control-button-height;
-                                        background: transparent;
-                                        HorizontalLayout {
-                                            spacing: 10px;
-                                            SoftComboBox { accessible-name: @tr("输入类型"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("文件"), enabled: true }, { text: @tr("文件夹"), enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: root.control-button-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
-                                            SoftButton { dark-mode: root.dark-mode; text: @tr("选择"); width: root.control-button-width; height: root.control-button-height; enabled: !root.running; clicked => { root.browse-input(); } }
-                                        }
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: @tr("输出目录"); width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    output-path-drop := DropArea {
-                                        enabled: !root.running;
-                                        min-width: 120px;
-                                        horizontal-stretch: 1;
-                                        height: root.control-button-height;
-                                        can-drop(event) => { return DragAction.copy; }
-                                        dropped(event) => { root.output-path-dropped(event); return event.proposed-action; }
-                                        LineEdit { accessible-label: @tr("输出目录"); text <=> root.output-dir; placeholder-text: @tr("默认与输入同目录"); enabled: !root.running; width: parent.width; height: parent.height; accepted(text) => { root.output-path-accepted(text); } }
-                                    }
-                                    Rectangle {
-                                        width: root.control-button-width * 2 + 10px;
-                                        height: root.control-button-height;
-                                        background: transparent;
-                                        HorizontalLayout {
-                                            spacing: 10px;
-                                            SoftButton { dark-mode: root.dark-mode; text: @tr("打开"); width: root.control-button-width; height: root.control-button-height; clicked => { root.open-output(); } }
-                                            SoftButton { dark-mode: root.dark-mode; text: @tr("选择"); width: root.control-button-width; height: root.control-button-height; enabled: !root.running; clicked => { root.browse-output(); } }
-                                        }
-                                    }
-                                }
-
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: @tr("命名规则"); width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    LineEdit { accessible-label: @tr("命名规则"); text <=> root.template-text; // @tr 内的 {…} 是格式占位符，这里的花括号是要原样显示给用户的模板变量，必须转义成 {{ }}。
-                                            placeholder-text: @tr("例：{{name}}_{{date}}"); enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: 38px; }
-                                    Rectangle {
-                                        width: 302px;
-                                        height: 38px;
-                                        background: transparent;
-                                        HorizontalLayout {
-                                            spacing: 10px;
-                                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                                            Text { text: @tr("重复处理"); width: 68px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                            SoftComboBox {
-                                                accessible-name: @tr("重复处理");
-                                                viewport-height: root.height;
-                                                close-generation: root.combo-close-generation;
-                                                popup-requested => { root.combo-popup-requested(); }
-                                                popup-finished => { root.combo-popup-finished(); }
-                                                model: [{ text: @tr("覆盖"), enabled: true }, { text: @tr("跳过"), enabled: true }, { text: @tr("追加时间"), enabled: true }, { text: @tr("追加随机"), enabled: true }];
-                                                current-index <=> root.collision-index;
-                                                enabled: !root.running;
-                                                width: root.control-button-width * 2 + root.page-gap;
-                                                normal-background: root.combo-bg;
-                                                hover-background: root.combo-bg-hover;
-                                                disabled-background: root.combo-bg-disabled;
-                                                selected-background: root.combo-selected-bg;
-                                                normal-border: root.combo-border;
-                                                hover-border: root.combo-border-hover;
-                                                normal-text: root.text-body;
-                                                disabled-text: root.text-soft;
-                                                muted-text: root.text-muted;
-                                                selected-text: root.accent-strong;
-                                            }
-                                        }
-                                    }
-                                }
-
-                                if root.width >= 1000px: HorizontalLayout {
-                                    spacing: 8px;
-                                    Rectangle { width: 88px; background: transparent; }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
-                                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                }
-                                if root.width < 1000px: VerticalLayout {
-                                    spacing: 6px;
-                                    HorizontalLayout {
-                                        spacing: 8px;
-                                        Rectangle { width: 88px; background: transparent; }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
-                                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    }
-                                    HorizontalLayout {
-                                        spacing: 8px;
-                                        Rectangle { width: 88px; background: transparent; }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
-                                        SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
-                                        SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
-                                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    }
-                                }
-                            }
-
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: @tr("输出格式"); width: 78px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    queue-format := SoftComboBox { accessible-name: root.queue-format-index == 1 ? @tr("AVIF.png：实际编码为 AVIF，仅额外添加 .png 文件名后缀") : @tr("队列输出格式"); accessible-description: root.queue-format-index == 1 ? @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀") : ""; viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "AVIF.png", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.queue-format-index; enabled: !root.running; width: 142px; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀"); hover-help-option-index: 1;
-                                    }
-                                    Text { text: @tr("预设"); width: 42px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                    queue-preset := SoftComboBox { accessible-name: @tr("队列预设"); viewport-height: root.height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.queue-preset-options; current-index <=> root.queue-preset-index; enabled: !root.running; width: root.parameter-control-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: root.queue-preset-description; hover-help-always: true; selection-accepted(index, click-x, click-y) => { root.queue-preset-selected(index); }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                }
-
-                                if root.width >= 1100px: HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; }
-                                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; }
-                                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; }
-                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; }
-                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; }
-                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                }
-                                if root.width >= 760px && root.width < 1100px: VerticalLayout {
-                                    spacing: 6px;
-                                    HorizontalLayout {
-                                        spacing: root.page-gap;
-                                        CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; }
-                                        CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; }
-                                        CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; }
-                                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    }
-                                    if root.timestamp-ui-visible: HorizontalLayout {
-                                        spacing: root.page-gap;
-                                        CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; }
-                                        CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; }
-                                        CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; }
-                                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    }
-                                }
-                                if root.width < 760px: VerticalLayout {
-                                    spacing: 6px;
-                                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; }
-                                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; }
-                                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; }
-                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; }
-                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; }
-                                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; }
-                                }
-
-                                HorizontalLayout {
-                                spacing: root.page-gap;
-                                SoftButton { dark-mode: root.dark-mode; text: root.running ? (root.force-terminate-supported ? @tr("强制终止") : @tr("停止任务")) : @tr("开始转换"); variant: root.running && root.force-terminate-supported ? "danger" : "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
-                                if root.force-terminate-supported: SoftButton { dark-mode: root.dark-mode; text: @tr("停止任务"); variant: "outline"; height: 42px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
-                                SoftButton { dark-mode: root.dark-mode; text: @tr("清空队列"); height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
-                            }
-
-                        }
-                    }
-
-                    Rectangle {
-                        border-radius: 8px;
-                        background: root.panel-bg;
-                        border-color: root.panel-border;
-                        border-width: 1px;
-                        min-height: 170px;
-                        vertical-stretch: 1;
-                        animate background, border-color { duration: 180ms; easing: ease-out; }
-
-                        VerticalLayout {
-                            padding: 10px;
-                            spacing: 6px;
-
-                            HorizontalLayout {
-                                height: 34px;
-                                spacing: 10px;
-                                Text {
-                                    text: @tr("待处理 ") + root.queue-pending-count + @tr("  ·  处理中 ") + root.queue-running-count + @tr("  ·  成功 ") + root.queue-success-count + @tr("  ·  失败 ") + root.queue-failed-count;
-                                    color: root.text-muted;
-                                    font-size: 12px;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1;
-                                    overflow: elide;
-                                }
-                                CheckBox {
-                                    text: @tr("仅看失败");
-                                    checked <=> root.queue-failed-only;
-                                    enabled: root.task-rows.length > 0;
-                                    toggled => {
-                                        if (root.queue-failed-only && root.selected-queue-valid && root.task-rows[root.selected-queue-index].state != 3) {
-                                            root.selected-queue-index = -1;
-                                        }
-                                    }
-                                }
-                                SoftButton {
-                                    dark-mode: root.dark-mode;
-                                    text: @tr("重试失败");
-                                    height: 32px;
-                                    width: 86px;
-                                    enabled: !root.running && root.queue-failed-count > 0;
-                                    clicked => { root.retry-failed(); }
-                                }
-                            }
-
-                            Rectangle {
-                                vertical-stretch: 1;
-                                border-radius: 4px;
-                                background: root.dark-mode ? #151b25 : #ffffff;
-                                border-width: 0px;
-                                clip: true;
-                                animate background, border-color { duration: 180ms; easing: ease-out; }
-
-                                VerticalLayout {
-                                    spacing: 0px;
-
-                                    Rectangle {
-                                        height: 34px;
-                                        background: root.field-bg;
-                                        border-color: root.field-border;
-                                        border-width: 0px;
-                                        animate background, border-color { duration: 180ms; easing: ease-out; }
-                                        HorizontalLayout {
-                                            padding-left: 10px;
-                                            padding-right: 10px;
-                                            spacing: 10px;
-                                            Text { text: "#"; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                                            Text { text: @tr("文件名"); width: root.queue-filename-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: @tr("目录"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: @tr("大小"); width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: @tr("状态"); width: root.queue-status-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                            Text { text: @tr("输出或日志"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                        }
-                                    }
-
-                                    Rectangle {
-                                        vertical-stretch: 1;
-                                        background: root.dark-mode ? #151b25 : #ffffff;
-
-                                        // The unused table surface appends external drops; row
-                                        // DropAreas above it keep their internal reorder targets.
-                                        DropArea {
-                                            width: parent.width;
-                                            height: parent.height;
-                                            can-drop(event) => { return root.queue-drag-can-drop(event, root.task-rows.length); }
-                                            dropped(event) => { return root.queue-drag-dropped(event, root.task-rows.length); }
-                                        }
-
-                                        if root.task-rows.length == 0 || (root.queue-failed-only && root.queue-failed-count == 0): DropArea {
-                                            width: parent.width;
-                                            height: parent.height;
-                                            can-drop(event) => { return root.queue-drag-can-drop(event, root.task-rows.length); }
-                                            dropped(event) => { return root.queue-drag-dropped(event, root.task-rows.length); }
-                                            Text {
-                                                text: root.task-rows.length == 0 ? @tr("队列为空") : @tr("没有失败项");
-                                                color: root.text-muted;
-                                                font-size: 13px;
-                                                horizontal-alignment: center;
-                                                vertical-alignment: center;
-                                            }
-                                        }
-
-                                        if root.task-rows.length > 0 && (!root.queue-failed-only || root.queue-failed-count > 0): ListView {
-                                     accessible-role: list;
-                                     accessible-label: @tr("编码任务");
-                                     accessible-item-count: root.queue-failed-only ? root.queue-failed-count : root.task-rows.length;
-                                     for row[index] in root.task-rows: Rectangle {
-                                         height: (!root.queue-failed-only || row.state == 3) ? 34px : 0px;
-                                         if !root.queue-failed-only || row.state == 3: drop-row := DropArea {
-                                         property <length> hover-y: 0px;
-                                         property <int> drop-index: index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
-                                         width: parent.width;
-                                         height: 34px;
-                                         can-drop(event) => {
-                                             drop-row.hover-y = event.position.y;
-                                             return root.queue-drag-can-drop(event, drop-row.drop-index);
-                                         }
-                                         dropped(event) => {
-                                             return root.queue-drag-dropped(event, drop-row.drop-index);
-                                         }
-                                         row-drag := DragArea {
-                                             enabled: !root.running && !row.locked;
-                                             allow-move: !root.running && !row.locked;
-                                             data: root.queue-drag-data(index);
-                                             opacity: row-drag.dragging ? 0.45 : 1.0;
-                                             Rectangle {
-                                                 width: parent.width;
-                                                 height: parent.height;
-                                                 background: root.selected-queue-index == index ? root.accent-soft : (drop-row.has-drag ? (root.dark-mode ? #24324a : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #222d3c : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #1c2533 : #f4f8fe) : transparent)));
-                                                 border-radius: 3px;
-                                                 accessible-role: list-item;
-                                                 accessible-label: row.filename + "，" + row.status;
-                                                 accessible-item-selectable: true;
-                                                 accessible-item-selected: root.selected-queue-index == index;
-                                                 animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
-                                                 HorizontalLayout {
-                                                     padding-left: 10px;
-                                                     padding-right: 10px;
-                                                     spacing: 10px;
-                                                     Text { text: row.order; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                                                     Text { text: row.filename; width: root.queue-filename-width; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                     Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                     Text { text: row.size; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                                     Text { text: row.status; width: root.queue-status-width; color: row.warning ? root.warning : root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                     Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                                 }
-                                                 row-touch := TouchArea {
-                                                     width: parent.width;
-                                                     height: parent.height;
-                                                     pointer-event(event) => {
-                                                         if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                                                             root.selected-queue-index = index;
-                                                         }
-                                                         if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                                                             root.open-queue-menu(index, row-touch.absolute-position.x + row-touch.mouse-x, row-touch.absolute-position.y + row-touch.mouse-y);
-                                                         }
-                                                         root.queue-row-pointer-event(
-                                                             index,
-                                                             event.button == PointerEventButton.left ? 0 : (event.button == PointerEventButton.right ? 1 : 2),
-                                                             event.kind == PointerEventKind.down ? 0 : (event.kind == PointerEventKind.up ? 1 : (event.kind == PointerEventKind.move ? 2 : 3)),
-                                                             row-touch.mouse-y / 1px
-                                                         );
-                                                     }
-                                                 }
-                                             }
-                                         }
-                                         if drop-row.has-drag: Rectangle {
-                                             y: drop-row.hover-y > drop-row.height / 2 ? parent.height - 2px : 0px;
-                                             width: parent.width;
-                                             height: 2px;
-                                             background: root.accent-strong;
-                                             border-radius: 1px;
-                                         }
-                                         }
-                                     }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Rectangle {
-                                height: 10px;
-                                border-radius: 5px;
-                                background: root.progress-track;
-                                clip: true;
-                                animate background { duration: 180ms; easing: ease-out; }
-                                Rectangle {
-                                    x: 0px;
-                                    width: max(0px, min(parent.width, parent.width * root.progress));
-                                    height: parent.height;
-                                    border-radius: 5px;
-                                    background: root.progress-fill;
-                                    animate width, background { duration: 160ms; easing: ease-out; }
-                                }
-                            }
-
-                            Text { text: @tr("总进度：") + root.status-text; color: root.text-muted; font-size: 12px; overflow: elide; }
-                        }
-
-                        if root.selected-queue-valid: Rectangle {
-                            x: 10px;
-                            y: 50px;
-                            width: parent.width - 20px;
-                            height: min(154px, max(96px, parent.height - 94px));
-                            border-radius: 4px;
-                            border-width: 1px;
-                            border-color: root.panel-border;
-                            background: root.panel-bg-soft;
-                            clip: true;
-
-                            VerticalLayout {
-                                padding: 10px;
-                                spacing: 6px;
-
-                                HorizontalLayout {
-                                    height: 28px;
-                                    spacing: 8px;
-                                    Text {
-                                        text: root.task-rows[root.selected-queue-index].filename + " · " + root.task-rows[root.selected-queue-index].status;
-                                        color: root.text-strong;
-                                        font-size: 13px;
-                                        font-weight: 700;
-                                        vertical-alignment: center;
-                                        horizontal-stretch: 1;
-                                        overflow: elide;
-                                    }
-                                    SoftButton {
-                                        dark-mode: root.dark-mode;
-                                        text: "×";
-                                        accessible-name: @tr("关闭详情");
-                                        width: 30px;
-                                        height: 28px;
-                                        clicked => { root.selected-queue-index = -1; }
-                                    }
-                                }
-
-                                ScrollView {
-                                    vertical-stretch: 1;
-                                    VerticalLayout {
-                                        spacing: 4px;
-                                        Text { text: @tr("输入：") + root.task-rows[root.selected-queue-index].input-path; color: root.text-body; font-size: 12px; wrap: word-wrap; }
-                                        Text { text: @tr("输出：") + (root.task-rows[root.selected-queue-index].output-path.is-empty ? @tr("尚未生成") : root.task-rows[root.selected-queue-index].output-path); color: root.text-body; font-size: 12px; wrap: word-wrap; }
-                                        Text { text: @tr("编码器：") + (root.task-rows[root.selected-queue-index].encoder.is-empty ? @tr("尚未确定") : root.task-rows[root.selected-queue-index].encoder) + @tr("  ·  线程：") + (root.task-rows[root.selected-queue-index].threads.is-empty ? "-" : root.task-rows[root.selected-queue-index].threads); color: root.text-body; font-size: 12px; wrap: word-wrap; }
-                                        Text { text: @tr("阶段：") + (root.task-rows[root.selected-queue-index].stage-timings.is-empty ? @tr("尚无数据") : root.task-rows[root.selected-queue-index].stage-timings); color: root.text-body; font-size: 12px; wrap: word-wrap; }
-                                        Text { text: @tr("错误/日志：") + (root.task-rows[root.selected-queue-index].log.is-empty ? @tr("无") : root.task-rows[root.selected-queue-index].log); color: root.task-rows[root.selected-queue-index].state == 3 ? root.warning : root.text-muted; font-size: 12px; wrap: word-wrap; }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+                if root.selected-page == 1: QueuePage {
+    language-index: root.language-index;
+    init => { root.drop-regions = self.drop-regions; }
+    changed drop-regions => { root.drop-regions = self.drop-regions; }
+    external-drag-target: root.external-drag-target;
+    accent-soft : root.accent-soft;
+    accent-strong : root.accent-strong;
+    browse-input() => { root.browse-input(); }
+    browse-output() => { root.browse-output(); }
+    cancel-conversion() => { root.cancel-conversion(); }
+    clear-tasks() => { root.clear-tasks(); }
+    collision-index <=> root.collision-index;
+    combo-bg : root.combo-bg;
+    combo-bg-disabled : root.combo-bg-disabled;
+    combo-bg-hover : root.combo-bg-hover;
+    combo-border : root.combo-border;
+    combo-border-hover : root.combo-border-hover;
+    combo-close-generation <=> root.combo-close-generation;
+    combo-popup-finished() => { root.combo-popup-finished(); }
+    combo-popup-requested() => { root.combo-popup-requested(); }
+    combo-selected-bg : root.combo-selected-bg;
+    control-button-height : root.control-button-height;
+    control-button-width : root.control-button-width;
+    dark-mode : root.dark-mode;
+    field-bg : root.field-bg;
+    field-border : root.field-border;
+    force-terminate-supported <=> root.force-terminate-supported;
+    window-height : root.height;
+    input-mode-index <=> root.input-mode-index;
+    input-path <=> root.input-path;
+    input-path-accepted(a0) => { root.input-path-accepted(a0); }
+    input-path-dropped(a0) => { root.input-path-dropped(a0); }
+    open-output() => { root.open-output(); }
+    open-queue-menu(a0, a1, a2) => { root.open-queue-menu(a0, a1, a2); }
+    output-dir <=> root.output-dir;
+    output-path-accepted(a0) => { root.output-path-accepted(a0); }
+    output-path-dropped(a0) => { root.output-path-dropped(a0); }
+    page-gap : root.page-gap;
+    panel-bg : root.panel-bg;
+    panel-bg-soft : root.panel-bg-soft;
+    panel-border : root.panel-border;
+    parameter-control-width : root.parameter-control-width;
+    preserve-access-time <=> root.preserve-access-time;
+    preserve-creation-time <=> root.preserve-creation-time;
+    preserve-modification-time <=> root.preserve-modification-time;
+    progress <=> root.progress;
+    progress-fill : root.progress-fill;
+    progress-track : root.progress-track;
+    queue-drag-can-drop(a0, a1) => { return root.queue-drag-can-drop(a0, a1); }
+    queue-drag-data(a0) => { return root.queue-drag-data(a0); }
+    queue-drag-dropped(a0, a1) => { return root.queue-drag-dropped(a0, a1); }
+    queue-failed-count <=> root.queue-failed-count;
+    queue-failed-only <=> root.queue-failed-only;
+    queue-filename-width : root.queue-filename-width;
+    queue-format-index <=> root.queue-format-index;
+    queue-pending-count <=> root.queue-pending-count;
+    queue-preset-description : root.queue-preset-description;
+    queue-preset-index <=> root.queue-preset-index;
+    queue-preset-options : root.queue-preset-options;
+    queue-preset-selected(a0) => { root.queue-preset-selected(a0); }
+    queue-row-pointer-event(a0, a1, a2, a3) => { root.queue-row-pointer-event(a0, a1, a2, a3); }
+    queue-running-count <=> root.queue-running-count;
+    queue-size-width : root.queue-size-width;
+    queue-status-width : root.queue-status-width;
+    queue-success-count <=> root.queue-success-count;
+    retry-failed() => { root.retry-failed(); }
+    running <=> root.running;
+    selected-queue-index <=> root.selected-queue-index;
+    selected-queue-valid : root.selected-queue-valid;
+    start-conversion() => { root.start-conversion(); }
+    status-text <=> root.status-text;
+    strip-metadata <=> root.strip-metadata;
+    task-rows : root.task-rows;
+    template-date-selected <=> root.template-date-selected;
+    template-hash8-selected <=> root.template-hash8-selected;
+    template-params-selected <=> root.template-params-selected;
+    template-rand-selected <=> root.template-rand-selected;
+    template-sha2568-selected <=> root.template-sha2568-selected;
+    template-text <=> root.template-text;
+    template-time-selected <=> root.template-time-selected;
+    template-token-button-width : root.template-token-button-width;
+    text-body : root.text-body;
+    text-muted : root.text-muted;
+    text-soft : root.text-soft;
+    text-strong : root.text-strong;
+    timestamp-ui-visible : root.timestamp-ui-visible;
+    toggle-template-token(a0) => { root.toggle-template-token(a0); }
+    warning : root.warning;
+    window-width : root.width;
+    write-log <=> root.write-log;
+    write-summary <=> root.write-summary;
+}
 
                 if root.selected-page == 4 && root.show-update-changelog: ScrollView {
                     horizontal-stretch: 1;
@@ -1489,351 +824,74 @@ export component AwjStudio inherits Window {
                     }
                 }
 
-                if root.selected-page == 2: ScrollView {
-                    horizontal-stretch: 1;
-                    vertical-stretch: 1;
-                    viewport-width: parent.width;
-                    VerticalLayout {
-                        spacing: root.page-gap;
-
-                        Rectangle {
-                            border-radius: 8px;
-                            background: root.panel-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: root.page-gap;
-                                Text { text: @tr("外观"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    Text { text: @tr("主题"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox {
-                                        accessible-name: @tr("主题");
-                                                viewport-height: root.height;
-                                        close-generation: root.combo-close-generation;
-                                        popup-requested => { root.combo-popup-requested(); }
-                                        popup-finished => { root.combo-popup-finished(); }
-                                        model: [{ text: @tr("跟随系统"), enabled: true }, { text: @tr("浅色"), enabled: true }, { text: @tr("深色"), enabled: true }];
-                                        current-index <=> root.theme-index;
-                                        horizontal-stretch: 1;
-                                        normal-background: root.combo-bg;
-                                        hover-background: root.combo-bg-hover;
-                                        disabled-background: root.combo-bg-disabled;
-                                        selected-background: root.combo-selected-bg;
-                                        normal-border: root.combo-border;
-                                        hover-border: root.combo-border-hover;
-                                        normal-text: root.text-body;
-                                        disabled-text: root.text-soft;
-                                        muted-text: root.text-muted;
-                                        selected-text: root.accent-strong;
-                                        selection-accepted(index, click-x, click-y) => {
-                                            root.theme-selection-requested(index, click-x, click-y);
-                                        }
-                                    }
-                                }
-                                HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    Text { text: @tr("语言"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox {
-                                        accessible-name: @tr("语言");
-                                        viewport-height: root.height;
-                                        close-generation: root.combo-close-generation;
-                                        popup-requested => { root.combo-popup-requested(); }
-                                        popup-finished => { root.combo-popup-finished(); }
-                                        // 语言名一律用它自己的语言书写，所以这两项刻意不包 @tr()。
-                                        model: [{ text: "中文", enabled: true }, { text: "English", enabled: true }];
-                                        current-index <=> root.language-index;
-                                        horizontal-stretch: 1;
-                                        normal-background: root.combo-bg;
-                                        hover-background: root.combo-bg-hover;
-                                        disabled-background: root.combo-bg-disabled;
-                                        selected-background: root.combo-selected-bg;
-                                        normal-border: root.combo-border;
-                                        hover-border: root.combo-border-hover;
-                                        normal-text: root.text-body;
-                                        disabled-text: root.text-soft;
-                                        muted-text: root.text-muted;
-                                        selected-text: root.accent-strong;
-                                        // 与主题不同，语言必须回到 C++：字符串表和持久化都在那边。
-                                        selection-accepted(index, click-x, click-y) => {
-                                            root.language-selection-requested(index);
-                                        }
-                                    }
-                                }
-                                HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    Text { text: @tr("字体"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox {
-                                        accessible-name: @tr("字体");
-                                        viewport-height: root.height;
-                                        max-visible-items: 10;
-                                        close-generation: root.combo-close-generation;
-                                        popup-requested => { root.combo-popup-requested(); }
-                                        popup-finished => { root.combo-popup-finished(); }
-                                        model: root.ui-font-options;
-                                        current-index <=> root.ui-font-index;
-                                        enabled: !root.running;
-                                        horizontal-stretch: 1;
-                                        height: root.control-button-height;
-                                        normal-background: root.combo-bg;
-                                        hover-background: root.combo-bg-hover;
-                                        disabled-background: root.combo-bg-disabled;
-                                        selected-background: root.combo-selected-bg;
-                                        normal-border: root.combo-border;
-                                        hover-border: root.combo-border-hover;
-                                        normal-text: root.text-body;
-                                        disabled-text: root.text-soft;
-                                        muted-text: root.text-muted;
-                                        selected-text: root.text-body;
-                                    }
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            border-radius: 8px;
-                            background: root.panel-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: root.page-gap;
-                                Text { text: @tr("自动更新"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    Text { text: @tr("更新渠道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-                                    SoftComboBox {
-                                        accessible-name: @tr("更新渠道");
-                                        viewport-height: root.height;
-                                        close-generation: root.combo-close-generation;
-                                        popup-requested => { root.combo-popup-requested(); }
-                                        popup-finished => { root.combo-popup-finished(); }
-                                        model: [{ text: @tr("仅稳定版"), enabled: true }, { text: @tr("稳定版和 prerelease"), enabled: true }];
-                                        current-index <=> root.update-channel-index;
-                                        enabled: !root.update-checking;
-                                        retain-focus-when-disabled: true;
-                                        horizontal-stretch: 1;
-                                        normal-background: root.combo-bg;
-                                        hover-background: root.combo-bg-hover;
-                                        disabled-background: root.combo-bg-disabled;
-                                        selected-background: root.combo-selected-bg;
-                                        normal-border: root.combo-border;
-                                        hover-border: root.combo-border-hover;
-                                        normal-text: root.text-body;
-                                        disabled-text: root.text-soft;
-                                        muted-text: root.text-muted;
-                                        selected-text: root.accent-strong;
-                                        selection-accepted(index, click-x, click-y) => {
-                                            root.update-channel-selection-requested(index);
-                                        }
-                                    }
-                                }
-                                HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    CheckBox {
-                                        text: @tr("显示更新日志");
-                                        checked <=> root.show-update-changelog-enabled;
-                                        toggled => { root.show-update-changelog-requested(self.checked); }
-                                    }
-                                    CheckBox {
-                                        text: @tr("退出后隐藏更新日志");
-                                        checked <=> root.hide-update-changelog-after-exit;
-                                        toggled => { root.hide-update-changelog-after-exit-requested(self.checked); }
-                                    }
-                                    CheckBox {
-                                        text: @tr("更新后显示更新日志");
-                                        checked <=> root.show-update-changelog-after-update;
-                                        toggled => { root.show-update-changelog-after-update-requested(self.checked); }
-                                    }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                }
-                                HorizontalLayout {
-                                    spacing: root.page-gap;
-                                    Text { text: root.update-status; color: root.text-muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
-                                }
-                                Text {
-                                    text: @tr("上次成功检查：") + root.update-last-successful-check;
-                                    color: root.text-muted;
-                                    font-size: 13px;
-                                    wrap: word-wrap;
-                                }
-                            }
-                        }
-
-                        Rectangle {
-                            border-radius: 8px;
-                            background: root.panel-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: root.page-gap;
-                                Text { text: @tr("高级与实验功能"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                if root.wic-ui-visible: VerticalLayout {
-                                    spacing: 8px;
-                                    width: 100%;
-                                    height: self.preferred-height;
-                                    CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.allow-wic-fallback; enabled: !root.running; }
-                                    Text { text: @tr("开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                                }
-                                VerticalLayout {
-                                    spacing: 8px;
-                                    width: 100%;
-                                    height: self.preferred-height;
-                                    CheckBox { text: @tr("GPU 加速视觉质量"); checked <=> root.visual-quality-gpu; enabled: !root.running; }
-                                    Text { text: root.visual-quality-gpu-help-text; color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                                }
-                                VerticalLayout {
-                                    spacing: 8px;
-                                    width: 100%;
-                                    height: self.preferred-height;
-                                    CheckBox { text: @tr("视觉质量未达标时兜底输出"); checked <=> root.visual-quality-fallback; enabled: !root.running; }
-                                    Text { text: @tr("填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                                }
-
-                                VerticalLayout {
-                                    spacing: 8px;
-                                    width: 100%;
-                                    height: self.preferred-height;
-                                    CheckBox { text: @tr("解除 20 GiB 输入/运行时上限"); checked <=> root.unlock-max-input-file-bytes; enabled: !root.running; }
-                                    Text { text: @tr("仅当前会话生效，不会写入 AWJ.jsonc。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                                    Text { text: @tr("警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"); color: #d13438; font-size: 13px; wrap: word-wrap; font-weight: 700; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                                }
-                                VerticalLayout {
-                                    spacing: 8px;
-                                    width: 100%;
-                                    height: self.preferred-height;
-                                    CheckBox { text: @tr("启用实验性编码器（zenrav1e）"); checked <=> root.experimental-encoders; enabled: !root.running; }
-                                    Text { text: @tr("启用后，构建支持时可在自动大图链路中使用 zenrav1e；普通队列自动不会选择实验编码器。不可用时相关路径会跳过或置灰。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                                }
-
-                            }
-                        }
-
-                        Rectangle {
-                            border-radius: 8px;
-                            background: root.panel-bg;
-                            border-color: root.panel-border;
-                            border-width: 1px;
-                            animate background, border-color { duration: 180ms; easing: ease-out; }
-                            VerticalLayout {
-                                padding: 24px;
-                                spacing: root.page-gap;
-                                Text { text: @tr("关于后端"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                                Text { text: @tr("Studio 输出支持 libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI 与无损 PNG。"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
-                            }
-                        }
-                    }
-                }
+                if root.selected-page == 2: SettingsPage {
+    accent-strong : root.accent-strong;
+    allow-wic-fallback <=> root.allow-wic-fallback;
+    combo-bg : root.combo-bg;
+    combo-bg-disabled : root.combo-bg-disabled;
+    combo-bg-hover : root.combo-bg-hover;
+    combo-border : root.combo-border;
+    combo-border-hover : root.combo-border-hover;
+    combo-close-generation <=> root.combo-close-generation;
+    combo-popup-finished() => { root.combo-popup-finished(); }
+    combo-popup-requested() => { root.combo-popup-requested(); }
+    combo-selected-bg : root.combo-selected-bg;
+    control-button-height : root.control-button-height;
+    window-height : root.height;
+    hide-update-changelog-after-exit <=> root.hide-update-changelog-after-exit;
+    hide-update-changelog-after-exit-requested(a0) => { root.hide-update-changelog-after-exit-requested(a0); }
+    language-index <=> root.language-index;
+    language-selection-requested(a0) => { root.language-selection-requested(a0); }
+    page-gap : root.page-gap;
+    panel-bg : root.panel-bg;
+    panel-border : root.panel-border;
+    running <=> root.running;
+    show-update-changelog-after-update <=> root.show-update-changelog-after-update;
+    show-update-changelog-after-update-requested(a0) => { root.show-update-changelog-after-update-requested(a0); }
+    show-update-changelog-enabled <=> root.show-update-changelog-enabled;
+    show-update-changelog-requested(a0) => { root.show-update-changelog-requested(a0); }
+    text-body : root.text-body;
+    text-muted : root.text-muted;
+    text-soft : root.text-soft;
+    text-strong : root.text-strong;
+    theme-index <=> root.theme-index;
+    theme-selection-requested(a0, a1, a2) => { root.theme-selection-requested(a0, a1, a2); }
+    ui-font-index <=> root.ui-font-index;
+    ui-font-options : root.ui-font-options;
+    unlock-max-input-file-bytes <=> root.unlock-max-input-file-bytes;
+    update-channel-index <=> root.update-channel-index;
+    update-channel-selection-requested(a0) => { root.update-channel-selection-requested(a0); }
+    update-checking <=> root.update-checking;
+    update-last-successful-check <=> root.update-last-successful-check;
+    update-status <=> root.update-status;
+    visual-quality-fallback <=> root.visual-quality-fallback;
+    visual-quality-gpu <=> root.visual-quality-gpu;
+    visual-quality-gpu-help-text <=> root.visual-quality-gpu-help-text;
+    wic-ui-visible <=> root.wic-ui-visible;
+}
             }
         }
 
-        if root.preset-editor-open: Rectangle {
-            z: 100;
-            width: root.width;
-            height: root.height;
-            background: root.dark-mode ? #000000aa : #17203366;
-
-            TouchArea { width: parent.width; height: parent.height; }
-
-            preset-editor-panel := Rectangle {
-                width: min(760px, max(320px, parent.width - 48px));
-                height: min(parent.height * 0.8, max(320px, preset-editor-content.preferred-height + 40px));
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                border-radius: 10px;
-                background: root.panel-bg;
-                border-color: root.panel-border;
-                border-width: 1px;
-                clip: true;
-
-                ScrollView {
-                    width: parent.width;
-                    height: parent.height;
-                    viewport-width: parent.width;
-                    viewport-height: max(parent.height, preset-editor-content.preferred-height + 40px);
-                    preset-editor-content := VerticalLayout {
-                        padding: 20px;
-                        spacing: 12px;
-                        width: parent.width;
-                        Text {
-                            text: @tr("保存用户预设");
-                            color: root.text-strong;
-                            font-size: 20px;
-                            font-weight: 800;
-                            height: self.preferred-height;
-                        }
-                        Text {
-                            text: @tr("名称和简介会写入程序同目录 preset/*.jsonc；保存的是五种格式的完整参数，不包含队列、路径或元数据设置。");
-                            color: root.text-muted;
-                            font-size: 13px;
-                            wrap: word-wrap;
-                            width: 100%;
-                            height: self.preferred-height;
-                        }
-                        Text { text: @tr("名称"); color: root.text-body; font-size: 14px; font-weight: 700; height: self.preferred-height; }
-                        LineEdit {
-                            accessible-label: @tr("预设名称");
-                            text <=> root.preset-editor-name;
-                            placeholder-text: @tr("例如：高质量存档");
-                            height: 40px;
-                            width: 100%;
-                        }
-                        Text { text: @tr("简介"); color: root.text-body; font-size: 14px; font-weight: 700; height: self.preferred-height; }
-                        description-measure := Text {
-                            text: root.preset-editor-description + "\n";
-                            color: transparent;
-                            font-size: 14px;
-                            wrap: word-wrap;
-                            width: parent.width - 40px;
-                            height: 0px;
-                        }
-                        TextEdit {
-                            accessible-label: @tr("预设简介");
-                            text <=> root.preset-editor-description;
-                            placeholder-text: @tr("鼠标悬停在预设名称上可查看这里的简介。");
-                            wrap: word-wrap;
-                            font-size: 14px;
-                            width: 100%;
-                            height: min(360px, max(150px, description-measure.preferred-height + 30px));
-                        }
-                        if !root.preset-editor-error.is-empty: Text {
-                            text: root.preset-editor-error;
-                            color: root.warning;
-                            font-size: 13px;
-                            wrap: word-wrap;
-                            width: 100%;
-                            height: self.preferred-height;
-                        }
-                        HorizontalLayout {
-                            height: 42px;
-                            spacing: 10px;
-                            Rectangle { horizontal-stretch: 1; background: transparent; }
-                            SoftButton {
-                                dark-mode: root.dark-mode;
-                                text: @tr("取消");
-                                variant: "outline";
-                                width: 90px;
-                                height: 42px;
-                                clicked => { root.cancel-preset-editor(); }
-                            }
-                            SoftButton {
-                                dark-mode: root.dark-mode;
-                                text: @tr("保存");
-                                variant: "action";
-                                width: 90px;
-                                height: 42px;
-                                clicked => { root.save-parameter-preset(root.preset-editor-name, root.preset-editor-description); }
-                            }
-                        }
-                    }
-                }
-            }
-        }
+        if root.preset-editor-open: PresetEditor {
+    preset-editor-existing: root.preset-editor-existing;
+    preset-editor-shell-menu <=> root.preset-editor-shell-menu;
+    shell-menu-injection-supported: root.shell-menu-injection-supported;
+    delete-parameter-preset => { root.delete-parameter-preset(); }
+    cancel-preset-editor() => { root.cancel-preset-editor(); }
+    dark-mode : root.dark-mode;
+    window-height : root.height;
+    panel-bg : root.panel-bg;
+    panel-border : root.panel-border;
+    preset-editor-description <=> root.preset-editor-description;
+    preset-editor-error <=> root.preset-editor-error;
+    preset-editor-name <=> root.preset-editor-name;
+    save-parameter-preset(a0, a1) => { root.save-parameter-preset(a0, a1); }
+    text-body : root.text-body;
+    text-muted : root.text-muted;
+    text-strong : root.text-strong;
+    warning : root.warning;
+    window-width : root.width;
+}
 
         queue-menu-popup := PopupWindow {
             x: root.queue-menu-x;
@@ -1932,26 +990,4 @@ export component AwjStudio inherits Window {
         }
     }
 
-    if root.external-drag-active: Rectangle {
-        x: 8px;
-        y: 8px;
-        width: root.width - 16px;
-        height: root.height - 16px;
-        border-radius: 10px;
-        border-width: 2px;
-        border-color: root.external-drag-valid ? root.accent : root.hint-red;
-        background: root.external-drag-valid ? #220d6efd : #22dc2626;
-        Text {
-            width: parent.width;
-            height: parent.height;
-            text: root.external-drag-valid
-                ? @tr("释放以加入图片队列") + " · " + root.external-drag-item-count
-                : @tr("当前不能接收外部文件");
-            color: root.external-drag-valid ? root.accent-strong : root.hint-red;
-            font-size: 18px;
-            font-weight: 800;
-            horizontal-alignment: center;
-            vertical-alignment: center;
-        }
-    }
 }

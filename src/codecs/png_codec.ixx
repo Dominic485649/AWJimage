@@ -5,6 +5,7 @@ module;
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -39,6 +40,20 @@ import awj.large_image_plan;
 export namespace awj {
 
 namespace png_detail {
+
+int quantization_bits(int storage_depth, int quality) noexcept {
+  if (quality >= 100) return storage_depth;
+  const int minimum = storage_depth == 16 ? 10 : 4;
+  return minimum + (std::clamp(quality, 1, 99) - 1) * (storage_depth - minimum) / 99;
+}
+
+std::uint16_t quantize_sample(std::uint16_t value, int storage_depth, int bits) noexcept {
+  const std::uint64_t full = (1u << storage_depth) - 1;
+  const std::uint64_t levels = (1u << bits) - 1;
+  const auto reduced = (value * levels + full / 2) / full;
+  // PNG 12.4: nearest rounding, rescale to the full range, retain both endpoints.
+  return static_cast<std::uint16_t>((reduced * full + levels / 2) / levels);
+}
 
 std::uint32_t read_be_u32(std::span<const std::byte> bytes,
                           std::size_t offset) noexcept {
@@ -286,10 +301,12 @@ struct DecodeContext {
   std::vector<std::byte> icc_profile{};
   std::vector<std::byte> exif_metadata{};
   std::vector<std::byte> xmp_metadata{};
+  std::optional<SignificantBits> significant_bits{};
 };
 
 struct WriteState {
   std::vector<std::byte> bytes{};
+  std::vector<std::byte> row{};
 };
 
 struct PngReadDeleter {
@@ -350,7 +367,8 @@ void flush_callback(png_structp) {}
 
 std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
   if (image.pixel_format != PixelFormat::rgba ||
-      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
+      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty() ||
+      image.sample_representation != SampleRepresentation::unorm) {
     return std::unexpected{"PNG encoder 当前需要 RGBA ImageBuffer。"};
   }
   const auto& plane = image.planes.front();
@@ -622,6 +640,15 @@ class PngImageDecoder final : public ImageDecoder {
       const bool source_has_alpha = (color_type & PNG_COLOR_MASK_ALPHA) != 0 ||
                                     png_get_valid(png.get(), info.get(), PNG_INFO_tRNS) != 0;
 
+      png_color_8p bits = nullptr;
+      if (png_get_sBIT(png.get(), info.get(), &bits) && bits) {
+        const bool gray = (color_type & PNG_COLOR_MASK_COLOR) == 0;
+        context->significant_bits = SignificantBits{
+            gray ? bits->gray : bits->red, gray ? bits->gray : bits->green,
+            gray ? bits->gray : bits->blue,
+            (color_type & PNG_COLOR_MASK_ALPHA) ? bits->alpha : (bit_depth == 16 ? 16 : 8)};
+      }
+
       if (color_type == PNG_COLOR_TYPE_PALETTE) {
         png_set_palette_to_rgb(png.get());
       }
@@ -736,6 +763,7 @@ class PngImageDecoder final : public ImageDecoder {
       if (!image) {
         return std::unexpected{image.error()};
       }
+      image->significant_bits = context->significant_bits;
       if (!context->icc_profile.empty()) {
         image->metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
                                                 .bytes = std::move(context->icc_profile)});
@@ -766,7 +794,7 @@ class PngImageEncoder final : public ImageEncoder {
   [[nodiscard]] CodecCapabilities capabilities() const override {
     return CodecCapabilities{.output_format = OutputFormat::png,
                              .features = CodecFeature::lossless | CodecFeature::alpha,
-                             .min_quality = 100,
+                             .min_quality = 1,
                              .max_quality = 100,
                              .min_speed = 0,
                              .max_speed = 10,
@@ -781,6 +809,9 @@ class PngImageEncoder final : public ImageEncoder {
       if (stop_token.stop_requested()) {
         return std::unexpected{"任务已取消。"};
       }
+      if (settings.quality < 1 || settings.quality > 100) {
+        return std::unexpected{"PNG quality 必须在 1–100 范围内。"};
+      }
       auto plane = png_detail::rgba_plane(image);
       if (!plane) {
         return std::unexpected{plane.error()};
@@ -790,8 +821,21 @@ class PngImageEncoder final : public ImageEncoder {
         return std::unexpected{"PNG encoder 输入尺寸超过 libpng API 限制。"};
       }
 
-      png_detail::WriteState state{};
-      state.bytes.reserve(std::min((*plane)->bytes.size(), std::size_t{1u << 20}));
+      const int bit_depth = image.bit_depth;
+      const auto source_bits = image.significant_bits.value_or(
+          SignificantBits{bit_depth, bit_depth, bit_depth, bit_depth});
+      const std::array<int, 4> depths{source_bits.red, source_bits.green, source_bits.blue, source_bits.alpha};
+      if (std::ranges::any_of(depths, [bit_depth](int value) { return value < 1 || value > bit_depth; })) {
+        return std::unexpected{"PNG 有效位数必须在 1 到存储位深之间。"};
+      }
+      const int target_bits = png_detail::quantization_bits(bit_depth, settings.quality);
+      const std::array<int, 3> rgb_bits{std::min(source_bits.red, target_bits),
+          std::min(source_bits.green, target_bits), std::min(source_bits.blue, target_bits)};
+      const bool quantize = rgb_bits[0] < source_bits.red || rgb_bits[1] < source_bits.green ||
+                            rgb_bits[2] < source_bits.blue;
+      auto state = std::make_unique<png_detail::WriteState>();
+      state->bytes.reserve(std::min((*plane)->bytes.size(), std::size_t{1u << 20}));
+      if (quantize) state->row.resize((*plane)->stride);
       png_detail::PngWritePtr png{png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)};
       if (!png) {
         return std::unexpected{"创建 PNG encoder 失败。"};
@@ -805,13 +849,20 @@ class PngImageEncoder final : public ImageEncoder {
         return std::unexpected{"PNG 编码失败。"};
       }
 
-      png_set_write_fn(png.get(), &state, png_detail::write_callback,
+      png_set_write_fn(png.get(), state.get(), png_detail::write_callback,
                        png_detail::flush_callback);
-      const int bit_depth = image.bit_depth > 8 ? 16 : 8;
       png_set_IHDR(png.get(), info.get(), static_cast<png_uint_32>(image.width),
                    static_cast<png_uint_32>(image.height), bit_depth,
                    PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
                    PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+      if (quantize || image.significant_bits) {
+        png_color_8 bits{};
+        bits.red = static_cast<png_byte>(rgb_bits[0]);
+        bits.green = static_cast<png_byte>(rgb_bits[1]);
+        bits.blue = static_cast<png_byte>(rgb_bits[2]);
+        bits.alpha = static_cast<png_byte>(source_bits.alpha);
+        png_set_sBIT(png.get(), info.get(), &bits);
+      }
       if (!settings.strip_metadata && settings.applied_icc == "kept") {
         if (const auto* icc = png_detail::first_metadata(image, MetadataKind::icc)) {
           png_set_iCCP(png.get(), info.get(), "ICC profile", PNG_COMPRESSION_TYPE_BASE,
@@ -824,22 +875,37 @@ class PngImageEncoder final : public ImageEncoder {
         png_set_swap(png.get());
       }
 
-      std::vector<png_bytep> rows{};
-      rows.reserve(image.height);
       for (std::size_t y = 0; y < image.height; ++y) {
-        rows.push_back(const_cast<png_bytep>(reinterpret_cast<png_const_bytep>(
-            (*plane)->bytes.data() + y * (*plane)->stride)));
+        if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+        const auto* row = (*plane)->bytes.data() + y * (*plane)->stride;
+        if (quantize) {
+          std::memcpy(state->row.data(), row, state->row.size());
+          const auto sample_bytes = static_cast<std::size_t>(bit_depth / 8);
+          for (std::size_t x = 0; x < image.width; ++x) {
+            for (std::size_t c = 0; c < 3; ++c) {
+              if (rgb_bits[c] >= depths[c]) continue;
+              auto* sample = state->row.data() + (x * 4 + c) * sample_bytes;
+              std::uint16_t value{};
+              if (bit_depth == 16) std::memcpy(&value, sample, sizeof(value));
+              else value = std::to_integer<std::uint8_t>(*sample);
+              value = png_detail::quantize_sample(value, bit_depth, rgb_bits[c]);
+              if (bit_depth == 16) std::memcpy(sample, &value, sizeof(value));
+              else *sample = static_cast<std::byte>(value);
+            }
+          }
+          row = state->row.data();
+        }
+        png_write_row(png.get(), reinterpret_cast<png_const_bytep>(row));
       }
       if (stop_token.stop_requested()) {
         return std::unexpected{"任务已取消。"};
       }
-      png_write_image(png.get(), rows.data());
       png_write_end(png.get(), nullptr);
-      if (auto hdr_chunks = png_detail::add_png_hdr_chunks(state.bytes, image, settings);
+      if (auto hdr_chunks = png_detail::add_png_hdr_chunks(state->bytes, image, settings);
           !hdr_chunks) {
         return std::unexpected{hdr_chunks.error()};
       }
-      if (state.bytes.empty()) {
+      if (state->bytes.empty()) {
         return std::unexpected{"PNG encoder 输出失败。"};
       }
 
@@ -848,11 +914,11 @@ class PngImageEncoder final : public ImageEncoder {
       diagnostics.integration_mode = "libpng";
       diagnostics.encoder_threads = 1;
       diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
-      return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(state.bytes),
+      return NativeEncodeResult{.encoded = EncodedImage{.bytes = std::move(state->bytes),
                                                         .codec_name = "libpng"},
                                 .diagnostics = std::move(diagnostics),
-                                .final_quality = 100,
-                                .lossless = true,
+                                .final_quality = settings.quality,
+                                .lossless = !quantize,
                                 .search_attempt_count = 1};
     } catch (const std::bad_alloc&) {
       return std::unexpected{"PNG 编码内存不足。"};

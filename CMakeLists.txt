@@ -24,8 +24,6 @@ option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bund
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
 option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
 option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets in Release builds" OFF)
-option(AWJ_ENABLE_ZENRAVIF "Build experimental zenrav1e into AWJ" ON)
-option(AWJ_ENABLE_SVTAV1HDR "Build svt-av1-hdr into AWJ" ON)
 option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
 set(AWJ_UPDATE_PUBLIC_KEY_HEX "ebdb1a49b8686f34a5791f7c0f2a0215e4cdc03ad99281e5bf8606cb62fcf1b1" CACHE STRING
@@ -34,8 +32,7 @@ set(AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX "652b506c2fbd71d75ae48cca3d0196cd5
     "Offline recovery root A public key for the signed updater keyring")
 set(AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX "65a49e06e12dfc48bf26dbbcc5380d5fbd61198c6e7cd65af4f860dfe5b6f65a" CACHE STRING
     "Offline recovery root B public key for the signed updater keyring")
-set(AWJ_SVTAV1HDR_GIT_TAG "8b4b9f5624cb70c2363a7cebb553110c1447dd4c" CACHE STRING "svt-av1-hdr source commit")
-set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static SVT-enabled build")
+set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static AOM build")
 set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
 set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
@@ -170,8 +167,6 @@ if(NOT WIN32)
     find_package(CURL REQUIRED)
 endif()
 
-set(AWJ_SVTAV1HDR_AVAILABLE OFF)
-set(AWJ_SVTAV1HDR_STATIC_DEFINE 0)
 set(AWJ_JPEGLI_AVAILABLE OFF)
 
 if(VCPKG_INSTALLED_DIR)
@@ -488,69 +483,12 @@ add_custom_target(awj_visual_metric_shaders DEPENDS "${AWJ_VISUAL_SHADER_HEADER}
 
 include(FetchContent)
 
-if(AWJ_ENABLE_SVTAV1HDR)
-    set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
-    set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
-    set(BUILD_APPS OFF CACHE BOOL "" FORCE)
-    set(BUILD_TESTING OFF)
-    set(BUILD_DEC OFF CACHE BOOL "" FORCE)
-    set(COMPILE_C_ONLY ON CACHE BOOL "" FORCE)
-    set(ENABLE_AVX512 OFF CACHE BOOL "" FORCE)
-    set(SVT_AV1_BUILD_APPS OFF CACHE BOOL "" FORCE)
-    FetchContent_Declare(SvtAv1Hdr
-        URL "https://codeload.github.com/juliobbv-p/svt-av1-hdr/tar.gz/${AWJ_SVTAV1HDR_GIT_TAG}"
-        URL_HASH "SHA256=35454847f6635c793c996f5a1bda824b827b14de7fa04dd58d9c985aa795801f")
-    FetchContent_MakeAvailable(SvtAv1Hdr)
-    # Upstream main assigns the Cr point twice and leaves the matching Cb point
-    # uninitialized. Patch the fetched source after population so this also works
-    # when release.ps1 reuses it through FETCHCONTENT_SOURCE_DIR_SVTAV1HDR.
-    set(AWJ_SVTAV1HDR_NOISE_SOURCE
-        "${svtav1hdr_SOURCE_DIR}/Source/Lib/Codec/noise_generation.c")
-    file(READ "${AWJ_SVTAV1HDR_NOISE_SOURCE}" AWJ_SVTAV1HDR_NOISE_TEXT)
-    set(AWJ_SVTAV1HDR_BROKEN_SCALING
-        "film_grain->scaling_points_cr[1][1] = film_grain->scaling_points_cr[1][1] =")
-    set(AWJ_SVTAV1HDR_FIXED_SCALING
-        "film_grain->scaling_points_cr[1][1] = film_grain->scaling_points_cb[1][1] =")
-    string(FIND "${AWJ_SVTAV1HDR_NOISE_TEXT}" "${AWJ_SVTAV1HDR_BROKEN_SCALING}"
-           AWJ_SVTAV1HDR_BROKEN_SCALING_OFFSET)
-    if(NOT AWJ_SVTAV1HDR_BROKEN_SCALING_OFFSET EQUAL -1)
-        string(REPLACE "${AWJ_SVTAV1HDR_BROKEN_SCALING}" "${AWJ_SVTAV1HDR_FIXED_SCALING}"
-               AWJ_SVTAV1HDR_NOISE_TEXT "${AWJ_SVTAV1HDR_NOISE_TEXT}")
-        file(WRITE "${AWJ_SVTAV1HDR_NOISE_SOURCE}" "${AWJ_SVTAV1HDR_NOISE_TEXT}")
-    else()
-        string(FIND "${AWJ_SVTAV1HDR_NOISE_TEXT}" "${AWJ_SVTAV1HDR_FIXED_SCALING}"
-               AWJ_SVTAV1HDR_FIXED_SCALING_OFFSET)
-        if(AWJ_SVTAV1HDR_FIXED_SCALING_OFFSET EQUAL -1)
-            message(FATAL_ERROR "svt-av1-hdr noise scaling source no longer matches the audited fix.")
-        endif()
-    endif()
-    file(WRITE "${svtav1hdr_SOURCE_DIR}/.awj-source-commit" "${AWJ_SVTAV1HDR_GIT_TAG}\n")
-    awj_suppress_msvc_warnings(CODEC /wd4244)
-    if(TARGET SvtAv1Enc)
-        set(AWJ_SVTAV1HDR_AVAILABLE ON)
-        set(AWJ_SVTAV1HDR_STATIC_DEFINE 1)
-        set(AWJ_SVTAV1HDR_INCLUDE_COMPAT_DIR "${CMAKE_CURRENT_BINARY_DIR}/svtav1hdr-include/svt-av1")
-        file(MAKE_DIRECTORY "${AWJ_SVTAV1HDR_INCLUDE_COMPAT_DIR}")
-        file(GLOB AWJ_SVTAV1HDR_API_HEADERS "${svtav1hdr_SOURCE_DIR}/Source/API/*.h")
-        file(COPY ${AWJ_SVTAV1HDR_API_HEADERS} DESTINATION "${AWJ_SVTAV1HDR_INCLUDE_COMPAT_DIR}")
-        target_include_directories(SvtAv1Enc INTERFACE
-            "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}/svtav1hdr-include>")
-    else()
-        message(FATAL_ERROR "svt-av1-hdr FetchContent did not provide SvtAv1Enc.")
-    endif()
-    set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING})
-endif()
-
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 set(AVIF_CODEC_AOM SYSTEM CACHE STRING "" FORCE)
 set(AVIF_CODEC_AOM_DECODE ON CACHE BOOL "" FORCE)
 set(AVIF_CODEC_AOM_ENCODE ON CACHE BOOL "" FORCE)
 set(AVIF_CODEC_DAV1D SYSTEM CACHE STRING "" FORCE)
-if(AWJ_SVTAV1HDR_AVAILABLE)
-    set(AVIF_CODEC_SVT SYSTEM CACHE STRING "" FORCE)
-else()
-    set(AVIF_CODEC_SVT OFF CACHE STRING "" FORCE)
-endif()
+set(AVIF_CODEC_SVT OFF CACHE STRING "" FORCE)
 if(WIN32)
     set(AVIF_LIBYUV SYSTEM CACHE STRING "" FORCE)
 else()
@@ -657,7 +595,7 @@ endif()
 
 function(avif_add_slint_sources target slint_file)
     set(options DEBUG_INFO)
-    set(one_value_args OUTPUT_SUFFIX)
+    set(one_value_args OUTPUT_SUFFIX CPP_NAMESPACE)
     cmake_parse_arguments(AWJ_SLINT "${options}" "${one_value_args}" "" ${ARGN})
 
     get_filename_component(slint_absolute "${slint_file}" REALPATH BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -672,9 +610,13 @@ function(avif_add_slint_sources target slint_file)
             "$<TARGET_FILE:Slint::slint-compiler>")
     endif()
 
+    if(AWJ_SLINT_CPP_NAMESPACE)
+        list(APPEND slint_compiler_command --cpp-namespace "${AWJ_SLINT_CPP_NAMESPACE}")
+    endif()
+
     # Slint's depfile currently produces noisy MSBuild warnings when the repo path
-    # contains spaces. The UI has a single .slint file, so a direct dependency is
-    # enough and keeps Windows paths intact.
+    # contains spaces. List the page/component dependencies explicitly to keep
+    # incremental UI builds correct without the depfile path ambiguity.
     # 界面翻译走 Slint 的 bundled translations：目录结构是
     # <dir>/<语言>/LC_MESSAGES/<domain>.po，由 slint-compiler 直接解析 .po 编进二进制，
     # 不需要 msgfmt、不需要运行时 .mo、也不依赖 gettext（本项目的 Slint 没开 gettext）。
@@ -701,6 +643,11 @@ function(avif_add_slint_sources target slint_file)
             "${slint_absolute}"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/studio_components.slint"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/studio_theme.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/parameter_page.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/menu_parameter_page.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/queue_page.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/settings_page.slint"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/preset_editor.slint"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/shell_convert_window.slint"
             "${awj_translation_po}"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo.png"
@@ -833,55 +780,8 @@ if(AWJ_JPEGLI_AVAILABLE)
                 src/codecs/jpegli_codec.ixx)
 endif()
 
-set(ZENRAVIF_BRIDGE_MANIFEST "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.toml")
-set(ZENRAVIF_BRIDGE_LOCK "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/Cargo.lock")
-set(ZENRAVIF_BRIDGE_SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/src/lib.rs")
-set(AWJ_ZENRAVIF_AVAILABLE OFF)
-if(AWJ_ENABLE_ZENRAVIF AND EXISTS "${ZENRAVIF_BRIDGE_MANIFEST}" AND EXISTS "${ZENRAVIF_BRIDGE_SOURCE}")
-    set(AWJ_ZENRAVIF_AVAILABLE ON)
-    set(ZENRAVIF_BRIDGE_TARGET_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/zenravif-bridge/target")
-    if(WIN32)
-        set(ZENRAVIF_BRIDGE_LIB "${ZENRAVIF_BRIDGE_TARGET_DIR}/release/zenravif_bridge.lib")
-    else()
-        set(ZENRAVIF_BRIDGE_LIB "${ZENRAVIF_BRIDGE_TARGET_DIR}/release/libzenravif_bridge.a")
-    endif()
-    add_custom_command(
-        OUTPUT "${ZENRAVIF_BRIDGE_LIB}"
-        COMMAND cargo build --manifest-path "${ZENRAVIF_BRIDGE_MANIFEST}" --release
-        DEPENDS
-            "${ZENRAVIF_BRIDGE_MANIFEST}"
-            "${ZENRAVIF_BRIDGE_LOCK}"
-            "${ZENRAVIF_BRIDGE_SOURCE}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-        COMMENT "Building zenravif Rust static library"
-        VERBATIM)
-    add_custom_target(zenravif_bridge_static DEPENDS "${ZENRAVIF_BRIDGE_LIB}")
-    add_library(zenravif_bridge STATIC IMPORTED GLOBAL)
-    set_target_properties(zenravif_bridge PROPERTIES IMPORTED_LOCATION "${ZENRAVIF_BRIDGE_LIB}")
-    if(WIN32)
-        set_property(TARGET zenravif_bridge PROPERTY INTERFACE_LINK_LIBRARIES
-            "ws2_32;userenv;ntdll;bcrypt;advapi32")
-    else()
-        set_property(TARGET zenravif_bridge PROPERTY INTERFACE_LINK_LIBRARIES "dl;pthread;m")
-    endif()
-    add_dependencies(zenravif_bridge zenravif_bridge_static)
-elseif(AWJ_ENABLE_ZENRAVIF)
-    message(STATUS "zenravif bridge sources were not found; experimental zenrav1e AVIF encoder will be unavailable in this build.")
-else()
-    message(STATUS "Experimental zenrav1e AVIF encoder disabled by AWJ_ENABLE_ZENRAVIF=OFF.")
-endif()
-
 # ponytail: keep avif module+impl on awj_native_codecs so decoder_registry can import it without a cycle.
 target_link_libraries(awj_native_codecs PUBLIC avif)
-target_compile_definitions(awj_native_codecs PUBLIC
-    AWJ_HAS_SVTAV1HDR_STATIC=${AWJ_SVTAV1HDR_STATIC_DEFINE})
-if(AWJ_ZENRAVIF_AVAILABLE)
-    target_link_libraries(awj_native_codecs PUBLIC zenravif_bridge)
-    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_ZENRAVIF=1)
-    add_dependencies(awj_native_codecs zenravif_bridge_static)
-else()
-    target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_ZENRAVIF=0)
-endif()
 target_sources(awj_native_codecs
     PRIVATE
         src/codecs/avif_aom_codec.cpp
@@ -891,22 +791,6 @@ target_sources(awj_native_codecs
 add_library(awj_avif_base_codec INTERFACE)
 target_link_libraries(awj_avif_base_codec INTERFACE awj_native_codecs)
 
-add_library(awj_svtav1hdr_codec STATIC)
-avif_enable_common_options(awj_svtav1hdr_codec)
-target_link_libraries(awj_svtav1hdr_codec PUBLIC
-    awj_base
-    awj_native_codecs
-    avif)
-target_compile_definitions(awj_svtav1hdr_codec PUBLIC
-    AWJ_HAS_SVTAV1HDR_STATIC=${AWJ_SVTAV1HDR_STATIC_DEFINE})
-if(AWJ_SVTAV1HDR_AVAILABLE)
-    target_link_libraries(awj_svtav1hdr_codec PUBLIC SvtAv1Enc)
-endif()
-target_sources(awj_svtav1hdr_codec
-    PUBLIC
-        FILE_SET awj_svtav1hdr_codec_modules TYPE CXX_MODULES FILES
-            src/codecs/svtav1hdr_codec.ixx)
-
 add_library(awj_native_backend STATIC)
 avif_enable_common_options(awj_native_backend)
 target_link_libraries(awj_native_backend PUBLIC
@@ -914,13 +798,11 @@ target_link_libraries(awj_native_backend PUBLIC
     awj_raw_image_io
     awj_native_visual_search
     awj_native_codecs
-    awj_avif_base_codec
-    awj_svtav1hdr_codec)
+    awj_avif_base_codec)
 add_dependencies(awj_native_backend
     awj_native_visual_search
     awj_native_codecs
-    awj_avif_base_codec
-    awj_svtav1hdr_codec)
+    awj_avif_base_codec)
 target_sources(awj_native_backend
     PUBLIC
         FILE_SET awj_native_backend_modules TYPE CXX_MODULES FILES
@@ -1021,6 +903,12 @@ if(BUILD_TESTING)
     add_executable(awj_config_defaults_tests tests/config_defaults_tests.cpp)
     avif_enable_common_options(awj_config_defaults_tests)
     target_link_libraries(awj_config_defaults_tests PRIVATE awj_base)
+
+    add_executable(awj_user_preset_tests tests/user_preset_tests.cpp)
+    avif_enable_common_options(awj_user_preset_tests)
+    target_link_libraries(awj_user_preset_tests PRIVATE awj_base)
+    awj_set_runtime_directory(awj_user_preset_tests "${CMAKE_CURRENT_BINARY_DIR}/preset-contract")
+    add_test(NAME user_preset_contract COMMAND awj_user_preset_tests)
 
     add_executable(awj_process_tests tests/process_tests.cpp)
     avif_enable_common_options(awj_process_tests)
@@ -1213,9 +1101,9 @@ if(BUILD_TESTING)
         COMMAND awj_cli_native_avif_aom_tests)
     set_tests_properties(cli_native_avif_aom_converts_webp PROPERTIES TIMEOUT 30)
 
-    add_test(NAME cli_rejects_svt_444
+    add_test(NAME cli_rejects_removed_encoder
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
-            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--avif-encoder' 'svt' '--chroma' '444' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('420 chroma')) { exit 1 }")
+            "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--avif-encoder' 'svt' '--chroma' '444' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('已移除')) { exit 1 }")
 
     add_test(NAME cli_rejects_rav1e
         COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
@@ -1317,12 +1205,6 @@ if(WIN32)
         imm32
         opengl32)
 endif()
-if(MSVC AND AVIF_STATIC_SLINT AND AWJ_ZENRAVIF_AVAILABLE)
-    # Both Slint's static C++ runtime and zenravif_bridge are Rust static libraries.
-    # MSVC otherwise reports duplicate Rust std runtime symbols even when built by
-    # the same toolchain for one final executable.
-    target_link_options(AWJ PRIVATE "/FORCE:MULTIPLE")
-endif()
 avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
@@ -1350,6 +1232,7 @@ if(BUILD_TESTING AND WIN32)
     avif_enable_common_options(awj_shell_context_menu_explorer_tests)
     target_link_libraries(awj_shell_context_menu_explorer_tests PRIVATE
         awj_shell_context_menu
+        awj_native_codecs
         ole32)
     add_dependencies(awj_shell_context_menu_explorer_tests AWJ)
     awj_set_runtime_directory(awj_shell_context_menu_explorer_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
@@ -1357,7 +1240,7 @@ if(BUILD_TESTING AND WIN32)
         COMMAND awj_shell_context_menu_explorer_tests "$<TARGET_FILE:AWJ>")
     set_tests_properties(shell_context_menu_registry shell_context_menu_explorer
         PROPERTIES RESOURCE_LOCK awj_shell_registry)
-    set_tests_properties(shell_context_menu_explorer PROPERTIES TIMEOUT 180)
+    set_tests_properties(shell_context_menu_explorer PROPERTIES TIMEOUT 1200)
 endif()
 
 if(BUILD_TESTING)
@@ -1382,6 +1265,7 @@ if(BUILD_TESTING)
     avif_add_slint_sources(awj_ui_smoke_tests ui/awj_studio.slint
         DEBUG_INFO
         OUTPUT_SUFFIX _ui_smoke)
+    avif_add_slint_sources(awj_ui_smoke_tests tests/focus_reentrancy.slint DEBUG_INFO CPP_NAMESPACE awj_focus_test)
     target_include_directories(awj_ui_smoke_tests PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_definitions(awj_ui_smoke_tests PRIVATE

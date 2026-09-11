@@ -50,7 +50,8 @@ std::expected<HDROP, std::string> get_hdrop(IDataObject* data_object,
 
 class DropTarget final : public IDropTarget {
  public:
-  explicit DropTarget(Callbacks callbacks) : callbacks_(std::move(callbacks)) {}
+  DropTarget(HWND hwnd, Callbacks callbacks)
+      : hwnd_(hwnd), callbacks_(std::move(callbacks)) {}
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void** object) override {
     if (object == nullptr) return E_POINTER;
@@ -74,22 +75,20 @@ class DropTarget final : public IDropTarget {
   }
 
   HRESULT STDMETHODCALLTYPE DragEnter(IDataObject* data_object, DWORD,
-                                      POINTL, DWORD* effect) override {
+                                      POINTL position, DWORD* effect) override {
     item_count_ = 0;
     if (auto value = hdrop_item_count(data_object)) item_count_ = *value;
     const DWORD allowed_effects = effect != nullptr ? *effect : DROPEFFECT_NONE;
-    const auto feedback = copy_drag_feedback(
-        allowed_effects, effect != nullptr && can_accept_now(), item_count_);
+    const auto feedback = feedback_at(position, allowed_effects, effect != nullptr);
     valid_ = feedback.hover.valid;
     if (effect != nullptr) *effect = feedback.effect;
     notify(feedback.hover);
     return S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL, DWORD* effect) override {
+  HRESULT STDMETHODCALLTYPE DragOver(DWORD, POINTL position, DWORD* effect) override {
     const DWORD allowed_effects = effect != nullptr ? *effect : DROPEFFECT_NONE;
-    const auto feedback = copy_drag_feedback(
-        allowed_effects, effect != nullptr && can_accept_now(), item_count_);
+    const auto feedback = feedback_at(position, allowed_effects, effect != nullptr);
     valid_ = feedback.hover.valid;
     if (effect != nullptr) *effect = feedback.effect;
     notify(feedback.hover);
@@ -101,16 +100,16 @@ class DropTarget final : public IDropTarget {
     return S_OK;
   }
 
-  HRESULT STDMETHODCALLTYPE Drop(IDataObject* data_object, DWORD, POINTL,
+  HRESULT STDMETHODCALLTYPE Drop(IDataObject* data_object, DWORD, POINTL position,
                                  DWORD* effect) override {
     const DWORD allowed_effects = effect != nullptr ? *effect : DROPEFFECT_NONE;
-    const bool acceptable = effect != nullptr && item_count_ > 0 && can_accept_now() &&
+    const auto feedback = feedback_at(position, allowed_effects, effect != nullptr);
+    const bool acceptable = feedback.hover.valid &&
                             static_cast<bool>(callbacks_.paths_dropped);
     const DWORD result = dispatch_copy_drop(allowed_effects, acceptable, [&] {
       auto paths = extract_hdrop_paths(data_object);
       if (!paths || paths->empty()) return false;
-      callbacks_.paths_dropped(std::move(*paths));
-      return true;
+      return callbacks_.paths_dropped(std::move(*paths), feedback.hover.target);
     });
     if (effect != nullptr) *effect = result;
     clear_hover();
@@ -118,6 +117,22 @@ class DropTarget final : public IDropTarget {
   }
 
  private:
+  DragFeedback feedback_at(POINTL position, DWORD allowed, bool has_effect) noexcept {
+    int target = 0;
+    try {
+      POINT client{position.x, position.y};
+      if (has_effect && can_accept_now() && ScreenToClient(hwnd_, &client) &&
+          callbacks_.target_at) {
+        target = callbacks_.target_at(client, item_count_);
+      }
+    } catch (...) {
+      target = 0;
+    }
+    auto feedback = copy_drag_feedback(allowed, target != 0, item_count_);
+    feedback.hover.target = feedback.hover.valid ? target : 0;
+    return feedback;
+  }
+
   bool can_accept_now() noexcept {
     try {
       return !callbacks_.can_accept || callbacks_.can_accept();
@@ -141,6 +156,7 @@ class DropTarget final : public IDropTarget {
   }
 
   std::atomic<ULONG> ref_count_{1};
+  HWND hwnd_{};
   Callbacks callbacks_;
   std::size_t item_count_{};
   bool valid_{};
@@ -255,7 +271,7 @@ std::expected<Registration, std::string> install(HWND hwnd, Callbacks callbacks)
     return std::unexpected{hresult_text("撤销 Winit 默认拖放目标", revoke_hr)};
   }
 
-  auto* target = new (std::nothrow) DropTarget(std::move(callbacks));
+  auto* target = new (std::nothrow) DropTarget(hwnd, std::move(callbacks));
   if (target == nullptr) return std::unexpected{"创建 Windows IDropTarget 时内存不足。"};
   registration.target_ = target;
 

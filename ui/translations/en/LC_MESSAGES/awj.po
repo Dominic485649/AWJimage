@@ -57,8 +57,8 @@ msgstr "Choose AVIF"
 msgid "极高压缩率 · 支持 HDR · 最高 12-bit"
 msgstr "top compression · HDR · up to 12-bit"
 
-msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG 为无损输出，也可在参数设置中独立编辑。"
-msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPGLI is a new JPEG encoder that clearly improves compression while staying JPEG-compatible. PNG is lossless output and can also be edited independently in Parameters."
+msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。"
+msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPGLI is a new JPEG encoder that clearly improves compression while staying JPEG-compatible. PNG q100 is lossless. q1–99 reduces effective RGB precision while retaining storage bit depth and alpha precision."
 
 msgid "编码器"
 msgstr "Encoder"
@@ -69,23 +69,20 @@ msgstr "AVIF encoder"
 msgid "保持“自动”就是最优解"
 msgstr "Leave this on Auto"
 
-msgid "优先 aom，超限自动切 zenrav1e"
-msgstr "aom first, auto-switch to zenrav1e past the limit"
-
-msgid "aom 支持高位深与 420/422/444，是默认主力。svt-av1-hdr 各项指标均不及 libaom，仅作备选。zenrav1e 能吃下超大图，但不适合当常规默认。"
-msgstr "aom supports high bit depth and 420/422/444, and is the default workhorse. svt-av1-hdr trails libaom on every metric, so it is only a fallback. zenrav1e can swallow very large images, but it is a poor everyday default."
-
 msgid "质量"
 msgstr "Quality"
 
 msgid "由视觉质量自动控制"
 msgstr "Driven by visual quality"
 
-msgid "1-100，越大越好；填 100 及以上为无损"
-msgstr "1-100, higher is better; 100 or above is lossless"
+msgid "1–100，越大质量越高；100 为无损"
+msgstr "1–100, higher means better quality; 100 is lossless"
 
-msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。PNG 固定为无损，质量值为 100。JPEG 转 JXL 默认走无损转封装。"
-msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPGLI 90. PNG is always lossless with quality fixed at 100. JPEG to JXL defaults to lossless transcoding."
+msgid "1–100，越大质量越高；JPGLI 始终有损"
+msgstr "1–100, higher means better quality; JPGLI is always lossy"
+
+msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 默认走无损转封装。"
+msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPGLI 90. PNG q100 is lossless. q1–99 quantizes RGB while alpha retains its original precision. JPEG to JXL defaults to lossless transcoding."
 
 msgid "视觉质量"
 msgstr "Visual quality"
@@ -549,17 +546,8 @@ msgstr "Applies to this session only; never written to AWJ.jsonc."
 msgid "警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"
 msgstr "Warning: an oversized image or working set can exhaust memory, get the process killed by the system, or freeze the whole machine. Turn this on temporarily only when you genuinely need to handle very large files."
 
-msgid "启用实验性编码器（zenrav1e）"
-msgstr "Enable experimental encoders (zenrav1e)"
-
-msgid "启用后，构建支持时可在自动大图链路中使用 zenrav1e；普通队列自动不会选择实验编码器。不可用时相关路径会跳过或置灰。"
-msgstr "When enabled and the build supports it, zenrav1e can be used in the automatic large-image path; the normal queue never picks an experimental encoder on its own. Where it is unavailable, the related paths are skipped or greyed out."
-
 msgid "关于后端"
 msgstr "About the backend"
-
-msgid "Studio 输出支持 libavif / AOM、svt-av1-hdr、实验 zenrav1e、WebP、JXL、JPGLI 与无损 PNG。"
-msgstr "Studio output supports libavif / AOM, svt-av1-hdr, experimental zenrav1e, WebP, JXL, JPGLI, and lossless PNG."
 
 msgid "队列操作"
 msgstr "Queue actions"
@@ -726,3 +714,54 @@ msgstr "Preset description"
 
 msgid "预设名称"
 msgstr "Preset name"
+
+msgid "AOM 支持高位深与 420/422/444；超出单图能力时自动使用 AOM Grid，保留原尺寸。"
+msgstr "AOM supports high bit depths and 4:2:0/4:2:2/4:4:4. Images beyond its single-image limits use AOM Grid automatically and retain their dimensions."
+
+msgid "AOM，超限自动使用 Grid"
+msgstr "AOM, with automatic Grid for large images"
+
+msgid "AVIF 颜色表示"
+msgstr "AVIF color representation"
+
+msgid "AVIF.png：实际编码为 AVIF，仅额外添加 .png 文件名后缀"
+msgstr "AVIF.png: encoded as AVIF with an extra .png filename suffix"
+
+msgid "Studio 输出支持 libavif / AOM、WebP、JXL、JPGLI 与 PNG。"
+msgstr "Studio supports libavif / AOM, WebP, JXL, JPGLI and PNG output."
+
+msgid "YUV 始终使用非 Identity 矩阵；跟随源仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；RGB(A)/GBR(A) 强制 4:4:4 并自动选择 AOM。"
+msgstr "YUV always uses a non-Identity matrix. Follow source uses RGB/GBR Identity only for RGB/RGBA or Identity sources. RGB(A)/GBR(A) forces 4:4:4 and automatically selects AOM."
+
+msgid "删除"
+msgstr "Delete"
+
+msgid "实际编码为 AVIF，仅额外添加 .png 文件名后缀"
+msgstr "Encoded as AVIF with an extra .png filename suffix"
+
+msgid "检测到旧版系统级 AWJ 菜单，清理需要管理员权限。"
+msgstr "Legacy system-wide AWJ menus detected. Administrator permission is required to remove them."
+
+msgid "注入右键菜单（最多 10 个预设）"
+msgstr "Add to context menu (up to 10 presets)"
+
+msgid "清理历史系统菜单"
+msgstr "Remove legacy system menus"
+
+msgid "确定删除此用户预设？"
+msgstr "Delete this user preset?"
+
+msgid "确认删除"
+msgstr "Confirm deletion"
+
+msgid "跟随源"
+msgstr "Follow source"
+
+msgid "颜色表示"
+msgstr "Color representation"
+
+msgid "额外添加 .png 后缀"
+msgstr "Append .png suffix"
+
+msgid "默认 YUV"
+msgstr "Default YUV"

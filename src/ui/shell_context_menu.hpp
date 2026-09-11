@@ -12,12 +12,12 @@
 
 namespace awj::shell_context_menu {
 
-inline constexpr std::uint32_t schema_version = 3;
+inline constexpr std::uint32_t schema_version = 4;
 inline constexpr std::wstring_view owner_value_name = L"AWJimage.Owner";
 inline constexpr std::wstring_view schema_value_name = L"AWJimage.SchemaVersion";
 inline constexpr std::wstring_view owner_value = L"AWJimage";
 inline constexpr std::wstring_view parent_canonical_verb = L"AWJimage.Convert";
-inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v3";
+inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v4.A";
 
 struct FormatParams {
   std::wstring quality_text{};
@@ -53,15 +53,8 @@ struct CommandSpec {
   bool append_png_suffix{};
 };
 
-struct ExtensionPerception {
-  std::wstring extension{};
-  bool is_image{};
-
-  bool operator==(const ExtensionPerception&) const = default;
-};
-
 struct InstallPlan {
-  std::vector<std::wstring> fallback_extensions{};
+  std::vector<std::wstring> extensions{};
 
   bool operator==(const InstallPlan&) const = default;
 };
@@ -95,25 +88,37 @@ std::span<const CommandSpec> command_specs() noexcept;
 std::wstring image_parent_key();
 std::wstring directory_parent_key();
 std::wstring extension_parent_key(std::wstring_view extension);
-std::wstring shared_tree_key();
+std::wstring shared_tree_key(int slot = 0);
 std::wstring legacy_shared_tree_key();
 std::vector<std::wstring> legacy_root_keys();
 std::vector<std::wstring> owned_root_keys();
-InstallPlan build_install_plan(std::span<const ExtensionPerception> perceptions);
+InstallPlan build_install_plan();
 std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
                                         std::wstring_view format,
                                         const FormatParams& params,
                                         bool append_png_suffix = false);
 RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
-                                     const InstallPlan& plan);
+                                     const InstallPlan& plan,
+                                     std::span<const std::wstring> preset_names = {},
+                                     int slot = 0);
 
 std::expected<InstallPlan, std::string> detect_install_plan();
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
-                                         const MenuParams& menu_params);
+                                         const MenuParams& menu_params,
+                                         std::span<const std::wstring> preset_names = {});
+std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
+                                         const MenuParams& menu_params,
+                                         std::span<const std::wstring> preset_names = {},
+                                         bool force_install = false);
+std::expected<void, std::string> recover();
+std::expected<bool, std::string> is_installed();
 std::expected<void, std::string> remove();
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe,
-    const MenuParams& menu_params);
+    const MenuParams& menu_params,
+    std::span<const std::wstring> preset_names = {});
+std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands();
+std::expected<void, std::string> remove_legacy_machine_commands();
 
 }  // namespace awj::shell_context_menu

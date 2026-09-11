@@ -24,6 +24,7 @@ struct HoverState {
   bool active{};
   bool valid{};
   std::size_t item_count{};
+  int target{};  // 1: input, 2: output, 3: queue; 0 rejects the drop.
 };
 
 struct DragFeedback {
@@ -33,8 +34,9 @@ struct DragFeedback {
 
 struct Callbacks {
   std::function<bool()> can_accept;
+  std::function<int(POINT, std::size_t)> target_at;
   std::function<void(HoverState)> hover_changed;
-  std::function<void(std::vector<std::filesystem::path>)> paths_dropped;
+  std::function<bool(std::vector<std::filesystem::path>, int)> paths_dropped;
 };
 
 class Registration {

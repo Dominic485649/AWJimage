@@ -20,15 +20,15 @@ export component ShellConvertWindow inherits Window {
     callback force-terminate-requested();
     callback open-output-requested();
 
-    property <color> page-bg: root.dark-mode ? #10151e : #f3f7fd;
-    property <color> panel-bg: root.dark-mode ? #1b2330 : #ffffff;
-    property <color> panel-border: root.dark-mode ? #303b4c : #dde7f3;
-    property <color> row-bg: root.dark-mode ? #202a39 : #ffffff;
-    property <color> text-strong: root.dark-mode ? #f5f8fc : #111827;
-    property <color> text-body: root.dark-mode ? #dce5f1 : #334155;
-    property <color> text-muted: root.dark-mode ? #a0aec2 : #64748b;
+    property <color> page-bg: root.dark-mode ? #202020 : #f3f7fd;
+    property <color> panel-bg: root.dark-mode ? #282828 : #ffffff;
+    property <color> panel-border: root.dark-mode ? #414141 : #dde7f3;
+    property <color> row-bg: root.dark-mode ? #303030 : #ffffff;
+    property <color> text-strong: root.dark-mode ? #f5f5f5 : #111827;
+    property <color> text-body: root.dark-mode ? #e2e2e2 : #334155;
+    property <color> text-muted: root.dark-mode ? #adadad : #64748b;
     property <color> accent: #0d6efd;
-    property <color> progress-track: root.dark-mode ? #293445 : #dbe7f5;
+    property <color> progress-track: root.dark-mode ? #383838 : #dbe7f5;
     property <color> warning-color: root.dark-mode ? #f59e0b : #d97706;
 
     background: root.page-bg;
@@ -56,6 +56,7 @@ export component ShellConvertWindow inherits Window {
             border-radius: 3px;
             background: root.progress-track;
             Rectangle {
+                x: 0px;
                 width: max(0px, min(parent.width, parent.width * root.progress));
                 height: parent.height;
                 border-radius: 3px;
@@ -76,7 +77,7 @@ export component ShellConvertWindow inherits Window {
 
                 Rectangle {
                     height: 34px;
-                    background: root.dark-mode ? #222c3b : #f8fbff;
+                    background: root.dark-mode ? #303030 : #f8fbff;
                     HorizontalLayout {
                         padding-left: 14px;
                         padding-right: 14px;

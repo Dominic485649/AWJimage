@@ -8,7 +8,7 @@
 
 当前转换核心只保留 native codec，不再依赖内置 ImageMagick/MagickWand 后端。
 
-- AVIF：libavif/AOM、SVT backend 与实验 `zenrav1e` 静态 Rust bridge；Windows 与 Linux GCC Release 均启用。
+- AVIF：libavif/AOM 与自动 AOM Grid；Windows 与 Linux GCC Release 均启用。
 - WebP：libwebp。
 - JXL：libjxl。
 - JPGLI：google/jpegli，Windows 与 Linux GCC Release 均可用；输出为 JPEG 兼容 bitstream，默认扩展名为 `.jpg`，用户可见格式和诊断显示为 `JPGLI` / `jpegli`。
@@ -22,7 +22,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 2. 解码器返回像素、ICC、EXIF/XMP、色彩/HDR 和 alpha 语义。
 3. 根据配置执行可选缩放、alpha 策略、色度采样、位深选择和视觉质量搜索；`visual_quality` 指标默认走 GPU-first 路径，Windows 使用 Direct3D 11，Linux 使用 Vulkan，必要时 CPU fallback。
 4. AVIF auto 只选择允许参与自动选择的稳定 encoder；实验 encoder 必须显式开启并选择。
-5. AVIF 超过单图编码上限时进入大图模式并按资源规划拆分 grid/tile；1000 万像素以上但未超 AOM 65536 边/2^30 像素或 SVT 16384×8704 上限的图片只延后到普通队列尾部。
+5. AVIF 超过单图编码上限时进入大图模式并按资源规划拆分 grid/tile；1000 万像素以上但未超 AOM 65536 边/2^30 像素上限的图片只延后到普通队列尾部。
 6. 编码器写回 ICC、EXIF/XMP、色彩和 HDR metadata；不支持的组合返回明确错误。
 7. 输出写入先经过临时文件与碰撞策略，再落到目标路径。
 8. 日志与 `summary.csv` 记录实际后端、质量、fallback、GPU 指标路径和诊断信息。
@@ -36,7 +36,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 未选择用户预设时使用当前内置默认；用户预设采用可执行文件同目录 `preset/*.jsonc` 的五格式完整参数集，CLI 可用 `--preset <名称>` 或 `--preset-file <路径>` 显式选择。
 - AVIF 默认 q70、WebP 默认 q95、JXL 默认 q85、JPGLI 默认 q90，仍支持 `q90` 风格质量参数。
 - 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通，其他输入使用 AOM 无损量化并按 `auto` 的 source-aware 色度规则重编码；源图为 420/422 时仍存在色度子采样，需要显式 444 才能避免。
-- AVIF 采样支持 `auto/444/422/420`，`auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。无损 444 会写入 identity matrix coefficients，即以 AVIF 的 444 容器直通存储原始 RGB，不做 RGB↔YUV 色彩转换。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`；显式 SVT 始终实际使用 420 chroma，且只支持 8/10-bit。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量。
+- AVIF 采样支持 `auto/444/422/420`，`auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量。
 - CICP 优先级为“用户显式值 > 源图值 > 兜底”。BT.2020、PQ、HLG 等 HDR 源的 primaries/transfer/matrix 会原样保留，只有源图和用户都没有提供 CICP 时才回退 BT.709/sRGB；color range 默认保持 PC/full 或 TV/limited，未知时使用 full。
 - JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 native libjxl effort/speed 控制压缩成本。
 - WebP 固定 8-bit；有损 WebP 为 Y'CbCr 4:2:0，无损 WebP 为 ARGB。
@@ -82,7 +82,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - `awj.image` / `awj.codec`：共享图像缓冲、metadata、codec capability 和 encode/decode 数据结构。
 - `awj.decoder_registry` / `awj.*_codec`：native 格式解码、编码与 metadata 透传；启用 JPGLI 时由 `awj.jpegli_codec` 负责 Jpegli encode/decode 与 JPEG 兼容 metadata marker 处理。
 - `awj.avif_registry`：AVIF encoder 能力注册与选择策略。
-- `awj.native_backend`：native decoder/encoder 调度、libavif 与可选 SVT/zenrav1e 静态集成、临时文件和输出写入边界。
+- `awj.native_backend`：native decoder/encoder 调度、libavif/AOM 静态集成、临时文件和输出写入边界。
 - `awj.pipeline`：多线程调度、进度事件和汇总。
 - `awj.native_visual_search` / `awj.visual_metrics` / `awj.visual_metrics_gpu` / `awj.visual_metrics_gpu_vulkan`：视觉质量搜索、CPU/GPU 质量指标和 fallback 诊断。
 - `src\cli\main.cpp`：CLI 入口。
@@ -148,7 +148,7 @@ Linux Studio 继续使用 `ui/awj_studio.slint`，不重做 UI。Win32 DWM、COM
 
 ## 大图处理（0.10.1）
 
-- 超过 AVIF 单图硬限制的输入进入自动大图链路：默认 `zenrav1e` 优先，失败回退 `grid`；参数页可改 `grid` 优先。
+- 超过 AVIF 单图硬限制的输入进入自动大图链路：使用 AOM Grid；不再提供编码器优先顺序选项。
 - Studio 不再保留独立“大图模式”页面，自动处理状态并入主队列。
 - 两条路径都不可用/失败，或触达输入/运行时上限时明确报错。
 - 默认 20 GiB 输入/运行时上限可通过会话开关解除（UI 设置页 / CLI `--unlock-max-input-file-bytes`），不写入 `AWJ.jsonc`。

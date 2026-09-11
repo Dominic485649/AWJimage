@@ -1,9 +1,11 @@
-#include <slint-testing.h>
 #include <slint.h>
+#include <private/slint_tests_helpers.h>
 
 #include <array>
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <format>
 #include <memory>
 #include <optional>
@@ -13,6 +15,7 @@
 #include <vector>
 
 #include "awj_studio_ui_smoke.h"
+#include "focus_reentrancy.h"
 
 namespace {
 
@@ -57,6 +60,9 @@ std::optional<slint::testing::ElementHandle> find_one(
 int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
                                  float window_width, bool expect_two_rows) {
   app->window().set_size(slint::LogicalSize({window_width, 560.0f}));
+  const auto collision = find_one(app, "重复处理", slint::language::AccessibleRole::Combobox);
+  if (!collision || collision->absolute_position().x + collision->size().width > window_width - 10)
+    return fail("collision dropdown overflows the queue header");
   const std::array<std::string_view, 6> labels{"参数", "日期", "时间",
                                                 "随机", "哈希", "SHA"};
   std::vector<slint::testing::ElementHandle> buttons;
@@ -174,6 +180,98 @@ std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows() {
       .changelog_zh_cn = "稳定版测试记录",
       .changelog_en = "Stable test release"});
   return std::make_shared<slint::VectorModel<UpdateHistoryRow>>(std::move(rows));
+}
+
+int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  app->window().set_size(slint::LogicalSize({1220.0f, 2000.0f}));
+  for (const int language : {0, 1}) {
+    if (!slint::select_bundled_translation(language ? "en" : "")) return fail("missing matrix translation");
+    app->set_language_index(language);
+    for (const int theme : {1, 2}) {
+      app->set_theme_index(theme);
+      for (const int page : {0, 3}) {
+        app->set_selected_page(page);
+        for (int format = 0; format < 5; ++format) {
+          if (page == 0) app->set_format_index(format);
+          else app->set_menu_format_index(format);
+          const auto check = [&](std::string_view zh, std::string_view en, Role role, bool expected) {
+            const auto control = find_one(app, language ? en : zh, role);
+            if (control.has_value() != expected) {
+              return fail(std::format("parameter matrix: language={} theme={} page={} format={} control={} expected={}",
+                                      language, theme, page, format, en, expected));
+            }
+            if (control && (control->size().width <= 0 || control->size().height <= 0 ||
+                            control->absolute_position().x + control->size().width > 1221 ||
+                            control->absolute_position().y + control->size().height > 2001))
+              return fail(std::format("parameter control is clipped: {}", en));
+            return 0;
+          };
+          if (check("质量", "Quality", Role::TextInput, true) ||
+              check("视觉质量", "Visual quality", Role::TextInput, page == 0 && format != 4) ||
+              check("速度", "Speed", Role::TextInput, format < 3) ||
+              check("线程", "Threads", Role::TextInput, page == 0) ||
+              check("内存限制", "Memory limit", Role::TextInput, page == 0) ||
+              check("位深", "Bit depth", Role::TextInput, format == 0) ||
+              check("色度采样", "Chroma subsampling", Role::Combobox, format == 0 || format == 3) ||
+              check("JPGLI 渐进级别", "JPGLI progressive level", Role::Combobox, format == 3) ||
+              check("启用 XYB", "Enable XYB", Role::Checkbox, format == 3)) return 1;
+          if (format == 3) {
+            for (const int progressive : {0, 1, 2}) {
+              if (page == 0) app->set_jpegli_progressive_index(progressive);
+              else app->set_menu_jpegli_progressive_index(progressive);
+              slint::private_api::testing::mock_elapsed_time(1);
+              if (check("优化哈夫曼表", "Optimize Huffman tables", Role::Checkbox, progressive == 0)) return 1;
+              if (progressive > 0 && !(page == 0 ? app->get_jpegli_optimize_huffman() : app->get_menu_jpegli_optimize_huffman()))
+                return fail("progressive JPGLI did not force Huffman optimization");
+            }
+          }
+        }
+      }
+    }
+  }
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
+  app->set_format_index(0);
+  app->set_menu_format_index(0);
+  return 0;
+}
+
+int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  const std::array<std::string_view, 6> zh{"移除元数据", "写入 CSV 报告", "写入运行日志", "保留创建时间", "保留修改时间", "保留访问时间"};
+  const std::array<std::string_view, 6> en{"Strip metadata", "Write CSV report", "Write run log", "Preserve creation time", "Preserve modification time", "Preserve access time"};
+  app->set_selected_page(1);
+  for (const int language : {0, 1}) {
+    slint::select_bundled_translation(language ? "en" : "");
+    app->set_language_index(language);
+    for (const float width : {820.0f, 1220.0f, 1440.0f}) {
+      app->window().set_size(slint::LogicalSize({width, 827.0f}));
+      const auto& labels = language ? en : zh;
+      float option_width = 0;
+      float first_y = 0;
+      const bool single_row = width >= (language ? 1400 : 1100);
+      for (std::size_t i = 0; i < labels.size(); ++i) {
+        const auto option = find_one(app, labels[i], Role::Checkbox);
+        if (!option) return fail("queue option is missing");
+        if (i == 0) { option_width = option->size().width; first_y = option->absolute_position().y; }
+        if (std::fabs(option->size().width - option_width) > 0.5f ||
+            option->absolute_position().x + option->size().width > width - 10 ||
+            (language && option->size().width < 180))
+          return fail("queue options are unequal, clipped, or too narrow for English");
+        if ((i < 3 || single_row) != (std::fabs(option->absolute_position().y - first_y) < 0.5f))
+          return fail("queue options did not wrap into the expected equal columns");
+      }
+      const auto format = find_one(app, language ? "Queue output format" : "队列输出格式", Role::Combobox);
+      const auto preset = find_one(app, language ? "Queue preset" : "队列预设", Role::Combobox);
+      if (!format || !preset || std::fabs(format->size().width - preset->size().width) > 0.5f ||
+          preset->absolute_position().x + preset->size().width > width - 10)
+        return fail("queue format/preset selectors are unequal or clipped");
+    }
+  }
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
+  return 0;
 }
 
 int run_scale(const slint::ComponentHandle<AwjStudio>& app,
@@ -378,6 +476,91 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   app->set_selected_page(1);
+  app->window().set_size(slint::LogicalSize({1220.0f, 827.0f}));
+  app->set_selected_queue_index(-1);
+  slint::private_api::testing::mock_elapsed_time(250);
+  const auto table = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-table");
+  const auto header = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-header");
+  const auto viewport = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-viewport");
+  if (table.size() != 1 || header.size() != 1 || viewport.size() != 1)
+    return fail("queue geometry elements are missing");
+  const auto table_position = table[0].absolute_position();
+  const auto table_size = table[0].size();
+  const auto regions = app->get_drop_regions();
+  if (regions->row_count() != 3) return fail("native drop target regions are missing");
+  const std::array<std::string_view, 2> drop_labels{"输入路径", "输出目录"};
+  for (std::size_t i = 0; i < drop_labels.size(); ++i) {
+    const auto field = find_one(app, drop_labels[i], slint::language::AccessibleRole::TextInput);
+    const auto region = regions->row_data(i);
+    if (!field || !region) return fail("drop target field is missing");
+    const auto position = field->absolute_position();
+    const auto size = field->size();
+    if (std::fabs(region->x - position.x) > 1 || std::fabs(region->y - position.y) > 1 ||
+        std::fabs(region->width - size.width) > 1 || std::fabs(region->height - size.height) > 1)
+      return fail("native drop region does not match its logical input field");
+  }
+  const auto queue_region = *regions->row_data(2);
+  if (std::fabs(queue_region.x - table_position.x) > 1 ||
+      std::fabs(queue_region.y - table_position.y) > 1 ||
+      std::fabs(queue_region.width - table_size.width) > 1 ||
+      std::fabs(queue_region.height - table_size.height) > 1)
+    return fail("native drop region does not match the queue");
+  if (std::fabs(header[0].absolute_position().y - table_position.y) > 0.5f)
+    return fail("queue header is not anchored to the top of its table");
+  const auto closed_top = viewport[0].absolute_position().y;
+  app->set_selected_queue_index(0);
+  slint::private_api::testing::mock_elapsed_time(250);
+  const auto detail = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-detail");
+  if (detail.size() != 1) return fail("queue detail geometry is missing");
+  const auto card = detail[0].absolute_position();
+  const auto card_size = detail[0].size();
+  const auto open_top = viewport[0].absolute_position().y;
+  if (open_top < card.y + card_size.height || open_top > card.y + card_size.height + 8.5f ||
+      std::fabs(table[0].size().height - table_size.height) > 0.5f)
+    return fail("queue detail overlaps its list or resizes the queue table");
+  const slint::LogicalPosition click{{card.x + card_size.width / 2, card.y + card_size.height / 2}};
+  app->window().dispatch_pointer_press_event(click, slint::PointerEventButton::Left);
+  if (app->get_selected_queue_index() != 0) return fail("queue detail closed before pointer release");
+  app->window().dispatch_pointer_release_event(click, slint::PointerEventButton::Left);
+  if (app->get_selected_queue_index() != -1) return fail("queue detail click did not close on release");
+  slint::private_api::testing::mock_elapsed_time(90);
+  const auto intermediate_top = viewport[0].absolute_position().y;
+  if (intermediate_top <= closed_top || intermediate_top >= open_top)
+    return fail("queue viewport does not animate when closing details");
+  slint::private_api::testing::mock_elapsed_time(160);
+  if (std::fabs(viewport[0].absolute_position().y - closed_top) > 0.5f)
+    return fail("queue viewport did not recover after closing details");
+  std::vector<TaskRow> scrolling_rows(80, *task_rows()->row_data(0));
+  for (std::size_t i = 0; i < scrolling_rows.size(); ++i)
+    scrolling_rows[i].filename = slint::SharedString{std::format("scroll-row-{:03}", i)};
+  app->set_task_rows(std::make_shared<slint::VectorModel<TaskRow>>(std::move(scrolling_rows)));
+  app->set_selected_queue_index(0);
+  slint::private_api::testing::mock_elapsed_time(250);
+  const auto scrolled_top = viewport[0].absolute_position();
+  app->window().dispatch_pointer_scroll_event(
+      slint::LogicalPosition({scrolled_top.x + 60, scrolled_top.y + 50}), 0, -340);
+  slint::private_api::testing::mock_elapsed_time(250);
+  const auto first_visible = [&] {
+    std::string label;
+    float first_y = 1e9f;
+    const auto top = viewport[0].absolute_position().y;
+    slint::testing::ElementHandle::visit_elements(app, [&](auto element) {
+      const auto y = element.absolute_position().y;
+      if (element.accessible_role() == slint::language::AccessibleRole::ListItem &&
+          y >= top && y < first_y && element.accessible_label()) {
+        first_y = y;
+        label = element.accessible_label()->data();
+      }
+    });
+    return label;
+  };
+  const auto anchor = first_visible();
+  if (anchor.empty() || anchor.starts_with("scroll-row-000")) return fail("queue scroll check did not leave the first row");
+  app->set_selected_queue_index(-1);
+  slint::private_api::testing::mock_elapsed_time(250);
+  if (first_visible() != anchor) return fail("closing details lost the scrolled queue anchor");
+  app->set_task_rows(task_rows());
+  app->set_selected_queue_index(0);
   if (const int result = verify_template_token_layout(app, 820.0f, true);
       result != 0) {
     return result;
@@ -471,16 +654,77 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("an accessible control is clipped outside the minimum window");
   }
 
-  return 0;
+  if (const int result = verify_parameter_matrix(app)) return result;
+  return verify_queue_option_layout(app);
 }
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if ((argc == 3 || argc == 4) && std::string_view{argv[1]} == "--snapshots") {
+    const std::filesystem::path directory{argv[2]};
+    if (!std::filesystem::create_directory(directory)) return fail("snapshot directory must be fresh");
+    auto app = AwjStudio::create();
+    const float scale = argc == 4 ? std::stof(argv[3]) : 1.0f;
+    if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2)
+      return fail("snapshot scale must be 1, 1.25, 1.5, or 2");
+    app->window().window_handle().set_const_scale_factor(scale);
+    app->set_current_version("1.0.12");
+    app->set_task_rows(task_rows());
+    app->set_queue_failed_count(1);
+    app->set_queue_success_count(1);
+    app->show();
+    for (const int language : {0, 1}) {
+      slint::select_bundled_translation(language ? "en" : "");
+      app->set_language_index(language);
+      for (const int theme : {1, 2}) {
+        app->set_theme_index(theme);
+        for (const int page : {0, 1, 3}) {
+          app->set_selected_page(page);
+          app->set_selected_queue_index(page == 1 ? 0 : -1);
+          const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround(1220 * scale)),
+                                         static_cast<std::uint32_t>(std::lround((page == 1 ? 827 : 2000) * scale))}};
+          app->window().set_size(size);
+          for (int format = 0; format < (page == 1 ? 1 : 5); ++format) {
+            app->set_format_index(format);
+            app->set_menu_format_index(format);
+            (void)app->window().take_snapshot();
+            slint::private_api::testing::mock_elapsed_time(250);
+            const auto snapshot = app->window().take_snapshot();
+            if (!snapshot) return fail("Slint renderer could not produce a snapshot");
+            if (snapshot->width() != size.width || snapshot->height() != size.height ||
+                std::fabs(app->window().scale_factor() - scale) > 0.001f)
+              return fail("snapshot did not use the requested pixel size and scale");
+            std::ofstream file{directory / std::format("lang{}-theme{}-page{}-format{}.ppm", language, theme, page, format), std::ios::binary};
+            file << "P6\n" << snapshot->width() << ' ' << snapshot->height() << "\n255\n";
+            for (const auto& pixel : *snapshot) {
+              file.put(static_cast<char>(pixel.r));
+              file.put(static_cast<char>(pixel.g));
+              file.put(static_cast<char>(pixel.b));
+            }
+            if (!file) return fail("could not write the renderer snapshot");
+          }
+        }
+      }
+    }
+    app->hide();
+    return 0;
+  }
   slint::testing::init();
+  {
+    auto focus = awj_focus_test::FocusReentrancy::create();
+    focus->show();
+    for (int i = 0; i < 100; ++i) {
+      focus->window().dispatch_window_active_changed_event(true);
+      focus->invoke_prepare();
+      focus->window().dispatch_window_active_changed_event(false);
+      if (focus->get_transitions() != i + 1) return fail("focus reentrancy regression did not exercise its callback");
+    }
+    focus->hide();
+  }
   auto app = AwjStudio::create();
   app->show();
-  for (const float scale : {1.0f, 1.5f, 2.0f}) {
+  for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
     if (const int result = run_scale(app, scale); result != 0) {
       return result;
     }

@@ -35,7 +35,7 @@ enum class CollisionMode { overwrite, skip, suffix_time, suffix_random, suffix_n
 enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
 // AVIF 的颜色表示与 YUV 4:2:0/4:2:2/4:4:4 采样是两件事。
 enum class AvifColorRepresentation { yuv, source, rgb_identity };
-enum class AvifEncoderMode { automatic, svt, aom, zenrav1e };
+enum class AvifEncoderMode { automatic, aom = 2 };
 enum class AlphaModePolicy { force, automatic, off };
 enum class ImageSizeLimitMode { automatic, none, manual };
 
@@ -125,7 +125,6 @@ struct AppConfig {
   // AVIF 文件内容不变，只把完整输出后缀写成 .avif.png。
   bool append_png_suffix{};
   AlphaModePolicy alpha_policy{AlphaModePolicy::automatic};
-  bool enable_experimental_encoders{true};
   bool experimental_clamped_grid_padding{
       encoding_defaults::default_experimental_clamped_grid_padding};
   int quality{default_quality_for(output_format)};
@@ -141,18 +140,10 @@ struct AppConfig {
   int encode_timeout_minutes{
       encoding_defaults::default_encode_timeout_minutes};
   bool allow_wic_fallback{default_allow_wic_fallback_for_platform()};
-  std::optional<int> svtav1hdr_crf{};
-  std::optional<int> svtav1hdr_preset{};
-  std::string svtav1hdr_tune{
-      std::string{encoding_defaults::default_svtav1hdr_tune}};
-  std::optional<int> svtav1hdr_keyint{};
-  std::vector<std::wstring> svtav1hdr_params{};
   std::optional<int> color_primaries{};
   std::optional<int> transfer_characteristics{};
   std::optional<int> matrix_coefficients{};
   std::optional<int> color_range{};
-  std::wstring mastering_display{};
-  std::wstring content_light{};
   // 默认在视觉质量搜索未达标时交付最接近候选；未启用 visual-quality 时该值
   // 不参与编码，保持 UI、CLI 与 worker 的默认一致。
   bool visual_quality_fallback{
@@ -171,8 +162,6 @@ struct AppConfig {
   std::filesystem::path studio_queue_manifest{};
   // ponytail: empty = auto chain; kept for worker/CLI compatibility, not a Studio page action.
   std::wstring studio_large_action{};
-  // auto large-image path preference: zenrav1e (default) or grid first.
-  std::wstring large_image_priority{L"zenrav1e"};
   // session-only unlock of 20 GiB input/runtime caps; never persist.
   bool unlock_max_input_file_bytes{false};
 };
@@ -438,36 +427,6 @@ std::expected<void, std::string> validate_native_key_value_option(
   return {};
 }
 
-std::expected<void, std::string> validate_svtav1hdr_text(
-    std::wstring_view value, std::string_view name) {
-  constexpr std::size_t max_value_length = 512;
-  if (value.empty()) {
-    return std::unexpected{std::format("{} 不能为空。", name)};
-  }
-  if (value.size() > max_value_length) {
-    return std::unexpected{std::format("{} 长度不能超过 512 个字符。", name)};
-  }
-  for (const wchar_t ch : value) {
-    if (ch < 0x20 || ch == 0x7f) {
-      return std::unexpected{std::format("{} 不能包含控制字符。", name)};
-    }
-  }
-  return {};
-}
-
-std::expected<void, std::string> validate_svtav1hdr_ascii_text(
-    std::wstring_view value, std::string_view name) {
-  if (auto valid = validate_svtav1hdr_text(value, name); !valid) {
-    return std::unexpected{valid.error()};
-  }
-  for (const wchar_t ch : value) {
-    if (ch > 0x7f) {
-      return std::unexpected{std::format("{} 只能包含 ASCII 字符。", name)};
-    }
-  }
-  return {};
-}
-
 std::optional<OutputFormat> parse_output_format(std::wstring_view value) {
   auto lower = lower_copy(value);
   if (!lower.empty() && lower.front() == L'.') {
@@ -577,15 +536,11 @@ std::optional<AvifEncoderMode> parse_avif_encoder(std::wstring_view value) {
   if (lower == L"auto" || lower == L"automatic" || lower == L"自动") {
     return AvifEncoderMode::automatic;
   }
-  if (lower == L"svt" || lower == L"svt-av1" || lower == L"svt-av1-hdr") {
-    return AvifEncoderMode::svt;
-  }
+
   if (lower == L"aom" || lower == L"libaom") {
     return AvifEncoderMode::aom;
   }
-  if (lower == L"zenrav1e") {
-    return AvifEncoderMode::zenrav1e;
-  }
+
   return std::nullopt;
 }
 
@@ -633,24 +588,12 @@ std::optional<ImageSizeLimitMode> parse_image_size_limit_mode(std::wstring_view 
 
 std::string avif_encoder_name(AvifEncoderMode mode) {
   switch (mode) {
-    case AvifEncoderMode::svt:
-      return "svt-av1-hdr";
     case AvifEncoderMode::aom:
       return "aom";
-    case AvifEncoderMode::zenrav1e:
-      return "zenrav1e";
     case AvifEncoderMode::automatic:
     default:
       return "auto";
   }
-}
-
-bool avif_encoder_is_experimental(AvifEncoderMode mode) noexcept {
-  return mode == AvifEncoderMode::zenrav1e;
-}
-
-bool avif_encoder_is_svt_compatible_chroma(ChromaMode mode) noexcept {
-  return mode == ChromaMode::auto_keep || mode == ChromaMode::yuv420;
 }
 
 bool avif_bit_depth_supported(int bit_depth) noexcept {
@@ -711,6 +654,9 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
   }
   switch (cfg.output_format) {
     case OutputFormat::png:
+      if (cfg.visual_quality) {
+        return std::unexpected{"PNG 不支持视觉质量搜索；请使用 --quality。"};
+      }
       if (cfg.speed) {
         return std::unexpected{"PNG 不支持 --speed；请移除该参数。"};
       }
@@ -722,6 +668,9 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       }
       break;
     case OutputFormat::avif:
+      if (cfg.avif_encoder != AvifEncoderMode::automatic && cfg.avif_encoder != AvifEncoderMode::aom) {
+        return std::unexpected{"AVIF 编码器已移除或无效；请使用 auto/aom。"};
+      }
       if (cfg.bit_depth &&
           !config_detail::avif_bit_depth_supported(*cfg.bit_depth)) {
         return std::unexpected{
@@ -735,11 +684,7 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
           return std::unexpected{
               "RGB(A)/GBR(A) Identity AVIF 必须使用 4:4:4；请使用 --chroma auto/444。"};
         }
-        if (cfg.avif_encoder == AvifEncoderMode::svt ||
-            cfg.avif_encoder == AvifEncoderMode::zenrav1e) {
-          return std::unexpected{
-              "RGB(A)/GBR(A) Identity AVIF 仅支持 AOM；请使用 --avif-encoder auto/aom。"};
-        }
+
         if (cfg.matrix_coefficients && *cfg.matrix_coefficients != 0) {
           return std::unexpected{
               "RGB(A)/GBR(A) Identity 与非 Identity matrix-coefficients 冲突。"};
@@ -750,22 +695,7 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
         return std::unexpected{
             "YUV 颜色表示不能使用 Identity matrix-coefficients；请选择 RGB(A)/GBR(A) 或移除该参数。"};
       }
-      if (cfg.avif_encoder == AvifEncoderMode::svt) {
-        if ((cfg.visual_quality ? *cfg.visual_quality >= 100 : cfg.quality >= 100) ||
-            cfg.svtav1hdr_crf.value_or(1) == 0) {
-          return std::unexpected{"svt-av1-hdr 不支持 AVIF 无损/q100；请改用 --avif-encoder auto/aom。"};
-        }
-        if (cfg.alpha_policy == AlphaModePolicy::force) {
-          return std::unexpected{"svt-av1-hdr 不支持保留 alpha；请改用 --alpha auto/off 或 --avif-encoder auto/aom。"};
-        }
-        if (cfg.chroma_mode == ChromaMode::yuv444 ||
-            cfg.chroma_mode == ChromaMode::yuv422) {
-          return std::unexpected{"svt-av1-hdr 只支持 420 chroma；请使用 --chroma auto/420 或改用 AOM。"};
-        }
-        if (cfg.bit_depth && *cfg.bit_depth > 10) {
-          return std::unexpected{"svt-av1-hdr 只支持 8/10-bit；请降低 bit-depth 或改用 AOM。"};
-        }
-      }
+
       break;
     case OutputFormat::webp:
       if (cfg.bit_depth && *cfg.bit_depth != 8) {
@@ -825,14 +755,9 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
   return {};
 }
 
-std::expected<void, std::string> validate_execution_config(
-    const AppConfig& cfg) {
-  if (cfg.output_format == OutputFormat::avif &&
-      cfg.avif_encoder == AvifEncoderMode::svt &&
-      cfg.chroma_mode != ChromaMode::auto_keep &&
-      cfg.chroma_mode != ChromaMode::yuv420) {
-    return std::unexpected{
-        "svt-av1-hdr AVIF encoder only supports 420 chroma；请使用 --chroma 420/auto，或改用 --avif-encoder aom。"};
+std::expected<void, std::string> validate_execution_config(const AppConfig& cfg) {
+  if (cfg.avif_encoder != AvifEncoderMode::automatic && cfg.avif_encoder != AvifEncoderMode::aom) {
+    return std::unexpected{"AVIF 编码器已移除；请将 avif_encoder 修正为 auto/aom。"};
   }
   return {};
 }
@@ -840,6 +765,11 @@ std::expected<void, std::string> validate_execution_config(
 std::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
                                                           bool quality_was_set,
                                                           bool preset_was_set) {
+  if (cfg.output_policy == OutputPolicy::shell) {
+    cfg.visual_quality.reset();
+    cfg.max_jobs = default_max_jobs();
+    cfg.memory_limit_bytes = 0;
+  }
   if (!quality_was_set && !preset_was_set) {
     cfg.quality = default_quality_for(cfg.output_format);
   }
@@ -856,9 +786,9 @@ std::string help_text() {
   std::string help = R"(AWJimage C++23
 =======================
 
-默认后端：内置 native（libavif/AOM/zenrav1e/svt-av1-hdr/WebP/JXL/JPGLI）
-默认质量：PNG 无损，AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
-质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按 auto 色度规则重编码；默认颜色表示始终为非 Identity 的 YUV；显式 --avif-encoder svt 不支持 q100/visual-quality 100、alpha、444/422 或高于 10-bit
+默认后端：内置 native（libavif/AOM/WebP/JXL/JPGLI）
+默认质量：PNG q100（无损），AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
+质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按 auto 色度规则重编码；默认颜色表示始终为非 Identity 的 YUV
 
 用法:
   AWJ [选项]
@@ -866,9 +796,9 @@ std::string help_text() {
 常用选项:
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
-  -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 为无损 RGBA，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
-  -q, --quality <1-100>       编码质量，PNG 固定无损，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入走 AOM 无损量化：默认 YUV 保留 420/422/444 采样但始终使用非 Identity matrix；--avif-color-representation source 仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；--avif-color-representation rgb 强制 Identity + 444。显式 --avif-encoder svt 不支持 AVIF 100。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入直通，其他输入走 AOM 无损量化；默认 YUV 不会因无损自动切换 Identity。显式 --avif-encoder svt 时不支持 100；1..99 自动搜索最小体积达标候选
+  -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 保持 8/16-bit 存储位深，q100 无损、q1–99 量化 RGB，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
+  -q, --quality <1-100>       编码质量，PNG 默认 100；q1–99 降低 RGB 有效精度（16-bit 最低 10 位），alpha 保持原精度；PNG 不支持视觉质量搜索，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入走 AOM 无损量化：默认 YUV 保留 420/422/444 采样但始终使用非 Identity matrix；--avif-color-representation source 仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；--avif-color-representation rgb 强制 Identity + 444。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入直通，其他输入走 AOM 无损量化；默认 YUV 不会因无损自动切换 Identity。1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
@@ -882,21 +812,12 @@ std::string help_text() {
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
-  --avif-encoder <auto|svt|svt-av1-hdr|aom|zenrav1e> AVIF 编码器选择，默认 auto；auto 默认 AOM，显式 svt 仅用于 420/8-10bit/无 alpha/非无损输入；AOM 单图上限 65536 边/2^30 像素，SVT 上限 16384x8704；超限后自动走大图链路（默认 zenrav1e，可优先 grid），再失败则报错
+  --avif-encoder <auto|aom>   AVIF 使用 AOM；单图上限 65536 边/2^30 像素，超限自动使用 AOM Grid
   --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha，auto 保留非不透明 alpha，off 总是删除 alpha；AVIF 颜色与 alpha 都跟随请求质量，auto chroma 按源图选择
-  --svtav1hdr-crf <0-63>     svt-av1-hdr 专家 CRF；未指定时使用通用 quality，避免默认 quality 与默认 CRF 同时生效
-  --svtav1hdr-preset <0-13>  svt-av1-hdr preset；默认 @SVTAV1HDR_PRESET@
-  --svtav1hdr-tune <值>      svt-av1-hdr tune；默认 @SVTAV1HDR_TUNE@，UI 不提供修改入口
-  --svtav1hdr-keyint <1-999999> svt-av1-hdr keyint；默认 @SVTAV1HDR_KEYINT@，UI 不提供修改入口
-  --svtav1hdr-params <key=value> svt-av1-hdr 专家参数，可重复；按原样传给 --svtav1-params
-  --color-primaries <n>      AVIF CICP color primaries；未指定时保留源值（含 BT.2020 等 HDR 源），源与用户都没有时才回退 BT.709；AOM/libavif 与 svt-av1-hdr 可应用
-  --transfer-characteristics <n> AVIF CICP transfer characteristics；未指定时保留源值（含 PQ/HLG 等 HDR 传输函数），源与用户都没有时才回退 sRGB；AOM/libavif 与 svt-av1-hdr 可应用
-  --matrix-coefficients <n>  AVIF CICP matrix coefficients；未指定时保留源的有效非 Identity 值；YUV 中 Identity/未知值会对 BT.2020 源回退 BT.2020 NCL，其他源回退 BT.709；Identity 仅可与 --avif-color-representation source/rgb 配合；AOM/libavif 与 svt-av1-hdr 可应用
-  --color-range <0|1>        AVIF color range；显式指定时覆盖源值，未指定时保留源 PC/full 或 TV/limited，未知源使用 full；AOM/libavif 与 svt-av1-hdr 可应用
-  --mastering-display <值>   svt-av1-hdr mastering display metadata
-  --content-light <值>       svt-av1-hdr content light metadata
-  --experimental-encoders   启用实验 AVIF 编码器；默认开启，构建支持时可显式使用 zenrav1e
-  --no-experimental-encoders 禁用实验 AVIF 编码器选项
+  --color-primaries <n>      AVIF CICP color primaries；未指定时保留源值（含 BT.2020 等 HDR 源），源与用户都没有时才回退 BT.709；AOM/libavif 可应用
+  --transfer-characteristics <n> AVIF CICP transfer characteristics；未指定时保留源值（含 PQ/HLG 等 HDR 传输函数），源与用户都没有时才回退 sRGB；AOM/libavif 可应用
+  --matrix-coefficients <n>  AVIF CICP matrix coefficients；未指定时保留源的有效非 Identity 值；YUV 中 Identity/未知值会对 BT.2020 源回退 BT.2020 NCL，其他源回退 BT.709；Identity 仅可与 --avif-color-representation source/rgb 配合；AOM/libavif 可应用
+  --color-range <0|1>        AVIF color range；显式指定时覆盖源值，未指定时保留源 PC/full 或 TV/limited，未知源使用 full；AOM/libavif 可应用
   --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时使用较小的右列和底行 cell，保持原始尺寸不变，默认开启；奇数输出尺寸或奇数 cell 尺寸与 420/422 色度仍不兼容，需要 --chroma 444
   --no-experimental-clamped-grid-padding 禁用 AVIF grid 较小边缘 cell；不可整除分割会报错
   -p, --preset <名称>         从程序同目录 preset/ 按 JSONC 内 name 加载用户预设；未指定使用当前内置默认
@@ -904,7 +825,6 @@ std::string help_text() {
   --list-presets              列出程序同目录 preset/ 中可用的用户预设及简介
   -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
   --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
-  --large-image-priority <zenrav1e|grid> 超过 AOM 单图上限后的自动大图优先路径；默认 zenrav1e，失败回退另一路径
   --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/运行时上限（默认关闭，不写入配置）
   --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持默认 20 GiB 上限
   --image-size-limit <auto|none|manual> 图片边长限制；manual 可配合 --max-width/--max-height/--max-long-edge/--max-short-edge
@@ -968,14 +888,6 @@ std::string help_text() {
               std::format("{}", default_quality_for(OutputFormat::jxl)));
   replace_all(help, "@JPEGLI_QUALITY@",
               std::format("{}", default_quality_for(OutputFormat::jpgli)));
-  replace_all(help, "@SVTAV1HDR_CRF@",
-              std::format("{}", encoding_defaults::default_svtav1hdr_crf));
-  replace_all(help, "@SVTAV1HDR_PRESET@",
-              std::format("{}", encoding_defaults::default_svtav1hdr_preset));
-  replace_all(help, "@SVTAV1HDR_TUNE@",
-              std::string{encoding_defaults::default_svtav1hdr_tune});
-  replace_all(help, "@SVTAV1HDR_KEYINT@",
-              std::format("{}", encoding_defaults::default_svtav1hdr_keyint));
   replace_all(help, "@INPUT_PATH@", encoding_defaults::default_input_path_text);
   replace_all(help, "@WEBP_BIT_DEPTH@",
               std::format("{}", encoding_defaults::default_webp_bit_depth));
@@ -1182,8 +1094,8 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         return std::unexpected{value.error()};
       }
       const auto lower_value = config_detail::lower_copy(*value);
-      if (lower_value != L"grid" && lower_value != L"zenrav1e") {
-        return std::unexpected{"studio-large-action 只支持 grid 或 zenrav1e。"};
+      if (lower_value != L"grid") {
+        return std::unexpected{"studio-large-action 只支持 grid；旧编码路径已移除。"};
       }
       cfg.studio_large_action = lower_value;
       continue;
@@ -1191,16 +1103,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
 
     if (lower == L"--large-image-priority") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      const auto lower_value = config_detail::lower_copy(*value);
-      if (lower_value != L"zenrav1e" && lower_value != L"grid") {
-        return std::unexpected{"large-image-priority 只支持 zenrav1e 或 grid。"};
-      }
-      cfg.large_image_priority = lower_value;
-      continue;
+      return std::unexpected{"large-image-priority 已移除；超出单图上限时自动使用 AOM Grid。"};
     }
 
     if (lower == L"--unlock-max-input-file-bytes" ||
@@ -1382,7 +1285,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       if (!encoder) {
         return std::unexpected{
             std::format("AVIF encoder 不支持: "
-                        "{}。可选值：auto、svt、svt-av1-hdr、aom、zenrav1e。",
+                        "{}。仅支持 auto/aom；旧 SVT/Zen 编码器已移除。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.avif_encoder = *encoder;
@@ -1405,15 +1308,9 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--experimental-encoders" ||
-        lower == L"--enable-experimental-encoders") {
-      cfg.enable_experimental_encoders = true;
-      continue;
-    }
-
-    if (lower == L"--no-experimental-encoders") {
-      cfg.enable_experimental_encoders = false;
-      continue;
+    if (lower == L"--experimental-encoders" || lower == L"--enable-experimental-encoders" ||
+        lower == L"--no-experimental-encoders") {
+      return std::unexpected{"experimental-encoders 已移除；AVIF 仅支持 AOM。"};
     }
 
     if (lower == L"--experimental-clamped-grid-padding") {
@@ -1571,80 +1468,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--svtav1hdr-crf" || lower == L"--svt-av1-hdr-crf") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      const auto crf =
-          config_detail::parse_int_range(*value, 0, 63, "svtav1hdr-crf");
-      if (!crf) {
-        return std::unexpected{crf.error()};
-      }
-      cfg.svtav1hdr_crf = *crf;
-      continue;
-    }
-
-    if (lower == L"--svtav1hdr-preset" || lower == L"--svt-av1-hdr-preset") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      const auto preset =
-          config_detail::parse_int_range(*value, 0, 13, "svtav1hdr-preset");
-      if (!preset) {
-        return std::unexpected{preset.error()};
-      }
-      cfg.svtav1hdr_preset = *preset;
-      continue;
-    }
-
-    if (lower == L"--svtav1hdr-tune" || lower == L"--svt-av1-hdr-tune") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      if (auto valid = config_detail::validate_svtav1hdr_ascii_text(
-              *value, "svtav1hdr-tune");
-          !valid) {
-        return std::unexpected{valid.error()};
-      }
-      cfg.svtav1hdr_tune = config_detail::narrow_ascii(*value);
-      continue;
-    }
-
-    if (lower == L"--svtav1hdr-keyint" || lower == L"--svt-av1-hdr-keyint") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      const auto keyint =
-          config_detail::parse_int_range(*value, 1, 999999, "svtav1hdr-keyint");
-      if (!keyint) {
-        return std::unexpected{keyint.error()};
-      }
-      cfg.svtav1hdr_keyint = *keyint;
-      continue;
-    }
-
-    if (lower == L"--svtav1hdr-params" || lower == L"--svt-av1-hdr-params") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      if (auto valid = config_detail::validate_native_key_value_option(
-              *value, "--svtav1hdr-params");
-          !valid) {
-        return std::unexpected{valid.error()};
-      }
-      try {
-        cfg.svtav1hdr_params.push_back(*value);
-      } catch (const std::bad_alloc&) {
-        return std::unexpected{"svtav1hdr 参数列表内存不足。"};
-      } catch (const std::length_error&) {
-        return std::unexpected{"svtav1hdr 参数列表尺寸超过运行时限制。"};
-      }
-      continue;
+    if (lower.starts_with(L"--svtav1hdr-") || lower.starts_with(L"--svt-av1-hdr-") ||
+        lower.starts_with(L"--zenrav") || lower == L"--mastering-display" ||
+        lower == L"--content-light") {
+      return std::unexpected{std::format("参数 {} 所属编码器已移除；请移除此参数并使用 auto/aom。",
+          config_detail::narrow_ascii_for_diagnostics(args[i]))};
     }
 
     if (lower == L"--color-primaries") {
@@ -1700,34 +1528,6 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         return std::unexpected{parsed.error()};
       }
       cfg.color_range = *parsed;
-      continue;
-    }
-
-    if (lower == L"--mastering-display") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      if (auto valid = config_detail::validate_svtav1hdr_text(
-              *value, "mastering-display");
-          !valid) {
-        return std::unexpected{valid.error()};
-      }
-      cfg.mastering_display = *value;
-      continue;
-    }
-
-    if (lower == L"--content-light") {
-      const auto value = require_value(i, args[i]);
-      if (!value) {
-        return std::unexpected{value.error()};
-      }
-      if (auto valid =
-              config_detail::validate_svtav1hdr_text(*value, "content-light");
-          !valid) {
-        return std::unexpected{valid.error()};
-      }
-      cfg.content_light = *value;
       continue;
     }
 

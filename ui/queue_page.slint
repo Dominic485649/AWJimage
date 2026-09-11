@@ -1,0 +1,561 @@
+import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-widgets.slint";
+import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
+import { StudioTheme } from "studio_theme.slint";
+
+export component QueuePage inherits VerticalLayout {
+    in property <color> accent-soft;
+    in property <color> accent-strong;
+    callback browse-input();
+    callback browse-output();
+    callback cancel-conversion();
+    callback clear-tasks();
+    in-out property <int> collision-index;
+    in property <color> combo-bg;
+    in property <color> combo-bg-disabled;
+    in property <color> combo-bg-hover;
+    in property <color> combo-border;
+    in property <color> combo-border-hover;
+    in-out property <int> combo-close-generation;
+    callback combo-popup-finished();
+    callback combo-popup-requested();
+    in property <color> combo-selected-bg;
+    in property <length> control-button-height;
+    in property <length> control-button-width;
+    in property <bool> dark-mode;
+    in property <int> language-index;
+    property <length> path-label-width: root.language-index == 1 ? 90px : 78px;
+    property <length> options-single-row-width: root.timestamp-ui-visible ? (root.language-index == 1 ? 1400px : 1100px) : 760px;
+    property <length> queue-selector-width: min(root.parameter-control-width, (root.width - 32px - root.path-label-width - 42px - 40px) / 2);
+    in property <color> field-bg;
+    in property <color> field-border;
+    in-out property <bool> force-terminate-supported;
+    in property <length> window-height;
+    in-out property <int> input-mode-index;
+    in-out property <string> input-path;
+    callback input-path-accepted(string);
+    callback input-path-dropped(DropEvent);
+    callback open-output();
+    callback open-queue-menu(int, length, length);
+    in-out property <string> output-dir;
+    callback output-path-accepted(string);
+    callback output-path-dropped(DropEvent);
+    in property <length> page-gap;
+    in property <color> panel-bg;
+    in property <color> panel-bg-soft;
+    in property <color> panel-border;
+    in property <length> parameter-control-width;
+    in-out property <bool> preserve-access-time;
+    in-out property <bool> preserve-creation-time;
+    in-out property <bool> preserve-modification-time;
+    in-out property <float> progress;
+    in property <brush> progress-fill;
+    in property <color> progress-track;
+    callback queue-drag-can-drop(DropEvent, int) -> DragAction;
+    pure callback queue-drag-data(int) -> data-transfer;
+    callback queue-drag-dropped(DropEvent, int) -> DragAction;
+    in-out property <int> queue-failed-count;
+    in-out property <bool> queue-failed-only;
+    in property <length> queue-filename-width;
+    in-out property <int> queue-format-index;
+    in-out property <int> queue-pending-count;
+    in property <string> queue-preset-description;
+    in-out property <int> queue-preset-index;
+    in property <[ComboOption]> queue-preset-options;
+    callback queue-preset-selected(int);
+    callback queue-row-pointer-event(int, int, int, float);
+    in-out property <int> queue-running-count;
+    in property <length> queue-size-width;
+    in property <length> queue-status-width;
+    in-out property <int> queue-success-count;
+    callback retry-failed();
+    in-out property <bool> running;
+    in-out property <int> selected-queue-index;
+    in property <bool> selected-queue-valid;
+    callback start-conversion();
+    in-out property <string> status-text;
+    in-out property <bool> strip-metadata;
+    in property <[TaskRow]> task-rows;
+    in-out property <bool> template-date-selected;
+    in-out property <bool> template-hash8-selected;
+    in-out property <bool> template-params-selected;
+    in-out property <bool> template-rand-selected;
+    in-out property <bool> template-sha2568-selected;
+    in-out property <string> template-text;
+    in-out property <bool> template-time-selected;
+    in property <length> template-token-button-width;
+    in property <color> text-body;
+    in property <color> text-muted;
+    in property <color> text-soft;
+    in property <color> text-strong;
+    in property <bool> timestamp-ui-visible;
+    callback toggle-template-token(string);
+    in property <color> warning;
+    in property <length> window-width;
+    in-out property <bool> write-log;
+    in-out property <bool> write-summary;
+
+    in property <int> external-drag-target: 0;
+    out property <[DropRegion]> drop-regions: [{ x: input-path-drop.absolute-position.x, y: input-path-drop.absolute-position.y, width: input-path-drop.width, height: input-path-drop.height }, { x: output-path-drop.absolute-position.x, y: output-path-drop.absolute-position.y, width: output-path-drop.width, height: output-path-drop.height }, { x: queue-table.absolute-position.x, y: queue-table.absolute-position.y, width: queue-table.width, height: queue-table.height }];
+
+    spacing: 8px;
+
+    Rectangle {
+        border-radius: 8px;
+        background: root.panel-bg;
+        border-color: root.panel-border;
+        border-width: 1px;
+        animate background, border-color { duration: 180ms; easing: ease-out; }
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 8px;
+
+            VerticalLayout {
+                spacing: 8px;
+                horizontal-stretch: 1;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: @tr("输入路径"); width: root.path-label-width; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    input-path-drop := DropArea {
+                        enabled: !root.running;
+                        min-width: 120px;
+                        horizontal-stretch: 1;
+                        height: root.control-button-height;
+                        can-drop(event) => { return DragAction.copy; }
+                        dropped(event) => { root.input-path-dropped(event); return DragAction.copy; }
+                        LineEdit { accessible-label: @tr("输入路径"); text <=> root.input-path; placeholder-text: @tr("输入图片文件或文件夹路径，回车加入队列"); enabled: !root.running; width: parent.width; height: parent.height; accepted(text) => { root.input-path-accepted(text); } }
+                        if root.external-drag-target == 1 || input-path-drop.has-drag: Rectangle { width: parent.width; height: parent.height; background: #305aaaff; border-color: #86c5ff; border-width: 2px; border-radius: 4px; }
+                    }
+                    Rectangle {
+                        width: root.control-button-width * 2 + 10px;
+                        height: root.control-button-height;
+                        background: transparent;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            SoftComboBox { accessible-name: @tr("输入类型"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("文件"), enabled: true }, { text: @tr("文件夹"), enabled: true }]; current-index <=> root.input-mode-index; enabled: !root.running; width: root.control-button-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; }
+                            SoftButton { dark-mode: root.dark-mode; text: @tr("选择"); width: root.control-button-width; height: root.control-button-height; enabled: !root.running; clicked => { root.browse-input(); } }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: @tr("输出目录"); width: root.path-label-width; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    output-path-drop := DropArea {
+                        enabled: !root.running;
+                        min-width: 120px;
+                        horizontal-stretch: 1;
+                        height: root.control-button-height;
+                        can-drop(event) => { return DragAction.copy; }
+                        dropped(event) => { root.output-path-dropped(event); return DragAction.copy; }
+                        LineEdit { accessible-label: @tr("输出目录"); text <=> root.output-dir; placeholder-text: @tr("默认与输入同目录"); enabled: !root.running; width: parent.width; height: parent.height; accepted(text) => { root.output-path-accepted(text); } }
+                        if root.external-drag-target == 2 || output-path-drop.has-drag: Rectangle { width: parent.width; height: parent.height; background: #305aaaff; border-color: #86c5ff; border-width: 2px; border-radius: 4px; }
+                    }
+                    Rectangle {
+                        width: root.control-button-width * 2 + 10px;
+                        height: root.control-button-height;
+                        background: transparent;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            SoftButton { dark-mode: root.dark-mode; text: @tr("打开"); width: root.control-button-width; height: root.control-button-height; clicked => { root.open-output(); } }
+                            SoftButton { dark-mode: root.dark-mode; text: @tr("选择"); width: root.control-button-width; height: root.control-button-height; enabled: !root.running; clicked => { root.browse-output(); } }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: @tr("命名规则"); width: root.path-label-width; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    LineEdit { accessible-label: @tr("命名规则"); text <=> root.template-text; // @tr 内的 {…} 是格式占位符，这里的花括号是要原样显示给用户的模板变量，必须转义成 {{ }}。
+                            placeholder-text: @tr("例：{{name}}_{{date}}"); enabled: !root.running; min-width: 120px; horizontal-stretch: 1; height: 38px; }
+                    Rectangle {
+                        width: root.control-button-width * 2 + 10px;
+                        height: 38px;
+                        background: transparent;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: @tr("重复处理"); width: root.language-index == 1 ? 78px : 64px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                            SoftComboBox {
+                                accessible-name: @tr("重复处理");
+                                viewport-height: root.window-height;
+                                close-generation: root.combo-close-generation;
+                                popup-requested => { root.combo-popup-requested(); }
+                                popup-finished => { root.combo-popup-finished(); }
+                                model: [{ text: @tr("覆盖"), enabled: true }, { text: @tr("跳过"), enabled: true }, { text: @tr("追加时间"), enabled: true }, { text: @tr("追加随机"), enabled: true }];
+                                current-index <=> root.collision-index;
+                                enabled: !root.running;
+                                min-width: 0px;
+                                horizontal-stretch: 1;
+                                normal-background: root.combo-bg;
+                                hover-background: root.combo-bg-hover;
+                                disabled-background: root.combo-bg-disabled;
+                                selected-background: root.combo-selected-bg;
+                                normal-border: root.combo-border;
+                                hover-border: root.combo-border-hover;
+                                normal-text: root.text-body;
+                                disabled-text: root.text-soft;
+                                muted-text: root.text-muted;
+                                selected-text: root.accent-strong;
+                            }
+                        }
+                    }
+                }
+
+                if root.window-width >= 1000px: HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle { width: root.path-label-width + 2px; background: transparent; }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
+                    SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                }
+                if root.window-width < 1000px: VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle { width: root.path-label-width + 2px; background: transparent; }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle { width: root.path-label-width + 2px; background: transparent; }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
+                        SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                }
+            }
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: @tr("输出格式"); width: root.path-label-width; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    queue-format := SoftComboBox { accessible-name: root.queue-format-index == 1 ? @tr("AVIF.png：实际编码为 AVIF，仅额外添加 .png 文件名后缀") : @tr("队列输出格式"); accessible-description: root.queue-format-index == 1 ? @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀") : ""; viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "AVIF.png", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.queue-format-index; enabled: !root.running; width: root.queue-selector-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀"); hover-help-option-index: 1;
+                    }
+                    Text { text: @tr("预设"); width: 42px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    queue-preset := SoftComboBox { accessible-name: @tr("队列预设"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.queue-preset-options; current-index <=> root.queue-preset-index; enabled: !root.running; width: root.queue-selector-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: root.queue-preset-description; hover-help-always: true; selection-accepted(index, click-x, click-y) => { root.queue-preset-selected(index); }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                }
+
+                if root.window-width >= root.options-single-row-width: HorizontalLayout {
+                    spacing: root.page-gap;
+                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                }
+                if root.window-width >= 760px && root.window-width < root.options-single-row-width: VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: root.page-gap;
+                        CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                        CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                        CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    }
+                    if root.timestamp-ui-visible: HorizontalLayout {
+                        spacing: root.page-gap;
+                        CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                        CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                        CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    }
+                }
+                if root.window-width < 760px: VerticalLayout {
+                    spacing: 6px;
+                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                }
+
+                HorizontalLayout {
+                spacing: root.page-gap;
+                SoftButton { dark-mode: root.dark-mode; text: root.running ? (root.force-terminate-supported ? @tr("强制终止") : @tr("停止任务")) : @tr("开始转换"); variant: root.running && root.force-terminate-supported ? "danger" : "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
+                if root.force-terminate-supported: SoftButton { dark-mode: root.dark-mode; text: @tr("停止任务"); variant: "outline"; height: 42px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
+                SoftButton { dark-mode: root.dark-mode; text: @tr("清空队列"); height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
+            }
+
+        }
+    }
+
+    queue-panel := Rectangle {
+        property <length> detail-height: min(154px, max(48px, queue-table.height - 42px));
+        border-radius: 8px;
+        background: root.panel-bg;
+        border-color: root.panel-border;
+        border-width: 1px;
+        min-height: 170px;
+        vertical-stretch: 1;
+        animate background, border-color { duration: 180ms; easing: ease-out; }
+
+        VerticalLayout {
+            padding: 10px;
+            spacing: 6px;
+
+            HorizontalLayout {
+                height: 34px;
+                spacing: 10px;
+                Text {
+                    text: @tr("待处理 ") + root.queue-pending-count + @tr("  ·  处理中 ") + root.queue-running-count + @tr("  ·  成功 ") + root.queue-success-count + @tr("  ·  失败 ") + root.queue-failed-count;
+                    color: root.text-muted;
+                    font-size: 12px;
+                    vertical-alignment: center;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+                CheckBox {
+                    text: @tr("仅看失败");
+                    checked <=> root.queue-failed-only;
+                    enabled: root.task-rows.length > 0;
+                    toggled => {
+                        if (root.queue-failed-only && root.selected-queue-valid && root.task-rows[root.selected-queue-index].state != 3) {
+                            root.selected-queue-index = -1;
+                        }
+                    }
+                }
+                SoftButton {
+                    dark-mode: root.dark-mode;
+                    text: @tr("重试失败");
+                    height: 32px;
+                    width: 86px;
+                    enabled: !root.running && root.queue-failed-count > 0;
+                    clicked => { root.retry-failed(); }
+                }
+            }
+
+            queue-table := Rectangle {
+                property <length> list-top: root.selected-queue-valid ? queue-panel.detail-height : 34px;
+                animate list-top { duration: 180ms; easing: ease-out; }
+                vertical-stretch: 1;
+                min-height: 0px;
+                preferred-height: 0px;
+                border-radius: 4px;
+                background: root.dark-mode ? #202020 : #ffffff;
+                border-width: 0px;
+                clip: true;
+                animate background, border-color { duration: 180ms; easing: ease-out; }
+
+
+                queue-header := Rectangle {
+                    x: 0px;
+                    y: 0px;
+                    width: parent.width;
+                    height: 34px;
+                    background: root.field-bg;
+                    border-color: root.field-border;
+                    border-width: 0px;
+                    animate background, border-color { duration: 180ms; easing: ease-out; }
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+                        spacing: 10px;
+                        Text { text: "#"; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                        Text { text: @tr("文件名"); width: root.queue-filename-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("目录"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("大小"); width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("状态"); width: root.queue-status-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("输出或日志"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                    }
+                }
+
+                queue-viewport := Rectangle {
+                    x: 0px;
+                    y: queue-table.list-top;
+                    width: parent.width;
+                    height: max(0px, parent.height - self.y);
+                    background: root.dark-mode ? #202020 : #ffffff;
+
+                    // The unused table surface appends external drops; row
+                    // DropAreas above it keep their internal reorder targets.
+                    DropArea {
+                        width: parent.width;
+                        height: parent.height;
+                        can-drop(event) => { return root.queue-drag-can-drop(event, root.task-rows.length); }
+                        dropped(event) => { return root.queue-drag-dropped(event, root.task-rows.length); }
+                    }
+
+                    if root.task-rows.length == 0 || (root.queue-failed-only && root.queue-failed-count == 0): DropArea {
+                        width: parent.width;
+                        height: parent.height;
+                        can-drop(event) => { return root.queue-drag-can-drop(event, root.task-rows.length); }
+                        dropped(event) => { return root.queue-drag-dropped(event, root.task-rows.length); }
+                        Text {
+                            text: root.task-rows.length == 0 ? @tr("队列为空") : @tr("没有失败项");
+                            color: root.text-muted;
+                            font-size: 13px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+
+                    if root.task-rows.length > 0 && (!root.queue-failed-only || root.queue-failed-count > 0): ListView {
+                 accessible-role: list;
+                 accessible-label: @tr("编码任务");
+                 accessible-item-count: root.queue-failed-only ? root.queue-failed-count : root.task-rows.length;
+                 for row[index] in root.task-rows: Rectangle {
+                     height: (!root.queue-failed-only || row.state == 3) ? 34px : 0px;
+                     if !root.queue-failed-only || row.state == 3: drop-row := DropArea {
+                     property <length> hover-y: 0px;
+                     property <int> drop-index: index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
+                     width: parent.width;
+                     height: 34px;
+                     can-drop(event) => {
+                         drop-row.hover-y = event.position.y;
+                         return root.queue-drag-can-drop(event, drop-row.drop-index);
+                     }
+                     dropped(event) => {
+                         return root.queue-drag-dropped(event, drop-row.drop-index);
+                     }
+                     row-drag := DragArea {
+                         enabled: !root.running && !row.locked;
+                         allow-move: !root.running && !row.locked;
+                         data: root.queue-drag-data(index);
+                         opacity: row-drag.dragging ? 0.45 : 1.0;
+                         Rectangle {
+                             width: parent.width;
+                             height: parent.height;
+                             background: root.selected-queue-index == index ? root.accent-soft : (drop-row.has-drag ? (root.dark-mode ? #303030 : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #343434 : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #272727 : #f4f8fe) : transparent)));
+                             border-radius: 3px;
+                             accessible-role: list-item;
+                             accessible-label: row.filename + "，" + row.status;
+                             accessible-item-selectable: true;
+                             accessible-item-selected: root.selected-queue-index == index;
+                             animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                             HorizontalLayout {
+                                 padding-left: 10px;
+                                 padding-right: 10px;
+                                 spacing: 10px;
+                                 Text { text: row.order; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                                 Text { text: row.filename; width: root.queue-filename-width; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                 Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                 Text { text: row.size; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                                 Text { text: row.status; width: root.queue-status-width; color: row.warning ? root.warning : root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                 Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                             }
+                             row-touch := TouchArea {
+                                 width: parent.width;
+                                 height: parent.height;
+                                 pointer-event(event) => {
+                                     if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                                         root.selected-queue-index = index;
+                                     }
+                                     if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                                         root.open-queue-menu(index, row-touch.absolute-position.x + row-touch.mouse-x, row-touch.absolute-position.y + row-touch.mouse-y);
+                                     }
+                                     root.queue-row-pointer-event(
+                                         index,
+                                         event.button == PointerEventButton.left ? 0 : (event.button == PointerEventButton.right ? 1 : 2),
+                                         event.kind == PointerEventKind.down ? 0 : (event.kind == PointerEventKind.up ? 1 : (event.kind == PointerEventKind.move ? 2 : 3)),
+                                         row-touch.mouse-y / 1px
+                                     );
+                                 }
+                             }
+                         }
+                     }
+                     if drop-row.has-drag: Rectangle {
+                         y: drop-row.hover-y > drop-row.height / 2 ? parent.height - 2px : 0px;
+                         width: parent.width;
+                         height: 2px;
+                         background: root.accent-strong;
+                         border-radius: 1px;
+                     }
+                     }
+                 }
+                    }
+                }
+
+            }
+
+            Rectangle {
+                height: 10px;
+                border-radius: 5px;
+                background: root.progress-track;
+                clip: true;
+                animate background { duration: 180ms; easing: ease-out; }
+                Rectangle {
+                    x: 0px;
+                    width: max(0px, min(parent.width, parent.width * root.progress));
+                    height: parent.height;
+                    border-radius: 5px;
+                    background: root.progress-fill;
+                    animate width, background { duration: 160ms; easing: ease-out; }
+                }
+            }
+
+            Text { text: @tr("总进度：") + root.status-text; color: root.text-muted; font-size: 12px; overflow: elide; }
+        }
+
+        if root.external-drag-target == 3: Rectangle {
+            x: queue-table.x; y: queue-table.y;
+            width: queue-table.width; height: queue-table.height;
+            background: #205aaaff; border-color: #86c5ff; border-width: 2px;
+        }
+
+        if root.selected-queue-valid: queue-detail := Rectangle {
+            x: 10px;
+            y: 50px;
+            width: parent.width - 20px;
+            height: queue-panel.detail-height;
+            border-radius: 4px;
+            border-width: 1px;
+            border-color: root.panel-border;
+            background: root.panel-bg-soft;
+            clip: true;
+
+            VerticalLayout {
+                padding: 10px;
+                spacing: 6px;
+
+                HorizontalLayout {
+                    height: 28px;
+                    spacing: 8px;
+                    Text {
+                        text: root.task-rows[root.selected-queue-index].filename + " · " + root.task-rows[root.selected-queue-index].status;
+                        color: root.text-strong;
+                        font-size: 13px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                        overflow: elide;
+                    }
+                    SoftButton {
+                        dark-mode: root.dark-mode;
+                        text: "×";
+                        accessible-name: @tr("关闭详情");
+                        width: 30px;
+                        height: 28px;
+                        clicked => { root.selected-queue-index = -1; }
+                    }
+                }
+
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 4px;
+                        Text { text: @tr("输入：") + root.task-rows[root.selected-queue-index].input-path; color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                        Text { text: @tr("输出：") + (root.task-rows[root.selected-queue-index].output-path.is-empty ? @tr("尚未生成") : root.task-rows[root.selected-queue-index].output-path); color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                        Text { text: @tr("编码器：") + (root.task-rows[root.selected-queue-index].encoder.is-empty ? @tr("尚未确定") : root.task-rows[root.selected-queue-index].encoder) + @tr("  ·  线程：") + (root.task-rows[root.selected-queue-index].threads.is-empty ? "-" : root.task-rows[root.selected-queue-index].threads); color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                        Text { text: @tr("阶段：") + (root.task-rows[root.selected-queue-index].stage-timings.is-empty ? @tr("尚无数据") : root.task-rows[root.selected-queue-index].stage-timings); color: root.text-body; font-size: 12px; wrap: word-wrap; }
+                        Text { text: @tr("错误/日志：") + (root.task-rows[root.selected-queue-index].log.is-empty ? @tr("无") : root.task-rows[root.selected-queue-index].log); color: root.task-rows[root.selected-queue-index].state == 3 ? root.warning : root.text-muted; font-size: 12px; wrap: word-wrap; }
+                    }
+                }
+            }
+            TouchArea {
+                width: parent.width;
+                height: parent.height;
+                clicked => { root.selected-queue-index = -1; }
+            }
+        }
+    }
+}

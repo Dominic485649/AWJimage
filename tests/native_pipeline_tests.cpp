@@ -478,21 +478,6 @@ int main() {
                     ? "follow-source did not select RGB/GBR Identity for an RGB source."
                     : source_representation_decoded.error());
   }
-  auto source_svt_cfg = source_representation_cfg;
-  source_svt_cfg.output_dir = output / "source-svt";
-  source_svt_cfg.avif_encoder = awj::AvifEncoderMode::svt;
-  awj::NativeBackend source_svt_backend{
-      source_svt_cfg, logger,
-      awj::ResourcePlan{.file_parallelism = 1,
-                        .encoder_threads_per_file = 1,
-                        .global_thread_budget = 1}};
-  auto source_svt_result = source_svt_backend.encode(
-      awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
-  if (source_svt_result.ok ||
-      source_svt_result.message.find("仅支持 AOM") == std::string::npos) {
-    return fail("follow-source RGB Identity did not reject an explicit SVT encoder.");
-  }
-
   auto passthrough_seed_cfg = cfg;
   passthrough_seed_cfg.output_dir = output / "passthrough-seed";
   passthrough_seed_cfg.quality = 100;

@@ -44,13 +44,6 @@ inline constexpr bool default_jxl_effort_is_explicit = false;
 inline constexpr int default_jpegli_progressive_level = 2;
 inline constexpr bool default_jpegli_optimize_huffman = true;
 inline constexpr bool default_jpegli_xyb = false;
-inline constexpr int default_zenrav1e_preset = 6;
-inline constexpr int default_svt_preset = 6;
-inline constexpr int default_svtav1hdr_crf = 30;
-inline constexpr int default_svtav1hdr_preset = 6;
-inline constexpr std::string_view default_svtav1hdr_tune = "3";
-inline constexpr int default_svtav1hdr_keyint = 1;
-inline constexpr bool default_svtav1hdr_avif = true;
 
 inline constexpr std::uint64_t max_input_file_bytes =
     20ull * 1024ull * 1024ull * 1024ull;
@@ -69,13 +62,8 @@ inline constexpr std::uint32_t avif_single_image_max_dimension = 65'536u;
 inline constexpr std::uint64_t avif_single_image_max_pixels = 1ull << 30;
 inline constexpr std::uint64_t ordinary_large_safe_max_pixels =
     avif_single_image_max_pixels;
-inline constexpr std::uint32_t svtav1hdr_single_image_max_width = 16'384u;
-inline constexpr std::uint32_t svtav1hdr_single_image_max_height = 8'704u;
-inline constexpr std::uint64_t svt_safe_max_pixels =
-    static_cast<std::uint64_t>(svtav1hdr_single_image_max_width) *
-    svtav1hdr_single_image_max_height;
-inline constexpr std::uint32_t grid_auto_tile_width = svtav1hdr_single_image_max_width;
-inline constexpr std::uint32_t grid_auto_tile_height = svtav1hdr_single_image_max_height;
+inline constexpr std::uint32_t grid_auto_tile_width = 16'384u;
+inline constexpr std::uint32_t grid_auto_tile_height = 8'704u;
 inline constexpr std::uint32_t grid_max_cols = 256u;
 inline constexpr std::uint32_t grid_max_rows = 256u;
 inline constexpr bool default_experimental_clamped_grid_padding = true;
@@ -103,7 +91,6 @@ inline constexpr std::size_t webp_max_initial_encoder_output_capacity =
 
 inline constexpr int max_output_temp_path_attempts = 1000;
 inline constexpr std::size_t output_copy_buffer_bytes = 4 * 1024 * 1024;
-inline constexpr std::size_t svtav1hdr_option_value_max_length = 512;
 
 inline constexpr double visual_gmsd_best = 0.0025;
 inline constexpr double visual_gmsd_worst = 0.60;
@@ -121,11 +108,5 @@ inline constexpr double visual_search_center_bias = 5.0;
 inline constexpr double visual_search_curve_gamma = 1.28;
 
 inline constexpr bool default_avif_tune_iq = true;
-inline constexpr int default_zenrav1e_keyint = 1;
-inline constexpr bool default_zenrav1e_still_picture = true;
-inline constexpr bool default_zenrav1e_enable_qm = true;
-inline constexpr double default_zenrav1e_vaq_strength = 1.0;
-inline constexpr bool default_zenrav1e_enable_trellis = false;
-inline constexpr bool default_zenrav1e_rdo_tx_decision = false;
 
 }  // namespace awj::encoding_defaults

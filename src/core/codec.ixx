@@ -72,11 +72,7 @@ struct AvifEncoderCapability {
   bool supports_avif_grid{};
   std::optional<std::uint32_t> max_single_image_width{};
   std::optional<std::uint32_t> max_single_image_height{};
-  bool experimental{};
   bool enabled{true};
-  bool feature_enabled{true};
-  bool auto_selectable{true};
-  bool auto_alpha_selectable{};
   std::string unavailable_reason{};
   std::string license{};
   int default_speed{};
@@ -92,7 +88,6 @@ struct AvifEncoderSelectionRequest {
   bool must_preserve_alpha{};
   bool visual_quality_search{};
   bool speed_explicit{};
-  bool allow_zenrav1e_alpha{};
   std::uint64_t pixel_count{};
   std::uint32_t width{};
   std::uint32_t height{};
@@ -109,7 +104,6 @@ struct AvifEncoderSelection {
   std::string bit_depth_reason{};
   std::uint64_t pixel_count{};
   int speed{};
-  bool experimental{};
   std::string license{};
   std::string fallback_reason{};
 };
@@ -134,21 +128,6 @@ struct EncodeTimingDiagnostics {
   int visual_quality_candidate_count{};
   int visual_quality_decode_memory_fallback_count{};
   int visual_quality_gpu_fallback_count{};
-};
-
-struct SvtAv1HdrSettings {
-  std::optional<int> crf{};
-  int preset{encoding_defaults::default_svtav1hdr_preset};
-  std::string tune{std::string{encoding_defaults::default_svtav1hdr_tune}};
-  int keyint{encoding_defaults::default_svtav1hdr_keyint};
-  bool avif{encoding_defaults::default_svtav1hdr_avif};
-  std::vector<std::wstring> params{};
-  std::optional<int> color_primaries{};
-  std::optional<int> transfer_characteristics{};
-  std::optional<int> matrix_coefficients{};
-  std::optional<int> color_range{};
-  std::wstring mastering_display{};
-  std::wstring content_light{};
 };
 
 struct EncodeDiagnostics {
@@ -190,16 +169,8 @@ struct EncodeDiagnostics {
   std::string color_metadata_source{};
   std::string color_reason{};
   std::string fallback_reason{};
-  bool encoder_experimental{};
   std::string encoder_license{};
   std::string integration_mode{};
-  std::string svtav1hdr_helper_path{};
-  std::optional<int> svtav1hdr_crf{};
-  std::optional<int> svtav1hdr_preset{};
-  std::string svtav1hdr_tune{};
-  std::optional<int> svtav1hdr_keyint{};
-  std::string svtav1hdr_hdr_metadata{};
-  std::string svtav1hdr_note{};
   int jpegli_progressive_level{
       encoding_defaults::default_jpegli_progressive_level};
   bool jpegli_optimize_huffman{
@@ -273,7 +244,6 @@ struct NativeEncodeSettings {
   int jpegli_progressive_level{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
-  SvtAv1HdrSettings svtav1hdr{};
   ResourcePlan resources{};
   std::optional<GridPlan> avif_grid_plan{};
   std::span<const std::byte> jxl_rgb8_input{};
@@ -392,11 +362,11 @@ class CodecBackend {
       const NativeEncodeSettings& settings) const = 0;
 };
 
-SpeedMapping map_avif_speed_to_svt_preset(int speed) {
+SpeedMapping map_avif_speed_to_aom_cpu_used(int speed) {
   speed = std::clamp(speed, 0, 10);
   return SpeedMapping{.user_speed = speed,
-                      .codec_value = std::clamp(10 - speed, 0, 10),
-                      .codec_key = "svt:preset"};
+                      .codec_value = speed,
+                      .codec_key = "aom:cpu-used"};
 }
 
 SpeedMapping map_webp_speed_to_method(int speed) {
@@ -427,7 +397,7 @@ SpeedMapping map_speed_for_format(OutputFormat format, int speed) {
       return SpeedMapping{.user_speed = -1, .codec_value = -1, .codec_key = ""};
     case OutputFormat::avif:
     default:
-      return map_avif_speed_to_svt_preset(speed);
+      return map_avif_speed_to_aom_cpu_used(speed);
   }
 }
 

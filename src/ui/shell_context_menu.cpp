@@ -10,6 +10,8 @@
 
 #include <algorithm>
 #include <format>
+#include <cwctype>
+#include <map>
 #include <set>
 #include <utility>
 
@@ -25,7 +27,9 @@ constexpr std::wstring_view kDirectoryParent =
 // Current Microsoft Learn documents the child-key form instead, so this is a
 // Windows compatibility contract, not a claim about documented behavior.
 constexpr std::wstring_view kSharedTree =
-    L"Software\\Classes\\AWJimage.ContextMenu.v3";
+    L"Software\\Classes\\AWJimage.ContextMenu.v4.A";
+constexpr std::wstring_view kSharedTreeV3 = L"Software\\Classes\\AWJimage.ContextMenu.v3";
+constexpr std::wstring_view kTransaction = L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction";
 constexpr std::wstring_view kLegacySharedTreeV2 =
     L"Software\\Classes\\AWJimage.ContextMenu.v2";
 constexpr std::wstring_view kLegacyImageParent =
@@ -103,12 +107,13 @@ class RegistryKey {
   HKEY key_{};
 };
 
-std::expected<RegistryKey, std::string> create_key(std::wstring_view subkey) {
+std::expected<RegistryKey, std::string> create_key(std::wstring_view subkey,
+                                                  REGSAM access = KEY_READ | KEY_WRITE) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
   const auto status = RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr,
                                       REG_OPTION_NON_VOLATILE,
-                                      KEY_READ | KEY_WRITE, nullptr, &raw, nullptr);
+                                      access, nullptr, &raw, nullptr);
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("创建右键菜单注册表项", subkey, status)};
   }
@@ -363,12 +368,7 @@ std::wstring alpha_arg(int index) {
 }
 
 std::wstring avif_encoder_arg(int index) {
-  switch (index) {
-    case 1: return L"svt";
-    case 2: return L"aom";
-    case 3: return L"zenrav1e";
-    default: return L"auto";
-  }
+  return index == 0 ? L"auto" : index == 1 ? L"aom" : L"invalid";
 }
 
 std::wstring avif_color_representation_arg(int index) {
@@ -419,18 +419,6 @@ std::vector<std::wstring> current_parent_roots_for_all_extensions() {
   return roots;
 }
 
-std::expected<void, std::string> cleanup_owned_roots() {
-  std::string errors;
-  for (const auto& root : owned_root_keys()) {
-    if (auto removed = delete_tree(root); !removed) {
-      if (!errors.empty()) errors += " ";
-      errors += removed.error();
-    }
-  }
-  if (!errors.empty()) return std::unexpected{std::move(errors)};
-  return {};
-}
-
 std::expected<void, std::string> apply_schema(const RegistrySchema& schema) {
   for (const auto& key_path : schema.keys) {
     auto key = create_key(key_path);
@@ -473,7 +461,11 @@ std::span<const CommandSpec> command_specs() noexcept {
 
 std::wstring image_parent_key() { return std::wstring{kImageParent}; }
 std::wstring directory_parent_key() { return std::wstring{kDirectoryParent}; }
-std::wstring shared_tree_key() { return std::wstring{kSharedTree}; }
+std::wstring shared_tree_key(int slot) {
+  auto key = std::wstring{kSharedTree};
+  if (slot == 1) key.back() = L'B';
+  return key;
+}
 std::wstring legacy_shared_tree_key() { return std::wstring{kLegacySharedTreeV2}; }
 
 std::wstring extension_parent_key(std::wstring_view extension) {
@@ -489,6 +481,8 @@ std::vector<std::wstring> legacy_root_keys() {
   roots.emplace_back(kLegacyDirectoryParent);
   roots.emplace_back(kLegacySharedTree);
   roots.emplace_back(kLegacySharedTreeV2);
+  roots.emplace_back(kSharedTreeV3);
+  roots.emplace_back(kImageParent);
   for (const auto extension : kSupportedExtensions) {
     roots.push_back(std::format(
         L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\AWJImage",
@@ -501,7 +495,8 @@ std::vector<std::wstring> legacy_root_keys() {
 
 std::vector<std::wstring> owned_root_keys() {
   auto roots = legacy_root_keys();
-  roots.push_back(shared_tree_key());
+  roots.push_back(shared_tree_key(0));
+  roots.push_back(shared_tree_key(1));
   auto current = current_parent_roots_for_all_extensions();
   roots.insert(roots.end(), current.begin(), current.end());
   // No current icofile root is installed, but remove this owned name if an interrupted
@@ -513,15 +508,10 @@ std::vector<std::wstring> owned_root_keys() {
   return roots;
 }
 
-InstallPlan build_install_plan(std::span<const ExtensionPerception> perceptions) {
+InstallPlan build_install_plan() {
   InstallPlan plan;
-  for (const auto& perception : perceptions) {
-    if (!perception.is_image) plan.fallback_extensions.push_back(perception.extension);
-  }
-  std::ranges::sort(plan.fallback_extensions);
-  plan.fallback_extensions.erase(
-      std::unique(plan.fallback_extensions.begin(), plan.fallback_extensions.end()),
-      plan.fallback_extensions.end());
+  for (const auto extension : supported_extensions()) plan.extensions.emplace_back(extension);
+  std::ranges::sort(plan.extensions);
   return plan;
 }
 
@@ -540,7 +530,7 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
   const bool is_jxl = format == L"jxl";
   const bool is_jpgli = format == L"jpgli";
   const bool is_png = format == L"png";
-  if (!is_png && !params.quality_text.empty()) append_option(command, L"--quality", params.quality_text);
+  if (!params.quality_text.empty()) append_option(command, L"--quality", params.quality_text);
   if ((is_avif || is_webp || is_jpgli || is_png) && !params.bit_depth_text.empty()) {
     append_option(command, L"--bit-depth", params.bit_depth_text);
   }
@@ -576,7 +566,7 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
     append_option(command, L"--chroma", chroma_arg(params.chroma_index));
     append_option(command, L"--jpegli-progressive-level",
                   std::to_wstring(std::clamp(params.jpegli_progressive_index, 0, 2)));
-    append_arg(command, params.jpegli_optimize_huffman
+    append_arg(command, params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman
                             ? L"--jpegli-optimize-huffman"
                             : L"--no-jpegli-optimize-huffman");
     if (params.jpegli_xyb) append_arg(command, L"--jpegli-xyb");
@@ -587,10 +577,11 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
 
 RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
-                                     const InstallPlan& plan) {
+                                     const InstallPlan& plan,
+                                     std::span<const std::wstring> preset_names,
+                                     int slot) {
   RegistrySchema schema{.plan = plan};
-  schema.parent_roots.push_back(image_parent_key());
-  for (const auto& extension : plan.fallback_extensions) {
+  for (const auto& extension : plan.extensions) {
     schema.parent_roots.push_back(extension_parent_key(extension));
   }
   schema.parent_roots.push_back(directory_parent_key());
@@ -599,7 +590,7 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                             schema.parent_roots.end());
 
   const auto icon = icon_value(awj_exe);
-  const auto shared = shared_tree_key();
+  const auto shared = shared_tree_key(slot);
   const auto shared_shell = shared + L"\\shell";
   schema.keys.push_back(shared);
   schema.keys.push_back(shared_shell);
@@ -622,132 +613,487 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                    command.append_png_suffix));
   }
 
+  for (std::size_t index = 0; index < preset_names.size(); ++index) {
+    const auto parent = std::format(L"{}\\AWJimage.Preset.{:02}", shared_shell, index);
+    const auto subtree = parent + L"\\shell";
+    schema.keys.push_back(parent);
+    schema.keys.push_back(subtree);
+    append_string_spec(schema.values, parent, L"MUIVerb", preset_names[index]);
+    append_string_spec(schema.values, parent, L"Icon", icon);
+    append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
+    append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
+                       parent.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
+    for (const auto& spec : kCommands) {
+      if (spec.append_png_suffix) continue;
+      const auto verb = subtree + L"\\" + std::wstring{spec.canonical_verb};
+      const auto command_key = verb + L"\\command";
+      schema.keys.push_back(verb);
+      schema.keys.push_back(command_key);
+      append_string_spec(schema.values, verb, L"MUIVerb", std::wstring{spec.label});
+      append_string_spec(schema.values, verb, L"Icon", icon);
+      append_string_spec(schema.values, verb, L"MultiSelectModel", std::wstring{kMultiSelectModel});
+      auto command = quote_windows_arg(awj_exe.wstring(), true);
+      append_arg(command, L"--shell-window");
+      append_arg(command, L"--shell-convert");
+      append_option(command, L"--preset", preset_names[index]);
+      append_option(command, L"--format", spec.format);
+      append_option(command, L"--collision", L"number");
+      command += L" -i \"%1\" %*";
+      append_string_spec(schema.values, command_key, L"", std::move(command));
+    }
+  }
+
   for (const auto& parent : schema.parent_roots) {
     schema.keys.push_back(parent);
     append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
     append_string_spec(schema.values, parent, L"Icon", icon);
     append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
     append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
-                       std::wstring{shared_tree_reference});
+                       shared.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
     append_owned_markers(schema.values, parent);
   }
   return schema;
 }
 
 std::expected<InstallPlan, std::string> detect_install_plan() {
-  std::vector<ExtensionPerception> perceptions;
-  perceptions.reserve(std::size(kSupportedExtensions));
-  for (const auto extension : kSupportedExtensions) {
-    PERCEIVED perceived = PERCEIVED_TYPE_UNSPECIFIED;
-    PERCEIVEDFLAG flags = PERCEIVEDFLAG_UNDEFINED;
-    const std::wstring extension_storage{extension};
-    const HRESULT status = AssocGetPerceivedType(extension_storage.c_str(), &perceived,
-                                                 &flags, nullptr);
-    perceptions.push_back(ExtensionPerception{
-        .extension = extension_storage,
-        .is_image = SUCCEEDED(status) && perceived == PERCEIVED_TYPE_IMAGE});
-  }
-  return build_install_plan(perceptions);
+  return build_install_plan();
 }
 
-std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
-                                         const MenuParams& menu_params) {
-  auto plan = detect_install_plan();
-  if (!plan) return std::unexpected{plan.error()};
-  if (auto cleaned = cleanup_owned_roots(); !cleaned) return cleaned;
-  const auto schema = build_registry_schema(awj_exe, menu_params, *plan);
-  if (auto applied = apply_schema(schema); !applied) {
-    auto rollback = cleanup_owned_roots();
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-    if (!rollback) {
-      return std::unexpected{applied.error() + " 回滚右键菜单注册失败：" + rollback.error()};
-    }
-    return applied;
-  }
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  return {};
-}
+namespace {
 
-std::expected<void, std::string> remove() {
-  auto removed = cleanup_owned_roots();
-  if (!removed) return removed;
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  return {};
-}
-
-std::expected<std::optional<std::string>, std::string> warning(
-    const std::filesystem::path& awj_exe,
-    const MenuParams& menu_params) {
-  bool any_owned = false;
-  for (const auto& root : owned_root_keys()) {
-    auto exists = key_exists(root);
-    if (!exists) return std::unexpected{exists.error()};
-    any_owned = any_owned || *exists;
-  }
-  if (!any_owned) return std::optional<std::string>{};
-
-  for (const auto& root : legacy_root_keys()) {
-    auto exists = key_exists(root);
-    if (!exists) return std::unexpected{exists.error()};
-    if (*exists) {
-      return std::optional<std::string>{"检测到旧版右键菜单，点击移除后重新安装。"};
+struct RegistrationLock {
+  HANDLE handle{CreateMutexW(nullptr, FALSE, L"Local\\AWJimage.ContextMenu.v4")};
+  bool held{};
+  RegistrationLock() {
+    if (handle) {
+      const DWORD result = WaitForSingleObject(handle, 15000);
+      held = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
     }
   }
+  ~RegistrationLock() {
+    if (held) ReleaseMutex(handle);
+    if (handle) CloseHandle(handle);
+  }
+};
 
-  auto plan = detect_install_plan();
-  if (!plan) return std::unexpected{plan.error()};
-  const auto schema = build_registry_schema(awj_exe, menu_params, *plan);
-  for (const auto& key_path : schema.keys) {
-    auto exists = key_exists(key_path);
-    if (!exists) return std::unexpected{exists.error()};
-    if (!*exists) {
-      return std::optional<std::string>{
-          "右键菜单子键结构不完整，请重新安装右键菜单。"};
+bool is_awj_command(std::wstring_view command) {
+  int argc = 0;
+  const std::wstring text{command};
+  auto argv = CommandLineToArgvW(text.c_str(), &argc);
+  if (!argv) return false;
+  bool awj = argc > 0 &&
+      _wcsicmp(std::filesystem::path{argv[0]}.filename().c_str(), L"AWJ.exe") == 0;
+  bool shell_convert = false;
+  for (int i = 1; i < argc; ++i) {
+    if (std::wstring_view{argv[i]} == L"--shell-convert") shell_convert = true;
+  }
+  LocalFree(argv);
+  return awj && shell_convert;
+}
+
+// Only the exact historical roots are candidates. An unmarked root must contain
+// an actual AWJ command, and may not contain commands belonging to another app.
+std::expected<bool, std::string> historical_commands(std::wstring_view root,
+                                                     bool& foreign_command,
+                                                     int depth = 0) {
+  if (depth > 16) return std::unexpected{"历史菜单嵌套过深，未进行清理。"};
+  bool found = false;
+  if (_wcsicmp(leaf_key_name(root).c_str(), L"command") == 0) {
+    auto command = read_string(root, L"");
+    if (!command) return std::unexpected{command.error()};
+    if (!*command || !is_awj_command(**command)) {
+      foreign_command = true;
+      return false;
+    }
+    return true;
+  }
+  auto children = child_keys(root);
+  if (!children) return std::unexpected{children.error()};
+  if (children->size() > 128) return std::unexpected{"历史菜单子项过多，未进行清理。"};
+  for (const auto& child : *children) {
+    auto value = historical_commands(std::wstring{root} + L"\\" + child, foreign_command, depth + 1);
+    if (!value) return std::unexpected{value.error()};
+    if (_wcsicmp(child.c_str(), L"command") == 0 && !*value) return false;
+    found = found || *value;
+  }
+  return found;
+}
+
+std::expected<bool, std::string> owned(std::wstring_view root) {
+  auto marker = read_string(root, owner_value_name);
+  if (!marker) return std::unexpected{marker.error()};
+  if (*marker) return **marker == owner_value;
+  const auto legacy = legacy_root_keys();
+  if (std::ranges::find(legacy, root) == legacy.end()) return false;
+  bool foreign_command = false;
+  auto commands = historical_commands(root, foreign_command);
+  if (!commands) return std::unexpected{commands.error()};
+  return *commands && !foreign_command;
+}
+
+std::expected<void, std::string> verify_schema(const RegistrySchema& schema) {
+  for (const auto& key : schema.keys) {
+    auto values = value_names(key);
+    if (!values) return std::unexpected{values.error()};
+    auto children = child_keys(key);
+    if (!children) return std::unexpected{children.error()};
+    if (*values != expected_value_names(schema, key) ||
+        *children != expected_children(schema, key)) {
+      return std::unexpected{"右键菜单 key/value 集合与预期不一致：" + narrow_ascii(key)};
     }
   }
   for (const auto& spec : schema.values) {
-    auto verified = verify_spec(spec);
-    if (!verified) return std::unexpected{verified.error()};
-    if (!*verified) {
-      return std::optional<std::string>{
-          "右键菜单与当前版本、程序路径或菜单参数不一致，请重新安装右键菜单。"};
+    auto valid = verify_spec(spec);
+    if (!valid) return std::unexpected{valid.error()};
+    if (!*valid) return std::unexpected{"右键菜单值或类型与预期不一致：" + narrow_ascii(spec.key)};
+  }
+  return {};
+}
+
+std::expected<void, std::string> copy_tree(std::wstring_view source,
+                                         std::wstring_view destination) {
+  auto from = open_key(source, KEY_READ);
+  if (!from) return std::unexpected{from.error()};
+  auto to = create_key(destination, KEY_ALL_ACCESS);
+  if (!to) return std::unexpected{to.error()};
+  const auto status = RegCopyTreeW(from->get(), nullptr, to->get());
+  if (status != ERROR_SUCCESS) return std::unexpected{registry_error("复制注册快照", source, status)};
+  return {};
+}
+
+std::expected<void, std::string> flush_journal() {
+  auto key = open_key(kTransaction, KEY_READ);
+  if (!key) return std::unexpected{key.error()};
+  const auto status = RegFlushKey(key->get());
+  if (status != ERROR_SUCCESS) return std::unexpected{registry_error("保存注册事务", kTransaction, status)};
+  return {};
+}
+
+struct SnapshotRoot {
+  std::wstring path;
+  bool present{};
+  bool managed{};
+};
+
+std::expected<std::vector<SnapshotRoot>, std::string> snapshot_roots(
+    const RegistrySchema& schema) {
+  std::vector<SnapshotRoot> roots;
+  for (const auto& path : owned_root_keys()) {
+    auto exists = key_exists(path);
+    if (!exists) return std::unexpected{exists.error()};
+    bool managed = true;
+    if (*exists) {
+      auto ours = owned(path);
+      if (!ours) return std::unexpected{ours.error()};
+      managed = *ours;
+    }
+    if (!managed && std::ranges::find(schema.keys, path) != schema.keys.end()) {
+      return std::unexpected{"注册位置被非 AWJ 项占用，未修改：" + narrow_ascii(path)};
+    }
+    roots.push_back({path, *exists, managed});
+  }
+  return roots;
+}
+
+std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& roots) {
+  if (auto r = set_string(kTransaction, owner_value_name, owner_value); !r) return r;
+  if (auto r = set_dword(kTransaction, schema_value_name, schema_version); !r) return r;
+  if (auto r = set_dword(kTransaction, L"State", 0); !r) return r;
+  for (std::size_t index = 0; index < roots.size(); ++index) {
+    const auto& root = roots[index];
+    const auto key = std::format(L"{}\\{:03}", kTransaction, index);
+    if (auto r = set_string(key, L"Path", root.path); !r) return r;
+    if (auto r = set_dword(key, L"Present", root.present); !r) return r;
+    if (auto r = set_dword(key, L"Managed", root.managed); !r) return r;
+    if (root.present && root.managed) {
+      if (auto r = copy_tree(root.path, key + L"\\Data"); !r) return r;
     }
   }
+  if (auto r = set_dword(kTransaction, L"Count", static_cast<DWORD>(roots.size())); !r) return r;
+  if (auto r = set_dword(kTransaction, L"State", 1); !r) return r;
+  return flush_journal();
+}
 
-  for (const auto& key_path : schema.keys) {
-    auto actual_values = value_names(key_path);
-    if (!actual_values) return std::unexpected{actual_values.error()};
-    if (*actual_values != expected_value_names(schema, key_path)) {
-      return std::optional<std::string>{
-          "右键菜单含未预期的注册表值（包括父 Default/SubCommands 等），请重新安装右键菜单。"};
+std::expected<void, std::string> recover_locked() {
+  auto exists = key_exists(kTransaction);
+  if (!exists) return std::unexpected{exists.error()};
+  if (!*exists) return {};
+  auto marker = read_string(kTransaction, owner_value_name);
+  if (!marker || !*marker || **marker != owner_value) {
+    return std::unexpected{"注册事务缺少 AWJ ownership，未修改注册表。"};
+  }
+  auto state = read_dword(kTransaction, L"State");
+  if (!state) return std::unexpected{state.error()};
+  // State 0 never changes live registrations; State 2 has fully committed.
+  if (!*state || **state == 0 || **state == 2) return delete_tree(kTransaction);
+  if (**state != 1) return std::unexpected{"注册事务状态无效。"};
+  auto count = read_dword(kTransaction, L"Count");
+  const auto allowed = owned_root_keys();
+  if (!count || !*count || **count != allowed.size()) {
+    return std::unexpected{"注册快照不完整，未继续修改。"};
+  }
+  std::vector<SnapshotRoot> roots;
+  for (std::size_t i = 0; i < allowed.size(); ++i) {
+    const auto key = std::format(L"{}\\{:03}", kTransaction, i);
+    auto path = read_string(key, L"Path");
+    auto present = read_dword(key, L"Present");
+    auto managed = read_dword(key, L"Managed");
+    if (!path || !*path || **path != allowed[i] || !present || !*present ||
+        **present > 1 || !managed || !*managed || **managed > 1) {
+      return std::unexpected{"注册快照字段无效，未继续修改。"};
     }
-    auto actual_children = child_keys(key_path);
-    if (!actual_children) return std::unexpected{actual_children.error()};
-    if (*actual_children != expected_children(schema, key_path)) {
-      return std::optional<std::string>{
-          "右键菜单含未预期或缺失的子键，请重新安装右键菜单。"};
+    if (**present && **managed) {
+      auto data = key_exists(key + L"\\Data");
+      if (!data || !*data) return std::unexpected{"注册快照数据缺失。"};
+    }
+    roots.push_back({**path, **present != 0, **managed != 0});
+  }
+  std::string errors;
+  // Validate every snapshot before restoring any root. Keep the journal if a
+  // restore fails so the next launch can retry with the same original data.
+  for (std::size_t i = 0; i < roots.size(); ++i) {
+    const auto& root = roots[i];
+    if (!root.managed) continue;
+    auto restored = delete_tree(root.path);
+    if (restored && root.present) {
+      restored = copy_tree(std::format(L"{}\\{:03}\\Data", kTransaction, i), root.path);
+    }
+    if (!restored) errors += restored.error() + " ";
+  }
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  if (!errors.empty()) return std::unexpected{std::move(errors)};
+  return delete_tree(kTransaction);
+}
+
+std::expected<int, std::string> active_slot() {
+  auto reference = read_string(directory_parent_key(), kExtendedSubCommandsKey);
+  if (!reference) return std::unexpected{reference.error()};
+  return *reference && **reference == L"AWJimage.ContextMenu.v4.B" ? 1 : 0;
+}
+
+std::expected<void, std::string> validate_request(const std::filesystem::path& exe,
+                                                const RegistrySchema& schema,
+                                                std::span<const std::wstring> names) {
+  std::error_code ec;
+  if (!exe.is_absolute() || !std::filesystem::is_regular_file(exe, ec) || ec) {
+    return std::unexpected{"右键菜单程序必须是存在的绝对路径普通文件。"};
+  }
+  if (names.size() > 10) return std::unexpected{"最多同时注入 10 个预设。"};
+  std::set<std::wstring> unique;
+  for (const auto& name : names) {
+    auto normalized = name;
+    std::ranges::transform(normalized, normalized.begin(), [](wchar_t c) { return std::towlower(c); });
+    if (name.empty() || name.size() > 240 ||
+        std::ranges::any_of(name, [](wchar_t c) { return c < 32; }) ||
+        !unique.insert(normalized).second) {
+      return std::unexpected{"注入预设名称无效或重复。"};
     }
   }
+  for (const auto& value : schema.values) {
+    if (value.kind != RegistryValueKind::string) continue;
+    if (value.string_value.size() >= 30000 ||
+        value.string_value.find(L'\0') != std::wstring::npos ||
+        value.string_value.find_first_of(L"\r\n") != std::wstring::npos) {
+      return std::unexpected{"菜单参数含控制字符或超过 Windows 命令长度限制。"};
+    }
+  }
+  return {};
+}
 
-  const std::set<std::wstring> expected_parents(schema.parent_roots.begin(),
-                                                schema.parent_roots.end());
-  for (const auto& root : current_parent_roots_for_all_extensions()) {
+std::expected<void, std::string> verify_no_obsolete_roots(const RegistrySchema& schema) {
+  for (const auto& root : owned_root_keys()) {
+    if (std::ranges::find(schema.keys, root) != schema.keys.end()) continue;
     auto exists = key_exists(root);
     if (!exists) return std::unexpected{exists.error()};
-    if (*exists != expected_parents.contains(root)) {
-      return std::optional<std::string>{
-          "右键菜单 fallback 与当前系统文件分类不一致，请重新安装右键菜单。"};
+    if (!*exists) continue;
+    auto ours = owned(root);
+    if (!ours) return std::unexpected{ours.error()};
+    if (*ours) return std::unexpected{"旧菜单或非活动树尚未清除：" + narrow_ascii(root)};
+  }
+  return {};
+}
+
+std::expected<void, std::string> commit_journal() {
+  if (auto result = set_dword(kTransaction, L"State", 2); !result) return result;
+  if (auto result = flush_journal(); !result) return result;
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return delete_tree(kTransaction);
+}
+
+}  // namespace
+
+std::expected<void, std::string> recover() {
+  RegistrationLock lock;
+  if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+  return recover_locked();
+}
+
+std::expected<bool, std::string> is_installed() {
+  for (const auto& root : owned_root_keys()) {
+    auto exists = key_exists(root);
+    if (!exists) return std::unexpected{exists.error()};
+    if (!*exists) continue;
+    auto ours = owned(root);
+    if (!ours) return std::unexpected{ours.error()};
+    if (*ours) return true;
+  }
+  return false;
+}
+
+std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
+                                         const MenuParams& menu_params,
+                                         std::span<const std::wstring> preset_names,
+                                         bool force_install) {
+  RegistrationLock lock;
+  if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+  if (auto recovered = recover_locked(); !recovered) return recovered;
+  auto installed = is_installed();
+  if (!installed) return std::unexpected{installed.error()};
+  if (!*installed && !force_install) return {};
+  std::error_code ec;
+  const auto exe = std::filesystem::absolute(awj_exe, ec).lexically_normal();
+  if (ec) return std::unexpected{"无法确定程序的绝对路径。"};
+  auto active = active_slot();
+  if (!active) return std::unexpected{active.error()};
+  const auto plan = build_install_plan();
+  auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active);
+  if (auto valid = validate_request(exe, current, preset_names); !valid) return valid;
+  if (verify_schema(current) && verify_no_obsolete_roots(current)) return {};
+  const int next = *installed ? 1 - *active : 0;
+  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next);
+  auto roots = snapshot_roots(schema);
+  if (!roots) return std::unexpected{roots.error()};
+  if (auto saved = begin_journal(*roots); !saved) {
+    auto recovered = recover_locked();
+    return std::unexpected{saved.error() + (recovered ? "" : " " + recovered.error())};
+  }
+  auto apply = [&]() -> std::expected<void, std::string> {
+    const auto shared = shared_tree_key(next);
+    if (auto r = delete_tree(shared); !r) return r;
+    RegistrySchema tree = schema;
+    std::erase_if(tree.keys, [&](const auto& key) {
+      return key != shared && !key.starts_with(shared + L"\\");
+    });
+    std::erase_if(tree.values, [&](const auto& value) {
+      return std::ranges::find(tree.keys, value.key) == tree.keys.end();
+    });
+    if (auto r = apply_schema(tree); !r) return r;
+    if (auto r = verify_schema(tree); !r) return r;
+    // Parents switch only after the complete inactive tree is readable.
+    for (const auto& parent : schema.parent_roots) {
+      if (auto r = delete_tree(parent); !r) return r;
+      for (const auto& value : schema.values) {
+        if (value.key != parent) continue;
+        auto written = value.kind == RegistryValueKind::string
+            ? set_string(value.key, value.name, value.string_value)
+            : set_dword(value.key, value.name, value.dword_value);
+        if (!written) return written;
+      }
+    }
+    if (auto r = verify_schema(schema); !r) return r;
+    for (const auto& root : *roots) {
+      if (!root.managed || std::ranges::find(schema.keys, root.path) != schema.keys.end()) continue;
+      if (auto r = delete_tree(root.path); !r) return r;
+    }
+    if (auto r = verify_no_obsolete_roots(schema); !r) return r;
+    return verify_schema(schema);
+  };
+  if (auto applied = apply(); !applied) {
+    auto rolled_back = recover_locked();
+    return std::unexpected{applied.error() + (rolled_back ? " 已恢复原注册。" : " 回滚失败：" + rolled_back.error())};
+  }
+  return commit_journal();
+}
+
+std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
+                                       const MenuParams& menu_params,
+                                       std::span<const std::wstring> preset_names) {
+  return reconcile(awj_exe, menu_params, preset_names, true);
+}
+
+std::expected<void, std::string> remove() {
+  RegistrationLock lock;
+  if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+  if (auto recovered = recover_locked(); !recovered) return recovered;
+  const RegistrySchema empty;
+  auto roots = snapshot_roots(empty);
+  if (!roots) return std::unexpected{roots.error()};
+  if (auto saved = begin_journal(*roots); !saved) return saved;
+  for (const auto& root : *roots) {
+    if (!root.managed) continue;
+    if (auto removed = delete_tree(root.path); !removed) {
+      auto restored = recover_locked();
+      return std::unexpected{removed.error() + (restored ? " 已恢复原注册。" : " " + restored.error())};
     }
   }
-  const auto current_icofile =
-      std::format(L"Software\\Classes\\icofile\\shell\\{}", parent_canonical_verb);
-  auto icofile_exists = key_exists(current_icofile);
-  if (!icofile_exists) return std::unexpected{icofile_exists.error()};
-  if (*icofile_exists) {
-    return std::optional<std::string>{
-        "右键菜单仍含不需要的 icofile 专用注册，请重新安装右键菜单。"};
+  if (auto verified = verify_no_obsolete_roots(empty); !verified) {
+    auto restored = recover_locked();
+    return std::unexpected{verified.error() + (restored ? " 已恢复原注册。" : " " + restored.error())};
   }
+  return commit_journal();
+}
+
+std::expected<std::optional<std::string>, std::string> warning(
+    const std::filesystem::path& awj_exe, const MenuParams& menu_params,
+    std::span<const std::wstring> preset_names) {
+  auto installed = is_installed();
+  if (!installed) return std::unexpected{installed.error()};
+  if (!*installed) return std::optional<std::string>{};
+  auto slot = active_slot();
+  if (!slot) return std::unexpected{slot.error()};
+  const auto schema = build_registry_schema(awj_exe, menu_params, build_install_plan(), preset_names, *slot);
+  if (auto valid = verify_schema(schema); !valid) return std::optional<std::string>{valid.error()};
+  if (auto valid = verify_no_obsolete_roots(schema); !valid) return std::optional<std::string>{valid.error()};
   return std::optional<std::string>{};
+}
+
+namespace {
+constexpr std::wstring_view kMachineCommandPrefix =
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell\\";
+// PR #3 used exactly these six names. Never accept registry paths from argv.
+constexpr std::wstring_view kMachineCommands[] = {
+    L"AWJImage.png", L"AWJImage.webp", L"AWJImage.avif",
+    L"AWJImage.avif-png", L"AWJImage.jxl", L"AWJImage.jpgli"};
+}
+
+std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands() {
+  std::vector<std::wstring> found;
+  for (const auto name : kMachineCommands) {
+    const auto path = std::wstring{kMachineCommandPrefix} + std::wstring{name} + L"\\command";
+    wchar_t command[32768]{};
+    DWORD bytes = sizeof(command);
+    const auto status = RegGetValueW(HKEY_LOCAL_MACHINE, path.c_str(), nullptr,
+        RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, command, &bytes);
+    if (missing_registry_status(status)) continue;
+    if (status != ERROR_SUCCESS) return std::unexpected{registry_error("检查历史系统菜单", path, status)};
+    if (is_awj_command(command)) found.emplace_back(name);
+  }
+  return found;
+}
+
+std::expected<void, std::string> remove_legacy_machine_commands() {
+  auto found = legacy_machine_commands();
+  if (!found) return std::unexpected{found.error()};
+  HKEY raw = nullptr;
+  const auto opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell",
+      0, KEY_READ | KEY_WRITE | KEY_WOW64_64KEY, &raw);
+  if (missing_registry_status(opened)) return {};
+  if (opened != ERROR_SUCCESS) return std::unexpected{registry_error("打开历史系统菜单", kMachineCommandPrefix, opened)};
+  RegistryKey parent{raw};
+  std::string errors;
+  for (const auto& name : *found) {
+    const auto status = RegDeleteTreeW(parent.get(), name.c_str());
+    if (status != ERROR_SUCCESS && !missing_registry_status(status)) {
+      errors += registry_error("移除历史系统菜单", name, status) + " ";
+    }
+  }
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  if (!errors.empty()) return std::unexpected{std::move(errors)};
+  auto remaining = legacy_machine_commands();
+  if (!remaining) return std::unexpected{remaining.error()};
+  if (!remaining->empty()) return std::unexpected{"历史系统菜单尚未完全清除。"};
+  return {};
 }
 
 }  // namespace awj::shell_context_menu

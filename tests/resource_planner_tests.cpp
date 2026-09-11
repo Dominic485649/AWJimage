@@ -6,6 +6,7 @@
 import awj.codec;
 import awj.config;
 import awj.encoding_defaults;
+import awj.large_image_plan;
 import awj.resource_planner;
 
 namespace {
@@ -20,6 +21,14 @@ int fail(std::string_view message) {
 
 int main() {
   constexpr std::uint64_t gib = 1024ull * 1024ull * 1024ull;
+  const auto aom_working_set = awj::avif_encode_working_set_bytes_for_dimensions(
+      awj::make_image_dimensions(4096, 4096));
+  if (aom_working_set < gib + gib / 2)
+    return fail("AOM estimate is below measured encoder memory plus headroom");
+  const auto measured_budget = awj::plan_resources({.automatic_thread_budget = 8,
+      .file_count = 4, .memory_limit_bytes = 3 * gib, .estimated_bytes_per_file = aom_working_set});
+  if (measured_budget.file_parallelism != 1 || measured_budget.encoder_threads_per_file != 8)
+    return fail("AOM memory limit did not reassign the thread budget to the remaining file");
 
   // 可用内存偏紧时由 available*0.5 决定。
   const auto memory = awj::automatic_memory_limit(
@@ -85,10 +94,10 @@ int main() {
                                 .file_count = 13,
                                 .memory_limit_bytes = 0,
                                 .estimated_bytes_per_file = 1});
-  if (wide_batch.file_parallelism != 28 ||
-      wide_batch.encoder_threads_per_file != 1 ||
-      wide_batch.file_parallelism * wide_batch.encoder_threads_per_file != 28) {
-    return fail("超过 12 张图片时必须按单线程并发规划。");
+  if (wide_batch.file_parallelism != 13 ||
+      wide_batch.encoder_threads_per_file != 2 ||
+      wide_batch.file_parallelism * wide_batch.encoder_threads_per_file > 28) {
+    return fail("文件数低于 CPU 预算时应分配剩余线程。");
   }
 
   const auto three_files = awj::plan_resources(
@@ -107,18 +116,11 @@ int main() {
       awj::ResourcePlanRequest{.automatic_thread_budget = 28,
                                 .file_count = 12,
                                 .estimated_bytes_per_file = 1});
-  const auto forced_stage = awj::plan_resources(
-      awj::ResourcePlanRequest{.automatic_thread_budget = 28,
-                                .file_count = 5,
-                                .estimated_bytes_per_file = 1,
-                                .force_single_thread_per_file = true});
-  if (three_files.file_parallelism != 2 || three_files.encoder_threads_per_file != 4 ||
-      five_files.file_parallelism != 4 || five_files.encoder_threads_per_file != 3 ||
-      prime_budget.file_parallelism != 1 || prime_budget.encoder_threads_per_file != 7 ||
-      threshold_batch.file_parallelism != 7 ||
-      threshold_batch.encoder_threads_per_file != 4 ||
-      forced_stage.file_parallelism != 28 ||
-      forced_stage.encoder_threads_per_file != 1) {
+  if (three_files.file_parallelism != 3 || three_files.encoder_threads_per_file != 2 ||
+      five_files.file_parallelism != 5 || five_files.encoder_threads_per_file != 2 ||
+      prime_budget.file_parallelism != 3 || prime_budget.encoder_threads_per_file != 2 ||
+      threshold_batch.file_parallelism != 12 ||
+      threshold_batch.encoder_threads_per_file != 2) {
     return fail("线程预算未精确拆分为 encoder 线程与文件并发。");
   }
 
@@ -132,14 +134,14 @@ int main() {
     return fail("单文件 JXL 未收到完整线程预算。");
   }
 
-  const auto svt_single = awj::plan_resources(
+  const auto avif_single = awj::plan_resources(
       awj::ResourcePlanRequest{.automatic_thread_budget = 20,
                                 .file_count = 1,
                                 .memory_limit_bytes = 0,
                                 .estimated_bytes_per_file = 1});
-  if (svt_single.file_parallelism != 1 ||
-      svt_single.encoder_threads_per_file != 20) {
-    return fail("单文件 SVT 未收到完整线程预算。");
+  if (avif_single.file_parallelism != 1 ||
+      avif_single.encoder_threads_per_file != 20) {
+    return fail("单文件 AVIF 未收到完整线程预算。");
   }
 
   const auto memory_limited = awj::plan_resources(
@@ -147,10 +149,10 @@ int main() {
                                 .file_count = 12,
                                 .memory_limit_bytes = 300,
                                 .estimated_bytes_per_file = 128});
-  if (memory_limited.file_parallelism != 12 ||
-      memory_limited.encoder_threads_per_file != 1 ||
+  if (memory_limited.file_parallelism != 2 ||
+      memory_limited.encoder_threads_per_file != 6 ||
       memory_limited.memory_file_parallelism != 2) {
-    return fail("内存并发限制不应破坏 CPU 线程预算乘积。");
+    return fail("内存限制降低并发后必须重新分配每图线程。");
   }
 
   const auto grid_resources = awj::plan_grid_encode_resources(
@@ -199,7 +201,8 @@ int main() {
                          .memory_limit_bytes = 700,
                          .memory_file_parallelism = 8},
       4, 300);
-  if (large_mode_memory_tight.file_parallelism != 4 ||
+  if (large_mode_memory_tight.file_parallelism != 2 ||
+      large_mode_memory_tight.encoder_threads_per_file != 8 ||
       large_mode_memory_tight.memory_file_parallelism != 2) {
     return fail("大图模式内存预算未继续约束文件并发。");
   }
@@ -220,11 +223,27 @@ int main() {
   const auto webp_speed = awj::map_speed_for_format(awj::OutputFormat::webp, 10);
   const auto jxl_speed = awj::map_speed_for_format(awj::OutputFormat::jxl, 10);
   const auto jpegli_speed = awj::map_speed_for_format(awj::OutputFormat::jpgli, 10);
-  if (avif_speed.codec_value != 0 || webp_speed.codec_value != 0 ||
+  if (avif_speed.codec_value != 10 || webp_speed.codec_value != 0 ||
       jxl_speed.codec_value != 1 || jpegli_speed.codec_value != -1 ||
       !jpegli_speed.codec_key.empty()) {
     return fail("speed=10 未映射到最快 codec 档位。");
   }
 
+  for (int budget = 1; budget <= 32; ++budget) {
+    for (int files = 1; files <= 40; ++files) {
+      for (int memory_files = 1; memory_files <= 8; ++memory_files) {
+        const auto plan = awj::plan_resources({.automatic_thread_budget = budget,
+            .file_count = files, .memory_limit_bytes = static_cast<std::uint64_t>(memory_files) * 128,
+            .estimated_bytes_per_file = 128});
+        if (plan.file_parallelism > files || plan.file_parallelism > memory_files ||
+            plan.file_parallelism * plan.encoder_threads_per_file > budget ||
+            plan.encoder_threads_per_file != budget / plan.file_parallelism)
+          return fail("CPU/memory/file limits or thread redistribution invariant failed.");
+        const auto grid = awj::plan_grid_encode_resources(plan, 5);
+        if (grid.file_parallelism * grid.encoder_threads_per_file > plan.encoder_threads_per_file)
+          return fail("Grid exceeded its per-file CPU budget.");
+      }
+    }
+  }
   return 0;
 }

@@ -618,30 +618,6 @@ int main() {
     return fail("AOM edge grid auto mode did not reject incompatible 420 chroma.");
   }
 
-  auto zen = awj::make_avif_image_encoder(awj::AvifEncoderMode::zenrav1e);
-  auto zen_encoded = zen->encode(make_test_image(), settings(10, awj::ChromaMode::yuv444,
-                                                             awj::AvifEncoderMode::zenrav1e));
-  if (awj::avif_zenravif_encoder_available()) {
-    if (!zen_encoded || zen_encoded->encoded.bytes.empty() ||
-        zen_encoded->encoded.codec_name != "zenravif") {
-      return fail(zen_encoded ? "zenravif did not produce bytes." : zen_encoded.error());
-    }
-    auto zen_alpha_settings = settings(8, awj::ChromaMode::yuv444,
-                                       awj::AvifEncoderMode::zenrav1e);
-    zen_alpha_settings.quality = 1;
-    zen_alpha_settings.source_has_alpha_channel = true;
-    zen_alpha_settings.encoder_supports_alpha = false;
-    zen_alpha_settings.applied_alpha = "kept";
-    auto zen_alpha_encoded = zen->encode(alpha_image, zen_alpha_settings);
-    if (zen_alpha_encoded ||
-        zen_alpha_encoded.error().find("alpha") == std::string::npos ||
-        zen_alpha_encoded.error().find("aom") == std::string::npos) {
-      return fail("zenrav1e alpha did not require the AOM path.");
-    }
-  } else if (zen_encoded || zen_encoded.error().find("not available") == std::string::npos) {
-    return fail("zenravif unavailable build did not report clear error.");
-  }
-
   const auto temp_dir = std::filesystem::temp_directory_path();
   if (const int rc = decode_bytes_to_temp(encoded->encoded,
                                           temp_dir / "avif-aom-codec-test.avif",

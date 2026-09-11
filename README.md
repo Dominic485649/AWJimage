@@ -2,35 +2,28 @@
 
 English: [README.en.md](README.en.md)
 
-普通用户推荐：[GitHub Release 1.0.6](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6)。当前测试 prerelease [1.0.7](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.7) 与 1.0.6 功能完全一致，仅用于 1.0.6→1.0.7 的归档自动更新测试。
+当前源码版本为 **1.0.12**。本地验证见 [验证记录](docs/validation-1.0.12.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
 
-AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 GCC Release ELF。当前内置转换路径只保留 native codec：
+AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 Release ELF。当前内置转换路径只保留 native codec：
 
-- AVIF：libavif/AOM、实验 `zenrav1e` 与 `svt-av1-hdr`；Windows 和 Linux GCC Release 均静态链接
+- AVIF：libavif/AOM 与自动 AOM Grid；Windows 和 Linux Release 均静态链接
+- PNG：libpng；q100 不量化，q1–99 量化 RGB 有效精度
 - WebP：libwebp
 - JXL：libjxl
-- JPGLI：google/jpegli；Windows 与 Linux GCC Release 均可用，生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
+- JPGLI：google/jpegli；Windows 与 Linux Release 均可用，生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
 
 内置 ImageMagick/MagickWand 后端已经移除，Release 输出不再携带 ImageMagick XML、许可文件或模块目录。Magick 与 ffmpeg 以后只能作为外部集成重新引入；当前版本不处理该环节。
 
 Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-## 1.0.6 GitHub 发行包
+## 发行包
 
-从 [GitHub Release 1.0.6](https://github.com/Dominic485649/AWJimage/releases/tag/1.0.6) 下载与系统匹配的归档；1.0.6 的自定义资产只有这两个包，且不混装跨平台二进制：
+| 归档 | 精确内容 |
+|---|---|
+| `AWJ_Win.7z` | `AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt` |
+| `AWJ_Linux.7z` | `AWJ`、`LICENSE`、`NOTICE.txt` |
 
-| 归档 | 精确内容 | SHA-256 |
-|---|---|---|
-| [AWJ_Linux.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Linux.7z) | Linux ELF：`AWJ`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
-| [AWJ_Win.7z](https://github.com/Dominic485649/AWJimage/releases/download/1.0.6/AWJ_Win.7z) | Windows：`AWJ.exe`、`AWJ.com`，以及校验、许可证、第三方通知和 `BUILD_INFO.txt` | 见 Release 正文 |
-
-归档使用 7-Zip 的 LZMA2、最高压缩级别和单线程参数（`-t7z -m0=lzma2 -mx=9 -mmt=1 -mf=off`）生成，并在上传前通过 `7z t` 验证。`-mf=off` 禁用 `.exe` 的自动 BCJ2 过滤，确保压缩方法保持 LZMA2。自 1.0.6 起，`AWJ_Linux.7z` 必须在原生 Linux 文件系统中打包和解压验证，保留 `AWJ` 的可执行位；Windows 端只复核归档内容与哈希。
-
-如需使用ffmpeg作为后端可用参考下面两个仓库
-
-[AVIF-Console](https://github.com/CialloKing/AVIF-Console)
-
-[FFmpegPictureUI](https://github.com/luoye-cpu/ffmpegPictureUI)
+两包均为扁平目录，使用 LZMA2 最高压缩、单线程且关闭自动过滤（`-m0=lzma2 -mx=9 -mmt=1 -mf=off`）。Linux 包在原生 Linux 文件系统打包并验证可执行位；发布正文列出实际大小和 SHA-256。构建信息、第三方通知与完整许可证汇总于 `NOTICE.txt`。
 
 ## 构建
 
@@ -55,7 +48,7 @@ cmake --build --preset linux-x64-release --target AWJ
 - 支持 C++23 modules 的编译器（GCC 16+ 或 Clang 20+）与 Ninja、CMake 3.30+
 - vcpkg：`VCPKG_ROOT` 指向其检出目录，manifest 依赖由 `vcpkg.json` 声明
 - Linux 系统构建工具：`autoconf`、`autoconf-archive`、`automake` 和 `libtool`（vcpkg 构建 libsodium 需要）
-- Rust toolchain（`cargo` 在 `PATH` 中）：`third_party/zenravif-bridge` 会被构建为静态库；不需要时用 `-DAWJ_ENABLE_ZENRAVIF=OFF` 关闭
+- Rust toolchain（`cargo` 在 `PATH` 中）：用于构建 Slint。
 - Vulkan：`find_package(Vulkan REQUIRED)`，由 vcpkg 的 `vulkan-headers` / `vulkan-loader` 满足
 - DXC：visual_quality shader 在构建期编译为 SPIR-V，优先使用 vcpkg `directx-dxc` 提供的 `dxc`，否则回退到 `PATH` 中的 `dxc`
 
@@ -90,7 +83,7 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录。1.0.9 起�
 
 旧 `update-manifest.json` schema 1 仍只用于 Windows 1.0.3→1.0.5 本机桥接；1.0.5 不加入 v2 候选。密钥保管、过期、撤销和轮换流程见 [自动更新签名与密钥轮换](docs/update-security.md)。
 
-`svt-av1-hdr` 与实验 `zenrav1e` 均静态链接进主程序，不需要 sidecar。当前 SVT 路径仍限制为 420 色度采样和 8/10-bit AVIF 输出。
+AVIF 使用静态集成的 AOM；超出单图能力范围时自动使用 AOM Grid。
 
 `AWJ_ENABLE_JPEGLI` 默认开启，CMake 会拉取 google/jpegli 并静态链接 `jpegli-static`。JPGLI 没有独立容器格式，AWJ 的 UI、CLI、summary 和日志统一显示 `JPGLI` / `jpegli`，但输出文件扩展名默认保持 `.jpg`，以兼容系统缩略图和常见图片查看器。
 
@@ -112,7 +105,6 @@ AWJ -i input.png --format webp --template "{name}-{date}"
 AWJ -i input.png -o output.jxl --format jxl -q 90
 AWJ -i input.png --format jpgli -q 95 --summary
 AWJ -i input.png --format avif --avif-encoder aom --chroma 444 --bit-depth 10
-AWJ -i input.png --format avif --avif-encoder zenrav1e --experimental-encoders
 ```
 
 `-i` / `-o` 会去除外围空白和一对完整双引号，因此 `-i '"D:\example.jxr"'` 与 `-i D:\example.jxr` 等价；空路径、不配对引号或路径内部引号会明确报错。`--list-presets` 动态列出可执行文件旁有效的 `preset/*.jsonc`（无效文件也会报告具体原因）；`-p/--preset <名称>` 按名称加载，`--preset-file <路径>` 加载指定 JSONC。不选预设时使用当前内置默认，显式 CLI 参数始终覆盖预设且与参数顺序无关。AVIF 默认 speed 为 5。
@@ -121,21 +113,20 @@ Windows CLI 还可在输出原子提交成功后保留源文件时间：`--prese
 
 Windows CLI 可把单帧 WGC HDR 捕获管道接入：`捕获程序 | AWJ --stdin-wgc-rgba16f 3840x2160 -o D:\输出 --format avif`。它只接受精确长度的 `DXGI_FORMAT_R16G16B16A16_FLOAT`（小端 RGBA binary16、线性 scRGB）一帧，必须显式给出宽高和 `-o`，不能同时传 `-i`；短帧、额外帧字节或未知裸 RAW 一律拒绝，不猜测格式。
 
-`zenrav1e` 是实验编码器：普通单图必须显式选择 `--avif-encoder zenrav1e` 并加 `--experimental-encoders`；自动大图链路可按资源使用它。Windows 与 Linux GCC Release 均可用。
+旧配置或预设若显式选择已移除编码器，会报告需要修正的字段；CLI 仅保留 `--avif-encoder auto/aom`。
 
 ### AVIF 大图与队列策略
 
-AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）；`svt-av1-hdr` 上限为 16384×8704。超过 1000 万像素但仍在单图上限内的图片会排到普通队列末尾，避免单张大图的内存估算降低全部小图的并发；它们仍使用普通编码器，不会强制进入大图链路。总批次超过 12 张时，普通、延后和大图阶段都保持每张图片单编码线程。
+AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高各 1..65536 且总像素不超过 `2^30`（1,073,741,824）。超过 1000 万像素但仍在单图上限内的图片会排到普通队列末尾，避免单张大图的内存估算降低全部小图的并发；它们仍使用普通编码器，不会强制进入大图链路。普通、延后和大图阶段先取 CPU、内存与任务数允许的有效并发，再分配每图线程。
 
-`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。无损 444 写入 identity matrix coefficients，即直通存储原始 RGB，不做 RGB↔YUV 转换。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。CICP 按“用户显式值 > 源图值 > 兜底”生效，BT.2020/PQ/HLG 等 HDR 源会原样保留，只有源图和用户都没有 CICP 时才回退 BT.709/sRGB；source CICP range 默认保持（PC/full 或 TV/limited），未知 range 使用 full。`--alpha off` 会移除 alpha。
+PNG 默认 q100，不增加像素量化；没有其他像素变换时，解码后的像素保持一致。q1–99 逐行量化 RGB，再缩放回完整数值范围；8-bit/16-bit 存储位深不变，16-bit 有效精度最低为 10 位，alpha 保持原精度。合法的逐通道 `sBIT` 会被读取并保存，量化后的 RGB 有效位数独立记录。PNG 不支持视觉质量搜索；降低质量不保证文件更小，渐变与暗部应检查条带。
+
+`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。CICP 按“用户显式值 > 源图值 > 兜底”生效，BT.2020/PQ/HLG 等 HDR 源会原样保留，只有源图和用户都没有 CICP 时才回退 BT.709/sRGB；source CICP range 默认保持（PC/full 或 TV/limited），未知 range 使用 full。`--alpha off` 会移除 alpha。
 
 超过 AOM 单图上限后自动进入大图链路：
-1. 默认优先 `zenrav1e`，失败或不支持再回退 `grid`；
-2. Studio 固定使用该默认顺序；CLI `--large-image-priority grid` 可改为 `grid` 优先再回退 `zenrav1e`；
-3. 两条路径都不可用/都失败，或触达输入/运行时内存上限时明确报错。
+使用 AOM Grid；编码器不可用、规划失败或触达输入／运行时内存上限时明确报错。
 
 Studio 不再提供独立大图页；自动处理状态直接显示在主队列。CLI：
-- `--large-image-priority zenrav1e|grid`
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit`：仅当前会话解除默认 20 GiB 输入/运行时上限，不写入 `AWJ.jsonc`；过大图片可能 OOM。
 参数设置页其余编码参数同样只在本次运行内保持，不写入 `AWJ.jsonc`。
 
@@ -215,7 +206,7 @@ pwsh -NoProfile -File .\scripts\cli-worker-smoke.ps1
 
 `cli-worker-smoke.ps1` 不启动 Studio 窗口：它通过真实 CLI manifest 验证 ITEM/DETAIL、失败项重试输入、命名事件普通取消和 Job Object 强制终止进程树。Slint 的小型 component smoke 使用 testing backend，无窗口验证页面切换、键盘、字体滚动、深浅色、820×560 与 100%/150%/200% scale。0.10.4 Windows MSVC Release 为 31/31 通过。
 
-Linux GCC Release 测试：
+Linux Release 测试：
 
 ```bash
 cmake --preset linux-gcc-x64-release -DBUILD_TESTING=ON

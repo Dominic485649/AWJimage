@@ -8,17 +8,89 @@
 #include "shell_context_menu.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <fstream>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+import awj.decoder_registry;
+import awj.avif_aom_codec;
+import awj.image;
+
 namespace {
+
+// Real Shell activation crosses the process boundary, so HKCU overrides are not
+// sufficient here. Persist exactly the module's AWJ roots before any mutation.
+struct RegistryRestore {
+  std::vector<std::wstring> paths = awj::shell_context_menu::owned_root_keys();
+  std::vector<bool> present;
+  std::wstring backup = L"Software\\AWJimage.Tests.Backup\\" + std::to_wstring(GetCurrentProcessId());
+  HKEY storage{};
+  RegistryRestore() {
+    HKEY pending{};
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction",
+                      0, KEY_READ, &pending) == ERROR_SUCCESS) {
+      RegCloseKey(pending);
+      throw std::runtime_error("pending AWJ registry transaction; do not start real Shell test");
+    }
+    DWORD disposition{};
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, backup.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
+                       nullptr, &storage, &disposition) != ERROR_SUCCESS || disposition != REG_CREATED_NEW_KEY)
+      throw std::runtime_error("could not create unique registry snapshot");
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      const auto key = std::to_wstring(i);
+      HKEY source{}, destination{};
+      const auto status = RegOpenKeyExW(HKEY_CURRENT_USER, paths[i].c_str(), 0, KEY_READ, &source);
+      if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND && status != ERROR_PATH_NOT_FOUND)
+        throw std::runtime_error("cannot read AWJ registry root for snapshot");
+      present.push_back(status == ERROR_SUCCESS);
+      if (RegCreateKeyExW(storage, key.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS, nullptr, &destination, nullptr) != ERROR_SUCCESS)
+        throw std::runtime_error("cannot create registry snapshot entry");
+      const auto copied = source ? RegCopyTreeW(source, nullptr, destination) : ERROR_SUCCESS;
+      if (source) RegCloseKey(source);
+      RegCloseKey(destination);
+      if (copied != ERROR_SUCCESS) throw std::runtime_error("cannot copy registry snapshot");
+      const DWORD existed = present.back() ? 1 : 0;
+      if (RegSetValueExW(storage, key.c_str(), 0, REG_SZ, reinterpret_cast<const BYTE*>(paths[i].c_str()),
+                        static_cast<DWORD>((paths[i].size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS ||
+          RegSetValueExW(storage, (key + L".Present").c_str(), 0, REG_DWORD,
+                        reinterpret_cast<const BYTE*>(&existed), sizeof(existed)) != ERROR_SUCCESS)
+        throw std::runtime_error("cannot persist registry snapshot index");
+    }
+    RegFlushKey(storage);
+  }
+  ~RegistryRestore() {
+    bool restored = true;
+    for (std::size_t i = 0; i < paths.size(); ++i) {
+      const auto removed = RegDeleteTreeW(HKEY_CURRENT_USER, paths[i].c_str());
+      restored &= removed == ERROR_SUCCESS || removed == ERROR_FILE_NOT_FOUND || removed == ERROR_PATH_NOT_FOUND;
+      if (!present[i]) continue;
+      HKEY source{}, destination{};
+      if (RegOpenKeyExW(storage, std::to_wstring(i).c_str(), 0, KEY_READ, &source) != ERROR_SUCCESS ||
+          RegCreateKeyExW(HKEY_CURRENT_USER, paths[i].c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
+                         nullptr, &destination, nullptr) != ERROR_SUCCESS) {
+        restored = false;
+      } else restored &= RegCopyTreeW(source, nullptr, destination) == ERROR_SUCCESS;
+      if (source) RegCloseKey(source);
+      if (destination) RegCloseKey(destination);
+    }
+    RegCloseKey(storage);
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    if (!restored) {
+      std::fwprintf(stderr, L"Registry restoration failed; snapshot retained at HKCU\\%ls\n", backup.c_str());
+      std::abort();
+    }
+    RegDeleteTreeW(HKEY_CURRENT_USER, backup.c_str());
+  }
+};
 
 int fail(std::string_view message) {
   std::fwrite(message.data(), 1, message.size(), stderr);
@@ -276,9 +348,58 @@ std::vector<std::wstring> expected_labels(bool avif_png) {
   return labels;
 }
 
+std::expected<void, std::string> invoke_and_decode(ContextMenu& menu, HMENU submenu,
+    const std::vector<std::filesystem::path>& inputs, const std::filesystem::path& working_directory,
+    std::size_t command_index, bool directory_selection = false) {
+  const auto& spec = awj::shell_context_menu::command_specs()[command_index];
+  const UINT command = GetMenuItemID(submenu, static_cast<int>(command_index));
+  if (command < menu.id_first || command == UINT(-1)) return std::unexpected{"invalid Shell command ID"};
+  CMINVOKECOMMANDINFOEX invoke{};
+  invoke.cbSize = sizeof(invoke);
+  invoke.fMask = CMIC_MASK_UNICODE | CMIC_MASK_NOASYNC;
+  invoke.lpVerb = MAKEINTRESOURCEA(command - menu.id_first);
+  invoke.lpVerbW = MAKEINTRESOURCEW(command - menu.id_first);
+  const auto cwd = working_directory.wstring();
+  invoke.lpDirectoryW = cwd.c_str();
+  invoke.nShow = SW_SHOWNORMAL;
+  const auto status = menu.context->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO*>(&invoke));
+  if (FAILED(status)) return std::unexpected{"IContextMenu::InvokeCommand failed: " + std::to_string(status)};
+  const std::wstring extension = spec.append_png_suffix ? L".avif.png"
+      : spec.format == L"jpgli" ? L".jpg" : L"." + std::wstring{spec.format};
+  const auto deadline = GetTickCount64() + 45000;
+  std::string last_failure = "output file not found";
+  for (;;) {
+    bool complete = true;
+    for (const auto& input : inputs) {
+      const auto output_dir = directory_selection ? input.parent_path().parent_path() / L"AWJOutput" : input.parent_path();
+      const auto output = output_dir / (input.stem().wstring() + extension);
+      std::error_code ec;
+      if (!std::filesystem::is_regular_file(output, ec) || ec) { complete = false; break; }
+      // AVIF.png deliberately carries an AVIF stream despite its final suffix.
+      const auto decoded = spec.format == L"avif" ? awj::make_avif_image_decoder(1)->decode(output)
+          : awj::decode_image_for_path(output, {.allow_wic_fallback = false, .decode_threads = 1});
+      if (!decoded || decoded->image.width != 1 || decoded->image.height != 1) {
+        last_failure = decoded ? "unexpected decoded dimensions" : decoded.error();
+        complete = false;
+        break;
+      }
+    }
+    if (complete) break;
+    if (GetTickCount64() >= deadline) return std::unexpected{"Shell output missing or not decodable: " + last_failure};
+    MSG message{};
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+      TranslateMessage(&message);
+      DispatchMessageW(&message);
+    }
+    Sleep(50);
+  }
+  std::fwprintf(stdout, L"InvokeCommand decoded %zu item(s), format %ls\n", inputs.size(), extension.c_str());
+  return {};
+}
+
 }  // namespace
 
-int wmain(int argc, wchar_t** argv) {
+int wmain(int argc, wchar_t** argv) try {
   using namespace awj::shell_context_menu;
   if (argc != 2) return fail("expected AWJ executable path argument");
   const std::filesystem::path awj_exe{argv[1]};
@@ -287,15 +408,12 @@ int wmain(int argc, wchar_t** argv) {
   ComApartment apartment;
   if (FAILED(apartment.status)) return fail("CoInitializeEx failed");
 
-  struct RegistryCleanup {
-    ~RegistryCleanup() { (void)awj::shell_context_menu::remove(); }
-  } registry_cleanup;
+  RegistryRestore registry_cleanup;
 
-  const auto root = std::filesystem::temp_directory_path() / L"AWJ Explorer API 验证 空格";
+  const auto root = std::filesystem::temp_directory_path() /
+      (L"AWJ Explorer API 验证 空格 " + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
   std::error_code ec;
-  std::filesystem::remove_all(root, ec);
-  std::filesystem::create_directories(root, ec);
-  if (ec) return fail("failed to create Explorer API test root");
+  if (!std::filesystem::create_directory(root, ec) || ec) return fail("failed to create isolated Explorer API test root");
   struct TempCleanup {
     std::filesystem::path path;
     ~TempCleanup() {
@@ -304,8 +422,13 @@ int wmain(int argc, wchar_t** argv) {
     }
   } temp_cleanup{root};
 
+  const auto executable_dir = root / L"程序 空格";
+  std::filesystem::create_directory(executable_dir, ec);
+  const auto test_exe = executable_dir / L"AWJ.exe";
+  if (ec || !std::filesystem::copy_file(awj_exe, test_exe, ec) || ec)
+    return fail("failed to copy the test executable into its isolated profile");
   auto params = make_params(true);
-  auto installed = install(awj_exe, params);
+  auto installed = install(test_exe, params);
   if (!installed) return fail(installed.error());
 
   const auto single_dir = root / L"single 菜单";
@@ -319,6 +442,10 @@ int wmain(int argc, wchar_t** argv) {
     std::fputs("Explorer/Shell single-file menu dump follows:\n", stderr);
     dump_menu(single_menu->menu);
     return fail("single-file Explorer/Shell menu order is incorrect");
+  }
+  for (std::size_t i = 0; i < command_specs().size(); ++i) {
+    if (auto result = invoke_and_decode(*single_menu, single_submenu, {single_input}, root, i); !result)
+      return fail(result.error());
   }
 
   const auto multi_dir = root / L"multi 菜单";
@@ -334,6 +461,10 @@ int wmain(int argc, wchar_t** argv) {
   if (multi_submenu == nullptr || submenu_labels(multi_submenu) != expected_labels(true)) {
     return fail("multi-select Explorer/Shell menu order is incorrect");
   }
+  for (std::size_t i = 0; i < command_specs().size(); ++i) {
+    if (auto result = invoke_and_decode(*multi_menu, multi_submenu, {multi_a, multi_b}, root, i); !result)
+      return fail(result.error());
+  }
 
   const auto folder_input = root / L"folder 菜单输入";
   std::filesystem::create_directories(folder_input, ec);
@@ -345,9 +476,14 @@ int wmain(int argc, wchar_t** argv) {
   if (folder_submenu == nullptr || submenu_labels(folder_submenu) != expected_labels(true)) {
     return fail("folder Explorer/Shell menu order is incorrect");
   }
+  // Directory shell output is beside the selected directory.
+  for (std::size_t i = 0; i < command_specs().size(); ++i) {
+    if (auto result = invoke_and_decode(*folder_menu, folder_submenu, {folder_bmp}, root, i, true); !result)
+      return fail(result.error());
+  }
 
   params[0].install_avif_png_command = false;
-  installed = install(awj_exe, params);
+  installed = install(test_exe, params);
   if (!installed) return fail(installed.error());
   auto no_png_menu = create_context_menu({single_input});
   if (!no_png_menu) return fail(no_png_menu.error());
@@ -357,7 +493,7 @@ int wmain(int argc, wchar_t** argv) {
   }
 
   params[0].install_avif_png_command = true;
-  installed = install(awj_exe, params);
+  installed = install(test_exe, params);
   if (!installed) return fail(installed.error());
   auto reenabled_menu = create_context_menu({single_input});
   if (!reenabled_menu) return fail(reenabled_menu.error());
@@ -368,4 +504,6 @@ int wmain(int argc, wchar_t** argv) {
   }
 
   return 0;
+} catch (const std::exception& error) {
+  return fail(error.what());
 }

@@ -63,9 +63,7 @@ int main() {
     return fail("Non-Windows builds should disable WIC fallback by default.");
   }
 #endif
-  if (!defaults.enable_experimental_encoders) {
-    return fail("experimental encoders should be enabled by default.");
-  }
+
   if (!defaults.visual_quality_fallback) {
     return fail("visual-quality fallback should be enabled by default.");
   }
@@ -319,18 +317,18 @@ int main() {
   png_preset.formats.back().visual_quality = 42;
   const auto png_preset_config =
       awj::config_from_user_preset(png_preset, awj::OutputFormat::png);
-  if (png_preset_config.quality != 100 || png_preset_config.visual_quality) {
+  if (png_preset_config.quality != 37 || png_preset_config.visual_quality) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
-    return fail("PNG user preset did not normalize to fixed lossless quality.");
+    return fail("PNG user preset discarded ordinary quality or retained visual search.");
   }
   awj::AppConfig png_config = awj::default_app_config();
   png_config.output_format = awj::OutputFormat::png;
   png_config.quality = 23;
   png_config.visual_quality = 55;
   const auto png_preset_format = awj::preset_format_from_config(png_config);
-  if (png_preset_format.quality != 100 || png_preset_format.visual_quality) {
+  if (png_preset_format.quality != 23 || png_preset_format.visual_quality) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
-    return fail("PNG preset serialization did not normalize lossless quality.");
+    return fail("PNG preset serialization discarded ordinary quality or retained visual search.");
   }
   awj::UserPreset reserved_name = awj::default_user_preset();
   reserved_name.name = "CON";
@@ -385,7 +383,7 @@ int main() {
   }
   parsed = awj::parse_arguments(
       {L"--avif-color-representation", L"rgb", L"--avif-encoder", L"svt"});
-  if (parsed || parsed.error().find("仅支持 AOM") == std::string::npos) {
+  if (parsed || parsed.error().find("已移除") == std::string::npos) {
     return fail("CLI did not reject RGB Identity with SVT.");
   }
   parsed = awj::parse_arguments({L"--matrix-coefficients", L"0"});
@@ -398,56 +396,24 @@ int main() {
     return fail("non-AVIF output unexpectedly accepted the AVIF.png suffix.");
   }
 
-  parsed = awj::parse_arguments(
-      {L"--avif-encoder", L"svt-av1-hdr", L"--svtav1hdr-crf", L"28",
-       L"--svtav1hdr-preset", L"4", L"--svtav1hdr-tune", L"iq",
-       L"--svtav1hdr-keyint", L"1", L"--color-primaries", L"9",
-       L"--transfer-characteristics", L"16", L"--matrix-coefficients", L"9",
-       L"--color-range", L"0"});
-  if (!parsed || parsed->config.avif_encoder != awj::AvifEncoderMode::svt ||
-      parsed->config.svtav1hdr_crf.value_or(-1) != 28 ||
-      parsed->config.svtav1hdr_preset.value_or(-1) != 4 ||
-      parsed->config.svtav1hdr_tune != "iq" ||
-      parsed->config.svtav1hdr_keyint.value_or(-1) != 1 ||
-      parsed->config.color_primaries.value_or(-1) != 9 ||
-      parsed->config.transfer_characteristics.value_or(-1) != 16 ||
-      parsed->config.matrix_coefficients.value_or(-1) != 9 ||
-      parsed->config.color_range.value_or(-1) != 0) {
-    return fail("CLI svt-av1-hdr options did not parse.");
+  for (const auto* removed : {L"svt", L"svt-av1", L"svt-av1-hdr", L"zenrav1e"}) {
+    parsed = awj::parse_arguments({L"--avif-encoder", removed});
+    if (parsed || parsed.error().find("已移除") == std::string::npos)
+      return fail("Removed encoder was accepted or silently substituted.");
   }
-
-  parsed =
-      awj::parse_arguments({L"--avif-encoder", L"svt", L"--chroma", L"444"});
-  if (parsed || parsed.error().find("svt-av1-hdr 只支持 420 chroma") == std::string::npos) {
-    return fail("CLI should reject explicit SVT 444 chroma.");
+  for (const auto* removed : {L"--svtav1hdr-crf", L"--svtav1hdr-preset",
+       L"--svtav1hdr-tune", L"--svtav1hdr-keyint", L"--svtav1hdr-params",
+       L"--mastering-display", L"--content-light", L"--experimental-encoders",
+       L"--large-image-priority"}) {
+    parsed = awj::parse_arguments({removed, L"1"});
+    if (parsed || parsed.error().find("已移除") == std::string::npos)
+      return fail("Removed encoder-specific option was accepted.");
   }
-  parsed =
-      awj::parse_arguments({L"--avif-encoder", L"svt", L"--quality", L"100"});
-  if (parsed || parsed.error().find("svt-av1-hdr 不支持 AVIF 无损") == std::string::npos) {
-    return fail("CLI should reject explicit SVT q100.");
-  }
-  parsed =
-      awj::parse_arguments({L"--avif-encoder", L"svt", L"--bit-depth", L"12"});
-  if (parsed || parsed.error().find("svt-av1-hdr 只支持 8/10-bit") == std::string::npos) {
-    return fail("CLI should reject explicit SVT 12-bit.");
-  }
-
-  parsed = awj::parse_arguments({L"--avif-encoder", L"zenrav1e"});
-  if (!parsed ||
-      parsed->config.avif_encoder != awj::AvifEncoderMode::zenrav1e ||
-      !parsed->config.enable_experimental_encoders) {
-    return fail(
-        "CLI did not accept zenrav1e encoder with experimental encoders "
-        "enabled by default.");
-  }
-
-  parsed = awj::parse_arguments(
-      {L"--avif-encoder", L"zenrav1e", L"--no-experimental-encoders"});
-  if (!parsed ||
-      parsed->config.avif_encoder != awj::AvifEncoderMode::zenrav1e ||
-      parsed->config.enable_experimental_encoders) {
-    return fail("CLI did not parse experimental encoder disablement.");
-  }
+  parsed = awj::parse_arguments({L"--avif-encoder", L"aom", L"--color-primaries", L"9",
+      L"--transfer-characteristics", L"16", L"--matrix-coefficients", L"9", L"--color-range", L"0"});
+  if (!parsed || parsed->config.color_primaries != 9 || parsed->config.transfer_characteristics != 16 ||
+      parsed->config.matrix_coefficients != 9 || parsed->config.color_range != 0)
+    return fail("AOM explicit CICP configuration was lost.");
 
   parsed = awj::parse_arguments({L"--avif-encoder", L"rav1e"});
   if (parsed ||
@@ -484,11 +450,10 @@ int main() {
       help.find("jpgli|jpegli") == std::string::npos ||
       help.find("--jpegli-progressive-level") == std::string::npos ||
       help.find("--avif-encoder") == std::string::npos ||
-      help.find("--experimental-encoders") == std::string::npos ||
-      help.find("默认开启") == std::string::npos ||
-      help.find("zenrav1e") == std::string::npos ||
-      help.find("--svtav1hdr-crf") == std::string::npos ||
-      help.find("--svtav1hdr-keyint") == std::string::npos ||
+      help.find("--experimental-encoders") != std::string::npos ||
+      help.find("zenrav1e") != std::string::npos ||
+      help.find("--svtav1hdr-crf") != std::string::npos ||
+      help.find("--svtav1hdr-keyint") != std::string::npos ||
       help.find("--max-resolution") != std::string::npos) {
     return fail("help text does not reflect encoding defaults.");
   }

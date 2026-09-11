@@ -27,7 +27,6 @@ struct LargeImageDecision {
   LargeImageClass klass{LargeImageClass::ordinary};
   LargeImageReason reason{LargeImageReason::none};
   bool available_grid{};
-  bool available_zenrav1e{};
   std::string reason_text{};
 };
 
@@ -39,12 +38,6 @@ struct LargeImageLimits {
 };
 
 inline constexpr LargeImageLimits aom_large_image_limits{};
-inline constexpr LargeImageLimits svtav1hdr_large_image_limits{
-    .max_width = encoding_defaults::svtav1hdr_single_image_max_width,
-    .max_height = encoding_defaults::svtav1hdr_single_image_max_height,
-    .max_pixels = encoding_defaults::svt_safe_max_pixels,
-    .encoder_name = "svt-av1-hdr"};
-
 enum class GridMode { auto_grid, manual_grid };
 
 struct GridPlanRequest {
@@ -106,28 +99,29 @@ std::uint64_t visual_quality_working_set_bytes_for_dimensions(
 
 std::uint64_t avif_encode_working_set_bytes_for_dimensions(
     ImageDimensions dimensions) noexcept {
-  constexpr std::uint64_t multiplier = 3;
+  // ponytail: dimension-only upper estimate, not an allocator limit. Measured
+  // 4096x4096 AOM 10-bit 444 used ~1.1 GiB/file; allow 128 B/pixel plus
+  // fixed overhead for high-depth/alpha and encoder buffers. Refine from
+  // broader codec measurements before allowing more concurrency.
+  constexpr std::uint64_t multiplier = 32;
+  constexpr std::uint64_t overhead = 32ull * 1024 * 1024;
   const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
   const auto max_value = std::numeric_limits<std::uint64_t>::max();
-  if (decoded_rgba_bytes > max_value / multiplier) {
+  if (decoded_rgba_bytes > (max_value - overhead) / multiplier) {
     return max_value;
   }
-  return std::max<std::uint64_t>(1, decoded_rgba_bytes * multiplier);
+  return decoded_rgba_bytes * multiplier + overhead;
 }
 
 LargeImageDecision classify_large_image(ImageDimensions dimensions,
                                          bool grid_available,
-                                         bool zenrav1e_available,
                                          LargeImageLimits limits = aom_large_image_limits) {
   const bool dimension_exceeded =
       dimensions.width > limits.max_width || dimensions.height > limits.max_height;
   const bool pixel_limit_exceeded =
       dimensions.pixel_count > limits.max_pixels;
 
-  LargeImageDecision decision{.available_grid = grid_available,
-                              .available_zenrav1e = zenrav1e_available &&
-                                  dimensions.width <= encoding_defaults::avif_single_image_max_dimension &&
-                                  dimensions.height <= encoding_defaults::avif_single_image_max_dimension};
+  LargeImageDecision decision{.available_grid = grid_available};
   if (dimension_exceeded) {
     decision.klass = LargeImageClass::large_mode_required;
     decision.reason = LargeImageReason::dimension_limit_exceeded;

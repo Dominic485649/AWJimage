@@ -24,7 +24,6 @@ struct ResourcePlanRequest {
   int file_count{1};
   std::uint64_t memory_limit_bytes{};
   std::uint64_t estimated_bytes_per_file{};
-  bool force_single_thread_per_file{};
 };
 
 struct ResourcePlan {
@@ -50,16 +49,6 @@ std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
   return std::min(total_headroom, available_headroom);
 }
 
-int exact_file_parallelism(int budget, int desired) noexcept {
-  const int clamped_desired = std::clamp(desired, 1, budget);
-  for (int parallelism = clamped_desired; parallelism >= 1; --parallelism) {
-    if (budget % parallelism == 0) {
-      return parallelism;
-    }
-  }
-  return 1;
-}
-
 ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
   const int budget = std::max(1, request.automatic_thread_budget);
   const int files = std::max(1, request.file_count);
@@ -73,13 +62,7 @@ ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
         static_cast<std::uint64_t>(budget), memory_bound));
   }
 
-  constexpr int single_thread_batch_threshold = 12;
-  const bool single_thread_per_file = request.force_single_thread_per_file ||
-                                      files > single_thread_batch_threshold;
-  const int file_parallelism = single_thread_per_file
-                                   ? budget
-                                   : exact_file_parallelism(
-                                         budget, std::min(files, budget));
+  const int file_parallelism = std::min({budget, files, memory_parallelism});
   const int encoder_threads = budget / file_parallelism;
 
   return ResourcePlan{.file_parallelism = file_parallelism,
@@ -89,22 +72,11 @@ ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
                       .memory_file_parallelism = memory_parallelism};
 }
 
-ResourcePlan plan_large_deferred_resources(ResourcePlan base,
-                                                   int file_count) noexcept {
-  static_cast<void>(file_count);
-  return ResourcePlan{.file_parallelism = std::max(1, base.file_parallelism),
-                      .encoder_threads_per_file = std::max(1, base.encoder_threads_per_file),
-                      .global_thread_budget = std::max(1, base.global_thread_budget),
-                      .memory_limit_bytes = base.memory_limit_bytes,
-                      .memory_file_parallelism = std::max(1, base.memory_file_parallelism)};
-}
-
 ResourcePlan plan_grid_encode_resources(ResourcePlan base,
                                                int tile_count) noexcept {
-  const int budget = std::max(1, base.encoder_threads_per_file);
+  const int budget = std::max(1, std::min(base.encoder_threads_per_file, base.global_thread_budget));
   const int tiles = std::max(1, tile_count);
-  const int tile_parallelism = exact_file_parallelism(
-      budget, std::min({tiles, budget, std::max(1, base.global_thread_budget)}));
+  const int tile_parallelism = std::min(tiles, budget);
   const int per_tile_threads = budget / tile_parallelism;
   return ResourcePlan{.file_parallelism = tile_parallelism,
                       .encoder_threads_per_file = per_tile_threads,
@@ -116,21 +88,11 @@ ResourcePlan plan_grid_encode_resources(ResourcePlan base,
 ResourcePlan plan_large_mode_resources(ResourcePlan base,
                                                int file_count,
                                                std::uint64_t largest_working_set_bytes) noexcept {
-  const int budget = std::max(1, base.global_thread_budget);
-  static_cast<void>(file_count);
-  const int threads_per_file = std::max(1, base.encoder_threads_per_file);
-  int memory_parallelism = std::max(1, base.memory_file_parallelism);
-  if (base.memory_limit_bytes > 0) {
-    const std::uint64_t per_file = std::max<std::uint64_t>(1, largest_working_set_bytes);
-    const auto memory_bound = std::max<std::uint64_t>(1, base.memory_limit_bytes / per_file);
-    memory_parallelism = static_cast<int>(std::min<std::uint64_t>(
-        static_cast<std::uint64_t>(budget), memory_bound));
-  }
-  return ResourcePlan{.file_parallelism = std::max(1, base.file_parallelism),
-                      .encoder_threads_per_file = threads_per_file,
-                      .global_thread_budget = budget,
-                      .memory_limit_bytes = base.memory_limit_bytes,
-                      .memory_file_parallelism = memory_parallelism};
+  return plan_resources(ResourcePlanRequest{
+      .automatic_thread_budget = base.global_thread_budget,
+      .file_count = file_count,
+      .memory_limit_bytes = base.memory_limit_bytes,
+      .estimated_bytes_per_file = largest_working_set_bytes});
 }
 
 }  // namespace awj

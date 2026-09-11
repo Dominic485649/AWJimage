@@ -48,7 +48,6 @@ import awj.large_image_plan;
 import awj.native_visual_search;
 import awj.png_codec;
 import awj.resource_planner;
-import awj.svtav1hdr_codec;
 import awj.visual_quality;
 import awj.webp_codec;
 
@@ -773,7 +772,7 @@ std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
   if (cfg.image_size_limit.mode == ImageSizeLimitMode::automatic) {
     switch (cfg.output_format) {
       case OutputFormat::avif:
-        apply_edge(32768, std::max(image.width, image.height));
+        // AOM/Grid preserves dimensions; only explicit manual limits resize AVIF.
         break;
       case OutputFormat::webp:
         apply_edge(16383, std::max(image.width, image.height));
@@ -841,6 +840,7 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
     return std::unexpected{resized.error()};
   }
   resized->metadata = image.metadata;
+  resized->significant_bits = image.significant_bits; // Nearest-neighbor copies samples unchanged.
   return resized;
 }
 
@@ -935,12 +935,10 @@ bool has_user_cicp_settings(const AppConfig& cfg) noexcept {
          cfg.color_range;
 }
 
-bool has_user_hdr_settings(const AppConfig& cfg) noexcept {
-  return !cfg.mastering_display.empty() || !cfg.content_light.empty();
-}
+
 
 bool has_user_color_settings(const AppConfig& cfg) noexcept {
-  return has_user_cicp_settings(cfg) || has_user_hdr_settings(cfg);
+  return has_user_cicp_settings(cfg);
 }
 
 bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
@@ -1135,49 +1133,16 @@ std::string applied_hdr_metadata_name(const NativeEncodeSettings& settings,
   return applied_hdr_metadata_name(settings, cfg.strip_metadata, has_user_color_settings(cfg));
 }
 
-void ignore_svt_only_hdr_for_non_svt_encoder(NativeEncodeSettings& settings,
-                                             const AppConfig& cfg) {
-  if (!has_user_hdr_settings(cfg) || has_user_cicp_settings(cfg)) {
-    return;
-  }
-
-  settings.applied_icc = settings.source_has_icc
-                             ? (cfg.strip_metadata ? "stripped" : "kept")
-                             : "none";
-  settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg.strip_metadata, false);
-  if (cfg.strip_metadata) {
-    settings.color_metadata_source = "stripped";
-    settings.color_reason = "用户请求移除元数据";
-  } else if (settings.source_has_icc) {
-    settings.color_metadata_source = "source-icc";
-    settings.color_reason = "使用源图 ICC profile 写入编码器元数据";
-  } else if (settings.applied_color_primaries || settings.applied_transfer_characteristics ||
-             settings.applied_matrix_coefficients || settings.applied_color_range) {
-    if (settings.color_metadata_source.empty() ||
-        settings.color_metadata_source == "user-svt-settings") {
-      settings.color_metadata_source = "source-cicp";
-    }
-    settings.color_reason = "使用源图 CICP 字段写入编码器设置";
-  } else {
-    settings.color_metadata_source = "encoder-default";
-    settings.color_reason = "源图色彩元数据未知，使用编码器默认值";
-  }
-}
-
 void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cfg) {
   if (cfg.strip_metadata) {
     settings.applied_color_primaries = cfg.color_primaries;
     settings.applied_transfer_characteristics = cfg.transfer_characteristics;
     settings.applied_matrix_coefficients = cfg.matrix_coefficients;
     settings.applied_color_range = cfg.color_range;
-    settings.svtav1hdr.color_primaries = cfg.color_primaries;
-    settings.svtav1hdr.transfer_characteristics = cfg.transfer_characteristics;
-    settings.svtav1hdr.matrix_coefficients = cfg.matrix_coefficients;
-    settings.svtav1hdr.color_range = cfg.color_range;
     settings.applied_icc = settings.source_has_icc ? "stripped" : "none";
     settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg);
     if (has_user_color_settings(cfg)) {
-      settings.color_metadata_source = "user-svt-settings";
+      settings.color_metadata_source = "user-cicp-settings";
       settings.color_reason = "已移除源图元数据，并使用用户 color/HDR 设置";
     } else {
       settings.color_metadata_source = "stripped";
@@ -1194,10 +1159,6 @@ void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cf
                                                             settings.source_matrix_coefficients);
   settings.applied_color_range = choose_color_value(cfg.color_range,
                                                     settings.source_color_range);
-  settings.svtav1hdr.color_primaries = settings.applied_color_primaries;
-  settings.svtav1hdr.transfer_characteristics = settings.applied_transfer_characteristics;
-  settings.svtav1hdr.matrix_coefficients = settings.applied_matrix_coefficients;
-  settings.svtav1hdr.color_range = settings.applied_color_range;
 
   const bool user_color_settings = has_user_color_settings(cfg);
   settings.applied_icc = settings.source_has_icc
@@ -1205,7 +1166,7 @@ void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cf
                              : "none";
   settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg);
   if (user_color_settings) {
-    settings.color_metadata_source = "user-svt-settings";
+    settings.color_metadata_source = "user-cicp-settings";
     settings.color_reason = "用户 color/HDR 设置覆盖源图元数据";
   } else if (settings.source_has_icc) {
     settings.color_metadata_source = "source-icc";
@@ -1224,58 +1185,14 @@ void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cf
 
 void populate_applied_avif_color_diagnostics(NativeEncodeSettings& settings,
                                              const AppConfig& cfg,
-                                             AvifEncoderMode encoder,
                                              ChromaMode chroma,
                                              bool lossless) {
-  if (encoder == AvifEncoderMode::zenrav1e) {
-    if (settings.applied_icc == "kept") {
-      settings.applied_icc = settings.source_has_icc ? "not-written" : "none";
-    }
-    if (settings.applied_hdr_metadata == "kept") {
-      settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "not-written" : "none";
-    }
-    settings.color_metadata_source = "zenravif-bridge-default";
-    settings.color_reason = "zenravif bridge 未暴露 CICP/HDR 元数据控制";
-    return;
-  }
 
-  if (encoder == AvifEncoderMode::svt) {
-    settings.applied_color_primaries = settings.svtav1hdr.color_primaries.value_or(1);
-    settings.applied_transfer_characteristics = settings.svtav1hdr.transfer_characteristics.value_or(13);
-    settings.applied_matrix_coefficients = settings.svtav1hdr.matrix_coefficients.value_or(1);
-    settings.applied_color_range = settings.svtav1hdr.color_range.value_or(1);
-    if (settings.avif_color_representation !=
-            AvifColorRepresentation::rgb_identity &&
-        (*settings.applied_matrix_coefficients == 0 ||
-         *settings.applied_matrix_coefficients == 2)) {
-      const bool bt2020 = settings.source_color_primaries == 9 ||
-                          settings.source_matrix_coefficients == 9;
-      settings.applied_matrix_coefficients = bt2020 ? 9 : 1;
-      settings.svtav1hdr.matrix_coefficients =
-          settings.applied_matrix_coefficients;
-      settings.color_metadata_source =
-          bt2020 ? "source-bt2020-ncl" : "yuv-bt709-fallback";
-      settings.color_reason =
-          bt2020
-              ? "YUV 颜色表示将 Identity/未知 matrix 回退为 BT.2020 NCL"
-              : "YUV 颜色表示将 Identity/未知 matrix 回退为 BT.709";
-    }
-    if (has_user_hdr_settings(cfg)) {
-      settings.applied_hdr_metadata = "user-svt-settings";
-    }
-    if (settings.color_metadata_source == "stripped") {
-      settings.color_metadata_source = "svt-encoder-default";
-      settings.color_reason = "已移除源图元数据，并使用 svt-av1-hdr 默认值";
-    } else if (settings.color_metadata_source == "encoder-default") {
-      settings.color_metadata_source = "svt-encoder-default";
-      settings.color_reason = "源图色彩元数据未知，使用 svt-av1-hdr 默认值";
-    }
-    return;
-  }
+
+
 
   const bool user_cicp_settings = has_user_cicp_settings(cfg);
-  ignore_svt_only_hdr_for_non_svt_encoder(settings, cfg);
-  if (user_cicp_settings && settings.color_metadata_source == "user-svt-settings") {
+  if (user_cicp_settings && settings.color_metadata_source == "user-cicp-settings") {
     settings.color_metadata_source = "user-cicp-settings";
     settings.color_reason = cfg.strip_metadata
                                 ? "已移除源图元数据，并使用用户 CICP 设置"
@@ -1660,18 +1577,6 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
                               .jpegli_progressive_level = cfg.jpegli_progressive_level,
                               .jpegli_optimize_huffman = cfg.jpegli_optimize_huffman,
                               .jpegli_xyb = cfg.jpegli_xyb,
-                              .svtav1hdr = SvtAv1HdrSettings{.crf = cfg.svtav1hdr_crf,
-                                                            .preset = cfg.svtav1hdr_preset.value_or(encoding_defaults::default_svtav1hdr_preset),
-                                                            .tune = cfg.svtav1hdr_tune,
-                                                            .keyint = cfg.svtav1hdr_keyint.value_or(encoding_defaults::default_svtav1hdr_keyint),
-                                                            .avif = encoding_defaults::default_svtav1hdr_avif,
-                                                            .params = cfg.svtav1hdr_params,
-                                                            .color_primaries = cfg.color_primaries,
-                                                            .transfer_characteristics = cfg.transfer_characteristics,
-                                                            .matrix_coefficients = cfg.matrix_coefficients,
-                                                            .color_range = cfg.color_range,
-                                                            .mastering_display = cfg.mastering_display,
-                                                            .content_light = cfg.content_light},
                               .resources = resources};
 }
 
@@ -1728,16 +1633,8 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.visual_quality_gpu_path = native.diagnostics.visual_quality_gpu_path;
   result.visual_quality_gpu_fallback_reason = native.diagnostics.visual_quality_gpu_fallback_reason;
   result.visual_quality_search_trace = native.diagnostics.visual_quality_search_trace;
-  result.encoder_experimental = native.diagnostics.encoder_experimental;
   result.encoder_license = native.diagnostics.encoder_license;
   result.integration_mode = native.diagnostics.integration_mode;
-  result.svtav1hdr_helper_path = native.diagnostics.svtav1hdr_helper_path;
-  result.svtav1hdr_crf = native.diagnostics.svtav1hdr_crf;
-  result.svtav1hdr_preset = native.diagnostics.svtav1hdr_preset;
-  result.svtav1hdr_tune = native.diagnostics.svtav1hdr_tune;
-  result.svtav1hdr_keyint = native.diagnostics.svtav1hdr_keyint;
-  result.svtav1hdr_hdr_metadata = native.diagnostics.svtav1hdr_hdr_metadata;
-  result.svtav1hdr_note = native.diagnostics.svtav1hdr_note;
   result.speed_parameter_kind = has_speed_mapping ? native.diagnostics.speed_mapping.codec_key : std::string{};
   result.applied_speed = has_speed_mapping ? native.diagnostics.speed_mapping.codec_value : -1;
   result.encoder_threads = native.diagnostics.encoder_threads;
@@ -1912,13 +1809,6 @@ class NativeBackend final {
     EncodeOverrides overrides{};
     overrides.avif_encoder = AvifEncoderMode::aom;
     overrides.avif_grid_plan = std::move(plan);
-    return encode_with_requested_file_times(image, std::move(overrides), stop_token);
-  }
-
-  EncodeResult encode_avif_zenrav1e(const ImageFile& image,
-                                    std::stop_token stop_token = {}) const {
-    EncodeOverrides overrides{};
-    overrides.avif_encoder = AvifEncoderMode::zenrav1e;
     return encode_with_requested_file_times(image, std::move(overrides), stop_token);
   }
 
@@ -2253,6 +2143,22 @@ class NativeBackend final {
       }
       const auto pixel_count = static_cast<std::uint64_t>(decoded.image.width) *
                                static_cast<std::uint64_t>(decoded.image.height);
+      if (prepared.settings.avif_grid_plan && cfg_.image_size_limit.mode == ImageSizeLimitMode::manual) {
+        // A manual limit can resize after preflight; use the actual samples.
+        if (decoded.image.width <= aom_large_image_limits.max_width &&
+            decoded.image.height <= aom_large_image_limits.max_height &&
+            pixel_count <= aom_large_image_limits.max_pixels) {
+          prepared.settings.avif_grid_plan.reset();
+        } else {
+          auto grid = plan_grid(GridPlanRequest{
+              .width = static_cast<std::uint32_t>(decoded.image.width),
+              .height = static_cast<std::uint32_t>(decoded.image.height),
+              .mode = GridMode::auto_grid,
+              .clamped_padding_enabled = cfg_.experimental_clamped_grid_padding});
+          if (!grid) return prepare_failed(grid.error(), prepared.settings);
+          prepared.settings.avif_grid_plan = *grid;
+        }
+      }
       const auto has_non_opaque_alpha = decoder_common::has_non_opaque_alpha(decoded.image,
                                                                              "AVIF encoder");
       if (!has_non_opaque_alpha) {
@@ -2260,7 +2166,6 @@ class NativeBackend final {
       }
       prepared.settings.has_non_opaque_alpha = *has_non_opaque_alpha;
 
-      const bool explicit_svt = requested_avif_encoder == AvifEncoderMode::svt;
       const bool must_preserve_alpha = native_backend_detail::alpha_must_be_preserved(
           cfg_.alpha_policy, prepared.settings.source_has_alpha_channel, *has_non_opaque_alpha);
       const bool requested_avif_lossless =
@@ -2277,13 +2182,7 @@ class NativeBackend final {
             "RGB(A)/GBR(A) Identity AVIF 必须使用 4:4:4；请使用 chroma=auto/444。",
             prepared.settings);
       }
-      if (identity_representation &&
-          (requested_avif_encoder == AvifEncoderMode::svt ||
-           requested_avif_encoder == AvifEncoderMode::zenrav1e)) {
-        return prepare_failed(
-            "RGB(A)/GBR(A) Identity AVIF 仅支持 AOM；请使用 avif-encoder=auto/aom。",
-            prepared.settings);
-      }
+
       if (identity_representation && cfg_.matrix_coefficients &&
           *cfg_.matrix_coefficients != 0) {
         return prepare_failed(
@@ -2298,21 +2197,7 @@ class NativeBackend final {
             prepared.settings);
       }
 
-      if (explicit_svt) {
-        if (must_preserve_alpha) {
-          prepared.settings.alpha_reason = cfg_.alpha_policy == AlphaModePolicy::force
-                                               ? "force 请求保留 alpha，但 SVT 不支持 alpha"
-                                               : "auto 需要保留非不透明 alpha，但 SVT 不支持 alpha";
-          return prepare_failed(
-              "svt-av1-hdr AVIF encoder 不支持保留 alpha；请使用 --alpha off 或改用 AOM。",
-              prepared.settings);
-        }
-        if (requested_avif_lossless) {
-          return prepare_failed(
-              "svt-av1-hdr 不支持 AVIF 无损/q100；请改用 --avif-encoder auto/aom。",
-              prepared.settings);
-        }
-      }
+
 
       const auto selection_requested_encoder =
           (identity_representation || avif_lossless) &&
@@ -2324,21 +2209,6 @@ class NativeBackend final {
         selection_requested_chroma = ChromaMode::yuv444;
         prepared.settings.chroma_reason =
             "RGB(A)/GBR(A) Identity 强制使用 4:4:4 chroma";
-      } else if (explicit_svt) {
-        if (cfg_.chroma_mode != ChromaMode::auto_keep &&
-            cfg_.chroma_mode != ChromaMode::yuv420) {
-          prepared.settings.requested_chroma_mode = cfg_.chroma_mode;
-          prepared.settings.chroma_mode = ChromaMode::yuv420;
-          prepared.settings.chroma_reason =
-              "显式选择 SVT 但请求了非 420 chroma，已拒绝而不是静默降采样";
-          return prepare_failed(
-              "svt-av1-hdr AVIF encoder only supports 420 chroma；请使用 chroma=420/auto，或改用 AOM。",
-              prepared.settings);
-        }
-        selection_requested_chroma = ChromaMode::yuv420;
-        prepared.settings.chroma_reason = cfg_.chroma_mode == ChromaMode::yuv420
-                                             ? "显式选择 SVT 使用 420 chroma"
-                                             : "显式选择 SVT 有损编码强制使用 420 chroma";
       } else if (cfg_.chroma_mode != ChromaMode::auto_keep) {
         selection_requested_chroma = cfg_.chroma_mode;
         prepared.settings.chroma_reason = "用户请求 chroma";
@@ -2353,16 +2223,7 @@ class NativeBackend final {
       }
 
       std::optional<int> selection_requested_bit_depth{};
-      if (explicit_svt) {
-        if (cfg_.bit_depth) {
-          selection_requested_bit_depth = cfg_.bit_depth;
-          prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
-        } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth >= 10) {
-          selection_requested_bit_depth = prepared.settings.source_bit_depth;
-          prepared.settings.bit_depth_reason = std::format(
-              "显式选择 SVT 继承源图 {}-bit 输出", *prepared.settings.source_bit_depth);
-        }
-      } else if (cfg_.bit_depth) {
+      if (cfg_.bit_depth) {
         selection_requested_bit_depth = cfg_.bit_depth;
         prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
       } else if (avif_lossless) {
@@ -2389,6 +2250,11 @@ class NativeBackend final {
           prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth == 8) {
         prepared.settings.bit_depth_reason = "有损 auto 可能将 8-bit 源图升至编码器首选 bit-depth";
       }
+      // The codec's single-image bounds apply to a Grid cell, not the canvas.
+      const auto encode_width = prepared.settings.avif_grid_plan
+          ? prepared.settings.avif_grid_plan->tile_width : static_cast<std::uint32_t>(decoded.image.width);
+      const auto encode_height = prepared.settings.avif_grid_plan
+          ? prepared.settings.avif_grid_plan->tile_height : static_cast<std::uint32_t>(decoded.image.height);
       const auto selection = select_avif_encoder_for_current_build(AvifEncoderSelectionRequest{
           .requested_encoder = selection_requested_encoder,
           .requested_chroma = selection_requested_chroma,
@@ -2399,12 +2265,10 @@ class NativeBackend final {
           .must_preserve_alpha = must_preserve_alpha,
           .visual_quality_search = cfg_.visual_quality.has_value(),
           .speed_explicit = cfg_.speed.has_value(),
-          .allow_zenrav1e_alpha = false,
-          .pixel_count = pixel_count,
-          .width = static_cast<std::uint32_t>(decoded.image.width),
-          .height = static_cast<std::uint32_t>(decoded.image.height),
-          .speed = prepared.settings.speed},
-          cfg_.enable_experimental_encoders);
+          .pixel_count = static_cast<std::uint64_t>(encode_width) * encode_height,
+          .width = encode_width,
+          .height = encode_height,
+          .speed = prepared.settings.speed});
       if (!selection) {
         prepared.settings.requested_avif_encoder = selection_requested_encoder;
         prepared.settings.requested_chroma_mode = selection_requested_chroma;
@@ -2463,7 +2327,6 @@ class NativeBackend final {
       }
       native_backend_detail::populate_applied_avif_color_diagnostics(prepared.settings,
                                                                      cfg_,
-                                                                     selection->applied_encoder,
                                                                      selection->applied_chroma,
                                                                      avif_lossless);
       prepared.avif_bit_depth_reason = prepared.settings.bit_depth_reason;
@@ -2494,10 +2357,8 @@ class NativeBackend final {
             prepared.settings.bit_depth_reason,
             prepared.settings.color_metadata_source);
       });
-      if (selection->applied_encoder != AvifEncoderMode::svt) {
-        prepared.encoder = native_backend_detail::encoder_for_output_format(
-            cfg_.output_format, selection->applied_encoder);
-      }
+      prepared.encoder = native_backend_detail::encoder_for_output_format(
+          cfg_.output_format, selection->applied_encoder);
     } else {
       if (cfg_.output_format == OutputFormat::png ||
           cfg_.output_format == OutputFormat::jxl ||
@@ -2567,8 +2428,7 @@ class NativeBackend final {
           cfg_.output_format, requested_avif_encoder);
     }
 
-    if (!prepared.encoder && !(cfg_.output_format == OutputFormat::avif &&
-                               prepared.settings.avif_encoder == AvifEncoderMode::svt)) {
+    if (!prepared.encoder) {
       return prepare_failed(std::format("native backend 暂不支持输出格式: {}",
                                         output_format_name(cfg_.output_format)),
                             prepared.settings);
@@ -2644,41 +2504,12 @@ class NativeBackend final {
       effective_settings.encoder_fallback_reason = "scRGB -> BT.2020/PQ";
       effective_settings.color_reason = "scRGB FP16 仅在 HDR 输出阶段转换为 BT.2020/PQ";
     }
-    const bool use_svtav1hdr = cfg_.output_format == OutputFormat::avif &&
-                               effective_settings.avif_encoder == AvifEncoderMode::svt;
     if (cfg_.visual_quality) {
       auto output_decoder = native_backend_detail::decoder_for_output_format(
           cfg_.output_format, effective_settings.resources.encoder_threads_per_file);
       const auto candidate_path = output_path.parent_path() /
                                   (output_path.filename().wstring() + L".candidate");
-      if (use_svtav1hdr) {
-        class SvtAv1HdrImageEncoder final : public ImageEncoder {
-         public:
-          [[nodiscard]] std::string_view id() const noexcept override { return "svt-av1-hdr"; }
-          [[nodiscard]] CodecCapabilities capabilities() const override {
-            return CodecCapabilities{.output_format = OutputFormat::avif,
-                                     .features = CodecFeature::thread_control |
-                                                 CodecFeature::visual_quality_search,
-                                     .bit_depths = {8, 10}};
-          }
-          std::expected<NativeEncodeResult, std::string> encode(
-              const ImageBuffer& image,
-              const NativeEncodeSettings& settings,
-              std::stop_token stop_token = {}) const override {
-            return encode_svtav1hdr_in_process(image, settings, stop_token);
-          }
-        } svt_encoder;
-        auto search = encode_with_native_visual_quality_search(*effective_image, svt_encoder,
-                                                               *output_decoder, effective_settings,
-                                                               candidate_path, stop_token);
-        if (!search) {
-          return std::unexpected{search.error()};
-        }
-        search->encode_result.diagnostics.timing.encode_seconds =
-            search->encode_result.diagnostics.timing.visual_quality_candidate_encode_seconds;
-        search->encode_result.visual_quality_target_met = search->target_met;
-        return std::move(search->encode_result);
-      }
+
 
       auto search = encode_with_native_visual_quality_search(*effective_image, *encoder,
                                                              *output_decoder, effective_settings,
@@ -2692,14 +2523,7 @@ class NativeBackend final {
       return std::move(search->encode_result);
     }
 
-    if (use_svtav1hdr) {
-      auto encoded = encode_svtav1hdr_in_process(*effective_image, effective_settings, stop_token);
-      if (encoded) {
-        encoded->diagnostics.timing.encode_seconds =
-            native_backend_detail::elapsed_seconds(encode_started);
-      }
-      return encoded;
-    }
+
     auto encoded = encoder->encode(*effective_image, effective_settings, stop_token);
     if (encoded) {
       encoded->diagnostics.timing.encode_seconds =

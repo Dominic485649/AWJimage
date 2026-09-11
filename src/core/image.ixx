@@ -73,6 +73,15 @@ struct ImageSourceInfo {
   std::string color_metadata_source{};
 };
 
+// Precision of the current unorm samples, independent of their 8/16-bit storage.
+// Pixel transforms must clear this unless they preserve channel sample values.
+struct SignificantBits {
+  int red{};
+  int green{};
+  int blue{};
+  int alpha{};
+};
+
 struct ImageBuffer {
   std::size_t width{};
   std::size_t height{};
@@ -81,6 +90,7 @@ struct ImageBuffer {
   int bit_depth{8};
   SampleRepresentation sample_representation{SampleRepresentation::unorm};
   std::optional<ImageSourceInfo> source_info{};
+  std::optional<SignificantBits> significant_bits{};
   std::vector<ImagePlane> planes{};
   std::vector<MetadataBlock> metadata{};
 

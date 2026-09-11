@@ -8,6 +8,8 @@ module;
 #include <windows.h>
 #else
 #include <unistd.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #endif
 
 #include <nlohmann/json.hpp>
@@ -20,8 +22,10 @@ module;
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <ranges>
 #include <string>
@@ -64,6 +68,7 @@ struct UserPreset {
   std::string description{};
   std::array<PresetFormat, 5> formats{};
   std::filesystem::path source_path{};
+  bool shell_menu{};
 
 };
 
@@ -222,6 +227,9 @@ std::expected<void, std::string> validate_display_name(std::string_view name) {
       })) {
     return std::unexpected{"预设名称不能包含控制字符。"};
   }
+  if (name == "内置默认" || upper_ascii(std::string{name}) == "BUILT-IN DEFAULT") {
+    return std::unexpected{"内置默认名称保留给程序，不能用于用户预设。"};
+  }
   return {};
 }
 
@@ -246,7 +254,7 @@ std::expected<std::string, std::string> safe_file_stem(std::string_view name) {
   if (stem.empty() || stem == "." || stem == "..") {
     return std::unexpected{"预设名称无法生成安全文件名。"};
   }
-  const auto upper = upper_ascii(stem);
+  const auto upper = upper_ascii(stem.substr(0, stem.find('.')));
   static constexpr std::array reserved{"CON", "PRN", "AUX", "NUL", "COM1",
                                         "COM2", "COM3", "COM4", "COM5", "COM6",
                                         "COM7", "COM8", "COM9", "LPT1", "LPT2",
@@ -255,7 +263,11 @@ std::expected<std::string, std::string> safe_file_stem(std::string_view name) {
   if (std::ranges::find(reserved, upper) != reserved.end()) {
     return std::unexpected{"预设名称会生成 Windows 保留文件名。"};
   }
-  if (stem.size() > 180) stem.resize(180);
+  if (stem.size() > 180) {
+    std::size_t end = 180;
+    while (end > 0 && (static_cast<unsigned char>(stem[end]) & 0xc0) == 0x80) --end;
+    stem.resize(end);
+  }
   return stem;
 }
 
@@ -362,10 +374,8 @@ std::expected<AvifEncoderMode, std::string> parse_avif_encoder_value(
   }
   const auto text = value.get<std::string>();
   if (text == "auto") return AvifEncoderMode::automatic;
-  if (text == "svt") return AvifEncoderMode::svt;
   if (text == "aom") return AvifEncoderMode::aom;
-  if (text == "zenrav1e") return AvifEncoderMode::zenrav1e;
-  return std::unexpected{"预设字段 avif_encoder 只支持 auto/svt/aom/zenrav1e。"};
+  return std::unexpected{"预设字段 avif_encoder 仅支持 auto/aom；旧编码器已移除，请修正该预设。"};
 }
 
 std::expected<ChromaMode, std::string> parse_chroma_value(
@@ -514,7 +524,8 @@ Json format_json(const PresetFormat& value) {
 std::expected<void, std::string> atomic_write(const fs::path& path,
                                                std::string_view text) {
   std::error_code ec;
-  const auto temporary = path.parent_path() / (path.filename().string() + ".tmp");
+  auto temporary = path;
+  temporary += ".tmp";
   fs::remove(temporary, ec);
   {
     std::ofstream output{temporary, std::ios::binary | std::ios::trunc};
@@ -530,16 +541,146 @@ std::expected<void, std::string> atomic_write(const fs::path& path,
 #ifdef _WIN32
   if (MoveFileExW(temporary.c_str(), path.c_str(),
                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
+    const auto error = GetLastError();
     fs::remove(temporary, ec);
-    return std::unexpected{"原子替换预设文件失败。"};
+    return std::unexpected{std::format("原子替换预设文件失败，Windows 错误 {}。", error)};
   }
 #else
   fs::rename(temporary, path, ec);
   if (ec) {
+    const auto error = ec.message();
     fs::remove(temporary, ec);
-    return std::unexpected{"原子替换预设文件失败：" + ec.message()};
+    return std::unexpected{"原子替换预设文件失败：" + error};
   }
 #endif
+  return {};
+}
+
+std::expected<Json, std::string> read_document(const fs::path& path) {
+  try {
+    std::error_code ec;
+    const auto size = fs::file_size(path, ec);
+    if (ec || size > 2u * 1024u * 1024u) return std::unexpected{"文件不可读或超过 2 MiB 限制。"};
+    std::ifstream input{path, std::ios::binary};
+    if (!input) return std::unexpected{"无法读取预设文件。"};
+    std::string raw(static_cast<std::size_t>(size), '\0');
+    input.read(raw.data(), static_cast<std::streamsize>(raw.size()));
+    if (!input || input.peek() != std::char_traits<char>::eof()) return std::unexpected{"读取期间预设文件发生变化。"};
+    return Json::parse(strip_jsonc_comments(raw), nullptr, true, true);
+  } catch (const std::exception& error) {
+    return std::unexpected{std::format("预设 JSONC 无法解析：{}", error.what())};
+  }
+}
+
+class PresetLock {
+ public:
+  explicit PresetLock(const fs::path& directory) {
+#ifdef _WIN32
+    handle_ = CreateFileW((directory / L".awj-lock").c_str(), GENERIC_READ | GENERIC_WRITE,
+                         0, nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
+#else
+    handle_ = ::open((directory / ".awj-lock").c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
+    if (handle_ >= 0 && flock(handle_, LOCK_EX | LOCK_NB) != 0) { close(handle_); handle_ = -1; }
+#endif
+  }
+  ~PresetLock() {
+#ifdef _WIN32
+    if (valid()) CloseHandle(handle_);
+#else
+    if (valid()) close(handle_);
+#endif
+  }
+  bool valid() const noexcept {
+#ifdef _WIN32
+    return handle_ != INVALID_HANDLE_VALUE;
+#else
+    return handle_ >= 0;
+#endif
+  }
+ private:
+#ifdef _WIN32
+  HANDLE handle_{INVALID_HANDLE_VALUE};
+#else
+  int handle_{-1};
+#endif
+};
+
+std::string path_utf8(const fs::path& path) {
+  const auto value = path.u8string();
+  return {reinterpret_cast<const char*>(value.data()), value.size()};
+}
+
+fs::path path_from_utf8(std::string_view text) {
+  return fs::path{std::u8string_view{reinterpret_cast<const char8_t*>(text.data()), text.size()}};
+}
+
+// The display name may change while its existing file stays at the same path.
+// That makes an edit/rename one atomic replacement, with a single recovery record.
+std::expected<void, std::string> restore_operation(const fs::path& directory, const Json& journal) {
+  if (!journal.is_object() || journal.value("owner", "") != "AWJimage" ||
+      journal.value("schema", 0) != 1 || !journal.contains("file") ||
+      !journal["file"].is_string() || !journal.contains("before") ||
+      !(journal["before"].is_null() || journal["before"].is_string())) {
+    return std::unexpected{"预设恢复记录无效，未修改文件。"};
+  }
+  const auto file = path_from_utf8(journal["file"].get<std::string>());
+  if (file != file.filename() || file.extension() != ".jsonc" || file.empty()) {
+    return std::unexpected{"预设恢复记录包含非法路径。"};
+  }
+  if (journal["before"].is_string()) return atomic_write(directory / file, journal["before"].get<std::string>());
+  std::error_code ec;
+  fs::remove(directory / file, ec);
+  if (ec) return std::unexpected{"无法回滚新建预设：" + ec.message()};
+  return {};
+}
+
+std::expected<void, std::string> change_file(const fs::path& path,
+    const std::optional<std::string>& content,
+    const std::function<std::expected<void, std::string>()>& synchronize) {
+  const auto journal_path = path.parent_path() / ".awj-operation.json";
+  std::error_code ec;
+  if (fs::exists(journal_path, ec) || ec) return std::unexpected{"存在未完成的预设操作，请重新打开程序恢复。"};
+  Json before = nullptr;
+  if (fs::exists(path, ec)) {
+    const auto size = fs::file_size(path, ec);
+    if (ec || size > 1024u * 1024u) return std::unexpected{"原预设不可读或超过 1 MiB。"};
+    std::ifstream input{path, std::ios::binary};
+    std::string raw(static_cast<std::size_t>(size), '\0');
+    input.read(raw.data(), static_cast<std::streamsize>(raw.size()));
+    if (!input) return std::unexpected{"无法备份原预设。"};
+    before = std::move(raw);
+  }
+  if (ec) return std::unexpected{"无法检查原预设：" + ec.message()};
+  const Json journal{{"owner", "AWJimage"}, {"schema", 1},
+                     {"file", path_utf8(path.filename())}, {"before", before}};
+  if (auto saved = atomic_write(journal_path, journal.dump()); !saved) return saved;
+  std::expected<void, std::string> changed;
+  try {
+    if (content) changed = atomic_write(path, *content);
+    else {
+      fs::remove(path, ec);
+      if (ec) changed = std::unexpected{"删除预设失败：" + ec.message()};
+    }
+    if (changed && synchronize) changed = synchronize();
+  } catch (const std::exception& error) {
+    changed = std::unexpected{error.what()};
+  } catch (...) {
+    changed = std::unexpected{"同步预设时发生未知错误。"};
+  }
+  if (!changed) {
+    auto restored = restore_operation(path.parent_path(), journal);
+    if (restored && synchronize) restored = synchronize();
+    if (!restored) return std::unexpected{changed.error() + " 恢复尚未完成：" + restored.error()};
+    fs::remove(journal_path, ec);
+    return changed;
+  }
+  // Persist the completed state before dropping the journal, so interrupted
+  // cleanup cannot undo an already synchronized menu on the next launch.
+  auto committed = journal;
+  committed["committed"] = true;
+  if (auto result = atomic_write(journal_path, committed.dump()); !result) return result;
+  fs::remove(journal_path, ec);
+  if (ec) return std::unexpected{"预设已保存，但清理恢复记录失败：" + ec.message()};
   return {};
 }
 
@@ -549,6 +690,35 @@ std::expected<std::filesystem::path, std::string> user_preset_directory() {
   auto directory = preset_detail::running_executable_directory();
   if (!directory) return std::unexpected{directory.error()};
   return *directory / "preset";
+}
+
+std::expected<void, std::string> recover_user_preset_change(
+    const std::function<std::expected<void, std::string>()>& synchronize = {}) {
+  auto directory = user_preset_directory();
+  if (!directory) return std::unexpected{directory.error()};
+  std::error_code ec;
+  if (!std::filesystem::exists(*directory, ec)) return ec
+      ? std::expected<void, std::string>{std::unexpected{ec.message()}}
+      : std::expected<void, std::string>{};
+  preset_detail::PresetLock lock{*directory};
+  if (!lock.valid()) return std::unexpected{"另一进程正在修改预设。"};
+  const auto path = *directory / ".awj-operation.json";
+  if (!std::filesystem::exists(path, ec)) return ec
+      ? std::expected<void, std::string>{std::unexpected{ec.message()}}
+      : std::expected<void, std::string>{};
+  auto journal = preset_detail::read_document(path);
+  if (!journal) return std::unexpected{journal.error()};
+  if (!journal->is_object() || journal->value("owner", "") != "AWJimage" ||
+      journal->value("schema", 0) != 1) return std::unexpected{"预设恢复记录无效。"};
+  if (!journal->value("committed", false)) {
+    if (auto restored = preset_detail::restore_operation(*directory, *journal); !restored) return restored;
+  }
+  if (synchronize) {
+    if (auto synced = synchronize(); !synced) return synced;
+  }
+  std::filesystem::remove(path, ec);
+  if (ec) return std::unexpected{"无法清理预设恢复记录：" + ec.message()};
+  return {};
 }
 
 std::string user_preset_format_key(OutputFormat format) {
@@ -568,7 +738,7 @@ UserPreset default_user_preset() {
 PresetFormat preset_format_from_config(const AppConfig& config) {
   PresetFormat preset = default_user_preset_format(config.output_format);
   if (config.output_format == OutputFormat::png) {
-    preset.quality = default_quality_for(OutputFormat::png);
+    preset.quality = config.quality;
     preset.visual_quality.reset();
   } else {
     preset.quality = config.quality;
@@ -595,7 +765,7 @@ AppConfig config_from_user_preset(const UserPreset& preset,
   config.output_format = format;
   const auto& source = preset.formats[preset_detail::format_slot(format)];
   if (format == OutputFormat::png) {
-    config.quality = default_quality_for(OutputFormat::png);
+    config.quality = source.quality;
     config.visual_quality.reset();
   } else {
     config.quality = source.quality;
@@ -645,15 +815,13 @@ std::expected<void, std::string> validate_user_preset(const UserPreset& preset) 
 std::expected<UserPreset, std::string> load_user_preset_file(
     const std::filesystem::path& path) {
   try {
-    std::ifstream input{path, std::ios::binary};
-    if (!input) return std::unexpected{"无法读取预设文件。"};
-    std::string raw{std::istreambuf_iterator<char>{input},
-                    std::istreambuf_iterator<char>{}};
-    if (raw.size() > 1024u * 1024u) {
+    std::error_code ec;
+    if (std::filesystem::file_size(path, ec) > 1024u * 1024u || ec) {
       return std::unexpected{"预设文件超过 1 MiB 限制。"};
     }
-    const auto document = preset_detail::Json::parse(
-        preset_detail::strip_jsonc_comments(raw), nullptr, true, true);
+    auto parsed = preset_detail::read_document(path);
+    if (!parsed) return std::unexpected{parsed.error()};
+    const auto& document = *parsed;
     if (!document.is_object()) return std::unexpected{"预设根节点必须是对象。"};
     if (!document.contains("schema") || !document.at("schema").is_number_integer() ||
         document.at("schema").get<int>() != user_preset_schema) {
@@ -672,6 +840,9 @@ std::expected<UserPreset, std::string> load_user_preset_file(
     preset.name = document.at("name").get<std::string>();
     preset.description = document.at("description").get<std::string>();
     preset.source_path = path;
+    if (auto result = preset_detail::load_bool(document, "shell_menu", preset.shell_menu); !result) {
+      return std::unexpected{result.error()};
+    }
     const auto& formats = document.at("formats");
     for (std::size_t i = 0; i < preset.formats.size(); ++i) {
       const auto key = std::string{preset_detail::format_keys[i]};
@@ -701,17 +872,28 @@ std::expected<PresetCatalog, std::string> list_user_presets() {
     if (ec) return std::unexpected{"无法读取预设目录：" + ec.message()};
     return catalog;
   }
+  std::map<std::string, std::size_t> name_counts;
   for (const auto& entry : std::filesystem::directory_iterator(*directory, ec)) {
     if (ec) return std::unexpected{"无法枚举预设目录：" + ec.message()};
     if (!entry.is_regular_file(ec) || ec || entry.path().extension() != ".jsonc") continue;
+    auto document = preset_detail::read_document(entry.path());
+    if (document && document->is_object() && document->contains("name") && (*document)["name"].is_string()) {
+      ++name_counts[preset_detail::upper_ascii((*document)["name"].get<std::string>())];
+    }
     auto loaded = load_user_preset_file(entry.path());
     if (!loaded) {
-      catalog.errors.push_back(std::format("{}：{}", entry.path().filename().string(),
+      catalog.errors.push_back(std::format("{}：{}", preset_detail::path_utf8(entry.path().filename()),
                                            loaded.error()));
       continue;
     }
     catalog.presets.push_back(std::move(*loaded));
   }
+  std::erase_if(catalog.presets, [&](const UserPreset& preset) {
+    if (name_counts[preset_detail::upper_ascii(preset.name)] <= 1) return false;
+    catalog.errors.push_back(std::format("重复预设名称“{}”：{}，已排除。", preset.name,
+        preset_detail::path_utf8(preset.source_path.filename())));
+    return true;
+  });
   std::ranges::sort(catalog.presets, {}, &UserPreset::name);
   return catalog;
 }
@@ -719,7 +901,10 @@ std::expected<PresetCatalog, std::string> list_user_presets() {
 std::expected<UserPreset, std::string> find_user_preset(std::string_view name) {
   auto catalog = list_user_presets();
   if (!catalog) return std::unexpected{catalog.error()};
-  const auto it = std::ranges::find(catalog->presets, name, &UserPreset::name);
+  const auto key = preset_detail::upper_ascii(std::string{name});
+  const auto it = std::ranges::find_if(catalog->presets, [&](const auto& preset) {
+    return preset_detail::upper_ascii(preset.name) == key;
+  });
   if (it == catalog->presets.end()) {
     std::string available;
     for (const auto& preset : catalog->presets) {
@@ -757,7 +942,8 @@ std::expected<ParseResult, std::string> parse_arguments_with_user_preset(
 }
 
 std::expected<std::filesystem::path, std::string> save_user_preset(
-    const UserPreset& preset, bool overwrite) {
+    const UserPreset& preset, bool overwrite,
+    const std::function<std::expected<void, std::string>()>& synchronize = {}) {
   if (auto valid = validate_user_preset(preset); !valid) {
     return std::unexpected{valid.error()};
   }
@@ -765,14 +951,41 @@ std::expected<std::filesystem::path, std::string> save_user_preset(
   if (!directory) return std::unexpected{directory.error()};
   auto stem = preset_detail::safe_file_stem(preset.name);
   if (!stem) return std::unexpected{stem.error()};
-  const auto path = *directory / (*stem + ".jsonc");
+  const auto desired_path = *directory / preset_detail::path_from_utf8(*stem + ".jsonc");
+  auto path = desired_path;
   std::error_code ec;
   std::filesystem::create_directories(*directory, ec);
   if (ec) return std::unexpected{"无法创建预设目录：" + ec.message()};
-  if (std::filesystem::exists(path, ec) && !overwrite) {
-    return std::unexpected{"同名预设已存在；请确认覆盖。"};
+  preset_detail::PresetLock lock{*directory};
+  if (!lock.valid()) return std::unexpected{"另一进程正在修改预设。"};
+  if (overwrite) {
+    path = std::filesystem::canonical(preset.source_path, ec);
+    if (ec || path.parent_path() != std::filesystem::canonical(*directory, ec) || ec ||
+        path.extension() != ".jsonc" || std::filesystem::is_symlink(preset.source_path, ec) || ec) {
+      return std::unexpected{"只能编辑预设目录中已选择的原文件。"};
+    }
+  }
+  if (std::filesystem::exists(desired_path, ec) &&
+      (!overwrite || !std::filesystem::equivalent(path, desired_path, ec))) {
+    return std::unexpected{"预设名称或生成的文件名已被占用。"};
   }
   if (ec) return std::unexpected{"无法检查预设文件：" + ec.message()};
+  std::size_t injected_count = preset.shell_menu ? 1 : 0;
+  for (const auto& entry : std::filesystem::directory_iterator(*directory, ec)) {
+    if (ec) return std::unexpected{"无法枚举预设目录：" + ec.message()};
+    if (!entry.is_regular_file(ec) || ec || entry.path().extension() != ".jsonc") continue;
+    if (overwrite && std::filesystem::equivalent(entry.path(), path, ec)) continue;
+    if (ec) return std::unexpected{"无法检查原预设文件：" + ec.message()};
+    auto document = preset_detail::read_document(entry.path());
+    if (!document || !document->is_object()) continue;
+    if (document->contains("name") && (*document)["name"].is_string() &&
+        preset_detail::upper_ascii((*document)["name"].get<std::string>()) == preset_detail::upper_ascii(preset.name)) {
+      return std::unexpected{"预设名称已存在；创建和改名不能覆盖其他预设。"};
+    }
+    if (document->contains("shell_menu") && (*document)["shell_menu"].is_boolean() &&
+        (*document)["shell_menu"].get<bool>()) ++injected_count;
+  }
+  if (injected_count > 10) return std::unexpected{"最多同时注入 10 个预设，请先取消其他预设的注入。"};
   preset_detail::Json formats = preset_detail::Json::object();
   for (std::size_t i = 0; i < preset.formats.size(); ++i) {
     formats[std::string{preset_detail::format_keys[i]}] =
@@ -781,12 +994,40 @@ std::expected<std::filesystem::path, std::string> save_user_preset(
   const preset_detail::Json document{{"schema", user_preset_schema},
                                      {"name", preset.name},
                                      {"description", preset.description},
+                                     {"shell_menu", preset.shell_menu},
                                      {"formats", std::move(formats)}};
   const auto content = document.dump(2) + "\n";
-  if (auto saved = preset_detail::atomic_write(path, content); !saved) {
+  if (auto saved = preset_detail::change_file(path, content, synchronize); !saved) {
     return std::unexpected{saved.error()};
   }
   return path;
+}
+
+std::expected<void, std::string> delete_user_preset(
+    const UserPreset& preset,
+    const std::function<std::expected<void, std::string>()>& synchronize = {}) {
+  auto directory = user_preset_directory();
+  if (!directory) return std::unexpected{directory.error()};
+  preset_detail::PresetLock lock{*directory};
+  if (!lock.valid()) return std::unexpected{"另一进程正在修改预设。"};
+  std::error_code ec;
+  const auto path = std::filesystem::canonical(preset.source_path, ec);
+  if (ec || path.parent_path() != std::filesystem::canonical(*directory, ec) || ec ||
+      path.extension() != ".jsonc" || std::filesystem::is_symlink(preset.source_path, ec) || ec) {
+    return std::unexpected{"只能删除预设目录中已选择的用户预设；内置默认不可删除。"};
+  }
+  return preset_detail::change_file(path, std::nullopt, synchronize);
+}
+
+std::expected<std::vector<std::wstring>, std::string> injected_user_preset_names() {
+  auto catalog = list_user_presets();
+  if (!catalog) return std::unexpected{catalog.error()};
+  std::vector<std::wstring> names;
+  for (const auto& preset : catalog->presets) {
+    if (preset.shell_menu) names.push_back(preset_detail::path_from_utf8(preset.name).wstring());
+  }
+  if (names.size() > 10) return std::unexpected{"已注入预设超过 10 个，请修正预设配置。"};
+  return names;
 }
 
 }  // namespace awj

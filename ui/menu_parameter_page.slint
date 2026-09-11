@@ -1,0 +1,180 @@
+import { ParameterForm } from "parameter_page.slint";
+import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-widgets.slint";
+import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
+import { StudioTheme } from "studio_theme.slint";
+
+export component MenuParameterPage inherits Rectangle {
+    in property <[ComboOption]> avif-encoder-options;
+    in property <color> combo-bg;
+    in property <color> combo-bg-disabled;
+    in property <color> combo-bg-hover;
+    in property <color> combo-border;
+    in property <color> combo-border-hover;
+    in-out property <int> combo-close-generation;
+    callback combo-popup-finished();
+    callback combo-popup-requested();
+    in property <color> combo-selected-bg;
+    in-out property <string> context-menu-warning;
+    callback context-menu-warning-clicked();
+    in property <bool> dark-mode;
+    in property <length> window-height;
+    callback install-context-menu-requested();
+    in property <bool> legacy-machine-menu-present;
+    callback cleanup-legacy-machine-menu();
+    in-out property <bool> menu-allow-wic-fallback;
+    in-out property <int> menu-alpha-policy-index;
+    in-out property <int> menu-avif-color-representation-index;
+    in-out property <int> menu-avif-encoder-index;
+    in-out property <string> menu-bit-depth-text;
+    in-out property <int> menu-chroma-index;
+    in-out property <bool> menu-close-on-finish;
+    in-out property <int> menu-format-index;
+    in-out property <bool> menu-install-avif-png-command;
+    in-out property <bool> menu-jpegli-optimize-huffman;
+    in-out property <int> menu-jpegli-progressive-index;
+    in-out property <bool> menu-jpegli-xyb;
+    in-out property <string> menu-max-height-text;
+    in-out property <string> menu-max-long-edge-text;
+    in-out property <string> menu-max-short-edge-text;
+    in-out property <string> menu-max-width-text;
+    in-out property <string> menu-quality-text;
+    in-out property <int> menu-size-limit-index;
+    in-out property <string> menu-speed-text;
+    in-out property <bool> menu-strip-metadata;
+    in property <length> page-gap;
+    in property <color> panel-bg;
+    in property <color> panel-border;
+    in property <length> parameter-control-height;
+    in property <length> parameter-control-width;
+    callback remove-context-menu-requested();
+    in-out property <bool> running;
+    callback save-menu-params-requested();
+    in property <color> text-body;
+    in property <color> text-muted;
+    in property <color> text-soft;
+    in-out property <bool> wic-ui-visible;
+
+    in property <color> hint-blue;
+    in property <color> hint-cyan;
+    in property <color> hint-green;
+    in property <color> hint-orange;
+    in property <color> hint-red;
+    in property <color> hint-violet;
+    in-out property <string> memory-limit-text;
+    callback open-preset-editor();
+    in property <string> parameter-preset-description;
+    in-out property <int> parameter-preset-index;
+    in property <[ComboOption]> parameter-preset-options;
+    callback parameter-preset-selected(int);
+    in property <color> text-strong;
+    in-out property <string> threads-text;
+    in-out property <string> visual-quality-text;
+
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    border-radius: 8px;
+    background: root.panel-bg;
+    border-color: root.panel-border;
+    border-width: 1px;
+    ScrollView {
+        horizontal-stretch: 1;
+        vertical-stretch: 1;
+        viewport-width: parent.width;
+        VerticalLayout {
+            padding: 22px;
+            spacing: 10px;
+            if root.legacy-machine-menu-present: HorizontalLayout {
+                spacing: 10px;
+                Text { text: @tr("检测到旧版系统级 AWJ 菜单，清理需要管理员权限。"); horizontal-stretch: 1; color: root.text-body; wrap: word-wrap; }
+                SoftButton { dark-mode: root.dark-mode; text: @tr("清理历史系统菜单"); enabled: !root.running; clicked => { root.cleanup-legacy-machine-menu(); } }
+            }
+            HorizontalLayout {
+                height: 40px;
+                spacing: 10px;
+                Rectangle {
+                    horizontal-stretch: 3;
+                    height: 40px;
+                    background: transparent;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.install-context-menu-requested(); } }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "outline"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.remove-context-menu-requested(); } }
+                        SoftButton { dark-mode: root.dark-mode; text: @tr("保存参数"); variant: "action"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.save-menu-params-requested(); } }
+                    }
+                }
+                if !root.context-menu-warning.is-empty: Rectangle {
+                    horizontal-stretch: 1;
+                    height: 40px;
+                    background: transparent;
+                    Text { text: root.context-menu-warning; color: #dc2626; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                    TouchArea { clicked => { root.context-menu-warning-clicked(); } }
+                }
+            }
+
+            ParameterForm {
+                menu-mode: true;
+                alpha-policy-index <=> root.menu-alpha-policy-index;
+                avif-color-representation-index <=> root.menu-avif-color-representation-index;
+                avif-encoder-index <=> root.menu-avif-encoder-index;
+                avif-encoder-options : root.avif-encoder-options;
+                bit-depth-text <=> root.menu-bit-depth-text;
+                chroma-index <=> root.menu-chroma-index;
+                combo-bg : root.combo-bg;
+                combo-bg-disabled : root.combo-bg-disabled;
+                combo-bg-hover : root.combo-bg-hover;
+                combo-border : root.combo-border;
+                combo-border-hover : root.combo-border-hover;
+                combo-close-generation <=> root.combo-close-generation;
+                combo-selected-bg : root.combo-selected-bg;
+                dark-mode : root.dark-mode;
+                format-index <=> root.menu-format-index;
+                window-height : root.window-height;
+                hint-blue : root.hint-blue;
+                hint-cyan : root.hint-cyan;
+                hint-green : root.hint-green;
+                hint-orange : root.hint-orange;
+                hint-red : root.hint-red;
+                hint-violet : root.hint-violet;
+                jpegli-optimize-huffman <=> root.menu-jpegli-optimize-huffman;
+                jpegli-progressive-index <=> root.menu-jpegli-progressive-index;
+                jpegli-xyb <=> root.menu-jpegli-xyb;
+                max-height-text <=> root.menu-max-height-text;
+                max-long-edge-text <=> root.menu-max-long-edge-text;
+                max-short-edge-text <=> root.menu-max-short-edge-text;
+                max-width-text <=> root.menu-max-width-text;
+                memory-limit-text <=> root.memory-limit-text;
+                panel-bg : root.panel-bg;
+                panel-border : root.panel-border;
+                parameter-control-height : root.parameter-control-height;
+                parameter-control-width : root.parameter-control-width;
+                parameter-preset-description : root.parameter-preset-description;
+                parameter-preset-index <=> root.parameter-preset-index;
+                parameter-preset-options : root.parameter-preset-options;
+                quality-text <=> root.menu-quality-text;
+                running <=> root.running;
+                size-limit-index <=> root.menu-size-limit-index;
+                speed-text <=> root.menu-speed-text;
+                text-body : root.text-body;
+                text-muted : root.text-muted;
+                text-soft : root.text-soft;
+                text-strong : root.text-strong;
+                threads-text <=> root.threads-text;
+                visual-quality-text <=> root.visual-quality-text;
+                combo-popup-finished() => { root.combo-popup-finished(); }
+                combo-popup-requested() => { root.combo-popup-requested(); }
+                open-preset-editor() => { root.open-preset-editor(); }
+                parameter-preset-selected(a0) => { root.parameter-preset-selected(a0); }
+            }
+            HorizontalLayout { spacing: root.page-gap;
+                CheckBox { text: @tr("移除元数据"); checked <=> root.menu-strip-metadata; enabled: !root.running; }
+                if root.wic-ui-visible: CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.menu-allow-wic-fallback; enabled: !root.running; }
+                CheckBox { text: @tr("完成后关闭窗口"); checked <=> root.menu-close-on-finish; enabled: !root.running; }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+            }
+            if root.menu-format-index == 0: HorizontalLayout { height: 40px; spacing: root.page-gap;
+                CheckBox { text: @tr("额外添加 .png 后缀"); checked <=> root.menu-install-avif-png-command; enabled: !root.running; }
+                Rectangle { horizontal-stretch: 1; background: transparent; }
+            }
+        }
+    }
+}

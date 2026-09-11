@@ -1,0 +1,144 @@
+import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-widgets.slint";
+import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
+import { StudioTheme } from "studio_theme.slint";
+
+export component PresetEditor inherits Rectangle {
+    callback cancel-preset-editor();
+    callback delete-parameter-preset();
+    in property <bool> preset-editor-existing;
+    in property <bool> shell-menu-injection-supported;
+    in-out property <bool> preset-editor-shell-menu;
+    property <bool> delete-confirmation: false;
+    in property <bool> dark-mode;
+    in property <length> window-height;
+    in property <color> panel-bg;
+    in property <color> panel-border;
+    in-out property <string> preset-editor-description;
+    in-out property <string> preset-editor-error;
+    in-out property <string> preset-editor-name;
+    callback save-parameter-preset(string, string);
+    in property <color> text-body;
+    in property <color> text-muted;
+    in property <color> text-strong;
+    in property <color> warning;
+    in property <length> window-width;
+
+    z: 100;
+    width: root.window-width;
+    height: root.window-height;
+    background: root.dark-mode ? #000000aa : #17203366;
+
+    TouchArea { width: parent.width; height: parent.height; }
+
+    preset-editor-panel := Rectangle {
+        width: min(760px, max(320px, parent.width - 48px));
+        height: min(parent.height * 0.8, max(320px, preset-editor-content.preferred-height + 40px));
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        border-radius: 10px;
+        background: root.panel-bg;
+        border-color: root.panel-border;
+        border-width: 1px;
+        clip: true;
+
+        ScrollView {
+            width: parent.width;
+            height: parent.height;
+            viewport-width: parent.width;
+            viewport-height: max(parent.height, preset-editor-content.preferred-height + 40px);
+            preset-editor-content := VerticalLayout {
+                padding: 20px;
+                spacing: 12px;
+                width: parent.width;
+                Text {
+                    text: @tr("保存用户预设");
+                    color: root.text-strong;
+                    font-size: 20px;
+                    font-weight: 800;
+                    height: self.preferred-height;
+                }
+                Text {
+                    text: @tr("名称和简介会写入程序同目录 preset/*.jsonc；保存的是五种格式的完整参数，不包含队列、路径或元数据设置。");
+                    color: root.text-muted;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    width: 100%;
+                    height: self.preferred-height;
+                }
+                Text { text: @tr("名称"); color: root.text-body; font-size: 14px; font-weight: 700; height: self.preferred-height; }
+                LineEdit {
+                    accessible-label: @tr("预设名称");
+                    text <=> root.preset-editor-name;
+                    placeholder-text: @tr("例如：高质量存档");
+                    height: 40px;
+                    width: 100%;
+                }
+                Text { text: @tr("简介"); color: root.text-body; font-size: 14px; font-weight: 700; height: self.preferred-height; }
+                description-measure := Text {
+                    text: root.preset-editor-description + "\n";
+                    color: transparent;
+                    font-size: 14px;
+                    wrap: word-wrap;
+                    width: parent.width - 40px;
+                    height: 0px;
+                }
+                TextEdit {
+                    accessible-label: @tr("预设简介");
+                    text <=> root.preset-editor-description;
+                    placeholder-text: @tr("鼠标悬停在预设名称上可查看这里的简介。");
+                    wrap: word-wrap;
+                    font-size: 14px;
+                    width: 100%;
+                    height: min(360px, max(150px, description-measure.preferred-height + 30px));
+                }
+                if !root.preset-editor-error.is-empty: Text {
+                    text: root.preset-editor-error;
+                    color: root.warning;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                    width: 100%;
+                    height: self.preferred-height;
+                }
+                if root.shell-menu-injection-supported: CheckBox {
+                    text: @tr("注入右键菜单（最多 10 个预设）");
+                    checked <=> root.preset-editor-shell-menu;
+                }
+                if root.delete-confirmation: HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: @tr("确定删除此用户预设？"); color: root.warning; horizontal-stretch: 1; vertical-alignment: center; }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("取消"); clicked => { root.delete-confirmation = false; } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("确认删除"); clicked => { root.delete-parameter-preset(); } }
+                }
+                HorizontalLayout {
+                    height: 42px;
+                    spacing: 10px;
+                    if root.preset-editor-existing: SoftButton {
+                        dark-mode: root.dark-mode;
+                        text: @tr("删除");
+                        variant: "outline";
+                        width: 90px;
+                        height: 42px;
+                        clicked => { root.delete-confirmation = true; }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    SoftButton {
+                        dark-mode: root.dark-mode;
+                        text: @tr("取消");
+                        variant: "outline";
+                        width: 90px;
+                        height: 42px;
+                        clicked => { root.cancel-preset-editor(); }
+                    }
+                    SoftButton {
+                        dark-mode: root.dark-mode;
+                        text: @tr("保存");
+                        variant: "action";
+                        width: 90px;
+                        height: 42px;
+                        clicked => { root.save-parameter-preset(root.preset-editor-name, root.preset-editor-description); }
+                    }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,451 @@
+import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-widgets.slint";
+import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
+import { StudioTheme } from "studio_theme.slint";
+
+export component ParameterForm inherits VerticalLayout {
+    in-out property <int> alpha-policy-index;
+    in-out property <int> avif-color-representation-index;
+    in-out property <int> avif-encoder-index;
+    in property <[ComboOption]> avif-encoder-options;
+    in-out property <string> bit-depth-text;
+    in-out property <int> chroma-index;
+    in property <color> combo-bg;
+    in property <color> combo-bg-disabled;
+    in property <color> combo-bg-hover;
+    in property <color> combo-border;
+    in property <color> combo-border-hover;
+    in-out property <int> combo-close-generation;
+    callback combo-popup-finished();
+    callback combo-popup-requested();
+    in property <color> combo-selected-bg;
+    in property <bool> dark-mode;
+    in-out property <int> format-index;
+    in property <length> window-height;
+    in property <color> hint-blue;
+    in property <color> hint-cyan;
+    in property <color> hint-green;
+    in property <color> hint-orange;
+    in property <color> hint-red;
+    in property <color> hint-violet;
+    in-out property <bool> jpegli-optimize-huffman;
+    in-out property <int> jpegli-progressive-index;
+    in-out property <bool> jpegli-xyb;
+    in-out property <string> max-height-text;
+    in-out property <string> max-long-edge-text;
+    in-out property <string> max-short-edge-text;
+    in-out property <string> max-width-text;
+    in-out property <string> memory-limit-text;
+    callback open-preset-editor();
+    in property <color> panel-bg;
+    in property <color> panel-border;
+    in property <length> parameter-control-height;
+    in property <length> parameter-control-width;
+    in property <string> parameter-preset-description;
+    in-out property <int> parameter-preset-index;
+    in property <[ComboOption]> parameter-preset-options;
+    callback parameter-preset-selected(int);
+    in-out property <string> quality-text;
+    in-out property <bool> running;
+    in-out property <int> size-limit-index;
+    in-out property <string> speed-text;
+    in property <color> text-body;
+    in property <color> text-muted;
+    in property <color> text-soft;
+    in property <color> text-strong;
+    in-out property <string> threads-text;
+    in-out property <string> visual-quality-text;
+
+    in property <bool> menu-mode: false;
+    changed jpegli-progressive-index => {
+        if root.jpegli-progressive-index > 0 { root.jpegli-optimize-huffman = true; }
+    }
+    spacing: 10px;
+    if !root.menu-mode: HorizontalLayout {
+        height: 36px;
+        spacing: 10px;
+        Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; horizontal-stretch: 1; }
+        parameter-preset := SoftComboBox {
+            accessible-name: @tr("参数预设");
+            viewport-height: root.window-height;
+            close-generation: root.combo-close-generation;
+            popup-requested => { root.combo-popup-requested(); }
+            popup-finished => { root.combo-popup-finished(); }
+            model: root.parameter-preset-options;
+            current-index <=> root.parameter-preset-index;
+            enabled: !root.running;
+            width: root.parameter-control-width;
+            height: 36px;
+            normal-background: root.combo-bg;
+            hover-background: root.combo-bg-hover;
+            disabled-background: root.combo-bg-disabled;
+            selected-background: root.combo-selected-bg;
+            normal-border: root.combo-border;
+            hover-border: root.combo-border-hover;
+            normal-text: root.text-body;
+            disabled-text: root.text-soft;
+            muted-text: root.text-muted;
+            selected-text: root.text-body;
+            hover-help-text: root.parameter-preset-description;
+            hover-help-always: true;
+            selection-accepted(index, click-x, click-y) => {
+                root.parameter-preset-selected(index);
+            }
+        }
+        SoftButton {
+            dark-mode: root.dark-mode;
+            text: @tr("保存预设");
+            variant: "outline";
+            width: 96px;
+            height: 36px;
+            enabled: !root.running;
+            clicked => { root.open-preset-editor(); }
+        }
+    }
+    HorizontalLayout {
+        min-height: 72px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("编辑格式"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("编辑格式"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.format-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("首选 AVIF");
+            lead-color: root.hint-orange;
+            accent: @tr("极高压缩率 · 支持 HDR · 最高 12-bit");
+            accent-color: root.hint-blue;
+            detail: @tr("AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPGLI 是新的 JPEG 编码器，在保持 JPEG 兼容的前提下明显提升压缩率。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if root.format-index == 0: HorizontalLayout {
+        min-height: 72px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("编码器"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("AVIF 编码器"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("保持“自动”就是最优解");
+            lead-color: root.hint-orange;
+            accent: @tr("AOM，超限自动使用 Grid");
+            accent-color: root.hint-blue;
+            detail: @tr("AOM 支持高位深与 420/422/444；超出单图能力时自动使用 AOM Grid，保留原尺寸。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    HorizontalLayout {
+        min-height: 78px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("质量"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("质量"); text <=> root.quality-text; placeholder-text: (root.menu-mode || root.format-index == 4 || root.visual-quality-text.is-empty) ? "1-100/q90/0.9" : @tr("由视觉质量自动控制"); enabled: !root.running && (root.menu-mode || root.format-index == 4 || root.visual-quality-text.is-empty); width: root.parameter-control-width; opacity: !(root.menu-mode || root.format-index == 4 || root.visual-quality-text.is-empty) ? 0.56 : 1.0; height: root.parameter-control-height; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: root.format-index == 3 ? @tr("1–100，越大质量越高；JPGLI 始终有损") : @tr("1–100，越大质量越高；100 为无损");
+            lead-color: root.hint-violet;
+            detail: @tr("AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPGLI 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 默认走无损转封装。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if !root.menu-mode && root.format-index != 4: HorizontalLayout {
+        min-height: 64px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("视觉质量"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("视觉质量"); text <=> root.visual-quality-text; placeholder-text: @tr("空由质量决定，1-100"); input-type: number; enabled: !root.running; opacity: root.format-index == 4 ? 0.56 : 1.0; width: root.parameter-control-width; height: root.parameter-control-height; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("建议留空");
+            lead-color: root.hint-red;
+            detail: @tr("留空时由普通质量参数直接控制。若确实需要启用视觉质量搜索，建议从 50 左右开始；填写后会对同一张图反复编码，并用 GMSD / MS-SSIM 搜索目标画质，耗时会显著增加。");
+            detail-color: root.text-body;
+        }
+    }
+
+    if root.format-index == 0 || root.format-index == 1 || root.format-index == 2: HorizontalLayout {
+        min-height: 56px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("速度"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("速度"); text <=> root.speed-text; placeholder-text: @tr("默认/可选0-10"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("0-10，越大越快");
+            lead-color: root.hint-green;
+            detail: @tr("默认值是速度与画质的平衡点，自动映射到各编码器的 preset / effort / cpu-used。同一质量下数值越小压缩效率越高。不支持调速的格式会自动隐藏这一行。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if !root.menu-mode: Text { text: @tr("资源限制"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+
+    if !root.menu-mode: HorizontalLayout {
+        min-height: 64px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("线程"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("线程"); text <=> root.threads-text; placeholder-text: @tr("自动/线程数"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("留空 = 自动");
+            lead-color: root.hint-cyan;
+            accent: @tr("核心多时预留 4 个");
+            accent-color: root.hint-blue;
+            detail: @tr("填数字即为总线程上限。自动策略给桌面和 UI 留余量：逻辑核心 ≥12 预留 4 个，5-11 预留 2 个，2-4 预留 1 个，单核仍用 1 个。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if !root.menu-mode: HorizontalLayout {
+        min-height: 64px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("内存"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("内存限制"); text <=> root.memory-limit-text; placeholder-text: @tr("例如 4（单位 GiB）"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("留空 = 自动");
+            lead-color: root.hint-cyan;
+            accent: @tr("min(总内存 80%, 可用 50%)");
+            accent-color: root.hint-blue;
+            detail: @tr("填数字即为内存占用上限，单位 GiB。设置页可以解除内存限制，解除后覆盖这一项。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    HorizontalLayout {
+        min-height: 56px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("尺寸限制"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("图片尺寸限制"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: @tr("无限制"), enabled: true }, { text: @tr("手动"), enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("自动 = 保证还能正确解码");
+            lead-color: root.hint-cyan;
+            detail: @tr("按格式与解码能力限制边长，也可以切换成无限制。手动时取宽、高、长边、短边里最严格的一项。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if root.size-limit-index == 2: HorizontalLayout {
+        height: 48px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("手动尺寸"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("最大宽度"); text <=> root.max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("最大长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("最大短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+    }
+
+    if root.format-index == 0 || root.format-index == 3: Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+
+    if root.format-index == 0: HorizontalLayout {
+        min-height: 56px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("位深"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("位深"); text <=> root.bit-depth-text; placeholder-text: @tr("保持原片"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("自动至少 10-bit");
+            lead-color: root.hint-orange;
+            detail: @tr("源 ≤10-bit 提升到 10-bit，源 ≥12-bit 收到 12-bit；显式填写则以填写值为准。AVIF 支持 8 / 10 / 12-bit。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if root.format-index == 0: HorizontalLayout {
+        min-height: 64px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("颜色表示"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("AVIF 颜色表示"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "YUV", enabled: true }, { text: @tr("跟随源"), enabled: true }, { text: "RGB(A) / GBR(A) Identity", enabled: true }]; current-index <=> root.avif-color-representation-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("默认 YUV");
+            lead-color: root.hint-blue;
+            detail: @tr("YUV 始终使用非 Identity 矩阵；跟随源仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；RGB(A)/GBR(A) 强制 4:4:4 并自动选择 AOM。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if root.format-index == 0 || root.format-index == 3: HorizontalLayout {
+        min-height: 64px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("色度采样"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("色度采样"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("自动 = 跟随源");
+            lead-color: root.hint-blue;
+            detail: root.format-index == 3
+                ? @tr("JPGLI 支持 444 / 422 / 420，自动时用 Jpegli 默认采样。")
+                : @tr("一律以 YUV 编码：源是 420 / 422 / 444 就原样保留，RGB 与 RGBA 视作 444，灰度按 420 处理。");
+            detail-color: root.text-muted;
+        }
+    }
+
+    if root.format-index == 3: HorizontalLayout {
+        height: 48px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("渐进"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("JPGLI 渐进级别"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("关闭"), enabled: true }, { text: @tr("普通"), enabled: true }, { text: @tr("更细"), enabled: true }]; current-index <=> root.jpegli-progressive-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+    }
+
+    if root.format-index == 3 && root.jpegli-progressive-index == 0: HorizontalLayout {
+        height: 48px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("哈夫曼"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        CheckBox { text: @tr("优化哈夫曼表"); checked <=> root.jpegli-optimize-huffman; enabled: !root.running; width: root.parameter-control-width; }
+    }
+
+    if root.format-index == 3: HorizontalLayout {
+        height: 48px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: "XYB"; width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        CheckBox { text: @tr("启用 XYB"); checked <=> root.jpegli-xyb; enabled: !root.running; width: root.parameter-control-width; }
+    }
+
+    if root.format-index == 0: HorizontalLayout {
+        min-height: 56px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: @tr("透明通道"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        SoftComboBox { accessible-name: @tr("透明通道"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("强制开启"), enabled: true }, { text: @tr("自动"), enabled: true }, { text: @tr("关闭"), enabled: true }]; current-index <=> root.alpha-policy-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("自动 = 源真的用到才保留");
+            lead-color: root.hint-orange;
+            detail: @tr("源没有 alpha，或者 alpha 全不透明，都会去掉这一层。保留时 alpha 与颜色用同一个质量值压缩；编码器不支持有损 alpha 时，只有 alpha 退回无损，颜色仍按质量压缩。");
+            detail-color: root.text-muted;
+        }
+    }
+
+}
+
+export component ParameterPage inherits Rectangle {
+    in-out property <int> alpha-policy-index;
+    in-out property <int> avif-color-representation-index;
+    in-out property <int> avif-encoder-index;
+    in property <[ComboOption]> avif-encoder-options;
+    in-out property <string> bit-depth-text;
+    in-out property <int> chroma-index;
+    in property <color> combo-bg;
+    in property <color> combo-bg-disabled;
+    in property <color> combo-bg-hover;
+    in property <color> combo-border;
+    in property <color> combo-border-hover;
+    in-out property <int> combo-close-generation;
+    callback combo-popup-finished();
+    callback combo-popup-requested();
+    in property <color> combo-selected-bg;
+    in property <bool> dark-mode;
+    in-out property <int> format-index;
+    in property <length> window-height;
+    in property <color> hint-blue;
+    in property <color> hint-cyan;
+    in property <color> hint-green;
+    in property <color> hint-orange;
+    in property <color> hint-red;
+    in property <color> hint-violet;
+    in-out property <bool> jpegli-optimize-huffman;
+    in-out property <int> jpegli-progressive-index;
+    in-out property <bool> jpegli-xyb;
+    in-out property <string> max-height-text;
+    in-out property <string> max-long-edge-text;
+    in-out property <string> max-short-edge-text;
+    in-out property <string> max-width-text;
+    in-out property <string> memory-limit-text;
+    callback open-preset-editor();
+    in property <color> panel-bg;
+    in property <color> panel-border;
+    in property <length> parameter-control-height;
+    in property <length> parameter-control-width;
+    in property <string> parameter-preset-description;
+    in-out property <int> parameter-preset-index;
+    in property <[ComboOption]> parameter-preset-options;
+    callback parameter-preset-selected(int);
+    in-out property <string> quality-text;
+    in-out property <bool> running;
+    in-out property <int> size-limit-index;
+    in-out property <string> speed-text;
+    in property <color> text-body;
+    in property <color> text-muted;
+    in property <color> text-soft;
+    in property <color> text-strong;
+    in-out property <string> threads-text;
+    in-out property <string> visual-quality-text;
+
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    border-radius: 8px;
+    background: root.panel-bg;
+    border-color: root.panel-border;
+    border-width: 1px;
+    ScrollView {
+        viewport-width: parent.width;
+        ParameterForm {
+            padding: 22px;
+            alpha-policy-index <=> root.alpha-policy-index;
+            avif-color-representation-index <=> root.avif-color-representation-index;
+            avif-encoder-index <=> root.avif-encoder-index;
+            avif-encoder-options : root.avif-encoder-options;
+            bit-depth-text <=> root.bit-depth-text;
+            chroma-index <=> root.chroma-index;
+            combo-bg : root.combo-bg;
+            combo-bg-disabled : root.combo-bg-disabled;
+            combo-bg-hover : root.combo-bg-hover;
+            combo-border : root.combo-border;
+            combo-border-hover : root.combo-border-hover;
+            combo-close-generation <=> root.combo-close-generation;
+            combo-selected-bg : root.combo-selected-bg;
+            dark-mode : root.dark-mode;
+            format-index <=> root.format-index;
+            window-height : root.window-height;
+            hint-blue : root.hint-blue;
+            hint-cyan : root.hint-cyan;
+            hint-green : root.hint-green;
+            hint-orange : root.hint-orange;
+            hint-red : root.hint-red;
+            hint-violet : root.hint-violet;
+            jpegli-optimize-huffman <=> root.jpegli-optimize-huffman;
+            jpegli-progressive-index <=> root.jpegli-progressive-index;
+            jpegli-xyb <=> root.jpegli-xyb;
+            max-height-text <=> root.max-height-text;
+            max-long-edge-text <=> root.max-long-edge-text;
+            max-short-edge-text <=> root.max-short-edge-text;
+            max-width-text <=> root.max-width-text;
+            memory-limit-text <=> root.memory-limit-text;
+            panel-bg : root.panel-bg;
+            panel-border : root.panel-border;
+            parameter-control-height : root.parameter-control-height;
+            parameter-control-width : root.parameter-control-width;
+            parameter-preset-description : root.parameter-preset-description;
+            parameter-preset-index <=> root.parameter-preset-index;
+            parameter-preset-options : root.parameter-preset-options;
+            quality-text <=> root.quality-text;
+            running <=> root.running;
+            size-limit-index <=> root.size-limit-index;
+            speed-text <=> root.speed-text;
+            text-body : root.text-body;
+            text-muted : root.text-muted;
+            text-soft : root.text-soft;
+            text-strong : root.text-strong;
+            threads-text <=> root.threads-text;
+            visual-quality-text <=> root.visual-quality-text;
+            combo-popup-finished() => { root.combo-popup-finished(); }
+            combo-popup-requested() => { root.combo-popup-requested(); }
+            open-preset-editor() => { root.open-preset-editor(); }
+            parameter-preset-selected(a0) => { root.parameter-preset-selected(a0); }
+        }
+    }
+}

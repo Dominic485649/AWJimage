@@ -1,5 +1,7 @@
 import { ScrollView } from "std-widgets.slint";
 
+export struct DropRegion { x: length, y: length, width: length, height: length }
+
 export struct TaskRow {
     order: string,
     filename: string,
@@ -25,7 +27,6 @@ export struct LargeImageRow {
     actions: string,
     status: string,
     grid-available: bool,
-    zenrav1e-available: bool,
 }
 
 export struct UpdateHistoryRow {
@@ -428,14 +429,14 @@ export component SoftButton inherits Rectangle {
     in property <string> variant: "outline"; // "outline" | "primary" | "danger" | "action"
     in property <bool> dark-mode: false;
 
-    property <color> combo-bg: root.dark-mode ? #222c3b : #fbfdff;
-    property <color> combo-bg-hover: root.dark-mode ? #293548 : #f3f8ff;
-    property <color> combo-bg-disabled: root.dark-mode ? #1d2532 : #eef2f7;
+    property <color> combo-bg: root.dark-mode ? #303030 : #fbfdff;
+    property <color> combo-bg-hover: root.dark-mode ? #383838 : #f3f8ff;
+    property <color> combo-bg-disabled: root.dark-mode ? #272727 : #eef2f7;
     property <color> combo-selected-bg: root.dark-mode ? #14325b : #e7f1ff;
-    property <color> combo-border: root.dark-mode ? #3a4658 : #dfe8f3;
-    property <color> combo-border-hover: root.dark-mode ? #4d6684 : #b9d6f7;
-    property <color> text-body: root.dark-mode ? #dce5f1 : #334155;
-    property <color> text-soft: root.dark-mode ? #748299 : #94a3b8;
+    property <color> combo-border: root.dark-mode ? #4a4a4a : #dfe8f3;
+    property <color> combo-border-hover: root.dark-mode ? #626262 : #b9d6f7;
+    property <color> text-body: root.dark-mode ? #e2e2e2 : #334155;
+    property <color> text-soft: root.dark-mode ? #858585 : #94a3b8;
     property <color> accent-strong: root.dark-mode ? #5aa2ff : #0d6efd;
 
     out property <bool> has-hover <=> touch.has-hover;
@@ -637,7 +638,7 @@ export component QueueMenuItem inherits Rectangle {
         x: 10px;
         width: parent.width - 20px;
         text: root.text;
-        color: !root.enabled ? (root.dark-mode ? #657186 : #94a3b8) : (root.danger ? (root.dark-mode ? #fb7185 : #dc2626) : (root.dark-mode ? #dce5f1 : #334155));
+        color: !root.enabled ? (root.dark-mode ? #657186 : #94a3b8) : (root.danger ? (root.dark-mode ? #fb7185 : #dc2626) : (root.dark-mode ? #e2e2e2 : #334155));
         font-size: 13px;
         font-weight: root.danger ? 700 : 500;
         vertical-alignment: center;

@@ -1,0 +1,282 @@
+import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-widgets.slint";
+import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
+import { StudioTheme } from "studio_theme.slint";
+
+export component SettingsPage inherits ScrollView {
+    in property <color> accent-strong;
+    in-out property <bool> allow-wic-fallback;
+    in property <color> combo-bg;
+    in property <color> combo-bg-disabled;
+    in property <color> combo-bg-hover;
+    in property <color> combo-border;
+    in property <color> combo-border-hover;
+    in-out property <int> combo-close-generation;
+    callback combo-popup-finished();
+    callback combo-popup-requested();
+    in property <color> combo-selected-bg;
+    in property <length> control-button-height;
+    in property <length> window-height;
+    in-out property <bool> hide-update-changelog-after-exit;
+    callback hide-update-changelog-after-exit-requested(bool);
+    in-out property <int> language-index;
+    callback language-selection-requested(int);
+    in property <length> page-gap;
+    in property <color> panel-bg;
+    in property <color> panel-border;
+    in-out property <bool> running;
+    in-out property <bool> show-update-changelog-after-update;
+    callback show-update-changelog-after-update-requested(bool);
+    in-out property <bool> show-update-changelog-enabled;
+    callback show-update-changelog-requested(bool);
+    in property <color> text-body;
+    in property <color> text-muted;
+    in property <color> text-soft;
+    in property <color> text-strong;
+    in-out property <int> theme-index;
+    callback theme-selection-requested(int, length, length);
+    in-out property <int> ui-font-index;
+    in property <[ComboOption]> ui-font-options;
+    in-out property <bool> unlock-max-input-file-bytes;
+    in-out property <int> update-channel-index;
+    callback update-channel-selection-requested(int);
+    in-out property <bool> update-checking;
+    in-out property <string> update-last-successful-check;
+    in-out property <string> update-status;
+    in-out property <bool> visual-quality-fallback;
+    in-out property <bool> visual-quality-gpu;
+    in-out property <string> visual-quality-gpu-help-text;
+    in-out property <bool> wic-ui-visible;
+
+    horizontal-stretch: 1;
+    vertical-stretch: 1;
+    viewport-width: root.width;
+    VerticalLayout {
+        spacing: root.page-gap;
+
+        Rectangle {
+            border-radius: 8px;
+            background: root.panel-bg;
+            border-color: root.panel-border;
+            border-width: 1px;
+            animate background, border-color { duration: 180ms; easing: ease-out; }
+            VerticalLayout {
+                padding: 24px;
+                spacing: root.page-gap;
+                Text { text: @tr("外观"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                HorizontalLayout {
+                    spacing: root.page-gap;
+                    Text { text: @tr("主题"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    SoftComboBox {
+                        accessible-name: @tr("主题");
+                                viewport-height: root.window-height;
+                        close-generation: root.combo-close-generation;
+                        popup-requested => { root.combo-popup-requested(); }
+                        popup-finished => { root.combo-popup-finished(); }
+                        model: [{ text: @tr("跟随系统"), enabled: true }, { text: @tr("浅色"), enabled: true }, { text: @tr("深色"), enabled: true }];
+                        current-index <=> root.theme-index;
+                        horizontal-stretch: 1;
+                        normal-background: root.combo-bg;
+                        hover-background: root.combo-bg-hover;
+                        disabled-background: root.combo-bg-disabled;
+                        selected-background: root.combo-selected-bg;
+                        normal-border: root.combo-border;
+                        hover-border: root.combo-border-hover;
+                        normal-text: root.text-body;
+                        disabled-text: root.text-soft;
+                        muted-text: root.text-muted;
+                        selected-text: root.accent-strong;
+                        selection-accepted(index, click-x, click-y) => {
+                            root.theme-selection-requested(index, click-x, click-y);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: root.page-gap;
+                    Text { text: @tr("语言"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    SoftComboBox {
+                        accessible-name: @tr("语言");
+                        viewport-height: root.window-height;
+                        close-generation: root.combo-close-generation;
+                        popup-requested => { root.combo-popup-requested(); }
+                        popup-finished => { root.combo-popup-finished(); }
+                        // 语言名一律用它自己的语言书写，所以这两项刻意不包 @tr()。
+                        model: [{ text: "中文", enabled: true }, { text: "English", enabled: true }];
+                        current-index <=> root.language-index;
+                        horizontal-stretch: 1;
+                        normal-background: root.combo-bg;
+                        hover-background: root.combo-bg-hover;
+                        disabled-background: root.combo-bg-disabled;
+                        selected-background: root.combo-selected-bg;
+                        normal-border: root.combo-border;
+                        hover-border: root.combo-border-hover;
+                        normal-text: root.text-body;
+                        disabled-text: root.text-soft;
+                        muted-text: root.text-muted;
+                        selected-text: root.accent-strong;
+                        // 与主题不同，语言必须回到 C++：字符串表和持久化都在那边。
+                        selection-accepted(index, click-x, click-y) => {
+                            root.language-selection-requested(index);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: root.page-gap;
+                    Text { text: @tr("字体"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    SoftComboBox {
+                        accessible-name: @tr("字体");
+                        viewport-height: root.window-height;
+                        max-visible-items: 10;
+                        close-generation: root.combo-close-generation;
+                        popup-requested => { root.combo-popup-requested(); }
+                        popup-finished => { root.combo-popup-finished(); }
+                        model: root.ui-font-options;
+                        current-index <=> root.ui-font-index;
+                        enabled: !root.running;
+                        horizontal-stretch: 1;
+                        height: root.control-button-height;
+                        normal-background: root.combo-bg;
+                        hover-background: root.combo-bg-hover;
+                        disabled-background: root.combo-bg-disabled;
+                        selected-background: root.combo-selected-bg;
+                        normal-border: root.combo-border;
+                        hover-border: root.combo-border-hover;
+                        normal-text: root.text-body;
+                        disabled-text: root.text-soft;
+                        muted-text: root.text-muted;
+                        selected-text: root.text-body;
+                    }
+                }
+            }
+        }
+
+        Rectangle {
+            border-radius: 8px;
+            background: root.panel-bg;
+            border-color: root.panel-border;
+            border-width: 1px;
+            animate background, border-color { duration: 180ms; easing: ease-out; }
+            VerticalLayout {
+                padding: 24px;
+                spacing: root.page-gap;
+                Text { text: @tr("自动更新"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                HorizontalLayout {
+                    spacing: root.page-gap;
+                    Text { text: @tr("更新渠道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    SoftComboBox {
+                        accessible-name: @tr("更新渠道");
+                        viewport-height: root.window-height;
+                        close-generation: root.combo-close-generation;
+                        popup-requested => { root.combo-popup-requested(); }
+                        popup-finished => { root.combo-popup-finished(); }
+                        model: [{ text: @tr("仅稳定版"), enabled: true }, { text: @tr("稳定版和 prerelease"), enabled: true }];
+                        current-index <=> root.update-channel-index;
+                        enabled: !root.update-checking;
+                        retain-focus-when-disabled: true;
+                        horizontal-stretch: 1;
+                        normal-background: root.combo-bg;
+                        hover-background: root.combo-bg-hover;
+                        disabled-background: root.combo-bg-disabled;
+                        selected-background: root.combo-selected-bg;
+                        normal-border: root.combo-border;
+                        hover-border: root.combo-border-hover;
+                        normal-text: root.text-body;
+                        disabled-text: root.text-soft;
+                        muted-text: root.text-muted;
+                        selected-text: root.accent-strong;
+                        selection-accepted(index, click-x, click-y) => {
+                            root.update-channel-selection-requested(index);
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: root.page-gap;
+                    CheckBox {
+                        text: @tr("显示更新日志");
+                        checked <=> root.show-update-changelog-enabled;
+                        toggled => { root.show-update-changelog-requested(self.checked); }
+                    }
+                    CheckBox {
+                        text: @tr("退出后隐藏更新日志");
+                        checked <=> root.hide-update-changelog-after-exit;
+                        toggled => { root.hide-update-changelog-after-exit-requested(self.checked); }
+                    }
+                    CheckBox {
+                        text: @tr("更新后显示更新日志");
+                        checked <=> root.show-update-changelog-after-update;
+                        toggled => { root.show-update-changelog-after-update-requested(self.checked); }
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                }
+                HorizontalLayout {
+                    spacing: root.page-gap;
+                    Text { text: root.update-status; color: root.text-muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
+                }
+                Text {
+                    text: @tr("上次成功检查：") + root.update-last-successful-check;
+                    color: root.text-muted;
+                    font-size: 13px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+
+        Rectangle {
+            border-radius: 8px;
+            background: root.panel-bg;
+            border-color: root.panel-border;
+            border-width: 1px;
+            animate background, border-color { duration: 180ms; easing: ease-out; }
+            VerticalLayout {
+                padding: 24px;
+                spacing: root.page-gap;
+                Text { text: @tr("高级与实验功能"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                if root.wic-ui-visible: VerticalLayout {
+                    spacing: 8px;
+                    width: 100%;
+                    height: self.preferred-height;
+                    CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.allow-wic-fallback; enabled: !root.running; }
+                    Text { text: @tr("开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    width: 100%;
+                    height: self.preferred-height;
+                    CheckBox { text: @tr("GPU 加速视觉质量"); checked <=> root.visual-quality-gpu; enabled: !root.running; }
+                    Text { text: root.visual-quality-gpu-help-text; color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    width: 100%;
+                    height: self.preferred-height;
+                    CheckBox { text: @tr("视觉质量未达标时兜底输出"); checked <=> root.visual-quality-fallback; enabled: !root.running; }
+                    Text { text: @tr("填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                }
+
+                VerticalLayout {
+                    spacing: 8px;
+                    width: 100%;
+                    height: self.preferred-height;
+                    CheckBox { text: @tr("解除 20 GiB 输入/运行时上限"); checked <=> root.unlock-max-input-file-bytes; enabled: !root.running; }
+                    Text { text: @tr("仅当前会话生效，不会写入 AWJ.jsonc。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                    Text { text: @tr("警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"); color: #d13438; font-size: 13px; wrap: word-wrap; font-weight: 700; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                }
+
+
+            }
+        }
+
+        Rectangle {
+            border-radius: 8px;
+            background: root.panel-bg;
+            border-color: root.panel-border;
+            border-width: 1px;
+            animate background, border-color { duration: 180ms; easing: ease-out; }
+            VerticalLayout {
+                padding: 24px;
+                spacing: root.page-gap;
+                Text { text: @tr("关于后端"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                Text { text: @tr("Studio 输出支持 libavif / AOM、WebP、JXL、JPGLI 与 PNG。"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
+            }
+        }
+    }
+}

@@ -17,15 +17,11 @@ export namespace awj {
 
 bool avif_libavif_encoder_available(AvifEncoderMode mode);
 bool avif_dav1d_decoder_available() noexcept;
-bool avif_zenravif_encoder_available() noexcept;
-bool avif_svtav1hdr_encoder_available() noexcept;
 
-std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_current_build(
-    bool enable_experimental = false);
+std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_current_build();
 
 std::expected<AvifEncoderSelection, std::string> select_avif_encoder_for_current_build(
-    const AvifEncoderSelectionRequest& request,
-    bool enable_experimental = false);
+    const AvifEncoderSelectionRequest& request);
 
 std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     const ImageBuffer& image,

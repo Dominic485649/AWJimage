@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$VcpkgRoot = "",
     [string]$VcpkgTriplet = "",
     [switch]$StaticRuntime,
@@ -8,8 +8,6 @@ param(
     [switch]$EnableLto,
     [switch]$CleanDependencies,
     [string]$DependencyCacheRoot = "",
-    [switch]$DisableZenravif,
-    [switch]$DisableSvtAv1Hdr,
     [ValidateSet("stable", "prerelease")]
     [string]$UpdateChannel = "stable",
     [UInt64]$UpdateManifestSequence = 0,
@@ -210,59 +208,11 @@ function Get-UpdateVersionSortKey([string]$Text) {
     return '{0:D10}.{1:D10}.{2:D10}' -f $Parts[0], $Parts[1], $Parts[2]
 }
 
-function Get-CargoLicenseInventory([string]$Platform) {
-    $ManifestPath = Join-Path $Repo "third_party\zenravif-bridge\Cargo.toml"
-    $MetadataText = (& cargo metadata --manifest-path $ManifestPath --locked `
-        --format-version 1 --filter-platform $Platform | Out-String)
-    if ($LASTEXITCODE -ne 0) {
-        throw "cargo metadata ($Platform) 失败，退出码 $LASTEXITCODE。"
-    }
-    $Metadata = $MetadataText | ConvertFrom-Json
-    $PackageById = @{}
-    foreach ($Package in $Metadata.packages) {
-        $PackageById[$Package.id] = $Package
-    }
-    $Inventory = foreach ($Node in $Metadata.resolve.nodes) {
-        if ($Node.id -eq $Metadata.resolve.root) {
-            continue
-        }
-        $Package = $PackageById[$Node.id]
-        if (-not $Package -or -not $Package.license) {
-            throw "Cargo 包缺少可验证的 license 元数据: $($Node.id)"
-        }
-        "  $($Package.name) $($Package.version) | $($Package.license)"
-    }
-    return @($Inventory | Sort-Object -Unique)
-}
-
-function Assert-CargoLicenseInventoryCurrent {
-    $NoticePath = Join-Path $Repo "THIRD_PARTY_NOTICES.txt"
-    $NoticeLines = @(Get-Content -LiteralPath $NoticePath)
-    $Begin = [Array]::IndexOf($NoticeLines, "BEGIN AWJ CARGO LICENSE INVENTORY")
-    $End = [Array]::IndexOf($NoticeLines, "END AWJ CARGO LICENSE INVENTORY")
-    if ($Begin -lt 0 -or $End -le $Begin) {
-        throw "THIRD_PARTY_NOTICES.txt 缺少 Cargo 许可证清单标记。"
-    }
-    $Declared = @($NoticeLines[($Begin + 1)..($End - 1)] | Sort-Object -Unique)
-    $Resolved = @(
-        Get-CargoLicenseInventory "x86_64-pc-windows-msvc"
-        Get-CargoLicenseInventory "x86_64-unknown-linux-gnu"
-    ) | Sort-Object -Unique
-    $Difference = @(Compare-Object -ReferenceObject $Resolved -DifferenceObject $Declared)
-    if ($Difference.Count -ne 0) {
-        $Details = ($Difference | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }) -join "`n"
-        throw "THIRD_PARTY_NOTICES.txt 的 Cargo 许可证清单与锁定发布依赖不一致：`n$Details"
-    }
-}
-
 if ($StaticRuntime -and $DynamicRuntime) {
     throw "不能同时指定 -StaticRuntime 和 -DynamicRuntime。"
 }
 if ($SharedSlint) {
     throw "Release 产物必须静态链接 Slint；请不要使用 -SharedSlint。"
-}
-if (-not $DisableZenravif) {
-    Assert-CargoLicenseInventoryCurrent
 }
 if (-not $SkipUpdateManifest) {
     $CurrentVersionParts = @(Get-StrictUpdateVersionParts $Version "VERSION")
@@ -331,7 +281,6 @@ Ensure-VcpkgManifestPackages $VcpkgRoot $VcpkgTriplet @(
 # Release pins must take effect even when an earlier configure populated FetchContent.
 # Reuse only clean sources whose resolved commit already matches the release pin.
 $PinnedFetchContentCommits = @{
-    "svtav1hdr" = "8b4b9f5624cb70c2363a7cebb553110c1447dd4c"
     "libavif" = "c5240fc79fe5c2407e10afd35f5505ef6333ea49"
     "jpegli"  = "031a0077f5799a6041004267fc12b956c1f52a20"
     "slint"   = "cf62c975c311e7036d599ed8ed0b7e6a8386a934"
@@ -343,23 +292,17 @@ $PinnedFetchContentPatchedFiles = @{
     "slint"   = @(
         " M api/cpp/include/private/slint_config.h",
         " M internal/backends/winit/accesskit.rs",
-        " M internal/backends/winit/event_loop.rs"
+        " M internal/backends/winit/event_loop.rs",
+        " M internal/core/window.rs"
     )
 }
 $FetchContentSourceOverrides = @()
-foreach ($FetchContentName in @("svtav1hdr", "libavif", "jpegli", "slint")) {
+foreach ($FetchContentName in @("libavif", "jpegli", "slint")) {
     $SourceDir = Join-Path $BuildDir "_deps\$FetchContentName-src"
     $ExpectedCommit = $PinnedFetchContentCommits[$FetchContentName]
-    $CommitMarker = Join-Path $SourceDir ".awj-source-commit"
-    $KeepSource = if ($FetchContentName -eq "svtav1hdr") {
-        (Test-Path -LiteralPath $CommitMarker -PathType Leaf) -and
-            ((Get-Content -LiteralPath $CommitMarker -Raw).Trim() -eq $ExpectedCommit)
-    }
-    else {
-        $ExpectedCommit -and
-            (Test-Path -LiteralPath (Join-Path $SourceDir ".git") -PathType Container)
-    }
-    if ($KeepSource -and $FetchContentName -ne "svtav1hdr") {
+    $KeepSource = $ExpectedCommit -and
+        (Test-Path -LiteralPath (Join-Path $SourceDir ".git"))
+    if ($KeepSource) {
         $ResolvedCommit = (& git -C $SourceDir rev-parse HEAD).Trim()
         $SourceStatus = @(git -C $SourceDir status --porcelain --untracked-files=all)
         $ExpectedPatchedFiles = @($PinnedFetchContentPatchedFiles[$FetchContentName])
@@ -403,7 +346,6 @@ $ConfigureArgs = @(
     "-U", "scn_DIR",
     "-U", "FastFloat_DIR",
     "-U", "fast_float_DIR",
-    "-U", "AWJ_SVTAV1HDR_GIT_TAG",
     "-U", "AWJ_LIBAVIF_GIT_REPOSITORY",
     "-U", "AWJ_LIBAVIF_GIT_TAG",
     "-U", "AWJ_JPEGLI_GIT_REPOSITORY",
@@ -429,16 +371,11 @@ $ConfigureArgs += "-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=$DependencyBuildt
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { 'OFF' })"
-$ConfigureArgs += "-DAWJ_ENABLE_ZENRAVIF=$(if ($DisableZenravif) { 'OFF' } else { 'ON' })"
-$ConfigureArgs += "-DAWJ_ENABLE_SVTAV1HDR=$(if ($DisableSvtAv1Hdr) { 'OFF' } else { 'ON' })"
 if ($UpdatePublicKeyHex) {
     $ConfigureArgs += "-DAWJ_UPDATE_PUBLIC_KEY_HEX=$UpdatePublicKeyHex"
 }
 $ConfigureArgs += $FetchContentSourceOverrides
 
-if (Test-Path $OutputDir) {
-    Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $ReleaseFiles -notcontains $_.Name } | Remove-Item -Recurse -Force
-}
 
 cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
@@ -477,7 +414,6 @@ $FetchContentCommit = {
     }
     return $Commit
 }
-$SvtAv1HdrCommit = & $FetchContentCommit "svtav1hdr"
 $LibavifCommit = & $FetchContentCommit "libavif"
 $JpegliCommit = & $FetchContentCommit "jpegli"
 $SlintCommit = & $FetchContentCommit "slint"
@@ -500,7 +436,6 @@ libarchive: $LibarchiveVersion
 libplacebo: $LibplaceboVersion
 
 FetchContent Dependencies (actual commits):
-  svt-av1-hdr: $SvtAv1HdrCommit
   libavif:     $LibavifCommit
   jpegli:      $JpegliCommit
   slint:       $SlintCommit
@@ -666,12 +601,8 @@ if (-not $SkipUpdateManifest) {
     Write-Host "  $SignaturePath"
 }
 
-if (Test-Path $OutputDir) {
-    Get-ChildItem -LiteralPath $OutputDir -Force | Where-Object { $ReleaseFiles -notcontains $_.Name } | Remove-Item -Recurse -Force
-}
 
 Write-Host ""
 Write-Host "Release 输出:"
 Write-Host "  $OutputDir\AWJ.exe"
 Write-Host "  $OutputDir\AWJ.com"
-Write-Host "  svt-av1-hdr: 已静态集成到主程序。"

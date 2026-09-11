@@ -19,9 +19,12 @@
 import awj.config;
 import awj.core;
 import awj.image;
+import awj.large_image_plan;
 import awj.pipeline;
 import awj.resource_planner;
 import awj.webp_codec;
+import awj.png_codec;
+import awj.avif_aom_codec;
 
 namespace {
 
@@ -86,6 +89,66 @@ int main() {
   std::filesystem::create_directories(root, ec);
   if (ec) {
     return fail("failed to create temp root.");
+  }
+  {
+    auto cfg = awj::default_app_config();
+    cfg.output_format = awj::OutputFormat::png;
+    const auto bytes = awj::pipeline_detail::estimated_regular_working_set_bytes(
+        awj::make_image_dimensions(4096, 4096), cfg);
+    const auto plan = awj::plan_resources({.automatic_thread_budget = 8, .file_count = 2,
+        .memory_limit_bytes = 1024ull * 1024 * 1024, .estimated_bytes_per_file = bytes});
+    if (bytes <= 512ull * 1024 * 1024 || plan.file_parallelism != 1 || plan.encoder_threads_per_file != 8)
+      return fail("PNG planning omitted high-depth/output buffers or lost the remaining thread budget");
+  }
+  {
+    auto cfg = awj::default_app_config();
+    cfg.output_dir = root;
+    awj::FileLogger logger{root, false};
+    awj::BatchLargeImageItem oversized{
+        .file = {.path = root / "nonexistent-huge-input.png"},
+        .dimensions = awj::make_image_dimensions(65537, 4096),
+        .decision = {.available_grid = true}};
+    const auto result = awj::pipeline_detail::encode_large_mode_item(cfg, logger, oversized,
+        {.memory_limit_bytes = 64ull * 1024 * 1024}, {});
+    if (result.ok || result.message.find("超过内存预算") == std::string::npos)
+      return fail("Grid did not reject its working set before decoding input");
+  }
+  {
+    auto wide = make_test_image();
+    wide.width = 65537;
+    wide.height = 64;
+    wide.planes[0].stride = wide.width * 4;
+    wide.planes[0].bytes.assign(wide.planes[0].stride * wide.height, std::byte{255});
+    auto png = awj::PngImageEncoder{}.encode(wide, {.quality = 100});
+    if (!png) return fail(png.error());
+    const auto input = root / "auto-grid.png";
+    {
+      std::ofstream stream{input, std::ios::binary};
+      stream.write(reinterpret_cast<const char*>(png->encoded.bytes.data()), png->encoded.bytes.size());
+      if (!stream) return fail("could not write automatic Grid fixture");
+    }
+    auto cfg = awj::default_app_config();
+    cfg.input_path = input;
+    cfg.output_dir = root / "auto-grid-output";
+    cfg.quality = 50;
+    cfg.speed = 8;
+    cfg.max_jobs = 2;
+    cfg.memory_limit_bytes = 2ull * 1024 * 1024 * 1024;
+    cfg.chroma_mode = awj::ChromaMode::yuv444;
+    cfg.write_summary = true;
+    auto summary = awj::run_batch(cfg);
+    if (!summary) return fail(summary.error());
+    if (summary->ok_count != 1) return fail("automatic Grid encode failed: " + read_text(cfg.output_dir / "summary.csv"));
+    auto decoded = awj::make_avif_image_decoder(1)->decode(cfg.output_dir / "auto-grid.avif");
+    if (!summary || summary->ok_count != 1 || !decoded || decoded->image.width != 65537 || decoded->image.height != 64)
+      return fail(decoded ? "automatic Grid changed original dimensions" : decoded.error());
+    cfg.output_dir = root / "manual-grid-output";
+    cfg.image_size_limit.mode = awj::ImageSizeLimitMode::manual;
+    cfg.image_size_limit.max_width = 32768;
+    summary = awj::run_batch(cfg);
+    decoded = awj::make_avif_image_decoder(1)->decode(cfg.output_dir / "auto-grid.avif");
+    if (!summary || summary->ok_count != 1 || !decoded || decoded->image.width != 32768 || decoded->image.height != 31)
+      return fail(decoded ? "manual size limit left a stale Grid plan" : decoded.error());
   }
 
   std::vector<awj::ImageFile> manifest_files;

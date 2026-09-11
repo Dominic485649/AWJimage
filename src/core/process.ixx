@@ -173,16 +173,8 @@ struct EncodeResult {
   std::string color_reason{};
   std::string fallback_reason{};
   bool used_decoder_fallback{};
-  bool encoder_experimental{};
   std::string encoder_license{};
   std::string integration_mode{};
-  std::string svtav1hdr_helper_path{};
-  std::optional<int> svtav1hdr_crf{};
-  std::optional<int> svtav1hdr_preset{};
-  std::string svtav1hdr_tune{};
-  std::optional<int> svtav1hdr_keyint{};
-  std::string svtav1hdr_hdr_metadata{};
-  std::string svtav1hdr_note{};
   std::string speed_parameter_kind{};
   int applied_speed{};
   int encoder_threads{};
@@ -2524,10 +2516,8 @@ std::expected<void, std::string> write_csv(
          "gmsd_quality_score,msssim_quality_score,gmsd_weight,msssim_weight,"
          "final_encoder_quality,visual_quality_target_met,search_attempt_count,"
          "decoder_id,decoder_fallback,encoder_selected,encoder_requested,"
-         "encoder_experimental,encoder_license,"
-         "integration_mode,svtav1hdr_helper_path,svtav1hdr_crf,svtav1hdr_"
-         "preset,svtav1hdr_tune,svtav1hdr_keyint,svtav1hdr_hdr_metadata,"
-         "svtav1hdr_note,"
+         "encoder_license,"
+         "integration_mode,"
          "requested_chroma,applied_chroma,requested_color_representation,applied_color_representation,requested_bit_depth,applied_bit_"
          "depth,bit_depth_reason,"
          "fallback_reason,speed_parameter_kind,applied_speed,encoder_threads,"
@@ -2637,16 +2627,8 @@ std::expected<void, std::string> write_csv(
         << (result.used_decoder_fallback ? "yes" : "no") << ','
         << core_detail::csv_escape(result.encoder_id) << ','
         << core_detail::csv_escape(result.requested_encoder_id) << ','
-        << (result.encoder_experimental ? "true" : "false") << ','
         << core_detail::csv_escape(result.encoder_license) << ','
         << core_detail::csv_escape(result.integration_mode) << ','
-        << core_detail::csv_escape(result.svtav1hdr_helper_path) << ','
-        << optional_int(result.svtav1hdr_crf) << ','
-        << optional_int(result.svtav1hdr_preset) << ','
-        << core_detail::csv_escape(result.svtav1hdr_tune) << ','
-        << optional_int(result.svtav1hdr_keyint) << ','
-        << core_detail::csv_escape(result.svtav1hdr_hdr_metadata) << ','
-        << core_detail::csv_escape(result.svtav1hdr_note) << ','
         << core_detail::csv_escape(result.requested_chroma) << ','
         << core_detail::csv_escape(result.applied_chroma) << ','
         << core_detail::csv_escape(result.requested_color_representation) << ','

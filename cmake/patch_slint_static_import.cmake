@@ -21,6 +21,23 @@ endif()
 
 file(TOUCH "${SOURCE_DIR}/api/cpp/build.rs")
 
+# Focus events can synchronously change focus (including when a native popup
+# activates/deactivates the window). Do not hold focus_item's RefCell borrow
+# across that callback: take_focus_item() needs the same cell mutably.
+set(CORE_WINDOW "${SOURCE_DIR}/internal/core/window.rs")
+file(READ "${CORE_WINDOW}" CORE_WINDOW_CONTENT)
+if(NOT CORE_WINDOW_CONTENT MATCHES "AWJ_SLINT_FOCUS_REENTRANCY_FIX")
+    set(CORE_WINDOW_NEEDLE "        if let Some(focus_item) = self.focus_item.borrow().upgrade() {")
+    set(CORE_WINDOW_REPLACEMENT
+        "        // AWJ_SLINT_FOCUS_REENTRANCY_FIX: release the borrow before calling item code.\n        let focus_item = self.focus_item.borrow().upgrade();\n        if let Some(focus_item) = focus_item {")
+    string(REPLACE "${CORE_WINDOW_NEEDLE}" "${CORE_WINDOW_REPLACEMENT}"
+        CORE_WINDOW_PATCHED "${CORE_WINDOW_CONTENT}")
+    if(CORE_WINDOW_PATCHED STREQUAL CORE_WINDOW_CONTENT)
+        message(FATAL_ERROR "Could not patch Slint reentrant focus callbacks.")
+    endif()
+    file(WRITE "${CORE_WINDOW}" "${CORE_WINDOW_PATCHED}")
+endif()
+
 # Slint 1.17 exposes DropArea/DataTransfer, while its Winit backend currently
 # leaves Winit's native DroppedFile events untranslated.  AWJ needs the public
 # DropArea path on both desktop platforms, not a Win32 WM_DROPFILES shim.

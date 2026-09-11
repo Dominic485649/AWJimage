@@ -10,7 +10,7 @@ AWJimage is a C++23 / native-codec / Slint batch converter. Windows and Linux sh
 
 Native codecs only:
 
-- AVIF: libavif/AOM, experimental `zenrav1e`, and SVT-AV1-HDR on Windows and Linux Release builds
+- AVIF: libavif/AOM and automatic AOM Grid on Windows and Linux Release builds
 - WebP: libwebp
 - JXL: libjxl
 - JPGLI: google/jpegli (JPEG-compatible `.jpg` output)
@@ -24,7 +24,7 @@ Native codecs only:
 3. Optional resize, alpha policy, chroma, bit-depth, and visual-quality search run.
 4. Visual-quality metrics prefer GPU: D3D11 on Windows, Vulkan on Linux; CPU fallback otherwise.
 5. AVIF auto only picks stable encoders; experimental encoders require explicit selection.
-6. Oversized AVIF inputs enter the automatic large-image chain (default `zenrav1e` then `grid`); 10 MP+ under single-image limits are deferred to the ordinary queue tail.
+6. Oversized AVIF inputs enter the automatic AOM Grid path; 10 MP+ under single-image limits are deferred to the ordinary queue tail.
 7. Manual large-image force actions remain exclusive for a single item; auto priority may fall back once.
 8. Encoders write metadata when supported; unsupported combinations fail clearly.
 9. Outputs go through temp files and collision policy before the final path.
@@ -66,7 +66,7 @@ The 1.0.4 prerelease uploads only those two archives and records each archive pl
 
 ## Large-image handling (0.10.1)
 
-- Oversized AVIF inputs use an automatic chain: preferred path then one fallback (`zenrav1e` default priority, or `grid` first).
+- Oversized AVIF inputs use automatic AOM Grid.
 - Studio has no separate large-image page; automatic handling remains visible in the main queue.
 - Session-only unlock removes the default 20 GiB input/runtime cap; it is never written to `AWJ.jsonc`.
 - Non-divisible grids use smaller right/bottom edge cells and preserve the original dimensions; an incompatible default 420 grid fails clearly instead of silently changing to 444.

@@ -49,11 +49,10 @@ cmake_value() {
 }
 
 baseline=$(sed -nE 's/.*"baseline"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$repo/vcpkg-configuration.json" | head -n 1)
-svt_commit=$(cmake_value AWJ_SVTAV1HDR_GIT_TAG)
 libavif_commit=$(cmake_value AWJ_LIBAVIF_GIT_TAG)
 jpegli_commit=$(cmake_value AWJ_JPEGLI_GIT_TAG)
 slint_commit=$(cmake_value AWJ_SLINT_GIT_TAG)
-[[ -n "$baseline$svt_commit$libavif_commit$jpegli_commit$slint_commit" ]] || die 'could not read build pins'
+[[ -n "$baseline$libavif_commit$jpegli_commit$slint_commit" ]] || die 'could not read build pins'
 
 package="$output_dir/package/AWJ_Linux"
 archive="$output_dir/AWJ_Linux.7z"
@@ -73,7 +72,6 @@ cp -- "$repo/LICENSE" "$package/LICENSE"
     'Architecture: x64' \
     'Platform: Linux' \
     "Vcpkg baseline: $baseline" \
-    "SVT-AV1-HDR commit: $svt_commit" \
     "libavif commit: $libavif_commit" \
     "Jpegli commit: $jpegli_commit" \
     "Slint commit: $slint_commit" \

@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.12 - 2026-09-11
+
+- Fixed a reentrant Slint focus borrow by releasing it before callbacks. Added a window activation/focus regression that reproduces the panic without the patch.
+- Split Studio into queue, common parameters, menu parameters, settings, and preset editor components with shared capabilities and controls. Progressive JPGLI forces Huffman optimization. Shell conversions use regular quality and automatic resource budgets without rewriting preset values.
+- Fixed queue detail overlap, click-through, and scroll restoration; aligned the six options, template buttons, and selectors at a minimum width of 820. Applied neutral dark colors and left-anchored shell progress. Drop feedback follows the actual input/output/queue target, with DPI-aware Windows coordinates, single-item output drops, and COPY behavior.
+- Upgraded Shell registration to v4: per-extension and directory HKCU entries, two fixed shared-tree slots, exact schema verification, parent references switched last, and rollback. Removed the generic image entry. Normal operations need no elevation; legacy HKLM cleanup is a separate user-triggered fixed-whitelist operation.
+- Enforced unique preset names and file collision checks, confirmed deletion, recoverable rename/delete, and up to 10 injected preset submenus with five formats each. Installed menus reconcile parameter, preset, and executable-path changes.
+- Removed SVT, Zen, and their Rust bridge; AVIF now uses libavif/AOM with automatic AOM Grid. CLI auto/aom remains compatible; removed encoders/options fail explicitly. Fixed automatic wide-image downscaling and Grid decoder dimension limits while preserving dimensions, chroma, HDR CICP, and alpha.
+- Reassigned per-image threads after effective concurrency is known. Tightened AVIF/PNG memory estimates using large, mixed, Grid, and 8/16-bit noise measurements; insufficient budgets reject before decoding.
+- Added row-wise PNG RGB precision quantization: q100 bypasses quantization; q1–99 retain 8/16-bit storage, at least 10 significant bits for 16-bit RGB, and original alpha precision. Independent per-channel sBIT covers round trips, endpoints, transforms, and cancellation. See docs/png-quality-1.0.12.md for the frozen mapping and measurements. PNG does not use visual-quality search.
+
 ## 1.0.11 - 2026-09-05
 
 - Prerelease: Windows Explorer external file/folder drops now use native OLE `IDropTarget` + `CF_HDROP`. File selection, folder selection, Explorer drops, and command-line inputs converge on one C++ import pipeline, while Slint components/theme and the C++ import/path-picker/platform bridges are split by responsibility without changing queue deduplication, ordering, collision, or encoding semantics.

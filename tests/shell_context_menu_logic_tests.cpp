@@ -31,7 +31,7 @@ awj::shell_context_menu::MenuParams make_params(bool avif_png) {
     item.max_height_text = L"2160";
   }
   params[0].install_avif_png_command = avif_png;
-  params[0].avif_encoder_index = 2;
+  params[0].avif_encoder_index = 1;
   params[0].avif_color_representation_index = 1;
   params[0].chroma_index = 3;
   params[0].alpha_policy_index = 0;
@@ -57,14 +57,9 @@ int main() {
     return fail("shell parent verb is not vendor-qualified");
   }
 
-  const std::array perceptions{
-      ExtensionPerception{L".jpg", true},
-      ExtensionPerception{L".ico", true},
-      ExtensionPerception{L".awsraw", false},
-      ExtensionPerception{L".hdp", false}};
-  const auto plan = build_install_plan(perceptions);
-  if (plan.fallback_extensions != std::vector<std::wstring>{L".awsraw", L".hdp"}) {
-    return fail("perceived-type fallback planning is incorrect");
+  const auto plan = build_install_plan();
+  if (plan.extensions.size() != supported_extensions().size()) {
+    return fail("not every supported extension is registered");
   }
 
   const auto exe = std::filesystem::path{L"C:\\Program Files\\AWJimage\\AWJ.exe"};
@@ -74,13 +69,14 @@ int main() {
   if (schema_without_png != schema_repeat) {
     return fail("same install inputs did not produce an idempotent schema");
   }
-  if (schema_without_png.parent_roots.size() != 4 ||
-      std::ranges::find(schema_without_png.parent_roots, image_parent_key()) == schema_without_png.parent_roots.end() ||
-      std::ranges::find(schema_without_png.parent_roots, directory_parent_key()) == schema_without_png.parent_roots.end() ||
-      std::ranges::find(schema_without_png.parent_roots, extension_parent_key(L".jpg")) != schema_without_png.parent_roots.end() ||
-      std::ranges::find(schema_without_png.parent_roots, extension_parent_key(L".ico")) != schema_without_png.parent_roots.end() ||
-      std::ranges::find(schema_without_png.parent_roots, extension_parent_key(L".awsraw")) == schema_without_png.parent_roots.end()) {
-    return fail("install parent roots do not match perceived-type plan");
+  if (schema_without_png.parent_roots.size() != supported_extensions().size() + 1 ||
+      std::ranges::find(schema_without_png.parent_roots, image_parent_key()) != schema_without_png.parent_roots.end()) {
+    return fail("parent roots contain a generic image entry or miss an extension");
+  }
+  for (const auto extension : supported_extensions()) {
+    if (std::ranges::find(schema_without_png.parent_roots, extension_parent_key(extension)) == schema_without_png.parent_roots.end()) {
+      return fail("extension parent is missing");
+    }
   }
 
   std::size_t pointer_values = 0;
@@ -131,7 +127,7 @@ int main() {
     return fail("AVIF.png command did not include suffix switch");
   }
   const auto png_command = build_convert_command_line(exe, L"png", params_with_png[4]);
-  if (contains(png_command, L"--quality") || contains(png_command, L"--speed") ||
+  if (!contains(png_command, L"--quality 73") || contains(png_command, L"--speed") ||
       !contains(png_command, L"--bit-depth 10")) {
     return fail("PNG shell command format-specific options changed");
   }
@@ -153,10 +149,27 @@ int main() {
       !contains(jpgli_command, L"--bit-depth 10") ||
       !contains(jpgli_command, L"--chroma auto") ||
       !contains(jpgli_command, L"--jpegli-progressive-level 2") ||
-      !contains(jpgli_command, L"--no-jpegli-optimize-huffman") ||
+      contains(jpgli_command, L"--no-jpegli-optimize-huffman") ||
       !contains(jpgli_command, L"--jpegli-xyb") ||
       contains(jpgli_command, L"--speed")) {
     return fail("JPGLI shell command format-specific options changed");
+  }
+
+  for (int count : {0, 1, 10}) {
+    std::vector<std::wstring> names;
+    for (int i = 0; i < count; ++i) names.push_back(L"预设 空格 " + std::to_wstring(i));
+    const auto schema = build_registry_schema(exe, params_without_png, plan, names, 1);
+    int commands = 0;
+    for (const auto& value : schema.values) {
+      if (contains(value.string_value, L"--preset")) {
+        ++commands;
+        if (!contains(value.string_value, L"--format") || contains(value.string_value, L"--quality") ||
+            contains(value.string_value, L"--append-png-suffix") || contains(value.string_value, L"--jobs")) {
+          return fail("preset command embeds format values/resources or AVIF.png");
+        }
+      }
+    }
+    if (commands != count * 5 || schema == schema_without_png) return fail("preset subtree/slot schema failed");
   }
 
   const auto legacy = legacy_root_keys();

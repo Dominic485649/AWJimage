@@ -1,4 +1,4 @@
-#requires -Version 7.4
+﻿#requires -Version 7.4
 
 [CmdletBinding()]
 param(
@@ -364,9 +364,7 @@ function New-WorkerArguments(
         '--collision', 'overwrite',
         '--keep-metadata',
         '--no-wic-fallback',
-        '--experimental-encoders',
         '--no-experimental-clamped-grid-padding',
-        '--large-image-priority', 'zenrav1e',
         '--no-unlock-max-input-file-bytes',
         '--no-summary',
         '--no-log',
