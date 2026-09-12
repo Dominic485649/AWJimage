@@ -3,6 +3,7 @@
 #include <cstring>
 #include <iostream>
 #include <string_view>
+#include <vector>
 
 import awj.hdr_tonemap;
 import awj.image;
@@ -55,7 +56,9 @@ int main() {
   auto sdr = awj::hdr::tone_map_to_sdr_srgb(source);
   if (!sdr || sdr->bit_depth != 8 ||
       sdr->sample_representation != awj::SampleRepresentation::unorm ||
-      !sdr->source_info || sdr->source_info->transfer_characteristics != 13 ||
+      !sdr->source_info ||
+      !sdr->source_info->transfer_characteristics ||
+      *sdr->source_info->transfer_characteristics != 13 ||
       sdr->planes.size() != 1 || sdr->planes.front().bytes.size() != 4 ||
       sdr->planes.front().bytes[3] != std::byte{255}) {
     return fail(sdr ? "scRGB tone mapping output metadata or alpha is invalid."
@@ -65,9 +68,12 @@ int main() {
   auto hdr10 = awj::hdr::materialize_scrgb_as_hdr10(source);
   if (!hdr10 || hdr10->bit_depth != 16 ||
       hdr10->sample_representation != awj::SampleRepresentation::unorm ||
-      !hdr10->source_info || hdr10->source_info->color_primaries != 9 ||
-      hdr10->source_info->transfer_characteristics != 16 ||
-      hdr10->source_info->matrix_coefficients != 9) {
+      !hdr10->source_info || !hdr10->source_info->color_primaries ||
+      !hdr10->source_info->transfer_characteristics ||
+      !hdr10->source_info->matrix_coefficients ||
+      *hdr10->source_info->color_primaries != 9 ||
+      *hdr10->source_info->transfer_characteristics != 16 ||
+      *hdr10->source_info->matrix_coefficients != 9) {
     return fail(hdr10 ? "scRGB HDR materialization metadata is invalid."
                       : hdr10.error());
   }
