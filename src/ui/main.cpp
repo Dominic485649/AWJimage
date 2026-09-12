@@ -1595,7 +1595,7 @@ std::expected<void, std::string> synchronize_shell_context_menu(
 std::expected<void, std::string> validate_menu_params(const std::array<MenuFormatParams, 5>& params);
 
 std::expected<void, std::string> persist_studio_config_if_changed(
-    AwjStudio& app, UiState& state) {
+    AwjStudio& app, UiState& state, bool allow_shell_elevation = false) {
   if (!state.config_defaults) {
     return {};
   }
@@ -1610,7 +1610,10 @@ std::expected<void, std::string> persist_studio_config_if_changed(
   }
   if (!state.last_config_snapshot || current.menu_params != state.last_config_snapshot->menu_params) {
     auto valid = validate_menu_params(current.menu_params);
-    auto synchronized = valid ? synchronize_shell_context_menu(current.menu_params) : valid;
+    auto synchronized = valid
+        ? synchronize_shell_context_menu(current.menu_params,
+                                         allow_shell_elevation)
+        : valid;
     if (!synchronized) {
       if (state.last_config_snapshot) {
         auto restored = write_studio_config_file(*state.last_config_snapshot, *state.config_defaults);
@@ -3256,6 +3259,64 @@ std::expected<std::filesystem::path, std::string> awj_exe_path_for_shell_menu() 
   return path;
 }
 
+bool process_is_elevated() noexcept {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    return false;
+  }
+  TOKEN_ELEVATION elevation{};
+  DWORD bytes = 0;
+  const bool elevated =
+      GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation),
+                          &bytes) != FALSE &&
+      elevation.TokenIsElevated != 0;
+  CloseHandle(token);
+  return elevated;
+}
+
+std::expected<void, std::string> run_elevated_shell_context_menu_helper(
+    std::wstring_view operation) {
+  auto executable = awj_exe_path_for_shell_menu();
+  if (!executable) return std::unexpected{executable.error()};
+
+  const std::wstring operation_storage{operation};
+  const std::wstring working_directory = executable->parent_path().wstring();
+  SHELLEXECUTEINFOW launch{};
+  launch.cbSize = sizeof(launch);
+  launch.fMask = SEE_MASK_NOCLOSEPROCESS;
+  launch.lpVerb = L"runas";
+  launch.lpFile = executable->c_str();
+  launch.lpParameters = operation_storage.c_str();
+  launch.lpDirectory = working_directory.c_str();
+  launch.nShow = SW_HIDE;
+  if (!ShellExecuteExW(&launch)) {
+    const DWORD error = GetLastError();
+    if (error == ERROR_CANCELLED) {
+      return std::unexpected{"用户取消了管理员权限请求，右键菜单未修改。"};
+    }
+    return std::unexpected{
+        std::format("请求管理员权限修改右键菜单失败，错误码 {}。", error)};
+  }
+  const DWORD wait = WaitForSingleObject(launch.hProcess, INFINITE);
+  if (wait != WAIT_OBJECT_0) {
+    const DWORD error = GetLastError();
+    CloseHandle(launch.hProcess);
+    return std::unexpected{
+        std::format("等待管理员右键菜单操作失败，错误码 {}。", error)};
+  }
+  DWORD exit_code = 1;
+  const bool read_exit = GetExitCodeProcess(launch.hProcess, &exit_code) != FALSE;
+  CloseHandle(launch.hProcess);
+  if (!read_exit) {
+    return std::unexpected{"无法读取管理员右键菜单操作结果。"};
+  }
+  if (exit_code != 0) {
+    return std::unexpected{
+        std::format("管理员右键菜单操作失败，退出码 {}。", exit_code)};
+  }
+  return {};
+}
+
 awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams& params) {
   const auto text = [](const std::string& value) {
     return awj::wide_from_utf8(trim_copy(value));
@@ -3436,6 +3497,10 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
 
 std::expected<void, std::string> synchronize_shell_context_menu(
     const std::array<MenuFormatParams, 5>& menu_params, bool force_install) {
+  if (force_install && !process_is_elevated()) {
+    return run_elevated_shell_context_menu_helper(
+        L"--shell-context-menu-helper");
+  }
   auto awj_exe = awj_exe_path_for_shell_menu();
   if (!awj_exe) return std::unexpected{awj_exe.error()};
   auto names = awj::injected_user_preset_names();
@@ -3444,6 +3509,10 @@ std::expected<void, std::string> synchronize_shell_context_menu(
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {
+  if (!process_is_elevated()) {
+    return run_elevated_shell_context_menu_helper(
+        L"--shell-context-menu-remove-helper");
+  }
   return awj::shell_context_menu::remove();
 }
 
@@ -5942,6 +6011,64 @@ void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
 
 }  // namespace
 
+int run_shell_context_menu_helper(int argc, wchar_t* argv[]) {
+  const auto show_error = [](std::string_view message) {
+    const auto wide = awj::wide_from_utf8(std::string{message});
+    MessageBoxW(nullptr, wide.c_str(), L"AWJimage", MB_OK | MB_ICONERROR);
+    return 1;
+  };
+  if (argc != 2 || argv == nullptr || argv[1] == nullptr) {
+    return show_error("右键菜单管理员 helper 参数无效。");
+  }
+  if (!process_is_elevated()) {
+    return show_error("右键菜单管理员 helper 未获得提升权限。");
+  }
+
+  const std::wstring_view operation{argv[1]};
+  if (operation == L"--shell-context-menu-remove-helper") {
+    const auto removed = awj::shell_context_menu::remove();
+    return removed ? 0 : show_error(removed.error());
+  }
+  if (operation != L"--shell-context-menu-helper") {
+    return show_error("未知的右键菜单管理员操作。");
+  }
+
+  std::array<MenuFormatParams, 5> menu_params{};
+  for (std::size_t i = 0; i < menu_params.size(); ++i) {
+    menu_params[i] = default_menu_params_for_index(static_cast<int>(i));
+  }
+
+  const auto config_path = studio_config_path();
+  if (!config_path.empty()) {
+    std::error_code ec;
+    const bool config_exists = std::filesystem::exists(config_path, ec);
+    if (ec) return show_error("无法检查 Studio 配置文件：" + ec.message());
+    if (config_exists) {
+      std::ifstream input{config_path, std::ios::binary};
+      if (!input) return show_error("无法读取 Studio 配置文件。");
+      const std::string source{std::istreambuf_iterator<char>{input},
+                               std::istreambuf_iterator<char>{}};
+      auto values = parse_jsonc_config(source);
+      if (!values) return show_error(values.error());
+      if (auto applied = apply_menu_config_values(*values, menu_params);
+          !applied) {
+        return show_error(applied.error());
+      }
+    }
+  }
+
+  if (auto valid = validate_menu_params(menu_params); !valid) {
+    return show_error(valid.error());
+  }
+  auto executable = awj_exe_path_for_shell_menu();
+  if (!executable) return show_error(executable.error());
+  auto names = awj::injected_user_preset_names();
+  if (!names) return show_error(names.error());
+  auto installed = awj::shell_context_menu::install(
+      *executable, shell_menu_params(menu_params), *names);
+  return installed ? 0 : show_error(installed.error());
+}
+
 /// Probe whether the OpenGL driver exposes the functions FemtoVG needs
 /// (glCreateShader, OpenGL 2.0+). If not, force Slint to use the software
 /// renderer so the application starts instead of panicking.
@@ -6392,7 +6519,7 @@ int run_studio_ui(const wchar_t* health_event,
       const auto index = state->parameter_preset_index;
       if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
       auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)], [state] {
-        return synchronize_shell_context_menu(state->menu_params);
+        return synchronize_shell_context_menu(state->menu_params, true);
       });
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
       state->parameter_preset_index = 0;
@@ -6434,7 +6561,7 @@ int run_studio_ui(const wchar_t* health_event,
             }
           }
           auto saved = awj::save_user_preset(*preset, edit_index > 0, [state] {
-            return synchronize_shell_context_menu(state->menu_params);
+            return synchronize_shell_context_menu(state->menu_params, true);
           });
         if (!saved) {
           (*app)->set_preset_editor_error(to_shared(saved.error()));
@@ -6515,12 +6642,12 @@ int run_studio_ui(const wchar_t* health_event,
             (*app)->set_status_text(to_shared(valid.error()));
             return;
           }
-          if (auto saved = persist_studio_config_if_changed(**app, *state); !saved) {
+          if (auto saved = persist_studio_config_if_changed(**app, *state, true); !saved) {
             (*app)->set_context_menu_status(to_shared(saved.error()));
             (*app)->set_status_text(to_shared(saved.error()));
             return;
           }
-          if (auto synced = synchronize_shell_context_menu(state->menu_params); !synced) {
+          if (auto synced = synchronize_shell_context_menu(state->menu_params, true); !synced) {
             (*app)->set_context_menu_warning(to_shared(synced.error()));
             return;
           }
@@ -6542,7 +6669,7 @@ int run_studio_ui(const wchar_t* health_event,
 
     app->on_context_menu_warning_clicked([weak, state] {
       if (auto app = weak.lock(); app && !(*app)->get_running()) {
-        auto result = synchronize_shell_context_menu(state->menu_params);
+        auto result = synchronize_shell_context_menu(state->menu_params, true);
         (*app)->set_context_menu_warning(result ? slint::SharedString{} : to_shared(result.error()));
         (*app)->set_status_text(to_shared(result ? "右键菜单已修复。" : result.error()));
       }
