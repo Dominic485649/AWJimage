@@ -6,6 +6,7 @@ module;
 
 #ifdef _WIN32
 #include <windows.h>
+#include <shlobj.h>
 #else
 #include <unistd.h>
 #include <fcntl.h>
@@ -205,6 +206,99 @@ std::expected<fs::path, std::string> running_executable_directory() {
   }
 #endif
 }
+
+#ifdef _WIN32
+std::expected<fs::path, std::string> local_app_data_root() {
+  // CTest uses an isolated root so preset tests never touch a developer's
+  // real profile.  Normal releases leave this unset and use the known folder.
+  std::vector<wchar_t> override_buffer(256, L'\0');
+  DWORD override_size = GetEnvironmentVariableW(
+      L"AWJIMAGE_TEST_LOCAL_APPDATA", override_buffer.data(),
+      static_cast<DWORD>(override_buffer.size()));
+  if (override_size >= override_buffer.size()) {
+    override_buffer.resize(static_cast<std::size_t>(override_size) + 1, L'\0');
+    override_size = GetEnvironmentVariableW(
+        L"AWJIMAGE_TEST_LOCAL_APPDATA", override_buffer.data(),
+        static_cast<DWORD>(override_buffer.size()));
+  }
+  if (override_size != 0) {
+    fs::path root{std::wstring_view{override_buffer.data(), override_size}};
+    root /= L"AWJimage";
+    return root;
+  }
+  PWSTR raw = nullptr;
+  const HRESULT result = SHGetKnownFolderPath(
+      FOLDERID_LocalAppData, KF_FLAG_DEFAULT, nullptr, &raw);
+  if (FAILED(result) || raw == nullptr) {
+    if (raw != nullptr) CoTaskMemFree(raw);
+    return std::unexpected{"无法定位 LocalAppData 用户目录。"};
+  }
+  fs::path root{raw};
+  CoTaskMemFree(raw);
+  root /= L"AWJimage";
+  return root;
+}
+
+// A directory can exist under a protected installation root while still
+// being readable.  Probe the exact operation used by the preset store before
+// selecting it; failed CreateFile calls do not trigger UAC and let us fall
+// back to the per-user directory.
+bool directory_is_writable(const fs::path& directory) {
+  std::error_code ec;
+  if (!fs::is_directory(directory, ec) || ec) return false;
+  const auto probe = directory / std::format(
+      L".awj-write-test-{}-{}", GetCurrentProcessId(), GetTickCount64());
+  const auto handle = CreateFileW(
+      probe.c_str(), GENERIC_WRITE,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
+      CREATE_NEW, FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_DELETE_ON_CLOSE, nullptr);
+  if (handle == INVALID_HANDLE_VALUE) return false;
+  CloseHandle(handle);
+  return true;
+}
+
+// Portable releases may already have presets next to the executable.  When
+// that directory is protected (for example under Program Files), copy the
+// user-owned files into LocalAppData without deleting the originals.  Existing
+// per-user files win on name collisions, so migration is safe to retry.
+std::expected<void, std::string> migrate_adjacent_presets(
+    const fs::path& adjacent, const fs::path& local) {
+  std::error_code ec;
+  if (!fs::is_directory(adjacent, ec) || ec) return {};
+  fs::create_directories(local, ec);
+  if (ec) {
+    return std::unexpected{"无法创建用户预设目录：" + ec.message()};
+  }
+  for (const auto& entry : fs::directory_iterator(adjacent, ec)) {
+    if (ec) {
+      return std::unexpected{"无法读取旧预设目录：" + ec.message()};
+    }
+    if (entry.is_symlink(ec) || ec) continue;
+    if (!entry.is_regular_file(ec) || ec) continue;
+    const auto filename = entry.path().filename();
+    if (entry.path().extension() != ".jsonc" &&
+        filename != ".awj-operation.json") {
+      continue;
+    }
+    const auto destination = local / filename;
+    ec.clear();
+    if (fs::exists(destination, ec)) {
+      if (ec) {
+        return std::unexpected{"无法检查用户预设文件：" + ec.message()};
+      }
+      continue;
+    }
+    if (ec) {
+      return std::unexpected{"无法检查用户预设文件：" + ec.message()};
+    }
+    fs::copy_file(entry.path(), destination, fs::copy_options::none, ec);
+    if (ec) {
+      return std::unexpected{"迁移旧预设失败：" + ec.message()};
+    }
+  }
+  return {};
+}
+#endif
 
 std::string upper_ascii(std::string value) {
   std::ranges::transform(value, value.begin(), [](unsigned char ch) {
@@ -689,7 +783,52 @@ std::expected<void, std::string> change_file(const fs::path& path,
 std::expected<std::filesystem::path, std::string> user_preset_directory() {
   auto directory = preset_detail::running_executable_directory();
   if (!directory) return std::unexpected{directory.error()};
-  return *directory / "preset";
+  const auto adjacent = *directory / "preset";
+#ifdef _WIN32
+  auto local_root = preset_detail::local_app_data_root();
+  if (!local_root) return std::unexpected{local_root.error()};
+  const auto local = *local_root / "preset";
+  std::error_code ec;
+  const bool local_exists = std::filesystem::exists(local, ec);
+  if (ec) {
+    return std::unexpected{"无法检查用户预设目录：" + ec.message()};
+  }
+  if (local_exists) {
+    if (!std::filesystem::is_directory(local, ec) || ec) {
+      return std::unexpected{"用户预设路径不是目录。"};
+    }
+    // Once a per-user directory exists it wins.  If a protected portable
+    // directory is also present, fill in only files missing from LocalAppData.
+    ec.clear();
+    if (std::filesystem::exists(adjacent, ec) && !ec &&
+        !preset_detail::directory_is_writable(adjacent)) {
+      if (auto migrated =
+              preset_detail::migrate_adjacent_presets(adjacent, local);
+          !migrated) {
+        return std::unexpected{migrated.error()};
+      }
+    }
+    return local;
+  }
+  ec.clear();
+  if (std::filesystem::exists(adjacent, ec) && !ec &&
+      preset_detail::directory_is_writable(adjacent)) {
+    return adjacent;
+  }
+  // An existing but protected adjacent directory is readable in common
+  // Program Files installs.  Migrate its data before using the user-owned
+  // location so existing presets remain available without elevation.
+  ec.clear();
+  if (std::filesystem::exists(adjacent, ec) && !ec) {
+    if (auto migrated = preset_detail::migrate_adjacent_presets(adjacent, local);
+        !migrated) {
+      return std::unexpected{migrated.error()};
+    }
+  }
+  return local;
+#else
+  return adjacent;
+#endif
 }
 
 std::expected<void, std::string> recover_user_preset_change(

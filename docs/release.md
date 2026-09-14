@@ -78,16 +78,18 @@
 
 ## 1.0.9 更新器/发行包修复 prerelease
 
-1. Windows 公共发行归档 `AWJ_Win.7z` 的结构从 1.0.9 起固定且必须精确为以下四个顶层文件，不允许任何子目录或额外成员：
+1. Windows 公共发行归档 `AWJ_Win.7z` 的结构固定且必须精确为以下六个顶层文件，不允许任何子目录或额外成员：
 
    ```text
    AWJ.exe
    AWJ.com
+   AWJ.ShellExtension.dll
+   AWJ.ContextMenu.msix
    LICENSE
    NOTICE.txt
    ```
 
-   `NOTICE.txt` 合并构建信息、`THIRD_PARTY_NOTICES.txt` 的第三方 notices，以及 `licenses/` 下发行所需的完整第三方许可证文本。包内不再放置 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或 `THIRD_PARTY_LICENSES/`；归档本身及每个成员的大小和 SHA-256 仍由签名 v2 manifest 绑定，因此不依赖包内 checksum sidecar。
+   `AWJ.ContextMenu.msix` 是 Windows 11 资源管理器现代右键菜单所需的 sparse package；它不包含第二份程序或 DLL，只提供 package identity 并引用同目录的外部安装内容。发布前必须使用目标用户计算机信任的证书签名 MSIX。`NOTICE.txt` 合并构建信息、`THIRD_PARTY_NOTICES.txt` 的第三方 notices，以及 `licenses/` 下发行所需的完整第三方许可证文本。包内不再放置 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或 `THIRD_PARTY_LICENSES/`；归档本身及每个成员的大小和 SHA-256 仍由签名 v2 manifest 绑定，因此不依赖包内 checksum sidecar。
 2. `AWJ_Linux.7z` 同步固定为扁平的 `AWJ`、`LICENSE`、`NOTICE.txt` 三文件结构。`scripts/package-linux-release.sh` 和 `scripts/package-release.ps1` 都必须先精确校验成员集合，再执行 7z 完整性、全新解压、逐文件哈希和 smoke test。
 3. 为兼容 1.0.4–1.0.8 旧归档，更新器允许并跳过“由签名文件路径必然隐含”的安全目录 entry；目录本身不加入 manifest。任何额外目录、路径穿越、链接、特殊成员、重复/大小写冲突成员或未签名文件仍 fail-closed。
 4. 1.0.9 必须从干净的 `1.0.9` tag 构建 Windows 与原生 Linux 资产，使用严格递增的 v2 sequence 和仓库外 release seed 签名；GitHub Release 只上传 `AWJ_Win.7z` 与 `AWJ_Linux.7z` 并标记 prerelease。公开下载验证后再提交该次已经生成的 `update-manifest-v2.json` 与签名，不为重新签名而重跑打包。

@@ -17,7 +17,9 @@ param(
     [string]$UpdateKeyringPath = "",
     [string]$ExistingManifestPublicKeyHex = "",
     [string]$SignerPath = "",
-    [switch]$SkipManifests
+    [switch]$SkipManifests,
+    [string]$WindowsShellExtensionPath = "",
+    [string]$WindowsSparsePackagePath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -248,11 +250,21 @@ function Assert-ArchiveRoundTrip([string]$ArchivePath, [string]$PackageDirectory
 
 $WindowsExePath = Assert-File $WindowsExePath "AWJ.exe"
 $WindowsComPath = Assert-File $WindowsComPath "AWJ.com"
+if (-not $WindowsShellExtensionPath) {
+    $WindowsShellExtensionPath = Join-Path (Split-Path -Parent $WindowsExePath) "AWJ.ShellExtension.dll"
+}
+$WindowsShellExtensionPath = Assert-File $WindowsShellExtensionPath "AWJ.ShellExtension.dll"
+if (-not $WindowsSparsePackagePath) {
+    $WindowsSparsePackagePath = Join-Path (Split-Path -Parent $WindowsExePath) "AWJ.ContextMenu.msix"
+}
+$WindowsSparsePackagePath = Assert-File $WindowsSparsePackagePath "AWJ.ContextMenu.msix"
 $LinuxPackagePath = Assert-Directory $LinuxPackagePath "native Linux package"
 $LinuxArchivePath = Assert-File $LinuxArchivePath "native Linux archive"
 if (([IO.Path]::GetFileName($WindowsExePath) -ne "AWJ.exe") -or
-    ([IO.Path]::GetFileName($WindowsComPath) -ne "AWJ.com")) {
-    throw "输入文件名必须严格为 AWJ.exe 和 AWJ.com。"
+    ([IO.Path]::GetFileName($WindowsComPath) -ne "AWJ.com") -or
+    ([IO.Path]::GetFileName($WindowsShellExtensionPath) -ne "AWJ.ShellExtension.dll") -or
+    ([IO.Path]::GetFileName($WindowsSparsePackagePath) -ne "AWJ.ContextMenu.msix")) {
+    throw "输入文件名必须严格为 AWJ.exe、AWJ.com、AWJ.ShellExtension.dll 和 AWJ.ContextMenu.msix。"
 }
 if (-not (Test-Path -LiteralPath (Join-Path $LinuxPackagePath "AWJ") -PathType Leaf)) {
     throw "native Linux package 必须包含 AWJ。"
@@ -286,8 +298,8 @@ New-Item -ItemType Directory -Path $Assets, $WinPackage -Force | Out-Null
 $WindowsSourceDirectory = Split-Path -Parent $WindowsExePath
 $WindowsLicensePath = Assert-File (Join-Path $WindowsSourceDirectory "LICENSE") "Windows LICENSE"
 $WindowsNoticePath = Assert-File (Join-Path $WindowsSourceDirectory "NOTICE.txt") "Windows NOTICE.txt"
-Copy-Item -LiteralPath $WindowsExePath, $WindowsComPath, $WindowsLicensePath, $WindowsNoticePath -Destination $WinPackage -Force
-Assert-ExactPackage $WinPackage @("AWJ.exe", "AWJ.com", "LICENSE", "NOTICE.txt")
+Copy-Item -LiteralPath $WindowsExePath, $WindowsComPath, $WindowsShellExtensionPath, $WindowsSparsePackagePath, $WindowsLicensePath, $WindowsNoticePath -Destination $WinPackage -Force
+Assert-ExactPackage $WinPackage @("AWJ.exe", "AWJ.com", "AWJ.ShellExtension.dll", "AWJ.ContextMenu.msix", "LICENSE", "NOTICE.txt")
 Assert-ExactPackage $LinuxPackage @("AWJ", "LICENSE", "NOTICE.txt")
 
 $WindowsArchive = Join-Path $Assets "AWJ_Win.7z"
@@ -304,6 +316,19 @@ $GuiSmoke = Start-Process -FilePath (Join-Path $WinVerify "AWJ.exe") -ArgumentLi
 if ($GuiSmoke.ExitCode -ne 0) { throw "Windows AWJ.exe --help smoke 失败。" }
 & (Join-Path $WinVerify "AWJ.com") --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Windows AWJ.com --help smoke 失败。" }
+$ShellExtensionVerifyPath = Join-Path $WinVerify "AWJ.ShellExtension.dll"
+$ShellExtensionModule = [Runtime.InteropServices.NativeLibrary]::Load($ShellExtensionVerifyPath)
+try {
+    foreach ($Export in @("DllCanUnloadNow", "DllGetClassObject", "DllRegisterServer", "DllUnregisterServer")) {
+        [void][Runtime.InteropServices.NativeLibrary]::GetExport($ShellExtensionModule, $Export)
+    }
+} finally {
+    [Runtime.InteropServices.NativeLibrary]::Free($ShellExtensionModule)
+}
+$SparsePackageVerifyPath = Join-Path $WinVerify "AWJ.ContextMenu.msix"
+if (-not (Test-Path -LiteralPath $SparsePackageVerifyPath -PathType Leaf)) {
+    throw "Windows 归档往返验证缺少 AWJ.ContextMenu.msix。"
+}
 if ($BridgeRelease) {
     Copy-Item -LiteralPath $WindowsExePath, $WindowsComPath -Destination $Assets -Force
 }

@@ -12,12 +12,11 @@
 
 namespace awj::shell_context_menu {
 
-inline constexpr std::uint32_t schema_version = 4;
+inline constexpr std::uint32_t schema_version = 5;
 inline constexpr std::wstring_view owner_value_name = L"AWJimage.Owner";
 inline constexpr std::wstring_view schema_value_name = L"AWJimage.SchemaVersion";
 inline constexpr std::wstring_view owner_value = L"AWJimage";
 inline constexpr std::wstring_view parent_canonical_verb = L"AWJimage.Convert";
-inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v4.A";
 
 struct FormatParams {
   std::wstring quality_text{};
@@ -62,6 +61,7 @@ struct InstallPlan {
 enum class RegistryValueKind {
   string,
   dword,
+  multi_string,
 };
 
 struct RegistryValueSpec {
@@ -70,6 +70,7 @@ struct RegistryValueSpec {
   RegistryValueKind kind{RegistryValueKind::string};
   std::wstring string_value{};
   std::uint32_t dword_value{};
+  std::vector<std::wstring> multi_string_value{};
 
   bool operator==(const RegistryValueSpec&) const = default;
 };
@@ -79,6 +80,7 @@ struct RegistrySchema {
   std::vector<std::wstring> parent_roots{};
   std::vector<std::wstring> keys{};
   std::vector<RegistryValueSpec> values{};
+  std::string validation_error{};
 
   bool operator==(const RegistrySchema&) const = default;
 };
@@ -88,6 +90,10 @@ std::span<const CommandSpec> command_specs() noexcept;
 std::wstring image_parent_key();
 std::wstring directory_parent_key();
 std::wstring extension_parent_key(std::wstring_view extension);
+std::wstring class_root_key();
+std::wstring file_handler_key();
+std::wstring folder_handler_key();
+std::filesystem::path shell_extension_path(const std::filesystem::path& awj_exe);
 std::wstring shared_tree_key(int slot = 0);
 std::wstring legacy_shared_tree_key();
 std::vector<std::wstring> legacy_root_keys();
@@ -100,8 +106,7 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
 RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
-                                     std::span<const std::wstring> preset_names = {},
-                                     int slot = 0);
+                                     std::span<const std::wstring> preset_names = {});
 
 std::expected<InstallPlan, std::string> detect_install_plan();
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,

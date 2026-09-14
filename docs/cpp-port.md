@@ -33,7 +33,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 输出名模板 `{name}` / `{index}` / `{ext}` / `{date}` / `{time}` / `{datetime}` / `{unix}` / `{rand}` / `{hash}` / `{hash8}` / `{params}`，CLI 默认 `{name}`。
 - 输入为文件夹时保留原始子文件夹结构。
 - 输出格式可选 AVIF、WebP、JXL 或 JPGLI。
-- 未选择用户预设时使用当前内置默认；用户预设采用可执行文件同目录 `preset/*.jsonc` 的五格式完整参数集，CLI 可用 `--preset <名称>` 或 `--preset-file <路径>` 显式选择。
+- 未选择用户预设时使用当前内置默认；Windows 新建用户预设采用 `%LOCALAPPDATA%/AWJimage/preset/*.jsonc` 的五格式完整参数集，已有便携版会继续读取可执行文件同目录 `preset/*.jsonc`，CLI 可用 `--preset <名称>` 或 `--preset-file <路径>` 显式选择。
 - AVIF 默认 q70、WebP 默认 q95、JXL 默认 q85、JPGLI 默认 q90，仍支持 `q90` 风格质量参数。
 - 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通，其他输入使用 AOM 无损量化并按 `auto` 的 source-aware 色度规则重编码；源图为 420/422 时仍存在色度子采样，需要显式 444 才能避免。
 - AVIF 采样支持 `auto/444/422/420`，`auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量。

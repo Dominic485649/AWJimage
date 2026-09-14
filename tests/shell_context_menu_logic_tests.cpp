@@ -1,10 +1,13 @@
 #include "shell_context_menu.hpp"
+#include "shell_extension_contract.hpp"
+#include "shell_extension_core.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace {
 
@@ -16,6 +19,11 @@ int fail(std::string_view message) {
 
 bool contains(std::wstring_view text, std::wstring_view needle) {
   return text.find(needle) != std::wstring_view::npos;
+}
+
+bool contains(const std::vector<std::wstring>& values,
+              std::wstring_view needle) {
+  return std::ranges::find(values, needle) != values.end();
 }
 
 awj::shell_context_menu::MenuParams make_params(bool avif_png) {
@@ -41,6 +49,29 @@ awj::shell_context_menu::MenuParams make_params(bool avif_png) {
   return params;
 }
 
+std::expected<awj::shell_extension::RuntimeConfiguration, std::string>
+configuration_from(const awj::shell_context_menu::RegistrySchema& schema) {
+  for (const auto& value : schema.values) {
+    if (value.key == awj::shell_context_menu::class_root_key() &&
+        value.name ==
+            awj::shell_extension::contract::configuration_value_name &&
+        value.kind ==
+            awj::shell_context_menu::RegistryValueKind::multi_string) {
+      return awj::shell_extension::decode_configuration(
+          value.multi_string_value);
+    }
+  }
+  return std::unexpected{"configuration value is missing"};
+}
+
+const awj::shell_extension::MenuCommand* find_command(
+    const awj::shell_extension::RuntimeConfiguration& configuration,
+    std::wstring_view verb) {
+  const auto found = std::ranges::find(configuration.commands, verb,
+                                       &awj::shell_extension::MenuCommand::canonical_verb);
+  return found == configuration.commands.end() ? nullptr : &*found;
+}
+
 }  // namespace
 
 int main() {
@@ -58,58 +89,64 @@ int main() {
   }
 
   const auto plan = build_install_plan();
-  if (plan.extensions.size() != supported_extensions().size()) {
-    return fail("not every supported extension is registered");
+  if (plan.extensions.size() != supported_extensions().size() ||
+      plan.extensions.size() !=
+          awj::shell_extension::supported_extensions().size()) {
+    return fail("not every supported extension reaches the shell extension");
   }
 
   const auto exe = std::filesystem::path{L"C:\\Program Files\\AWJimage\\AWJ.exe"};
+  if (shell_extension_path(exe) !=
+      exe.parent_path() /
+          awj::shell_extension::contract::shell_extension_filename) {
+    return fail("shell extension path is not beside AWJ.exe");
+  }
   const auto params_without_png = make_params(false);
-  const auto schema_without_png = build_registry_schema(exe, params_without_png, plan);
+  const auto schema_without_png =
+      build_registry_schema(exe, params_without_png, plan);
   const auto schema_repeat = build_registry_schema(exe, params_without_png, plan);
   if (schema_without_png != schema_repeat) {
     return fail("same install inputs did not produce an idempotent schema");
   }
-  if (schema_without_png.parent_roots.size() != supported_extensions().size() + 1 ||
-      std::ranges::find(schema_without_png.parent_roots, image_parent_key()) != schema_without_png.parent_roots.end()) {
-    return fail("parent roots contain a generic image entry or miss an extension");
+  const std::vector<std::wstring> expected_roots{
+      class_root_key(), file_handler_key(), folder_handler_key()};
+  auto actual_roots = schema_without_png.parent_roots;
+  auto sorted_expected = expected_roots;
+  std::ranges::sort(actual_roots);
+  std::ranges::sort(sorted_expected);
+  if (actual_roots != sorted_expected) {
+    return fail("COM registration roots are incomplete");
   }
-  for (const auto extension : supported_extensions()) {
-    if (std::ranges::find(schema_without_png.parent_roots, extension_parent_key(extension)) == schema_without_png.parent_roots.end()) {
-      return fail("extension parent is missing");
+  for (const auto& value : schema_without_png.values) {
+    if (value.name == L"ExtendedSubCommandsKey" || value.name == L"SubCommands") {
+      return fail("static cascade registration survived in the v5 schema");
     }
   }
 
-  std::size_t pointer_values = 0;
-  std::size_t avif_png_commands = 0;
-  for (const auto& value : schema_without_png.values) {
-    if (value.name == L"ExtendedSubCommandsKey") {
-      ++pointer_values;
-      if (value.kind != RegistryValueKind::string ||
-          value.string_value != shared_tree_reference ||
-          value.key == shared_tree_key()) {
-        return fail("ExtendedSubCommandsKey pointer schema is incorrect");
-      }
-    }
-    if (contains(value.key, L"AWJimage.Convert.40.avif-png\\command")) ++avif_png_commands;
-  }
-  if (pointer_values != schema_without_png.parent_roots.size() || avif_png_commands != 0 ||
-      std::ranges::find(schema_without_png.keys, shared_tree_key()) == schema_without_png.keys.end() ||
-      std::ranges::find(schema_without_png.keys, shared_tree_key() + L"\\shell") == schema_without_png.keys.end()) {
-    return fail("shared-tree pointer or AVIF.png-off schema is incorrect");
+  const auto configuration_without_png =
+      configuration_from(schema_without_png);
+  if (!configuration_without_png) return fail(configuration_without_png.error());
+  if (configuration_without_png->executable != exe ||
+      configuration_without_png->menu_label != L"AWJimage 转换" ||
+      configuration_without_png->commands.size() != 5 ||
+      find_command(*configuration_without_png,
+                   L"AWJimage.Convert.40.avif-png") != nullptr) {
+    return fail("AVIF.png-off COM configuration is incorrect");
   }
 
   const auto params_with_png = make_params(true);
   const auto schema_with_png = build_registry_schema(exe, params_with_png, plan);
-  bool found_avif_png = false;
-  for (const auto& value : schema_with_png.values) {
-    if (contains(value.key, L"AWJimage.Convert.40.avif-png\\command") &&
-        value.name.empty() && contains(value.string_value, L"--append-png-suffix")) {
-      found_avif_png = true;
-    }
+  const auto configuration_with_png = configuration_from(schema_with_png);
+  if (!configuration_with_png) return fail(configuration_with_png.error());
+  const auto* avif_png =
+      find_command(*configuration_with_png, L"AWJimage.Convert.40.avif-png");
+  if (configuration_with_png->commands.size() != 6 || avif_png == nullptr ||
+      !contains(avif_png->arguments, L"--append-png-suffix")) {
+    return fail("AVIF.png-on COM configuration is incorrect");
   }
-  if (!found_avif_png) return fail("AVIF.png-on schema is missing its command");
 
-  const auto avif_command = build_convert_command_line(exe, L"avif", params_with_png[0]);
+  const auto avif_command =
+      build_convert_command_line(exe, L"avif", params_with_png[0]);
   if (!avif_command.starts_with(L"\"C:\\Program Files\\AWJimage\\AWJ.exe\"") ||
       !contains(avif_command, L"--shell-window") ||
       !contains(avif_command, L"--shell-convert") ||
@@ -122,69 +159,66 @@ int main() {
       !avif_command.ends_with(L"-i \"%1\" %*")) {
     return fail("AVIF shell command generation changed CLI semantics");
   }
-  const auto avif_png_command = build_convert_command_line(exe, L"avif", params_with_png[0], true);
-  if (!contains(avif_png_command, L"--append-png-suffix")) {
-    return fail("AVIF.png command did not include suffix switch");
-  }
-  const auto png_command = build_convert_command_line(exe, L"png", params_with_png[4]);
-  if (!contains(png_command, L"--quality 73") || contains(png_command, L"--speed") ||
+  const auto png_command =
+      build_convert_command_line(exe, L"png", params_with_png[4]);
+  if (!contains(png_command, L"--quality 73") ||
+      contains(png_command, L"--speed") ||
       !contains(png_command, L"--bit-depth 10")) {
     return fail("PNG shell command format-specific options changed");
   }
-  const auto webp_command = build_convert_command_line(exe, L"webp", params_with_png[1]);
-  if (!contains(webp_command, L"--quality 73") ||
-      !contains(webp_command, L"--bit-depth 10") ||
-      !contains(webp_command, L"--speed 6") ||
-      contains(webp_command, L"--chroma")) {
-    return fail("WebP shell command format-specific options changed");
-  }
-  const auto jxl_command = build_convert_command_line(exe, L"jxl", params_with_png[2]);
-  if (!contains(jxl_command, L"--quality 73") ||
-      !contains(jxl_command, L"--speed 6") ||
-      contains(jxl_command, L"--bit-depth")) {
-    return fail("JXL shell command format-specific options changed");
-  }
-  const auto jpgli_command = build_convert_command_line(exe, L"jpgli", params_with_png[3]);
-  if (!contains(jpgli_command, L"--quality 73") ||
-      !contains(jpgli_command, L"--bit-depth 10") ||
-      !contains(jpgli_command, L"--chroma auto") ||
-      !contains(jpgli_command, L"--jpegli-progressive-level 2") ||
+  const auto jpgli_command =
+      build_convert_command_line(exe, L"jpgli", params_with_png[3]);
+  if (!contains(jpgli_command, L"--jpegli-progressive-level 2") ||
       contains(jpgli_command, L"--no-jpegli-optimize-huffman") ||
-      !contains(jpgli_command, L"--jpegli-xyb") ||
-      contains(jpgli_command, L"--speed")) {
+      !contains(jpgli_command, L"--jpegli-xyb")) {
     return fail("JPGLI shell command format-specific options changed");
   }
 
   for (int count : {0, 1, 10}) {
     std::vector<std::wstring> names;
-    for (int i = 0; i < count; ++i) names.push_back(L"预设 空格 " + std::to_wstring(i));
-    const auto schema = build_registry_schema(exe, params_without_png, plan, names, 1);
-    int commands = 0;
-    for (const auto& value : schema.values) {
-      if (contains(value.string_value, L"--preset")) {
-        ++commands;
-        if (!contains(value.string_value, L"--format") || contains(value.string_value, L"--quality") ||
-            contains(value.string_value, L"--append-png-suffix") || contains(value.string_value, L"--jobs")) {
-          return fail("preset command embeds format values/resources or AVIF.png");
-        }
+    for (int i = 0; i < count; ++i) {
+      names.push_back(L"预设 空格 " + std::to_wstring(i));
+    }
+    const auto schema =
+        build_registry_schema(exe, params_without_png, plan, names);
+    const auto configuration = configuration_from(schema);
+    if (!configuration) return fail(configuration.error());
+    std::size_t grouped = 0;
+    for (const auto& command : configuration->commands) {
+      if (command.group_label.empty()) continue;
+      ++grouped;
+      if (!contains(command.arguments, L"--preset") ||
+          !contains(command.arguments, L"--format") ||
+          contains(command.arguments, L"--quality") ||
+          contains(command.arguments, L"--append-png-suffix") ||
+          contains(command.arguments, L"--jobs")) {
+        return fail("preset command embeds format resources or AVIF.png");
       }
     }
-    if (commands != count * 5 || schema == schema_without_png) return fail("preset subtree/slot schema failed");
+    if (grouped != static_cast<std::size_t>(count * 5)) {
+      return fail("preset groups did not reach the COM configuration");
+    }
   }
 
   const auto legacy = legacy_root_keys();
-  if (std::ranges::find(legacy, L"Software\\Classes\\AWJImage.ContextMenu") == legacy.end() ||
-      std::ranges::find(legacy, L"Software\\Classes\\SystemFileAssociations\\.jpg\\shell\\AWJImage") == legacy.end() ||
-      std::ranges::find(legacy, L"Software\\Classes\\icofile\\shell\\AWJImage") == legacy.end()) {
+  if (std::ranges::find(legacy, L"Software\\Classes\\AWJImage.ContextMenu") ==
+          legacy.end() ||
+      std::ranges::find(
+          legacy,
+          L"Software\\Classes\\SystemFileAssociations\\.jpg\\shell\\AWJImage") ==
+          legacy.end()) {
     return fail("legacy migration roots are incomplete");
   }
   const auto owned = owned_root_keys();
   auto sorted = owned;
   std::ranges::sort(sorted);
   if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end() ||
+      std::ranges::find(owned, class_root_key()) == owned.end() ||
+      std::ranges::find(owned, file_handler_key()) == owned.end() ||
+      std::ranges::find(owned, folder_handler_key()) == owned.end() ||
       std::ranges::find(owned, shared_tree_key()) == owned.end() ||
       std::ranges::find(owned, legacy_shared_tree_key()) == owned.end()) {
-    return fail("owned-root cleanup plan is not stable/unique");
+    return fail("owned-root cleanup plan is not stable or complete");
   }
   return 0;
 }

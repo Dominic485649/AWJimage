@@ -6,9 +6,13 @@
 #include <shlobj.h>
 
 #include "shell_context_menu.hpp"
+#include "shell_extension_contract.hpp"
+#include "shell_extension_core.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdio>
 #include <cstdlib>
 #include <expected>
@@ -305,17 +309,6 @@ void initialize_popup(ContextMenu& context_menu, HMENU submenu, int position) {
   }
 }
 
-HMENU find_awj_submenu(ContextMenu& context_menu) {
-  const int count = GetMenuItemCount(context_menu.menu);
-  for (int i = 0; i < count; ++i) {
-    if (menu_text(context_menu.menu, i) != L"AWJimage 转换") continue;
-    HMENU submenu = GetSubMenu(context_menu.menu, i);
-    if (submenu != nullptr) initialize_popup(context_menu, submenu, i);
-    return submenu;
-  }
-  return nullptr;
-}
-
 std::vector<std::wstring> submenu_labels(HMENU submenu) {
   std::vector<std::wstring> labels;
   const int count = GetMenuItemCount(submenu);
@@ -326,6 +319,28 @@ std::vector<std::wstring> submenu_labels(HMENU submenu) {
     labels.push_back(menu_text(submenu, i));
   }
   return labels;
+}
+
+HMENU find_awj_submenu(ContextMenu& context_menu,
+                       const std::vector<std::wstring>& expected = {}) {
+  const int count = GetMenuItemCount(context_menu.menu);
+  HMENU first_match = nullptr;
+  for (int i = 0; i < count; ++i) {
+    if (menu_text(context_menu.menu, i) != L"AWJimage 转换") continue;
+    HMENU submenu = GetSubMenu(context_menu.menu, i);
+    if (submenu != nullptr) initialize_popup(context_menu, submenu, i);
+    if (first_match == nullptr) first_match = submenu;
+    if (!expected.empty() && submenu_labels(submenu) == expected) return submenu;
+  }
+  return first_match;
+}
+
+HMENU child_submenu_with_label(HMENU menu, std::wstring_view label) {
+  const int count = GetMenuItemCount(menu);
+  for (int i = 0; i < count; ++i) {
+    if (menu_text(menu, i) == label) return GetSubMenu(menu, i);
+  }
+  return nullptr;
 }
 
 void dump_menu(HMENU menu, int depth = 0) {
@@ -363,10 +378,14 @@ std::expected<void, std::string> invoke_and_decode(ContextMenu& menu, HMENU subm
   invoke.lpDirectoryW = cwd.c_str();
   invoke.nShow = SW_SHOWNORMAL;
   const auto status = menu.context->InvokeCommand(reinterpret_cast<CMINVOKECOMMANDINFO*>(&invoke));
-  if (FAILED(status)) return std::unexpected{"IContextMenu::InvokeCommand failed: " + std::to_string(status)};
+  if (FAILED(status)) return std::unexpected{"IContextMenu::InvokeCommand failed for index " +
+      std::to_string(command_index) + ": " + std::to_string(status)};
   const std::wstring extension = spec.append_png_suffix ? L".avif.png"
       : spec.format == L"jpgli" ? L".jpg" : L"." + std::wstring{spec.format};
-  const auto deadline = GetTickCount64() + 45000;
+  // JPEGli initialization can be noticeably slower on a cold process; shell
+  // invocation is asynchronous, so allow enough time for the child window to
+  // finish without weakening the output validation below.
+  const auto deadline = GetTickCount64() + 120000;
   std::string last_failure = "output file not found";
   for (;;) {
     bool complete = true;
@@ -385,7 +404,8 @@ std::expected<void, std::string> invoke_and_decode(ContextMenu& menu, HMENU subm
       }
     }
     if (complete) break;
-    if (GetTickCount64() >= deadline) return std::unexpected{"Shell output missing or not decodable: " + last_failure};
+    if (GetTickCount64() >= deadline) return std::unexpected{"Shell output missing for index " +
+        std::to_string(command_index) + " or not decodable: " + last_failure};
     MSG message{};
     while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
       TranslateMessage(&message);
@@ -397,39 +417,75 @@ std::expected<void, std::string> invoke_and_decode(ContextMenu& menu, HMENU subm
   return {};
 }
 
-}  // namespace
+std::expected<bool, std::string> current_process_is_standard_user() {
+  SID_IDENTIFIER_AUTHORITY nt_authority = SECURITY_NT_AUTHORITY;
+  PSID administrators = nullptr;
+  if (!AllocateAndInitializeSid(
+          &nt_authority, 2, SECURITY_BUILTIN_DOMAIN_RID,
+          DOMAIN_ALIAS_RID_ADMINS, 0, 0, 0, 0, 0, 0, &administrators)) {
+    return std::unexpected{"could not allocate Administrators SID"};
+  }
+  BOOL administrator_enabled = FALSE;
+  const BOOL membership =
+      CheckTokenMembership(nullptr, administrators, &administrator_enabled);
+  FreeSid(administrators);
+  if (!membership) {
+    return std::unexpected{"could not inspect Administrators membership"};
+  }
 
-int wmain(int argc, wchar_t** argv) try {
+  HANDLE token = nullptr;
+  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+    return std::unexpected{"could not open process token for integrity check"};
+  }
+  DWORD bytes = 0;
+  (void)GetTokenInformation(token, TokenIntegrityLevel, nullptr, 0, &bytes);
+  std::vector<std::byte> buffer(bytes);
+  const BOOL queried = bytes != 0 &&
+      GetTokenInformation(token, TokenIntegrityLevel, buffer.data(), bytes,
+                          &bytes);
+  CloseHandle(token);
+  if (!queried) {
+    return std::unexpected{"could not query process integrity level"};
+  }
+  const auto* label =
+      reinterpret_cast<const TOKEN_MANDATORY_LABEL*>(buffer.data());
+  const DWORD subauthorities = *GetSidSubAuthorityCount(label->Label.Sid);
+  if (subauthorities == 0) {
+    return std::unexpected{"process integrity SID is invalid"};
+  }
+  const DWORD integrity =
+      *GetSidSubAuthority(label->Label.Sid, subauthorities - 1);
+  return administrator_enabled == FALSE &&
+         integrity <= SECURITY_MANDATORY_MEDIUM_RID;
+}
+
+int run_shell_scenarios(const std::filesystem::path& awj_exe,
+                        const std::filesystem::path& root) {
   using namespace awj::shell_context_menu;
-  if (argc != 2) return fail("expected AWJ executable path argument");
-  const std::filesystem::path awj_exe{argv[1]};
-  if (!std::filesystem::is_regular_file(awj_exe)) return fail("AWJ executable is missing");
-
+  auto standard_user = current_process_is_standard_user();
+  if (!standard_user) return fail(standard_user.error());
+  if (!*standard_user) {
+    return fail("Explorer scenarios did not run as a standard user");
+  }
   ComApartment apartment;
   if (FAILED(apartment.status)) return fail("CoInitializeEx failed");
-
-  RegistryRestore registry_cleanup;
-
-  const auto root = std::filesystem::temp_directory_path() /
-      (L"AWJ Explorer API 验证 空格 " + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64()));
+  CLSID class_id{};
+  const std::wstring class_id_text{
+      awj::shell_extension::contract::class_id};
+  if (FAILED(CLSIDFromString(class_id_text.c_str(), &class_id))) {
+    return fail("formal shell extension CLSID is invalid");
+  }
+  IContextMenu* activated_raw = nullptr;
+  const HRESULT activation = CoCreateInstance(
+      class_id, nullptr, CLSCTX_INPROC_SERVER, IID_IContextMenu,
+      reinterpret_cast<void**>(&activated_raw));
+  if (FAILED(activation) || activated_raw == nullptr) {
+    return fail("registered shell extension CoCreateInstance failed: " +
+                std::to_string(static_cast<unsigned long>(activation)));
+  }
+  ComPtr<IContextMenu> activated{activated_raw};
   std::error_code ec;
-  if (!std::filesystem::create_directory(root, ec) || ec) return fail("failed to create isolated Explorer API test root");
-  struct TempCleanup {
-    std::filesystem::path path;
-    ~TempCleanup() {
-      std::error_code ignored;
-      std::filesystem::remove_all(path, ignored);
-    }
-  } temp_cleanup{root};
-
-  const auto executable_dir = root / L"程序 空格";
-  std::filesystem::create_directory(executable_dir, ec);
-  const auto test_exe = executable_dir / L"AWJ.exe";
-  if (ec || !std::filesystem::copy_file(awj_exe, test_exe, ec) || ec)
-    return fail("failed to copy the test executable into its isolated profile");
   auto params = make_params(true);
-  auto installed = install(test_exe, params);
-  if (!installed) return fail(installed.error());
 
   const auto single_dir = root / L"single 菜单";
   std::filesystem::create_directories(single_dir, ec);
@@ -437,7 +493,7 @@ int wmain(int argc, wchar_t** argv) try {
   if (ec || !write_one_pixel_bmp(single_input)) return fail("failed to create single input");
   auto single_menu = create_context_menu({single_input});
   if (!single_menu) return fail(single_menu.error());
-  HMENU single_submenu = find_awj_submenu(*single_menu);
+  HMENU single_submenu = find_awj_submenu(*single_menu, expected_labels(true));
   if (single_submenu == nullptr || submenu_labels(single_submenu) != expected_labels(true)) {
     std::fputs("Explorer/Shell single-file menu dump follows:\n", stderr);
     dump_menu(single_menu->menu);
@@ -457,7 +513,7 @@ int wmain(int argc, wchar_t** argv) try {
   }
   auto multi_menu = create_context_menu({multi_a, multi_b});
   if (!multi_menu) return fail(multi_menu.error());
-  HMENU multi_submenu = find_awj_submenu(*multi_menu);
+  HMENU multi_submenu = find_awj_submenu(*multi_menu, expected_labels(true));
   if (multi_submenu == nullptr || submenu_labels(multi_submenu) != expected_labels(true)) {
     return fail("multi-select Explorer/Shell menu order is incorrect");
   }
@@ -472,7 +528,7 @@ int wmain(int argc, wchar_t** argv) try {
   if (ec || !write_one_pixel_bmp(folder_bmp)) return fail("failed to create folder input");
   auto folder_menu = create_context_menu({folder_input});
   if (!folder_menu) return fail(folder_menu.error());
-  HMENU folder_submenu = find_awj_submenu(*folder_menu);
+  HMENU folder_submenu = find_awj_submenu(*folder_menu, expected_labels(true));
   if (folder_submenu == nullptr || submenu_labels(folder_submenu) != expected_labels(true)) {
     return fail("folder Explorer/Shell menu order is incorrect");
   }
@@ -483,27 +539,248 @@ int wmain(int argc, wchar_t** argv) try {
   }
 
   params[0].install_avif_png_command = false;
-  installed = install(test_exe, params);
+  auto installed = install(awj_exe, params);
   if (!installed) return fail(installed.error());
   auto no_png_menu = create_context_menu({single_input});
   if (!no_png_menu) return fail(no_png_menu.error());
-  HMENU no_png_submenu = find_awj_submenu(*no_png_menu);
+  HMENU no_png_submenu = find_awj_submenu(*no_png_menu, expected_labels(false));
   if (no_png_submenu == nullptr || submenu_labels(no_png_submenu) != expected_labels(false)) {
     return fail("AVIF.png-off Explorer/Shell menu order is incorrect");
   }
 
   params[0].install_avif_png_command = true;
-  installed = install(test_exe, params);
+  installed = install(awj_exe, params);
   if (!installed) return fail(installed.error());
   auto reenabled_menu = create_context_menu({single_input});
   if (!reenabled_menu) return fail(reenabled_menu.error());
-  HMENU reenabled_submenu = find_awj_submenu(*reenabled_menu);
+  HMENU reenabled_submenu = find_awj_submenu(*reenabled_menu, expected_labels(true));
   if (reenabled_submenu == nullptr ||
       submenu_labels(reenabled_submenu) != expected_labels(true)) {
     return fail("AVIF.png-on Explorer/Shell menu did not restore exact order");
   }
 
+  const auto unsupported_input = single_dir / L"unsupported.txt";
+  {
+    std::ofstream unsupported{unsupported_input};
+    unsupported << "not an image";
+  }
+  auto unsupported_menu = create_context_menu({unsupported_input});
+  if (!unsupported_menu) return fail(unsupported_menu.error());
+  if (find_awj_submenu(*unsupported_menu) != nullptr) {
+    return fail("unsupported file received an AWJ shell menu");
+  }
+  auto mixed_menu = create_context_menu({single_input, unsupported_input});
+  if (!mixed_menu) return fail(mixed_menu.error());
+  if (find_awj_submenu(*mixed_menu) != nullptr) {
+    return fail("mixed supported/unsupported selection received an AWJ shell menu");
+  }
+
+  const std::vector<std::wstring> presets{L"网页 预设 Ω"};
+  installed = install(awj_exe, params, presets);
+  if (!installed) return fail(installed.error());
+  auto preset_menu = create_context_menu({single_input});
+  if (!preset_menu) return fail(preset_menu.error());
+  auto top_labels = expected_labels(true);
+  top_labels.push_back(presets.front());
+  HMENU preset_parent = find_awj_submenu(*preset_menu, top_labels);
+  if (preset_parent == nullptr || submenu_labels(preset_parent) != top_labels) {
+    return fail("preset group is missing from the COM shell menu");
+  }
+  HMENU preset_submenu = child_submenu_with_label(preset_parent, presets.front());
+  if (preset_submenu == nullptr ||
+      submenu_labels(preset_submenu) != expected_labels(false)) {
+    return fail("preset COM submenu order is incorrect");
+  }
+
+  auto removed = remove();
+  if (!removed) return fail(removed.error());
+  auto still_installed = is_installed();
+  if (!still_installed) return fail(still_installed.error());
+  if (*still_installed) {
+    return fail("normal-user shell extension removal was incomplete");
+  }
+
   return 0;
+}
+
+std::optional<std::filesystem::path> current_executable_path() {
+  std::vector<wchar_t> buffer(512);
+  for (;;) {
+    const DWORD copied = GetModuleFileNameW(
+        nullptr, buffer.data(), static_cast<DWORD>(buffer.size()));
+    if (copied == 0) return std::nullopt;
+    if (copied < buffer.size()) {
+      return std::filesystem::path{
+          std::wstring_view{buffer.data(), static_cast<std::size_t>(copied)}};
+    }
+    if (buffer.size() >= 32768) return std::nullopt;
+    buffer.resize(std::min<std::size_t>(buffer.size() * 2, 32768));
+  }
+}
+
+int launch_child(std::wstring_view mode,
+                 const std::filesystem::path& awj_exe,
+                 const std::filesystem::path& root) {
+  const auto launcher = current_executable_path();
+  if (!launcher) return fail("could not locate Explorer test executable");
+  std::wstring command_line;
+  for (const auto& argument :
+       std::array<std::wstring, 4>{launcher->native(), std::wstring{mode},
+                                   awj_exe.native(), root.native()}) {
+    if (!command_line.empty()) command_line.push_back(L' ');
+    command_line += awj::shell_extension::quote_windows_argument(argument, true);
+  }
+  STARTUPINFOW startup{sizeof(startup)};
+  PROCESS_INFORMATION process{};
+  auto standard_user = current_process_is_standard_user();
+  if (!standard_user) return fail(standard_user.error());
+  HANDLE token = nullptr;
+  BOOL created = FALSE;
+  if (*standard_user) {
+    created = CreateProcessW(launcher->c_str(), command_line.data(), nullptr,
+                             nullptr, FALSE, CREATE_UNICODE_ENVIRONMENT,
+                             nullptr, nullptr, &startup, &process);
+  } else {
+    HANDLE process_token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(),
+                          TOKEN_DUPLICATE | TOKEN_QUERY | TOKEN_ASSIGN_PRIMARY |
+                              TOKEN_ADJUST_DEFAULT,
+                          &process_token)) {
+      return fail("could not open process token for normal-user test");
+    }
+    const BOOL restricted = CreateRestrictedToken(
+        process_token, LUA_TOKEN, 0, nullptr, 0, nullptr, 0, nullptr, &token);
+    CloseHandle(process_token);
+    if (!restricted || token == nullptr) {
+      if (token != nullptr) CloseHandle(token);
+      return fail("could not create LUA test token");
+    }
+    SID_IDENTIFIER_AUTHORITY mandatory_authority =
+        SECURITY_MANDATORY_LABEL_AUTHORITY;
+    PSID medium_integrity = nullptr;
+    if (!AllocateAndInitializeSid(
+            &mandatory_authority, 1, SECURITY_MANDATORY_MEDIUM_RID, 0, 0, 0,
+            0, 0, 0, 0, &medium_integrity)) {
+      CloseHandle(token);
+      return fail("could not allocate medium-integrity SID");
+    }
+    TOKEN_MANDATORY_LABEL label{};
+    label.Label.Attributes = SE_GROUP_INTEGRITY;
+    label.Label.Sid = medium_integrity;
+    const BOOL integrity_set = SetTokenInformation(
+        token, TokenIntegrityLevel, &label,
+        static_cast<DWORD>(sizeof(label) + GetLengthSid(medium_integrity)));
+    FreeSid(medium_integrity);
+    if (!integrity_set) {
+      const DWORD integrity_error = GetLastError();
+      CloseHandle(token);
+      return fail("could not set medium integrity on LUA test token: " +
+                  std::to_string(integrity_error));
+    }
+    created = CreateProcessAsUserW(
+        token, launcher->c_str(), command_line.data(), nullptr, nullptr, FALSE,
+        CREATE_UNICODE_ENVIRONMENT, nullptr, nullptr, &startup, &process);
+  }
+  const DWORD create_error = created ? ERROR_SUCCESS : GetLastError();
+  if (token != nullptr) CloseHandle(token);
+  if (!created) {
+    return fail("could not launch fresh normal-user test process: " +
+                std::to_string(create_error));
+  }
+  CloseHandle(process.hThread);
+  const DWORD waited = WaitForSingleObject(process.hProcess, 15 * 60 * 1000);
+  if (waited != WAIT_OBJECT_0) {
+    TerminateProcess(process.hProcess, 1);
+    CloseHandle(process.hProcess);
+    return fail("fresh normal-user test process timed out");
+  }
+  DWORD exit_code = 1;
+  if (!GetExitCodeProcess(process.hProcess, &exit_code)) exit_code = 1;
+  CloseHandle(process.hProcess);
+  return static_cast<int>(exit_code);
+}
+
+}  // namespace
+
+int wmain(int argc, wchar_t** argv) try {
+  using namespace awj::shell_context_menu;
+  if (argc == 4 &&
+      (std::wstring_view{argv[1]} == L"--install-child" ||
+       std::wstring_view{argv[1]} == L"--shell-child" ||
+       std::wstring_view{argv[1]} == L"--persist-install-child" ||
+       std::wstring_view{argv[1]} == L"--persist-remove-child")) {
+    const std::filesystem::path awj_exe{argv[2]};
+    const std::filesystem::path root{argv[3]};
+    if (!std::filesystem::is_regular_file(awj_exe)) {
+      return fail("fresh-process AWJ executable is missing");
+    }
+    auto standard_user = current_process_is_standard_user();
+    if (!standard_user) return fail(standard_user.error());
+    if (!*standard_user) {
+      return fail("shell integration child retained administrator access");
+    }
+    if (std::wstring_view{argv[1]} == L"--persist-remove-child") {
+      auto removed = remove();
+      if (!removed) return fail(removed.error());
+      return 0;
+    }
+    if (std::wstring_view{argv[1]} == L"--install-child" ||
+        std::wstring_view{argv[1]} == L"--persist-install-child") {
+      auto installed = install(awj_exe, make_params(true));
+      if (!installed) return fail(installed.error());
+      if (std::wstring_view{argv[1]} == L"--persist-install-child") return 0;
+      return launch_child(L"--shell-child", awj_exe, root);
+    }
+    return run_shell_scenarios(awj_exe, root);
+  }
+  if (argc == 3 &&
+      (std::wstring_view{argv[1]} == L"--persist-install" ||
+       std::wstring_view{argv[1]} == L"--persist-remove")) {
+    const std::filesystem::path awj_exe{argv[2]};
+    if (!std::filesystem::is_regular_file(awj_exe)) {
+      return fail("persistent integration AWJ executable is missing");
+    }
+    const auto child_mode = std::wstring_view{argv[1]} == L"--persist-install"
+                                ? L"--persist-install-child"
+                                : L"--persist-remove-child";
+    return launch_child(child_mode, awj_exe, awj_exe.parent_path());
+  }
+  if (argc != 2) return fail("expected AWJ executable path argument");
+  const std::filesystem::path awj_exe{argv[1]};
+  if (!std::filesystem::is_regular_file(awj_exe)) {
+    return fail("AWJ executable is missing");
+  }
+
+  RegistryRestore registry_cleanup;
+  const auto root = std::filesystem::temp_directory_path() /
+      (L"AWJ Explorer API 验证 空格 " +
+       std::to_wstring(GetCurrentProcessId()) + L"-" +
+       std::to_wstring(GetTickCount64()));
+  std::error_code ec;
+  if (!std::filesystem::create_directory(root, ec) || ec) {
+    return fail("failed to create isolated Explorer API test root");
+  }
+  struct TempCleanup {
+    std::filesystem::path path;
+    ~TempCleanup() {
+      std::error_code ignored;
+      std::filesystem::remove_all(path, ignored);
+    }
+  } temp_cleanup{root};
+
+  const auto executable_dir = root / L"程序 空格";
+  std::filesystem::create_directory(executable_dir, ec);
+  const auto test_exe = executable_dir / L"AWJ.exe";
+  if (ec || !std::filesystem::copy_file(awj_exe, test_exe, ec) || ec) {
+    return fail("failed to copy the test executable into its isolated profile");
+  }
+  const auto source_extension = shell_extension_path(awj_exe);
+  const auto test_extension = shell_extension_path(test_exe);
+  ec.clear();
+  if (!std::filesystem::copy_file(source_extension, test_extension, ec) || ec) {
+    return fail("failed to copy the shell extension into its isolated profile");
+  }
+  return launch_child(L"--install-child", test_exe, root);
 } catch (const std::exception& error) {
   return fail(error.what());
 }

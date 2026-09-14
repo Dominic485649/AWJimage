@@ -54,6 +54,7 @@
 #include "import_service.h"
 #include "path_picker_win32.h"
 #include "shell_context_menu.hpp"
+#include "sparse_package.hpp"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -623,13 +624,52 @@ void load_system_font_options(AwjStudio& app) {
   }
 }
 
-std::filesystem::path studio_config_path() {
+std::filesystem::path local_app_data_root() {
+  PWSTR raw = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT,
+                                     nullptr, &raw)) &&
+      raw != nullptr) {
+    std::filesystem::path root{raw};
+    CoTaskMemFree(raw);
+    root /= L"AWJimage";
+    return root;
+  }
+  if (raw != nullptr) CoTaskMemFree(raw);
+  return {};
+}
+
+std::filesystem::path adjacent_studio_config_path() {
   if (auto directory = awj::executable_directory()) {
     return *directory /
            awj::wide_from_utf8(
                std::string{awj::studio_defaults::config_file_name});
   }
   return {};
+}
+
+std::filesystem::path local_studio_config_path() {
+  auto root = local_app_data_root();
+  if (root.empty()) return {};
+  return root /
+         awj::wide_from_utf8(
+             std::string{awj::studio_defaults::config_file_name});
+}
+
+std::filesystem::path studio_config_path() {
+  const auto local = local_studio_config_path();
+  std::error_code ec;
+  if (!local.empty() && std::filesystem::is_regular_file(local, ec) && !ec) {
+    return local;
+  }
+  const auto adjacent = adjacent_studio_config_path();
+  ec.clear();
+  if (!adjacent.empty() && std::filesystem::is_regular_file(adjacent, ec) &&
+      !ec) {
+    return adjacent;
+  }
+  // New installations use the per-user directory. Existing portable copies
+  // remain readable from the executable directory for backward compatibility.
+  return local.empty() ? adjacent : local;
 }
 
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
@@ -1581,7 +1621,30 @@ std::expected<void, std::string> write_studio_config_file(
   }
   content += "}\n";
 
-  return write_file_atomically(path, content);
+  const auto write_to = [&](const std::filesystem::path& target)
+      -> std::expected<void, std::string> {
+    if (target.empty()) {
+      return std::unexpected{"无法定位用户配置文件路径。"};
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(target.parent_path(), ec);
+    if (ec) {
+      return std::unexpected{
+          std::format("无法创建用户配置目录：{}", ec.message())};
+    }
+    return write_file_atomically(target, content);
+  };
+
+  if (auto saved = write_to(path); saved) return saved;
+
+  // A legacy portable configuration may still live beside an executable in a
+  // protected directory. Keep reading it, but persist the next change under
+  // LocalAppData so an ordinary user never needs elevation.
+  const auto local = local_studio_config_path();
+  if (!local.empty() && local != path) {
+    if (auto saved = write_to(local); saved) return saved;
+  }
+  return write_to(path);
 } catch (const std::bad_alloc&) {
   return std::unexpected{"写入 Studio 配置时内存不足。"};
 } catch (const std::length_error&) {
@@ -3440,11 +3503,21 @@ std::expected<void, std::string> synchronize_shell_context_menu(
   if (!awj_exe) return std::unexpected{awj_exe.error()};
   auto names = awj::injected_user_preset_names();
   if (!names) return std::unexpected{names.error()};
-  return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names, force_install);
+  auto result = awj::shell_context_menu::reconcile(
+      *awj_exe, shell_menu_params(menu_params), *names, force_install);
+  if (!result) return result;
+  return awj::shell_context_menu::ensure_sparse_package_registered(*awj_exe);
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {
-  return awj::shell_context_menu::remove();
+  auto package = awj::shell_context_menu::remove_sparse_package_registration();
+  auto classic = awj::shell_context_menu::remove();
+  if (!package && !classic) {
+    return std::unexpected{package.error() + " " + classic.error()};
+  }
+  if (!package) return std::unexpected{package.error()};
+  if (!classic) return std::unexpected{classic.error()};
+  return {};
 }
 
 std::optional<std::string> shell_context_menu_warning(

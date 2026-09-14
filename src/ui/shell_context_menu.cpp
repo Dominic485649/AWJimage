@@ -1,5 +1,8 @@
 #include "shell_context_menu.hpp"
 
+#include "shell_extension_contract.hpp"
+#include "shell_extension_core.hpp"
+
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -22,10 +25,7 @@ constexpr std::wstring_view kImageParent =
     L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJimage.Convert";
 constexpr std::wstring_view kDirectoryParent =
     L"Software\\Classes\\Directory\\shell\\AWJimage.Convert";
-// Windows 10.0.26200 Shell was empirically verified to materialize a real
-// cascade when ExtendedSubCommandsKey is a REG_SZ pointer to this shared tree.
-// Current Microsoft Learn documents the child-key form instead, so this is a
-// Windows compatibility contract, not a claim about documented behavior.
+// v4 static-cascade roots remain listed for migration and rollback only.
 constexpr std::wstring_view kSharedTree =
     L"Software\\Classes\\AWJimage.ContextMenu.v4.A";
 constexpr std::wstring_view kSharedTreeV3 = L"Software\\Classes\\AWJimage.ContextMenu.v3";
@@ -41,8 +41,6 @@ constexpr std::wstring_view kLegacyDirectoryParent =
 constexpr std::wstring_view kLegacySharedTree =
     L"Software\\Classes\\AWJImage.ContextMenu";
 constexpr std::wstring_view kMenuLabel = L"AWJimage 转换";
-constexpr std::wstring_view kMultiSelectModel = L"Player";
-constexpr std::wstring_view kExtendedSubCommandsKey = L"ExtendedSubCommandsKey";
 
 constexpr std::wstring_view kSupportedExtensions[] = {
     L".jpg",    L".jpeg", L".jpe", L".jfif", L".png",  L".webp",
@@ -164,6 +162,35 @@ std::expected<void, std::string> set_dword(std::wstring_view subkey,
   return {};
 }
 
+std::expected<void, std::string> set_multi_string(
+    std::wstring_view subkey, std::wstring_view name,
+    std::span<const std::wstring> values) {
+  auto key = create_key(subkey);
+  if (!key) return std::unexpected{key.error()};
+  std::size_t characters = 1;
+  for (const auto& value : values) characters += value.size() + 1;
+  if (characters > 256 * 1024) {
+    return std::unexpected{"右键菜单配置超过注册表值大小限制。"};
+  }
+  std::vector<wchar_t> buffer;
+  buffer.reserve(characters);
+  for (const auto& value : values) {
+    buffer.insert(buffer.end(), value.begin(), value.end());
+    buffer.push_back(L'\0');
+  }
+  buffer.push_back(L'\0');
+  const std::wstring name_storage{name};
+  const auto status = RegSetValueExW(
+      key->get(), name_storage.c_str(), 0, REG_MULTI_SZ,
+      reinterpret_cast<const BYTE*>(buffer.data()),
+      static_cast<DWORD>(buffer.size() * sizeof(wchar_t)));
+  if (status != ERROR_SUCCESS) {
+    return std::unexpected{
+        registry_error("写入右键菜单多字符串值", subkey, status)};
+  }
+  return {};
+}
+
 std::expected<bool, std::string> key_exists(std::wstring_view subkey) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
@@ -221,6 +248,47 @@ std::expected<std::optional<std::uint32_t>, std::string> read_dword(
     return std::unexpected{registry_error("读取右键菜单 DWORD 值", subkey, status)};
   }
   return std::optional<std::uint32_t>{value};
+}
+
+std::expected<std::optional<std::vector<std::wstring>>, std::string>
+read_multi_string(std::wstring_view subkey, std::wstring_view name) {
+  const std::wstring path{subkey};
+  const std::wstring name_storage{name};
+  DWORD bytes = 0;
+  DWORD type = 0;
+  const auto first = RegGetValueW(HKEY_CURRENT_USER, path.c_str(),
+                                  name_storage.c_str(), RRF_RT_REG_MULTI_SZ,
+                                  &type, nullptr, &bytes);
+  if (missing_registry_status(first)) {
+    return std::optional<std::vector<std::wstring>>{};
+  }
+  if (first != ERROR_SUCCESS || bytes < 2 * sizeof(wchar_t) ||
+      bytes > 512 * 1024 || bytes % sizeof(wchar_t) != 0) {
+    return std::unexpected{
+        registry_error("读取右键菜单多字符串值", subkey, first)};
+  }
+  std::vector<wchar_t> buffer(bytes / sizeof(wchar_t));
+  const auto second = RegGetValueW(
+      HKEY_CURRENT_USER, path.c_str(), name_storage.c_str(),
+      RRF_RT_REG_MULTI_SZ, &type, buffer.data(), &bytes);
+  if (second != ERROR_SUCCESS || buffer.size() < 2 ||
+      buffer[buffer.size() - 1] != L'\0' ||
+      buffer[buffer.size() - 2] != L'\0') {
+    return std::unexpected{
+        registry_error("读取右键菜单多字符串值", subkey, second)};
+  }
+  std::vector<std::wstring> values;
+  const wchar_t* cursor = buffer.data();
+  const wchar_t* const final_terminator = buffer.data() + buffer.size() - 1;
+  while (cursor < final_terminator && *cursor != L'\0') {
+    const wchar_t* terminator = std::find(cursor, final_terminator, L'\0');
+    if (terminator == final_terminator) {
+      return std::unexpected{"右键菜单多字符串值终止符无效。"};
+    }
+    values.emplace_back(cursor, terminator);
+    cursor = terminator + 1;
+  }
+  return std::optional<std::vector<std::wstring>>{std::move(values)};
 }
 
 std::expected<std::vector<std::wstring>, std::string> child_keys(
@@ -344,12 +412,6 @@ void append_arg(std::wstring& command, std::wstring_view arg) {
   command += quote_windows_arg(arg);
 }
 
-void append_option(std::wstring& command, std::wstring_view option,
-                   std::wstring_view value) {
-  append_arg(command, option);
-  append_arg(command, value);
-}
-
 std::wstring chroma_arg(int index) {
   switch (index) {
     case 1: return L"444";
@@ -379,10 +441,6 @@ std::wstring avif_color_representation_arg(int index) {
   }
 }
 
-std::wstring icon_value(const std::filesystem::path& awj_exe) {
-  return quote_windows_arg(awj_exe.wstring(), true) + L",0";
-}
-
 void append_string_spec(std::vector<RegistryValueSpec>& values,
                         std::wstring key, std::wstring name,
                         std::wstring value) {
@@ -399,6 +457,16 @@ void append_dword_spec(std::vector<RegistryValueSpec>& values,
                                      .name = std::move(name),
                                      .kind = RegistryValueKind::dword,
                                      .dword_value = value});
+}
+
+void append_multi_string_spec(std::vector<RegistryValueSpec>& values,
+                              std::wstring key, std::wstring name,
+                              std::vector<std::wstring> value) {
+  values.push_back(RegistryValueSpec{
+      .key = std::move(key),
+      .name = std::move(name),
+      .kind = RegistryValueKind::multi_string,
+      .multi_string_value = std::move(value)});
 }
 
 void append_owned_markers(std::vector<RegistryValueSpec>& values,
@@ -429,8 +497,14 @@ std::expected<void, std::string> apply_schema(const RegistrySchema& schema) {
       if (auto written = set_string(value.key, value.name, value.string_value); !written) {
         return written;
       }
-    } else {
+    } else if (value.kind == RegistryValueKind::dword) {
       if (auto written = set_dword(value.key, value.name, value.dword_value); !written) {
+        return written;
+      }
+    } else {
+      if (auto written = set_multi_string(value.key, value.name,
+                                          value.multi_string_value);
+          !written) {
         return written;
       }
     }
@@ -444,9 +518,14 @@ std::expected<bool, std::string> verify_spec(const RegistryValueSpec& spec) {
     if (!value) return std::unexpected{value.error()};
     return *value && **value == spec.string_value;
   }
-  auto value = read_dword(spec.key, spec.name);
+  if (spec.kind == RegistryValueKind::dword) {
+    auto value = read_dword(spec.key, spec.name);
+    if (!value) return std::unexpected{value.error()};
+    return *value && **value == spec.dword_value;
+  }
+  auto value = read_multi_string(spec.key, spec.name);
   if (!value) return std::unexpected{value.error()};
-  return *value && **value == spec.dword_value;
+  return *value && **value == spec.multi_string_value;
 }
 
 }  // namespace
@@ -461,6 +540,20 @@ std::span<const CommandSpec> command_specs() noexcept {
 
 std::wstring image_parent_key() { return std::wstring{kImageParent}; }
 std::wstring directory_parent_key() { return std::wstring{kDirectoryParent}; }
+std::wstring class_root_key() {
+  return std::wstring{awj::shell_extension::contract::class_root};
+}
+std::wstring file_handler_key() {
+  return std::wstring{awj::shell_extension::contract::file_handler_root};
+}
+std::wstring folder_handler_key() {
+  return std::wstring{awj::shell_extension::contract::folder_handler_root};
+}
+std::filesystem::path shell_extension_path(
+    const std::filesystem::path& awj_exe) {
+  return awj_exe.parent_path() /
+         awj::shell_extension::contract::shell_extension_filename;
+}
 std::wstring shared_tree_key(int slot) {
   auto key = std::wstring{kSharedTree};
   if (slot == 1) key.back() = L'B';
@@ -497,6 +590,9 @@ std::vector<std::wstring> owned_root_keys() {
   auto roots = legacy_root_keys();
   roots.push_back(shared_tree_key(0));
   roots.push_back(shared_tree_key(1));
+  roots.push_back(class_root_key());
+  roots.push_back(file_handler_key());
+  roots.push_back(folder_handler_key());
   auto current = current_parent_roots_for_all_extensions();
   roots.insert(roots.end(), current.begin(), current.end());
   // No current icofile root is installed, but remove this owned name if an interrupted
@@ -515,142 +611,157 @@ InstallPlan build_install_plan() {
   return plan;
 }
 
-std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
-                                        std::wstring_view format,
-                                        const FormatParams& params,
-                                        bool append_png_suffix) {
-  auto command = quote_windows_arg(awj_exe.wstring(), true);
-  append_arg(command, L"--shell-window");
-  append_arg(command, L"--shell-convert");
-  append_option(command, L"--format", format);
-  append_option(command, L"--collision", L"number");
+namespace {
 
+std::vector<std::wstring> build_convert_arguments(
+    std::wstring_view format, const FormatParams& params,
+    bool append_png_suffix) {
+  std::vector<std::wstring> arguments{
+      L"--shell-window", L"--shell-convert", L"--format",
+      std::wstring{format}, L"--collision", L"number"};
+  const auto append_option = [&](std::wstring_view option,
+                                 std::wstring_view value) {
+    arguments.emplace_back(option);
+    arguments.emplace_back(value);
+  };
   const bool is_avif = format == L"avif";
   const bool is_webp = format == L"webp";
   const bool is_jxl = format == L"jxl";
   const bool is_jpgli = format == L"jpgli";
   const bool is_png = format == L"png";
-  if (!params.quality_text.empty()) append_option(command, L"--quality", params.quality_text);
+  if (!params.quality_text.empty()) append_option(L"--quality", params.quality_text);
   if ((is_avif || is_webp || is_jpgli || is_png) && !params.bit_depth_text.empty()) {
-    append_option(command, L"--bit-depth", params.bit_depth_text);
+    append_option(L"--bit-depth", params.bit_depth_text);
   }
   if ((is_avif || is_webp || is_jxl) && !params.speed_text.empty()) {
-    append_option(command, L"--speed", params.speed_text);
+    append_option(L"--speed", params.speed_text);
   }
-  append_arg(command, params.strip_metadata ? L"--strip" : L"--keep-metadata");
-  append_arg(command, params.allow_wic_fallback ? L"--allow-wic-fallback" : L"--no-wic-fallback");
-  append_arg(command, params.close_on_finish ? L"--close-on-finish" : L"--no-close-on-finish");
+  arguments.emplace_back(params.strip_metadata ? L"--strip" : L"--keep-metadata");
+  arguments.emplace_back(params.allow_wic_fallback ? L"--allow-wic-fallback"
+                                                    : L"--no-wic-fallback");
+  arguments.emplace_back(params.close_on_finish ? L"--close-on-finish"
+                                                 : L"--no-close-on-finish");
   switch (params.size_limit_index) {
     case 1:
-      append_option(command, L"--image-size-limit", L"none");
+      append_option(L"--image-size-limit", L"none");
       break;
     case 2:
-      append_option(command, L"--image-size-limit", L"manual");
-      if (!params.max_width_text.empty()) append_option(command, L"--max-width", params.max_width_text);
-      if (!params.max_height_text.empty()) append_option(command, L"--max-height", params.max_height_text);
-      if (!params.max_long_edge_text.empty()) append_option(command, L"--max-long-edge", params.max_long_edge_text);
-      if (!params.max_short_edge_text.empty()) append_option(command, L"--max-short-edge", params.max_short_edge_text);
+      append_option(L"--image-size-limit", L"manual");
+      if (!params.max_width_text.empty()) append_option(L"--max-width", params.max_width_text);
+      if (!params.max_height_text.empty()) append_option(L"--max-height", params.max_height_text);
+      if (!params.max_long_edge_text.empty()) append_option(L"--max-long-edge", params.max_long_edge_text);
+      if (!params.max_short_edge_text.empty()) append_option(L"--max-short-edge", params.max_short_edge_text);
       break;
     default:
-      append_option(command, L"--image-size-limit", L"auto");
+      append_option(L"--image-size-limit", L"auto");
       break;
   }
   if (is_avif) {
-    append_option(command, L"--avif-encoder", avif_encoder_arg(params.avif_encoder_index));
-    append_option(command, L"--avif-color-representation",
+    append_option(L"--avif-encoder", avif_encoder_arg(params.avif_encoder_index));
+    append_option(L"--avif-color-representation",
                   avif_color_representation_arg(params.avif_color_representation_index));
-    append_option(command, L"--chroma", chroma_arg(params.chroma_index));
-    append_option(command, L"--alpha", alpha_arg(params.alpha_policy_index));
-    if (append_png_suffix) append_arg(command, L"--append-png-suffix");
+    append_option(L"--chroma", chroma_arg(params.chroma_index));
+    append_option(L"--alpha", alpha_arg(params.alpha_policy_index));
+    if (append_png_suffix) arguments.emplace_back(L"--append-png-suffix");
   } else if (is_jpgli) {
-    append_option(command, L"--chroma", chroma_arg(params.chroma_index));
-    append_option(command, L"--jpegli-progressive-level",
+    append_option(L"--chroma", chroma_arg(params.chroma_index));
+    append_option(L"--jpegli-progressive-level",
                   std::to_wstring(std::clamp(params.jpegli_progressive_index, 0, 2)));
-    append_arg(command, params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman
-                            ? L"--jpegli-optimize-huffman"
-                            : L"--no-jpegli-optimize-huffman");
-    if (params.jpegli_xyb) append_arg(command, L"--jpegli-xyb");
+    arguments.emplace_back(params.jpegli_progressive_index > 0 ||
+                                   params.jpegli_optimize_huffman
+                               ? L"--jpegli-optimize-huffman"
+                               : L"--no-jpegli-optimize-huffman");
+    if (params.jpegli_xyb) arguments.emplace_back(L"--jpegli-xyb");
   }
-  command += L" -i \"%1\" %*";
+  return arguments;
+}
+
+std::vector<std::wstring> build_preset_arguments(
+    std::wstring_view preset_name, std::wstring_view format) {
+  return {L"--shell-window", L"--shell-convert", L"--preset",
+          std::wstring{preset_name}, L"--format", std::wstring{format},
+          L"--collision", L"number"};
+}
+
+}  // namespace
+
+std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
+                                        std::wstring_view format,
+                                        const FormatParams& params,
+                                        bool append_png_suffix) {
+  auto command = quote_windows_arg(awj_exe.wstring(), true);
+  for (const auto& argument :
+       build_convert_arguments(format, params, append_png_suffix)) {
+    append_arg(command, argument);
+  }
+  append_arg(command, L"-i");
+  command += L" \"%1\" %*";
   return command;
 }
 
 RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
-                                     std::span<const std::wstring> preset_names,
-                                     int slot) {
+                                     std::span<const std::wstring> preset_names) {
   RegistrySchema schema{.plan = plan};
-  for (const auto& extension : plan.extensions) {
-    schema.parent_roots.push_back(extension_parent_key(extension));
-  }
-  schema.parent_roots.push_back(directory_parent_key());
+  const auto class_root = class_root_key();
+  const auto inproc = class_root + L"\\InprocServer32";
+  const auto file_handler = file_handler_key();
+  const auto folder_handler = folder_handler_key();
+  schema.parent_roots = {class_root, file_handler, folder_handler};
   std::ranges::sort(schema.parent_roots);
-  schema.parent_roots.erase(std::unique(schema.parent_roots.begin(), schema.parent_roots.end()),
-                            schema.parent_roots.end());
+  schema.keys = {class_root, inproc, file_handler, folder_handler};
 
-  const auto icon = icon_value(awj_exe);
-  const auto shared = shared_tree_key(slot);
-  const auto shared_shell = shared + L"\\shell";
-  schema.keys.push_back(shared);
-  schema.keys.push_back(shared_shell);
-  append_owned_markers(schema.values, shared);
+  awj::shell_extension::RuntimeConfiguration configuration{
+      .executable = awj_exe,
+      .menu_label = std::wstring{kMenuLabel}};
 
   for (const auto& command : kCommands) {
     if (command.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
-    const auto verb_key = std::format(L"{}\\{}", shared_shell, command.canonical_verb);
-    const auto command_key = verb_key + L"\\command";
-    schema.keys.push_back(verb_key);
-    schema.keys.push_back(command_key);
-    append_string_spec(schema.values, verb_key, L"MUIVerb", std::wstring{command.label});
-    append_string_spec(schema.values, verb_key, L"Icon", icon);
-    append_string_spec(schema.values, verb_key, L"MultiSelectModel",
-                       std::wstring{kMultiSelectModel});
-    append_string_spec(
-        schema.values, command_key, L"",
-        build_convert_command_line(awj_exe, command.format,
-                                   menu_params[command.params_index],
-                                   command.append_png_suffix));
+    configuration.commands.push_back({
+        .label = std::wstring{command.label},
+        .canonical_verb = std::wstring{command.canonical_verb},
+        .arguments = build_convert_arguments(
+            command.format, menu_params[command.params_index],
+            command.append_png_suffix)});
   }
 
   for (std::size_t index = 0; index < preset_names.size(); ++index) {
-    const auto parent = std::format(L"{}\\AWJimage.Preset.{:02}", shared_shell, index);
-    const auto subtree = parent + L"\\shell";
-    schema.keys.push_back(parent);
-    schema.keys.push_back(subtree);
-    append_string_spec(schema.values, parent, L"MUIVerb", preset_names[index]);
-    append_string_spec(schema.values, parent, L"Icon", icon);
-    append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-    append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
-                       parent.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
+    const auto group_verb = std::format(L"AWJimage.Preset.{:02}", index);
     for (const auto& spec : kCommands) {
       if (spec.append_png_suffix) continue;
-      const auto verb = subtree + L"\\" + std::wstring{spec.canonical_verb};
-      const auto command_key = verb + L"\\command";
-      schema.keys.push_back(verb);
-      schema.keys.push_back(command_key);
-      append_string_spec(schema.values, verb, L"MUIVerb", std::wstring{spec.label});
-      append_string_spec(schema.values, verb, L"Icon", icon);
-      append_string_spec(schema.values, verb, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-      auto command = quote_windows_arg(awj_exe.wstring(), true);
-      append_arg(command, L"--shell-window");
-      append_arg(command, L"--shell-convert");
-      append_option(command, L"--preset", preset_names[index]);
-      append_option(command, L"--format", spec.format);
-      append_option(command, L"--collision", L"number");
-      command += L" -i \"%1\" %*";
-      append_string_spec(schema.values, command_key, L"", std::move(command));
+      configuration.commands.push_back({
+          .group_label = preset_names[index],
+          .group_canonical_verb = group_verb,
+          .label = std::wstring{spec.label},
+          .canonical_verb = std::format(L"{}.{}", group_verb, spec.format),
+          .arguments = build_preset_arguments(preset_names[index], spec.format)});
     }
   }
 
-  for (const auto& parent : schema.parent_roots) {
-    schema.keys.push_back(parent);
-    append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
-    append_string_spec(schema.values, parent, L"Icon", icon);
-    append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-    append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
-                       shared.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
-    append_owned_markers(schema.values, parent);
+  auto encoded = awj::shell_extension::encode_configuration(configuration);
+  if (!encoded) {
+    schema.validation_error = encoded.error();
+  } else {
+    append_multi_string_spec(
+        schema.values, class_root,
+        std::wstring{awj::shell_extension::contract::configuration_value_name},
+        std::move(*encoded));
+  }
+  append_string_spec(schema.values, class_root, L"",
+                     std::wstring{awj::shell_extension::contract::friendly_name});
+  append_string_spec(
+      schema.values, class_root,
+      std::wstring{awj::shell_extension::contract::context_menu_opt_in_value_name},
+      L"");
+  append_owned_markers(schema.values, class_root);
+  append_string_spec(schema.values, inproc, L"",
+                     shell_extension_path(awj_exe).wstring());
+  append_string_spec(schema.values, inproc, L"ThreadingModel", L"Apartment");
+  for (const auto& handler : {file_handler, folder_handler}) {
+    append_string_spec(schema.values, handler, L"",
+                       std::wstring{awj::shell_extension::contract::class_id});
+    append_owned_markers(schema.values, handler);
   }
   return schema;
 }
@@ -829,17 +940,20 @@ std::expected<void, std::string> recover_locked() {
   if (**state != 1) return std::unexpected{"注册事务状态无效。"};
   auto count = read_dword(kTransaction, L"Count");
   const auto allowed = owned_root_keys();
-  if (!count || !*count || **count != allowed.size()) {
+  if (!count || !*count || **count == 0 || **count > allowed.size()) {
     return std::unexpected{"注册快照不完整，未继续修改。"};
   }
   std::vector<SnapshotRoot> roots;
-  for (std::size_t i = 0; i < allowed.size(); ++i) {
+  std::set<std::wstring> seen;
+  for (std::size_t i = 0; i < **count; ++i) {
     const auto key = std::format(L"{}\\{:03}", kTransaction, i);
     auto path = read_string(key, L"Path");
     auto present = read_dword(key, L"Present");
     auto managed = read_dword(key, L"Managed");
-    if (!path || !*path || **path != allowed[i] || !present || !*present ||
-        **present > 1 || !managed || !*managed || **managed > 1) {
+    if (!path || !*path ||
+        std::ranges::find(allowed, **path) == allowed.end() ||
+        !seen.insert(**path).second || !present || **present > 1 ||
+        !managed || **managed > 1) {
       return std::unexpected{"注册快照字段无效，未继续修改。"};
     }
     if (**present && **managed) {
@@ -865,18 +979,24 @@ std::expected<void, std::string> recover_locked() {
   return delete_tree(kTransaction);
 }
 
-std::expected<int, std::string> active_slot() {
-  auto reference = read_string(directory_parent_key(), kExtendedSubCommandsKey);
-  if (!reference) return std::unexpected{reference.error()};
-  return *reference && **reference == L"AWJimage.ContextMenu.v4.B" ? 1 : 0;
-}
-
 std::expected<void, std::string> validate_request(const std::filesystem::path& exe,
                                                 const RegistrySchema& schema,
                                                 std::span<const std::wstring> names) {
+  if (!schema.validation_error.empty()) {
+    return std::unexpected{"右键菜单配置无效：" + schema.validation_error};
+  }
   std::error_code ec;
   if (!exe.is_absolute() || !std::filesystem::is_regular_file(exe, ec) || ec) {
     return std::unexpected{"右键菜单程序必须是存在的绝对路径普通文件。"};
+  }
+  const auto extension = shell_extension_path(exe);
+  ec.clear();
+  if (!std::filesystem::is_regular_file(extension, ec) || ec) {
+    return std::unexpected{
+        "缺少 AWJ.ShellExtension.dll，无法安装 Windows 右键菜单。"};
+  }
+  if (schema.plan != build_install_plan()) {
+    return std::unexpected{"右键菜单支持扩展名集合无效。"};
   }
   if (names.size() > 10) return std::unexpected{"最多同时注入 10 个预设。"};
   std::set<std::wstring> unique;
@@ -890,11 +1010,19 @@ std::expected<void, std::string> validate_request(const std::filesystem::path& e
     }
   }
   for (const auto& value : schema.values) {
-    if (value.kind != RegistryValueKind::string) continue;
-    if (value.string_value.size() >= 30000 ||
-        value.string_value.find(L'\0') != std::wstring::npos ||
-        value.string_value.find_first_of(L"\r\n") != std::wstring::npos) {
-      return std::unexpected{"菜单参数含控制字符或超过 Windows 命令长度限制。"};
+    if (value.kind == RegistryValueKind::string) {
+      if (value.string_value.size() >= 30000 ||
+          value.string_value.find(L'\0') != std::wstring::npos ||
+          value.string_value.find_first_of(L"\r\n") != std::wstring::npos) {
+        return std::unexpected{"菜单参数含控制字符或超过 Windows 命令长度限制。"};
+      }
+    } else if (value.kind == RegistryValueKind::multi_string) {
+      for (const auto& item : value.multi_string_value) {
+        if (item.empty() || item.find(L'\0') != std::wstring::npos ||
+            item.find_first_of(L"\r\n") != std::wstring::npos) {
+          return std::unexpected{"右键菜单原子配置包含无效字符串。"};
+        }
+      }
     }
   }
   return {};
@@ -953,14 +1081,10 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
   std::error_code ec;
   const auto exe = std::filesystem::absolute(awj_exe, ec).lexically_normal();
   if (ec) return std::unexpected{"无法确定程序的绝对路径。"};
-  auto active = active_slot();
-  if (!active) return std::unexpected{active.error()};
   const auto plan = build_install_plan();
-  auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active);
-  if (auto valid = validate_request(exe, current, preset_names); !valid) return valid;
-  if (verify_schema(current) && verify_no_obsolete_roots(current)) return {};
-  const int next = *installed ? 1 - *active : 0;
-  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next);
+  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names);
+  if (auto valid = validate_request(exe, schema, preset_names); !valid) return valid;
+  if (verify_schema(schema) && verify_no_obsolete_roots(schema)) return {};
   auto roots = snapshot_roots(schema);
   if (!roots) return std::unexpected{roots.error()};
   if (auto saved = begin_journal(*roots); !saved) {
@@ -968,28 +1092,10 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
     return std::unexpected{saved.error() + (recovered ? "" : " " + recovered.error())};
   }
   auto apply = [&]() -> std::expected<void, std::string> {
-    const auto shared = shared_tree_key(next);
-    if (auto r = delete_tree(shared); !r) return r;
-    RegistrySchema tree = schema;
-    std::erase_if(tree.keys, [&](const auto& key) {
-      return key != shared && !key.starts_with(shared + L"\\");
-    });
-    std::erase_if(tree.values, [&](const auto& value) {
-      return std::ranges::find(tree.keys, value.key) == tree.keys.end();
-    });
-    if (auto r = apply_schema(tree); !r) return r;
-    if (auto r = verify_schema(tree); !r) return r;
-    // Parents switch only after the complete inactive tree is readable.
     for (const auto& parent : schema.parent_roots) {
       if (auto r = delete_tree(parent); !r) return r;
-      for (const auto& value : schema.values) {
-        if (value.key != parent) continue;
-        auto written = value.kind == RegistryValueKind::string
-            ? set_string(value.key, value.name, value.string_value)
-            : set_dword(value.key, value.name, value.dword_value);
-        if (!written) return written;
-      }
     }
+    if (auto r = apply_schema(schema); !r) return r;
     if (auto r = verify_schema(schema); !r) return r;
     for (const auto& root : *roots) {
       if (!root.managed || std::ranges::find(schema.keys, root.path) != schema.keys.end()) continue;
@@ -1039,9 +1145,14 @@ std::expected<std::optional<std::string>, std::string> warning(
   auto installed = is_installed();
   if (!installed) return std::unexpected{installed.error()};
   if (!*installed) return std::optional<std::string>{};
-  auto slot = active_slot();
-  if (!slot) return std::unexpected{slot.error()};
-  const auto schema = build_registry_schema(awj_exe, menu_params, build_install_plan(), preset_names, *slot);
+  std::error_code ec;
+  const auto exe = std::filesystem::absolute(awj_exe, ec).lexically_normal();
+  if (ec) return std::unexpected{"无法确定程序的绝对路径。"};
+  const auto schema =
+      build_registry_schema(exe, menu_params, build_install_plan(), preset_names);
+  if (auto valid = validate_request(exe, schema, preset_names); !valid) {
+    return std::optional<std::string>{valid.error()};
+  }
   if (auto valid = verify_schema(schema); !valid) return std::optional<std::string>{valid.error()};
   if (auto valid = verify_no_obsolete_roots(schema); !valid) return std::optional<std::string>{valid.error()};
   return std::optional<std::string>{};

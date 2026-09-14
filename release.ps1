@@ -32,7 +32,7 @@ $env:GIT_CONFIG_VALUE_0 = "HTTP/1.1"
 $BuildDir = Join-Path $Repo "build\x64\Release"
 $OutputDir = Join-Path $Repo "bin\x64\Release"
 $OverlayPorts = Join-Path $Repo "vcpkg-overlays"
-$ReleaseFiles = @("AWJ.exe", "AWJ.com", "LICENSE", "NOTICE.txt", "awj_update_manifest_sign.exe")
+$ReleaseFiles = @("AWJ.exe", "AWJ.com", "AWJ.ShellExtension.dll", "AWJ.ContextMenu.msix", "LICENSE", "NOTICE.txt", "awj_update_manifest_sign.exe")
 $Version = (Get-Content (Join-Path $Repo "VERSION") -Raw).Trim()
 $MinimumUpdaterVersion = if ($MinimumUpdaterVersion) { $MinimumUpdaterVersion } else { $Version }
 $VcpkgConfiguration = Get-Content (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
@@ -365,6 +365,8 @@ if ($VcpkgRoot) {
     $ConfigureArgs += "-DCMAKE_TOOLCHAIN_FILE=$ToolchainPath"
 }
 $ConfigureArgs += "-DAWJ_VCPKG_LIBRARY_CONFIG=Release"
+$ConfigureArgs += "-DAWJ_ENABLE_X64_V3=ON"
+$ConfigureArgs += "-DAWJ_ENABLE_SPARSE_PACKAGE=ON"
 $ConfigureArgs += "-DVCPKG_OVERLAY_PORTS=$OverlayPorts"
 $ConfigureArgs += "-DVCPKG_INSTALLED_DIR=$(Join-Path $BuildDir 'vcpkg_installed')"
 $ConfigureArgs += "-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=$DependencyBuildtrees;--x-packages-root=$DependencyPackages"
@@ -381,10 +383,19 @@ cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake 配置失败，退出码 $LASTEXITCODE。"
 }
-cmake --build $BuildDir --config Release --target AWJ AWJ-com awj_update_manifest_sign --parallel
+cmake --build $BuildDir --config Release --target AWJ AWJ-com awj_shell_extension awj_update_manifest_sign --parallel
 
 if ($LASTEXITCODE -ne 0) {
     throw "Release 构建失败，退出码 $LASTEXITCODE。"
+}
+
+$ShellExtensionPath = Join-Path $OutputDir "AWJ.ShellExtension.dll"
+if (-not (Test-Path -LiteralPath $ShellExtensionPath -PathType Leaf)) {
+    throw "Release Shell Extension 构建产物不存在: $ShellExtensionPath"
+}
+$SparsePackagePath = Join-Path $OutputDir "AWJ.ContextMenu.msix"
+if (-not (Test-Path -LiteralPath $SparsePackagePath -PathType Leaf)) {
+    throw "Release sparse package 构建产物不存在: $SparsePackagePath"
 }
 
 # --- Generate NOTICE.txt ---
@@ -606,3 +617,5 @@ Write-Host ""
 Write-Host "Release 输出:"
 Write-Host "  $OutputDir\AWJ.exe"
 Write-Host "  $OutputDir\AWJ.com"
+Write-Host "  $ShellExtensionPath"
+Write-Host "  $SparsePackagePath"
