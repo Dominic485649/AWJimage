@@ -368,6 +368,7 @@ $ConfigureArgs += "-DAWJ_VCPKG_LIBRARY_CONFIG=Release"
 $ConfigureArgs += "-DVCPKG_OVERLAY_PORTS=$OverlayPorts"
 $ConfigureArgs += "-DVCPKG_INSTALLED_DIR=$(Join-Path $BuildDir 'vcpkg_installed')"
 $ConfigureArgs += "-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=$DependencyBuildtrees;--x-packages-root=$DependencyPackages"
+$ConfigureArgs += "-DBUILD_TESTING=OFF"
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { 'OFF' })"
@@ -434,6 +435,8 @@ dav1d: $Dav1dVersion
 libyuv: $LibyuvVersion
 libarchive: $LibarchiveVersion
 libplacebo: $LibplaceboVersion
+libheif: 1.23.4 (decoder-only; libde265 backend)
+libde265: 1.1.2 (decoder library only)
 
 FetchContent Dependencies (actual commits):
   libavif:     $LibavifCommit

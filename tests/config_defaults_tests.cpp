@@ -211,14 +211,61 @@ int main() {
     return fail("CLI numbered collision mode did not parse.");
   }
 
+  auto size_cfg = awj::default_app_config();
+  size_cfg.image_size_limit.mode = awj::ImageSizeLimitMode::manual;
+  if (awj::limited_dimensions(4000, 3000, size_cfg)) {
+    return fail("blank manual scale should behave as 100 percent.");
+  }
+  size_cfg.image_size_limit.scale_percent = 80;
+  if (awj::limited_dimensions(4000, 3000, size_cfg) !=
+      std::optional{std::pair<std::size_t, std::size_t>{3200, 2400}}) {
+    return fail("80 percent manual scale produced wrong dimensions.");
+  }
+  size_cfg.image_size_limit.scale_percent = 100;
+  if (awj::limited_dimensions(4000, 3000, size_cfg)) {
+    return fail("100 percent manual scale should not resize.");
+  }
+  size_cfg.image_size_limit.scale_percent = 1;
+  if (awj::limited_dimensions(2, 1, size_cfg) !=
+      std::optional{std::pair<std::size_t, std::size_t>{1, 1}}) {
+    return fail("manual scale did not clamp dimensions to at least one pixel.");
+  }
+  size_cfg.image_size_limit.scale_percent = 80;
+  if (awj::limited_dimensions(5, 3, size_cfg) !=
+      std::optional{std::pair<std::size_t, std::size_t>{4, 2}}) {
+    return fail("manual scale did not floor odd dimensions.");
+  }
+  size_cfg.image_size_limit.max_width = 3500;
+  size_cfg.image_size_limit.max_height = 2100;
+  size_cfg.image_size_limit.max_long_edge = 2800;
+  size_cfg.image_size_limit.max_short_edge = 1800;
+  if (awj::limited_dimensions(4000, 3000, size_cfg) !=
+      std::optional{std::pair<std::size_t, std::size_t>{2400, 1800}}) {
+    return fail("manual percentage and edge limits did not use the smallest scale.");
+  }
+  size_cfg.image_size_limit.mode = awj::ImageSizeLimitMode::automatic;
+  if (awj::limited_dimensions(4000, 3000, size_cfg)) {
+    return fail("scale percent unexpectedly affected automatic size mode.");
+  }
+
+  parsed = awj::parse_arguments({L"--image-size-limit", L"manual", L"--scale-percent", L"80"});
+  if (!parsed || parsed->config.image_size_limit.scale_percent.value_or(0) != 80) {
+    return fail("CLI scale percent did not parse.");
+  }
+  for (const auto* invalid_scale : {L"0", L"-1", L"101", L"abc"}) {
+    parsed = awj::parse_arguments({L"--scale-percent", invalid_scale});
+    if (parsed) return fail("invalid CLI scale percent was accepted.");
+  }
+
   parsed = awj::parse_arguments({L"--image-size-limit", L"manual", L"--max-width", L"1600",
                                  L"--max-height", L"1200", L"--max-long-edge", L"2000",
-                                 L"--max-short-edge", L"900"});
+                                 L"--max-short-edge", L"900", L"--scale-percent", L"80"});
   if (!parsed || parsed->config.image_size_limit.mode != awj::ImageSizeLimitMode::manual ||
       parsed->config.image_size_limit.max_width.value_or(0) != 1600 ||
       parsed->config.image_size_limit.max_height.value_or(0) != 1200 ||
       parsed->config.image_size_limit.max_long_edge.value_or(0) != 2000 ||
-      parsed->config.image_size_limit.max_short_edge.value_or(0) != 900) {
+      parsed->config.image_size_limit.max_short_edge.value_or(0) != 900 ||
+      parsed->config.image_size_limit.scale_percent.value_or(0) != 80) {
     return fail("CLI image size limit did not parse.");
   }
 

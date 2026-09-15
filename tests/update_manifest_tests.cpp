@@ -180,6 +180,22 @@ int test_response_limits_and_signature_gate() {
   return 0;
 }
 
+int test_alias_fallback_gate() {
+  if (!runtime_detail::endpoint_not_found("更新服务器返回 HTTP 404。")) {
+    return fail("canonical update alias did not permit 404 fallback");
+  }
+  for (const std::string_view error : {
+           "更新服务器返回 HTTP 403。",
+           "更新服务器返回 HTTP 500。",
+           "更新服务器请求失败：timeout",
+           "更新密钥环签名封套格式非法。"}) {
+    if (runtime_detail::endpoint_not_found(error)) {
+      return fail("non-404 update failure incorrectly permitted legacy fallback");
+    }
+  }
+  return 0;
+}
+
 int test_asset_hash_and_size() {
   const auto path = std::filesystem::temp_directory_path() /
                     std::format("awj-update-hash-test-{}",
@@ -222,6 +238,7 @@ int main() {
   if (const auto result = test_strict_fields()) return result;
   if (const auto result = test_expiry_window()) return result;
   if (const auto result = test_response_limits_and_signature_gate()) return result;
+  if (const auto result = test_alias_fallback_gate()) return result;
   if (const auto result = test_asset_hash_and_size()) return result;
   std::cout << "update manifest security tests passed\n";
   return 0;

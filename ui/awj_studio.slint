@@ -30,6 +30,7 @@ export component AwjStudio inherits Window {
     in-out property <bool> preset-editor-open: false;
     in-out property <bool> preset-editor-existing: false;
     in-out property <bool> preset-editor-shell-menu: false;
+    in-out property <bool> preset-editor-delete-confirmation: false;
     in property <bool> shell-menu-injection-supported: true;
     in-out property <bool> legacy-machine-menu-present: false;
     callback delete-parameter-preset();
@@ -60,6 +61,7 @@ export component AwjStudio inherits Window {
     in-out property <int> jpegli-progressive-index: 2;
     in-out property <bool> jpegli-optimize-huffman: true;
     in-out property <bool> jpegli-xyb: false;
+    in-out property <bool> jxl-jpeg-lossless: true;
     in-out property <int> alpha-policy-index: 1;
     in-out property <string> threads-text: "";
     in-out property <string> memory-limit-text: "";
@@ -69,6 +71,7 @@ export component AwjStudio inherits Window {
     in-out property <string> max-height-text: "";
     in-out property <string> max-long-edge-text: "";
     in-out property <string> max-short-edge-text: "";
+    in-out property <string> scale-percent-text: "";
     in-out property <string> speed-text: "";
     in-out property <string> template-text: "";
     in-out property <bool> template-params-selected: false;
@@ -128,6 +131,7 @@ export component AwjStudio inherits Window {
     in-out property <int> menu-jpegli-progressive-index: 2;
     in-out property <bool> menu-jpegli-optimize-huffman: true;
     in-out property <bool> menu-jpegli-xyb: false;
+    in-out property <bool> menu-jxl-jpeg-lossless: true;
     in-out property <bool> menu-strip-metadata: false;
     in-out property <bool> menu-allow-wic-fallback: true;
     in-out property <bool> menu-close-on-finish: true;
@@ -136,6 +140,7 @@ export component AwjStudio inherits Window {
     in-out property <string> menu-max-height-text: "";
     in-out property <string> menu-max-long-edge-text: "";
     in-out property <string> menu-max-short-edge-text: "";
+    in-out property <string> menu-scale-percent-text: "";
     in-out property <bool> running: false;
     // Windows Explorer 外部拖放由 C++ 原生 IDropTarget 驱动；这里只接收可视状态，
     // 不再从 Slint DropEvent/DataTransfer 解析文件系统路径。
@@ -148,6 +153,8 @@ export component AwjStudio inherits Window {
     in-out property <float> progress: 0.0;
     in-out property <string> status-text: @tr("就绪");
     in property <[TaskRow]> task-rows;
+    in property <[TaskRow]> failed-task-rows;
+    pure callback failed-row-source-index(int) -> int;
     in-out property <int> queue-pending-count: 0;
     in-out property <int> queue-running-count: 0;
     in-out property <int> queue-success-count: 0;
@@ -258,6 +265,7 @@ export component AwjStudio inherits Window {
     callback combo-popup-finished();
     callback theme-selection-requested(int, length, length);
     callback language-selection-requested(int);
+    callback settings-page-opened();
     callback update-channel-selection-requested(int);
     callback show-update-changelog-requested(bool);
     callback hide-update-changelog-after-exit-requested(bool);
@@ -310,6 +318,12 @@ export component AwjStudio inherits Window {
         root.ui-font-family = root.ui-font-index > 0 && root.ui-font-index < root.ui-font-options.length
             ? root.ui-font-options[root.ui-font-index].text
             : "";
+    }
+
+    changed selected-page => {
+        if (root.selected-page == 2) {
+            root.settings-page-opened();
+        }
     }
 
     changed show-update-changelog => {
@@ -583,12 +597,15 @@ export component AwjStudio inherits Window {
     jpegli-optimize-huffman <=> root.jpegli-optimize-huffman;
     jpegli-progressive-index <=> root.jpegli-progressive-index;
     jpegli-xyb <=> root.jpegli-xyb;
+    jxl-jpeg-lossless <=> root.jxl-jpeg-lossless;
     max-height-text <=> root.max-height-text;
     max-long-edge-text <=> root.max-long-edge-text;
     max-short-edge-text <=> root.max-short-edge-text;
+    scale-percent-text <=> root.scale-percent-text;
     max-width-text <=> root.max-width-text;
     memory-limit-text <=> root.memory-limit-text;
-    open-preset-editor() => { root.open-preset-editor(); }
+    open-preset-editor() => { root.preset-editor-delete-confirmation = false; root.open-preset-editor(); }
+    open-preset-delete-confirmation() => { root.preset-editor-delete-confirmation = true; root.open-preset-editor(); }
     panel-bg : root.panel-bg;
     panel-border : root.panel-border;
     parameter-control-height : root.parameter-control-height;
@@ -649,9 +666,11 @@ export component AwjStudio inherits Window {
     menu-jpegli-optimize-huffman <=> root.menu-jpegli-optimize-huffman;
     menu-jpegli-progressive-index <=> root.menu-jpegli-progressive-index;
     menu-jpegli-xyb <=> root.menu-jpegli-xyb;
+    menu-jxl-jpeg-lossless <=> root.menu-jxl-jpeg-lossless;
     menu-max-height-text <=> root.menu-max-height-text;
     menu-max-long-edge-text <=> root.menu-max-long-edge-text;
     menu-max-short-edge-text <=> root.menu-max-short-edge-text;
+    menu-scale-percent-text <=> root.menu-scale-percent-text;
     menu-max-width-text <=> root.menu-max-width-text;
     menu-quality-text <=> root.menu-quality-text;
     menu-size-limit-index <=> root.menu-size-limit-index;
@@ -744,6 +763,8 @@ export component AwjStudio inherits Window {
     status-text <=> root.status-text;
     strip-metadata <=> root.strip-metadata;
     task-rows : root.task-rows;
+    failed-task-rows: root.failed-task-rows;
+    failed-row-source-index(index) => { return root.failed-row-source-index(index); }
     template-date-selected <=> root.template-date-selected;
     template-hash8-selected <=> root.template-hash8-selected;
     template-params-selected <=> root.template-params-selected;
@@ -875,6 +896,7 @@ export component AwjStudio inherits Window {
         if root.preset-editor-open: PresetEditor {
     preset-editor-existing: root.preset-editor-existing;
     preset-editor-shell-menu <=> root.preset-editor-shell-menu;
+    delete-confirmation <=> root.preset-editor-delete-confirmation;
     shell-menu-injection-supported: root.shell-menu-injection-supported;
     delete-parameter-preset => { root.delete-parameter-preset(); }
     cancel-preset-editor() => { root.cancel-preset-editor(); }

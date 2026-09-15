@@ -1,6 +1,7 @@
 cmake_minimum_required(VERSION 3.30)
 
 # Read version from the single source-of-truth file.
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION")
 file(STRINGS "${CMAKE_CURRENT_SOURCE_DIR}/VERSION" AWJ_VERSION_STRING)
 string(REGEX MATCH "^([0-9]+)\\.([0-9]+)\\.([0-9]+)$"
     _ver_match "${AWJ_VERSION_STRING}")
@@ -50,10 +51,11 @@ if(AVIF_ENABLE_RELEASE_IPO)
     endif()
 endif()
 
+set(AWJ_RUNTIME_OUTPUT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64" CACHE PATH "Application and test executable output root")
 foreach(config Debug Release RelWithDebInfo MinSizeRel)
     string(TOUPPER "${config}" config_upper)
     set(CMAKE_RUNTIME_OUTPUT_DIRECTORY_${config_upper}
-        "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/${config}")
+        "${AWJ_RUNTIME_OUTPUT_ROOT}/${config}")
 endforeach()
 
 if(MSVC)
@@ -484,6 +486,94 @@ add_custom_target(awj_visual_metric_shaders DEPENDS "${AWJ_VISUAL_SHADER_HEADER}
 include(FetchContent)
 
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+# HEIC decode is deliberately self-contained: libheif + the libde265 backend only.
+# Release tarballs and hashes are pinned so configure fails closed on source drift.
+set(AWJ_LIBHEIF_URL
+    "https://github.com/strukturag/libheif/releases/download/v1.23.4/libheif-1.23.4.tar.gz")
+set(AWJ_LIBHEIF_SHA256
+    "d0c02b4b0e978f34a1974b6f3eea7975a537bf7a9195ffeea38e7242ff316fdd")
+set(AWJ_LIBDE265_URL
+    "https://github.com/strukturag/libde265/releases/download/v1.1.2/libde265-1.1.2.tar.gz")
+set(AWJ_LIBDE265_SHA256
+    "eaacd1943ab0c452c19f6136a36ca227e6b761b39a81eaca8454d48c147e1f67")
+
+set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
+set(BUILD_TESTING OFF)
+set(ENABLE_DECODER OFF CACHE BOOL "" FORCE)
+set(ENABLE_ENCODER OFF CACHE BOOL "" FORCE)
+set(ENABLE_SHERLOCK265 OFF CACHE BOOL "" FORCE)
+set(ENABLE_INTERNAL_DEVELOPMENT_TOOLS OFF CACHE BOOL "" FORCE)
+set(ENABLE_SDL OFF CACHE BOOL "" FORCE)
+set(WITH_FUZZERS OFF CACHE BOOL "" FORCE)
+set(DE265_LOG_LEVEL none CACHE STRING "" FORCE)
+FetchContent_Declare(libde265
+    URL ${AWJ_LIBDE265_URL}
+    URL_HASH SHA256=${AWJ_LIBDE265_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(libde265)
+
+set(LIBDE265_INCLUDE_DIR "${libde265_SOURCE_DIR}" CACHE PATH "" FORCE)
+set(LIBDE265_LIBRARY de265 CACHE STRING "" FORCE)
+set(ENABLE_PLUGIN_LOADING OFF CACHE BOOL "" FORCE)
+set(WITH_LIBDE265 ON CACHE BOOL "" FORCE)
+set(WITH_LIBDE265_PLUGIN OFF CACHE BOOL "" FORCE)
+foreach(AWJ_LIBHEIF_CODEC IN ITEMS
+        X265 KVAZAAR UVG266 VVDEC VVENC X264 OpenH264_DECODER DAV1D
+        AOM_DECODER AOM_ENCODER SvtEnc RAV1E JPEG_DECODER JPEG_ENCODER
+        OpenJPEG_ENCODER OpenJPEG_DECODER FFMPEG_DECODER OPENJPH_ENCODER)
+    set(WITH_${AWJ_LIBHEIF_CODEC} OFF CACHE BOOL "" FORCE)
+    set(WITH_${AWJ_LIBHEIF_CODEC}_PLUGIN OFF CACHE BOOL "" FORCE)
+endforeach()
+set(WITH_UNCOMPRESSED_CODEC OFF CACHE BOOL "" FORCE)
+set(WITH_WEBCODECS OFF CACHE BOOL "" FORCE)
+set(WITH_LIBSHARPYUV OFF CACHE BOOL "" FORCE)
+set(WITH_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(WITH_EXAMPLE_HEIF_THUMB OFF CACHE BOOL "" FORCE)
+set(WITH_EXAMPLE_HEIF_VIEW OFF CACHE BOOL "" FORCE)
+set(WITH_GDK_PIXBUF OFF CACHE BOOL "" FORCE)
+set(BUILD_DEVELOPMENT_TOOLS OFF CACHE BOOL "" FORCE)
+set(BUILD_DOCUMENTATION OFF CACHE BOOL "" FORCE)
+set(ENABLE_EXPERIMENTAL_FEATURES OFF CACHE BOOL "" FORCE)
+set(ENABLE_MULTITHREADING_SUPPORT ON CACHE BOOL "" FORCE)
+set(ENABLE_PARALLEL_TILE_DECODING ON CACHE BOOL "" FORCE)
+FetchContent_Declare(libheif
+    URL ${AWJ_LIBHEIF_URL}
+    URL_HASH SHA256=${AWJ_LIBHEIF_SHA256}
+    PATCH_COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=<SOURCE_DIR>
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libheif_decoder_only.cmake"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+FetchContent_MakeAvailable(libheif)
+# FetchContent does not rerun PATCH_COMMAND for an already-populated dependency.
+# Apply the same idempotent decoder-only patch here as well so an incremental
+# configure cannot silently retain libheif's built-in mask encoder.
+execute_process(
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${libheif_SOURCE_DIR}
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libheif_decoder_only.cmake"
+    RESULT_VARIABLE AWJ_LIBHEIF_DECODER_ONLY_PATCH_RESULT)
+if(NOT AWJ_LIBHEIF_DECODER_ONLY_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to enforce decoder-only libheif sources.")
+endif()
+# If the source tree was already populated, libheif's CMakeLists.txt was read
+# before the patch above. Remove the encoder source from the already-created
+# target too; a clean configure has nothing to remove here.
+get_target_property(AWJ_LIBHEIF_SOURCES heif SOURCES)
+if(AWJ_LIBHEIF_SOURCES)
+    list(FILTER AWJ_LIBHEIF_SOURCES EXCLUDE REGEX "encoder_mask\\.(cc|h)$")
+    set_property(TARGET heif PROPERTY SOURCES "${AWJ_LIBHEIF_SOURCES}")
+endif()
+# libheif's build-interface include path assumes its installed include layout.
+# When embedded through FetchContent, expose the real API tree and the generated
+# heif_version.h location to every in-tree consumer.
+target_include_directories(heif PUBLIC
+    $<BUILD_INTERFACE:${libheif_SOURCE_DIR}/libheif/api>
+    $<BUILD_INTERFACE:${libheif_BINARY_DIR}>)
+target_compile_definitions(heif PRIVATE LIBDE265_STATIC_BUILD)
+target_include_directories(heif PRIVATE "${libde265_BINARY_DIR}")
+set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING})
+
 set(AVIF_CODEC_AOM SYSTEM CACHE STRING "" FORCE)
 set(AVIF_CODEC_AOM_DECODE ON CACHE BOOL "" FORCE)
 set(AVIF_CODEC_AOM_ENCODE ON CACHE BOOL "" FORCE)
@@ -563,6 +653,7 @@ else()
 endif()
 set(SLINT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SLINT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(SLINT_FEATURE_TESTING ${BUILD_TESTING} CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_INTERPRETER OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
@@ -575,6 +666,9 @@ FetchContent_Declare(Slint
         "-DSOURCE_DIR=<SOURCE_DIR>"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake")
 FetchContent_MakeAvailable(Slint)
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${slint_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_filter_model.cmake"
+    COMMAND_ERROR_IS_FATAL ANY)
 if(AVIF_STATIC_SLINT)
     target_compile_definitions(Slint INTERFACE SLINT_STATIC=1)
 endif()
@@ -736,7 +830,11 @@ target_link_libraries(awj_native_codecs PUBLIC
     JPEG::JPEG
     GIF::GIF
     TIFF::TIFF
-    libraw::raw_r)
+    libraw::raw_r
+    heif)
+target_include_directories(awj_native_codecs PUBLIC
+    "${libheif_SOURCE_DIR}/libheif/api"
+    "${libheif_BINARY_DIR}")
 if(WIN32)
     target_link_libraries(awj_native_codecs PUBLIC ole32 windowscodecs)
     target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_WINDOWS_CODECS=1)
@@ -756,7 +854,8 @@ target_sources(awj_native_codecs
             src/codecs/jpeg_codec.ixx
             src/codecs/gif_codec.ixx
             src/codecs/tiff_codec.ixx
-            src/codecs/libraw_codec.ixx)
+            src/codecs/libraw_codec.ixx
+            src/codecs/heif_codec.ixx)
 if(WIN32)
     target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_AWJ_RAW_CODEC=1)
     target_sources(awj_native_codecs
@@ -966,6 +1065,10 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_decoder_registry_tests)
     target_link_libraries(awj_decoder_registry_tests PRIVATE awj_native_backend)
 
+    add_executable(awj_heif_backend_tests tests/heif_backend_tests.cpp)
+    avif_enable_common_options(awj_heif_backend_tests)
+    target_link_libraries(awj_heif_backend_tests PRIVATE heif)
+
     if(WIN32)
         add_executable(awj_native_pipeline_tests tests/native_pipeline_tests.cpp)
         avif_enable_common_options(awj_native_pipeline_tests)
@@ -1015,6 +1118,7 @@ if(BUILD_TESTING)
         awj_bmp_codec_tests
         awj_native_visual_search_tests
         awj_decoder_registry_tests
+        awj_heif_backend_tests
         awj_memory_cancel_tests
         awj_raw_wgc_stdin_tests)
     if(WIN32)
@@ -1066,6 +1170,7 @@ if(BUILD_TESTING)
     endif()
     add_test(NAME native_visual_search_core COMMAND awj_native_visual_search_tests)
     add_test(NAME decoder_registry_core COMMAND awj_decoder_registry_tests)
+    add_test(NAME heif_backend_contract COMMAND awj_heif_backend_tests)
     if(WIN32)
         add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
         add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
@@ -1181,6 +1286,11 @@ if(MSVC)
         COMPILE_OPTIONS "/wd4099;/wd4201;/wd4624")
 endif()
 avif_enable_common_options(AWJ)
+if(MSVC)
+    target_link_options(AWJ PRIVATE "$<$<CONFIG:Release>:/MAP:${CMAKE_CURRENT_BINARY_DIR}/AWJ.map>")
+else()
+    target_link_options(AWJ PRIVATE "$<$<CONFIG:Release>:-Wl,-Map,${CMAKE_CURRENT_BINARY_DIR}/AWJ.map>")
+endif()
 target_compile_definitions(AWJ PRIVATE
     AWJ_UNIFIED_EXE
     AWJ_BUILD_VERSION="${PROJECT_VERSION}")
@@ -1292,7 +1402,9 @@ if(BUILD_TESTING)
     endif()
     awj_set_runtime_directory(awj_ui_smoke_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
     add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
-    set_tests_properties(ui_smoke PROPERTIES TIMEOUT 30)
+    add_test(NAME ui_queue_stress COMMAND awj_ui_smoke_tests --queue-stress)
+    set_tests_properties(ui_queue_stress PROPERTIES TIMEOUT 120)
+    set_tests_properties(ui_smoke PROPERTIES TIMEOUT 120)
 endif()
 
 if(WIN32)

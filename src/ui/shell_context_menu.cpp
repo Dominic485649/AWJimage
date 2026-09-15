@@ -22,6 +22,8 @@ constexpr std::wstring_view kImageParent =
     L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJimage.Convert";
 constexpr std::wstring_view kDirectoryParent =
     L"Software\\Classes\\Directory\\shell\\AWJimage.Convert";
+constexpr std::wstring_view kIcoParent =
+    L"Software\\Classes\\icofile\\shell\\AWJimage.Convert";
 // Windows 10.0.26200 Shell was empirically verified to materialize a real
 // cascade when ExtendedSubCommandsKey is a REG_SZ pointer to this shared tree.
 // Current Microsoft Learn documents the child-key form instead, so this is a
@@ -29,7 +31,9 @@ constexpr std::wstring_view kDirectoryParent =
 constexpr std::wstring_view kSharedTree =
     L"Software\\Classes\\AWJimage.ContextMenu.v4.A";
 constexpr std::wstring_view kSharedTreeV3 = L"Software\\Classes\\AWJimage.ContextMenu.v3";
-constexpr std::wstring_view kTransaction = L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction";
+constexpr std::wstring_view kTransaction = L"Software\\Classes\\AWJimage.ContextMenu.v5.Transaction";
+constexpr std::wstring_view kLegacyTransactionV4 =
+    L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction";
 constexpr std::wstring_view kLegacySharedTreeV2 =
     L"Software\\Classes\\AWJimage.ContextMenu.v2";
 constexpr std::wstring_view kLegacyImageParent =
@@ -410,12 +414,16 @@ void append_owned_markers(std::vector<RegistryValueSpec>& values,
 
 std::vector<std::wstring> current_parent_roots_for_all_extensions() {
   std::vector<std::wstring> roots;
-  roots.reserve(std::size(kSupportedExtensions) + 2);
+  roots.reserve(std::size(kSupportedExtensions) * 2 + 3);
   roots.push_back(image_parent_key());
+  roots.push_back(ico_parent_key());
   roots.push_back(directory_parent_key());
   for (const auto extension : kSupportedExtensions) {
     roots.push_back(extension_parent_key(extension));
+    roots.push_back(class_extension_parent_key(extension));
   }
+  std::ranges::sort(roots);
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
   return roots;
 }
 
@@ -461,6 +469,7 @@ std::span<const CommandSpec> command_specs() noexcept {
 
 std::wstring image_parent_key() { return std::wstring{kImageParent}; }
 std::wstring directory_parent_key() { return std::wstring{kDirectoryParent}; }
+std::wstring ico_parent_key() { return std::wstring{kIcoParent}; }
 std::wstring shared_tree_key(int slot) {
   auto key = std::wstring{kSharedTree};
   if (slot == 1) key.back() = L'B';
@@ -471,6 +480,11 @@ std::wstring legacy_shared_tree_key() { return std::wstring{kLegacySharedTreeV2}
 std::wstring extension_parent_key(std::wstring_view extension) {
   return std::format(L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\{}",
                      extension, parent_canonical_verb);
+}
+
+std::wstring class_extension_parent_key(std::wstring_view extension) {
+  return std::format(L"Software\\Classes\\{}\\shell\\{}", extension,
+                     parent_canonical_verb);
 }
 
 std::vector<std::wstring> legacy_root_keys() {
@@ -550,6 +564,7 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
       if (!params.max_height_text.empty()) append_option(command, L"--max-height", params.max_height_text);
       if (!params.max_long_edge_text.empty()) append_option(command, L"--max-long-edge", params.max_long_edge_text);
       if (!params.max_short_edge_text.empty()) append_option(command, L"--max-short-edge", params.max_short_edge_text);
+      if (!params.scale_percent_text.empty()) append_option(command, L"--scale-percent", params.scale_percent_text);
       break;
     default:
       append_option(command, L"--image-size-limit", L"auto");
@@ -562,6 +577,8 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
     append_option(command, L"--chroma", chroma_arg(params.chroma_index));
     append_option(command, L"--alpha", alpha_arg(params.alpha_policy_index));
     if (append_png_suffix) append_arg(command, L"--append-png-suffix");
+  } else if (is_jxl) {
+    if (!params.jxl_jpeg_lossless) append_arg(command, L"--no-jxl-jpeg-lossless");
   } else if (is_jpgli) {
     append_option(command, L"--chroma", chroma_arg(params.chroma_index));
     append_option(command, L"--jpegli-progressive-level",
@@ -581,10 +598,10 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      std::span<const std::wstring> preset_names,
                                      int slot) {
   RegistrySchema schema{.plan = plan};
+  schema.parent_roots.push_back(directory_parent_key());
   for (const auto& extension : plan.extensions) {
     schema.parent_roots.push_back(extension_parent_key(extension));
   }
-  schema.parent_roots.push_back(directory_parent_key());
   std::ranges::sort(schema.parent_roots);
   schema.parent_roots.erase(std::unique(schema.parent_roots.begin(), schema.parent_roots.end()),
                             schema.parent_roots.end());
@@ -1069,31 +1086,6 @@ std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands() 
     if (is_awj_command(command)) found.emplace_back(name);
   }
   return found;
-}
-
-std::expected<void, std::string> remove_legacy_machine_commands() {
-  auto found = legacy_machine_commands();
-  if (!found) return std::unexpected{found.error()};
-  HKEY raw = nullptr;
-  const auto opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell",
-      0, KEY_READ | KEY_WRITE | KEY_WOW64_64KEY, &raw);
-  if (missing_registry_status(opened)) return {};
-  if (opened != ERROR_SUCCESS) return std::unexpected{registry_error("打开历史系统菜单", kMachineCommandPrefix, opened)};
-  RegistryKey parent{raw};
-  std::string errors;
-  for (const auto& name : *found) {
-    const auto status = RegDeleteTreeW(parent.get(), name.c_str());
-    if (status != ERROR_SUCCESS && !missing_registry_status(status)) {
-      errors += registry_error("移除历史系统菜单", name, status) + " ";
-    }
-  }
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  if (!errors.empty()) return std::unexpected{std::move(errors)};
-  auto remaining = legacy_machine_commands();
-  if (!remaining) return std::unexpected{remaining.error()};
-  if (!remaining->empty()) return std::unexpected{"历史系统菜单尚未完全清除。"};
-  return {};
 }
 
 }  // namespace awj::shell_context_menu

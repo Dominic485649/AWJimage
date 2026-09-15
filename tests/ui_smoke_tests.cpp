@@ -2,6 +2,7 @@
 #include <private/slint_tests_helpers.h>
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <filesystem>
@@ -16,6 +17,8 @@
 
 #include "awj_studio_ui_smoke.h"
 #include "focus_reentrancy.h"
+#include "../src/ui/queue_model.h"
+#include "../src/ui/deferred_model.h"
 
 namespace {
 
@@ -276,10 +279,22 @@ int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
 
 int run_scale(const slint::ComponentHandle<AwjStudio>& app,
               float scale_factor) {
+  {
+    int loads = 0;
+    awj::ui::DeferredModel<int> deferred;
+    deferred.set_loader([&loads] { ++loads; return std::vector<int>{1, 2}; });
+    if (loads != 0 || deferred.row_count() != 2 || loads != 1 || deferred.row_data(1) != 2) {
+      return fail("deferred history was loaded eagerly or returned the wrong row");
+    }
+    deferred.set_loader([&loads] { ++loads; return std::vector<int>{3}; });
+    if (loads != 1 || deferred.row_data(0) != 3 || loads != 2) {
+      return fail("deferred history did not invalidate on a verified update");
+    }
+  }
   app->window().window_handle().set_const_scale_factor(scale_factor);
   app->window().set_size(slint::LogicalSize({820.0f, 560.0f}));
   app->set_ui_font_options(font_options());
-  app->set_task_rows(task_rows());
+  awj::ui::bind_queue_model(*app, task_rows());
   app->set_update_history(update_history_rows());
   app->set_queue_failed_count(1);
   app->set_queue_success_count(1);
@@ -533,7 +548,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   std::vector<TaskRow> scrolling_rows(80, *task_rows()->row_data(0));
   for (std::size_t i = 0; i < scrolling_rows.size(); ++i)
     scrolling_rows[i].filename = slint::SharedString{std::format("scroll-row-{:03}", i)};
-  app->set_task_rows(std::make_shared<slint::VectorModel<TaskRow>>(std::move(scrolling_rows)));
+  awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>(std::move(scrolling_rows)));
   app->set_selected_queue_index(0);
   slint::private_api::testing::mock_elapsed_time(250);
   const auto scrolled_top = viewport[0].absolute_position();
@@ -559,7 +574,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->set_selected_queue_index(-1);
   slint::private_api::testing::mock_elapsed_time(250);
   if (first_visible() != anchor) return fail("closing details lost the scrolled queue anchor");
-  app->set_task_rows(task_rows());
+  awj::ui::bind_queue_model(*app, task_rows());
   app->set_selected_queue_index(0);
   if (const int result = verify_template_token_layout(app, 820.0f, true);
       result != 0) {
@@ -587,6 +602,31 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
         queue_list->size().height));
   }
   app->set_queue_failed_only(true);
+  if (app->get_failed_task_rows()->row_count() != 1 ||
+      app->invoke_failed_row_source_index(0) != 0) {
+    return fail("failure filter lost its source queue index");
+  }
+  {
+    auto source = task_rows();
+    awj::ui::bind_queue_model(*app, source);
+    source->insert(0, TaskRow{});
+    if (app->invoke_failed_row_source_index(0) != 1) {
+      return fail("inserting a non-failed task broke filtered source indices");
+    }
+    source->erase(0);
+    auto failed = *source->row_data(0);
+    failed.state = 2;
+    awj::ui::replace_queue_row(*app, source, 0, failed);
+    if (app->get_failed_task_rows()->row_count() != 0 || app->get_queue_failed_count() != 0) {
+      return fail("finishing a failed task did not update the projection and counters");
+    }
+    failed.state = 3;
+    awj::ui::replace_queue_row(*app, source, 0, failed);
+    if (app->get_failed_task_rows()->row_count() != 1 || app->get_queue_failed_count() != 1) {
+      return fail("failed task did not return to the projection");
+    }
+    awj::ui::bind_queue_model(*app, task_rows());
+  }
   if (!app->get_queue_failed_only() ||
       queue_list->accessible_item_count() != 1) {
     return fail("failed-only filter did not update the accessible item count");
@@ -661,6 +701,55 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view{argv[1]} == "--queue-stress") {
+    slint::testing::init();
+    auto app = AwjStudio::create();
+    app->show();
+    for (const std::size_t count : {1000u, 10000u}) {
+      std::vector<TaskRow> data;
+      data.reserve(count);
+      for (std::size_t i = 0; i < count; ++i) {
+        auto row = *task_rows()->row_data(i % 2);
+        row.order = slint::SharedString{std::to_string(i + 1)};
+        data.push_back(std::move(row));
+      }
+      auto rows = std::make_shared<slint::VectorModel<TaskRow>>(std::move(data));
+      std::weak_ptr<slint::Model<TaskRow>> lifetime = rows;
+      awj::ui::bind_queue_model(*app, rows);
+      app->set_queue_failed_count(static_cast<int>(count / 2));
+      app->set_queue_success_count(static_cast<int>(count / 2));
+      app->set_queue_failed_only(true);
+      if (app->get_failed_task_rows()->row_count() != count / 2 ||
+          app->invoke_failed_row_source_index(static_cast<int>(count / 2 - 1)) != static_cast<int>(count - 2)) {
+        return fail("large queue filter/source mapping is incorrect");
+      }
+      const auto started = std::chrono::steady_clock::now();
+      for (std::size_t i = 0; i < count; i += 2) {
+        auto row = *rows->row_data(i);
+        row.state = 2;
+        awj::ui::replace_queue_row(*app, rows, i, std::move(row));
+      }
+      const auto elapsed = std::chrono::duration<double, std::milli>(
+          std::chrono::steady_clock::now() - started).count();
+      if (app->get_failed_task_rows()->row_count() || app->get_queue_failed_count() ||
+          app->get_queue_success_count() != static_cast<int>(count)) {
+        return fail("large queue final events or counters were lost");
+      }
+      for (int cycle = 0; cycle < 30; ++cycle) {
+        for (int page : {0, 1, 2, 3, 4}) {
+          app->set_selected_page(page);
+          slint::private_api::testing::mock_elapsed_time(250);
+        }
+      }
+      awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>());
+      rows.reset();
+      if (!lifetime.expired()) return fail("clearing the queue retained its old model");
+      std::printf("queue-stress rows=%zu events=%zu elapsed_ms=%.3f pages=150 released=true\n",
+                  count, count / 2, elapsed);
+    }
+    app->hide();
+    return 0;
+  }
   if ((argc == 3 || argc == 4) && std::string_view{argv[1]} == "--snapshots") {
     const std::filesystem::path directory{argv[2]};
     if (!std::filesystem::create_directory(directory)) return fail("snapshot directory must be fresh");
@@ -670,7 +759,7 @@ int main(int argc, char** argv) {
       return fail("snapshot scale must be 1, 1.25, 1.5, or 2");
     app->window().window_handle().set_const_scale_factor(scale);
     app->set_current_version("1.0.12");
-    app->set_task_rows(task_rows());
+    awj::ui::bind_queue_model(*app, task_rows());
     app->set_queue_failed_count(1);
     app->set_queue_success_count(1);
     app->show();

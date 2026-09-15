@@ -2,6 +2,9 @@
 #define NOMINMAX
 #endif
 
+#include "queue_model.h"
+#include "deferred_model.h"
+
 #ifdef _WIN32
 #include <dwmapi.h>
 #include <scn/scan.h>
@@ -126,7 +129,7 @@ struct QueueImageItem {
   std::size_t run_index{std::numeric_limits<std::size_t>::max()};
   std::filesystem::path locked_output_path{};
   std::string status_text{"等待编码"};
-  std::string log_text{};
+  slint::SharedString log_text{};
   std::string encoder_id{};
   int encoder_threads{};
   double decode_seconds{-1.0};
@@ -198,6 +201,7 @@ struct MenuFormatParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   bool strip_metadata{};
   bool allow_wic_fallback{true};
   bool close_on_finish{true};
@@ -207,6 +211,7 @@ struct MenuFormatParams {
   std::string max_height_text{};
   std::string max_long_edge_text{};
   std::string max_short_edge_text{};
+  std::string scale_percent_text{};
 
   bool operator==(const MenuFormatParams&) const = default;
 };
@@ -225,6 +230,7 @@ struct ParameterFormatParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   std::string threads_text{};
   std::string memory_limit_text{};
   int size_limit_index{};
@@ -232,6 +238,7 @@ struct ParameterFormatParams {
   std::string max_height_text{};
   std::string max_long_edge_text{};
   std::string max_short_edge_text{};
+  std::string scale_percent_text{};
 };
 
 struct StudioConfigSnapshot {
@@ -282,8 +289,11 @@ struct UiState {
   bool native_drop_registration_finished{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
-  std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
+  std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>> update_history_rows{};
+  bool ui_font_options_loaded{};
   std::vector<QueueImageItem> queue_items{};
+  std::unordered_map<std::uint64_t, std::size_t> queue_id_indices{};
+  std::unordered_map<std::size_t, std::size_t> queue_run_indices{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   slint::Timer theme_timer{};
   slint::Timer update_timer{};
@@ -495,7 +505,7 @@ std::expected<std::uint64_t, std::string> parse_memory_limit_field(
 
 std::expected<awj::ImageSizeLimit, std::string> image_size_limit_from_fields(
     int mode_index, std::string max_width_text, std::string max_height_text,
-    std::string max_long_edge_text, std::string max_short_edge_text) {
+    std::string max_long_edge_text, std::string max_short_edge_text, std::string scale_percent_text) {
   awj::ImageSizeLimit limit{};
   limit.mode = mode_index == 1   ? awj::ImageSizeLimitMode::none
                : mode_index == 2 ? awj::ImageSizeLimitMode::manual
@@ -526,6 +536,11 @@ std::expected<awj::ImageSizeLimit, std::string> image_size_limit_from_fields(
     return std::unexpected{value.error()};
   } else {
     limit.max_short_edge = *value;
+  }
+  if (auto value = parse_optional_int_field(std::move(scale_percent_text), "缩小至 (%)", 1, 100); !value) {
+    return std::unexpected{value.error()};
+  } else {
+    limit.scale_percent = *value;
   }
   return limit;
 }
@@ -669,6 +684,7 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
                           .jpegli_progressive_index = app.get_menu_jpegli_progressive_index(),
                           .jpegli_optimize_huffman = app.get_menu_jpegli_optimize_huffman(),
                           .jpegli_xyb = app.get_menu_jpegli_xyb(),
+                          .jxl_jpeg_lossless = app.get_menu_jxl_jpeg_lossless(),
                           .strip_metadata = app.get_menu_strip_metadata(),
                           .allow_wic_fallback = app.get_menu_allow_wic_fallback(),
                           .close_on_finish = app.get_menu_close_on_finish(),
@@ -678,7 +694,8 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
                           .max_width_text = shared_to_string(app.get_menu_max_width_text()),
                           .max_height_text = shared_to_string(app.get_menu_max_height_text()),
                           .max_long_edge_text = shared_to_string(app.get_menu_max_long_edge_text()),
-                          .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text())};
+                          .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text()),
+                          .scale_percent_text = shared_to_string(app.get_menu_scale_percent_text())};
 }
 
 void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
@@ -693,6 +710,7 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_menu_jpegli_xyb(params.jpegli_xyb);
+  app.set_menu_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_menu_strip_metadata(params.strip_metadata);
   app.set_menu_allow_wic_fallback(params.allow_wic_fallback);
   app.set_menu_close_on_finish(params.close_on_finish);
@@ -702,6 +720,7 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_max_height_text(to_shared(params.max_height_text));
   app.set_menu_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_menu_max_short_edge_text(to_shared(params.max_short_edge_text));
+  app.set_menu_scale_percent_text(to_shared(params.scale_percent_text));
 }
 
 void store_current_menu_params(AwjStudio& app, UiState& state) {
@@ -1178,6 +1197,7 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_int(menu_config_key(prefix, "jpegli_progressive_index"), 0, 2, param.jpegli_progressive_index)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), param.jpegli_optimize_huffman)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "jpegli_xyb"), param.jpegli_xyb)); !r) return r;
+    if (auto r = one(apply_bool(menu_config_key(prefix, "jxl_jpeg_lossless"), param.jxl_jpeg_lossless)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "strip_metadata"), param.strip_metadata)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "allow_wic_fallback"), param.allow_wic_fallback)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "close_on_finish"), param.close_on_finish)); !r) return r;
@@ -1187,6 +1207,7 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_string(menu_config_key(prefix, "max_height_text"), param.max_height_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_long_edge_text"), param.max_long_edge_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_short_edge_text"), param.max_short_edge_text)); !r) return r;
+    if (auto r = one(apply_string(menu_config_key(prefix, "scale_percent_text"), param.scale_percent_text)); !r) return r;
   }
   return {};
 }
@@ -1553,6 +1574,7 @@ std::expected<void, std::string> write_studio_config_file(
     add_int(menu_config_key(prefix, "jpegli_progressive_index"), value.jpegli_progressive_index, fallback.jpegli_progressive_index);
     add_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), value.jpegli_optimize_huffman, fallback.jpegli_optimize_huffman);
     add_bool(menu_config_key(prefix, "jpegli_xyb"), value.jpegli_xyb, fallback.jpegli_xyb);
+    add_bool(menu_config_key(prefix, "jxl_jpeg_lossless"), value.jxl_jpeg_lossless, fallback.jxl_jpeg_lossless);
     add_bool(menu_config_key(prefix, "strip_metadata"), value.strip_metadata, fallback.strip_metadata);
     add_bool(menu_config_key(prefix, "allow_wic_fallback"), value.allow_wic_fallback, fallback.allow_wic_fallback);
     add_bool(menu_config_key(prefix, "close_on_finish"), value.close_on_finish, fallback.close_on_finish);
@@ -1562,6 +1584,7 @@ std::expected<void, std::string> write_studio_config_file(
     add_string(menu_config_key(prefix, "max_height_text"), value.max_height_text, fallback.max_height_text);
     add_string(menu_config_key(prefix, "max_long_edge_text"), value.max_long_edge_text, fallback.max_long_edge_text);
     add_string(menu_config_key(prefix, "max_short_edge_text"), value.max_short_edge_text, fallback.max_short_edge_text);
+    add_string(menu_config_key(prefix, "scale_percent_text"), value.scale_percent_text, fallback.scale_percent_text);
   }
 
   // 先在内存里拼出完整内容，再原子落盘。直接 truncate 写目标文件的话，进程在
@@ -1710,7 +1733,7 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
                  .size = to_shared(awj::format_size(item.bytes)),
                  .status = to_shared(status),
                  .output = to_shared(output),
-                  .log = to_shared(item.log_text),
+                  .log = item.log_text,
                   .warning = item.warning,
                   .locked = !queue_item_editable(item),
                   .state = queue_status_code(item.status),
@@ -1726,6 +1749,8 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
 }
 
 void refresh_queue_rows(AwjStudio& app, UiState& state) {
+  state.queue_id_indices.clear();
+  state.queue_run_indices.clear();
   std::vector<TaskRow> rows;
   rows.reserve(state.queue_items.size());
   int pending_count = 0;
@@ -1734,6 +1759,10 @@ void refresh_queue_rows(AwjStudio& app, UiState& state) {
   int failed_count = 0;
   for (const auto i : std::views::iota(std::size_t{}, state.queue_items.size())) {
     const auto& item = state.queue_items[i];
+    state.queue_id_indices.emplace(item.id, i);
+    if (item.run_index != std::numeric_limits<std::size_t>::max()) {
+      state.queue_run_indices.emplace(item.run_index, i);
+    }
     rows.push_back(make_queue_task_row(item, i));
     switch (item.status) {
       case QueueItemStatus::running:
@@ -1753,8 +1782,14 @@ void refresh_queue_rows(AwjStudio& app, UiState& state) {
         break;
     }
   }
-  state.task_rows->set_vector(std::move(rows));
-  app.set_task_rows(state.task_rows);
+  const auto previous_count = state.task_rows->row_count();
+  for (std::size_t i = 0; i < std::min(previous_count, rows.size()); ++i) {
+    if (state.task_rows->row_data(i) != rows[i]) state.task_rows->set_row_data(i, rows[i]);
+  }
+  while (state.task_rows->row_count() > rows.size()) {
+    state.task_rows->erase(state.task_rows->row_count() - 1);
+  }
+  for (std::size_t i = previous_count; i < rows.size(); ++i) state.task_rows->push_back(rows[i]);
   app.set_queue_pending_count(pending_count);
   app.set_queue_running_count(running_count);
   app.set_queue_success_count(success_count);
@@ -1767,21 +1802,13 @@ void refresh_queue_rows(AwjStudio& app, UiState& state) {
 
 std::optional<std::size_t> queue_index_for_id(const UiState& state,
                                               std::uint64_t id) noexcept {
-  for (const auto i : std::views::iota(std::size_t{}, state.queue_items.size())) {
-    if (state.queue_items[i].id == id) {
-      return i;
-    }
-  }
+  if (const auto it = state.queue_id_indices.find(id); it != state.queue_id_indices.end()) return it->second;
   return std::nullopt;
 }
 
 std::optional<std::size_t> queue_index_for_run_index(
     const UiState& state, std::size_t run_index) noexcept {
-  for (const auto i : std::views::iota(std::size_t{}, state.queue_items.size())) {
-    if (state.queue_items[i].run_index == run_index) {
-      return i;
-    }
-  }
+  if (const auto it = state.queue_run_indices.find(run_index); it != state.queue_run_indices.end()) return it->second;
   return std::nullopt;
 }
 
@@ -3093,6 +3120,7 @@ std::vector<std::wstring> cli_arguments_from_config(
       if (cfg.image_size_limit.max_height) push_cli_option(args, L"--max-height", std::to_wstring(*cfg.image_size_limit.max_height));
       if (cfg.image_size_limit.max_long_edge) push_cli_option(args, L"--max-long-edge", std::to_wstring(*cfg.image_size_limit.max_long_edge));
       if (cfg.image_size_limit.max_short_edge) push_cli_option(args, L"--max-short-edge", std::to_wstring(*cfg.image_size_limit.max_short_edge));
+      if (cfg.image_size_limit.scale_percent) push_cli_option(args, L"--scale-percent", std::to_wstring(*cfg.image_size_limit.scale_percent));
       break;
     case awj::ImageSizeLimitMode::automatic:
     default:
@@ -3150,6 +3178,9 @@ std::vector<std::wstring> cli_arguments_from_config(
                     cli_avif_encoder_arg(cfg.avif_encoder));
     push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
     push_cli_option(args, L"--alpha", cli_alpha_arg(cfg.alpha_policy));
+  }
+  if (cfg.output_format == awj::OutputFormat::jxl && !cfg.jxl_jpeg_lossless) {
+    args.push_back(L"--no-jxl-jpeg-lossless");
   }
   if (cfg.output_format == awj::OutputFormat::jpgli) {
     push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
@@ -3271,6 +3302,7 @@ awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams
       .jpegli_progressive_index = params.jpegli_progressive_index,
       .jpegli_optimize_huffman = params.jpegli_optimize_huffman,
       .jpegli_xyb = params.jpegli_xyb,
+      .jxl_jpeg_lossless = params.jxl_jpeg_lossless,
       .strip_metadata = params.strip_metadata,
       .allow_wic_fallback = params.allow_wic_fallback,
       .close_on_finish = params.close_on_finish,
@@ -3279,7 +3311,8 @@ awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams
       .max_width_text = text(params.max_width_text),
       .max_height_text = text(params.max_height_text),
       .max_long_edge_text = text(params.max_long_edge_text),
-      .max_short_edge_text = text(params.max_short_edge_text)};
+      .max_short_edge_text = text(params.max_short_edge_text),
+      .scale_percent_text = text(params.scale_percent_text)};
 }
 
 awj::shell_context_menu::MenuParams shell_menu_params(
@@ -3865,9 +3898,10 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
                                       : params.jpegli_optimize_huffman;
     cfg.jpegli_xyb = params.jpegli_xyb;
   }
+  cfg.jxl_jpeg_lossless = params.jxl_jpeg_lossless;
   const auto size_limit = image_size_limit_from_fields(
       params.size_limit_index, params.max_width_text, params.max_height_text,
-      params.max_long_edge_text, params.max_short_edge_text);
+      params.max_long_edge_text, params.max_short_edge_text, params.scale_percent_text);
   if (!size_limit) return std::unexpected{size_limit.error()};
   cfg.image_size_limit = *size_limit;
   if (auto valid = awj::finalize_config_defaults(cfg, true, false); !valid) {
@@ -3901,6 +3935,7 @@ MenuFormatParams default_menu_params_for_index(int index) {
   params.jpegli_progressive_index = awj::encoding_defaults::default_jpegli_progressive_level;
   params.jpegli_optimize_huffman = awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  params.jxl_jpeg_lossless = true;
   params.allow_wic_fallback = awj::encoding_defaults::default_allow_wic_fallback;
   params.alpha_policy_index = 1;
   return params;
@@ -3923,6 +3958,7 @@ ParameterFormatParams default_parameter_params_for_index(int index) {
   params.jpegli_optimize_huffman =
       awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  params.jxl_jpeg_lossless = true;
   return params;
 }
 
@@ -3940,13 +3976,15 @@ ParameterFormatParams capture_parameter_params_from_ui(const AwjStudio& app) {
       .jpegli_progressive_index = app.get_jpegli_progressive_index(),
       .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
       .jpegli_xyb = app.get_jpegli_xyb(),
+      .jxl_jpeg_lossless = app.get_jxl_jpeg_lossless(),
       .threads_text = shared_to_string(app.get_threads_text()),
       .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
       .size_limit_index = app.get_size_limit_index(),
       .max_width_text = shared_to_string(app.get_max_width_text()),
       .max_height_text = shared_to_string(app.get_max_height_text()),
       .max_long_edge_text = shared_to_string(app.get_max_long_edge_text()),
-      .max_short_edge_text = shared_to_string(app.get_max_short_edge_text())};
+      .max_short_edge_text = shared_to_string(app.get_max_short_edge_text()),
+      .scale_percent_text = shared_to_string(app.get_scale_percent_text())};
 }
 
 void apply_parameter_params_to_ui(AwjStudio& app,
@@ -3968,6 +4006,7 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_jpegli_xyb(params.jpegli_xyb);
+  app.set_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_threads_text(to_shared(params.threads_text));
   app.set_memory_limit_text(to_shared(params.memory_limit_text));
   app.set_size_limit_index(params.size_limit_index);
@@ -3975,6 +4014,7 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_max_height_text(to_shared(params.max_height_text));
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
+  app.set_scale_percent_text(to_shared(params.scale_percent_text));
   app.set_quality_follows_format(
       params.quality_text == text_from_int(awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
@@ -4052,6 +4092,7 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_max_height_text({});
   app.set_max_long_edge_text({});
   app.set_max_short_edge_text({});
+  app.set_scale_percent_text({});
   app.set_format_index(0);
   app.set_visual_quality_gpu(defaults.visual_quality_gpu);
   app.set_visual_quality_fallback(defaults.visual_quality_fallback);
@@ -4065,6 +4106,7 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_jpegli_optimize_huffman(
       awj::encoding_defaults::default_jpegli_optimize_huffman);
   app.set_jpegli_xyb(awj::encoding_defaults::default_jpegli_xyb);
+  app.set_jxl_jpeg_lossless(true);
   app.set_alpha_policy_index(1);
   app.set_quality_follows_format(true);
   app.set_bit_depth_follows_format(true);
@@ -4154,11 +4196,13 @@ std::expected<awj::AppConfig, std::string> config_from_parameter_params(
       .jpegli_progressive_index = params.jpegli_progressive_index,
       .jpegli_optimize_huffman = params.jpegli_optimize_huffman,
       .jpegli_xyb = params.jpegli_xyb,
+      .jxl_jpeg_lossless = params.jxl_jpeg_lossless,
       .size_limit_index = params.size_limit_index,
       .max_width_text = params.max_width_text,
       .max_height_text = params.max_height_text,
       .max_long_edge_text = params.max_long_edge_text,
-      .max_short_edge_text = params.max_short_edge_text};
+      .max_short_edge_text = params.max_short_edge_text,
+      .scale_percent_text = params.scale_percent_text};
   auto config = config_from_menu_params(format, menu);
   if (!config) return std::unexpected{config.error()};
   if (png_lossless) {
@@ -4246,6 +4290,7 @@ ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config)
   params.jpegli_progressive_index = config.jpegli_progressive_level;
   params.jpegli_optimize_huffman = config.jpegli_optimize_huffman;
   params.jpegli_xyb = config.jpegli_xyb;
+  params.jxl_jpeg_lossless = config.jxl_jpeg_lossless;
   params.threads_text = config.max_jobs == awj::default_max_jobs()
                             ? std::string{}
                             : text_from_int(config.max_jobs);
@@ -4270,6 +4315,7 @@ ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config)
   params.max_height_text = optional_text(config.image_size_limit.max_height);
   params.max_long_edge_text = optional_text(config.image_size_limit.max_long_edge);
   params.max_short_edge_text = optional_text(config.image_size_limit.max_short_edge);
+  params.scale_percent_text = optional_text(config.image_size_limit.scale_percent);
   return params;
 }
 
@@ -4836,7 +4882,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       }
       item.status = QueueItemStatus::pending;
       item.status_text = "等待编码";
-      item.log_text.clear();
+      item.log_text = {};
       item.encoder_id.clear();
       item.encoder_threads = 0;
       item.decode_seconds = -1.0;
@@ -4922,8 +4968,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
                 item.status_text = "失败";
                 break;
             }
+            awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                      make_queue_task_row(item, *queue_index));
           }
-          refresh_queue_rows(app, *state);
           app.set_progress(static_cast<float>(event.completed) /
                            static_cast<float>(event.total));
           app.set_status_text(to_shared(
@@ -4968,8 +5015,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               item.prepare_seconds = seconds(detail.prepare_microseconds);
               item.encode_seconds = seconds(detail.encode_microseconds);
               item.write_seconds = seconds(detail.write_microseconds);
+              awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                        make_queue_task_row(item, *queue_index));
             }
-            refresh_queue_rows(app, *state);
           });
           return;
         }
@@ -4985,7 +5033,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
             if (auto queue_index =
                     queue_index_for_run_index(*state, event.index)) {
               auto& item = state->queue_items[*queue_index];
-              item.log_text = line;
+              item.log_text = to_shared(line);
               // 跨进程约定：这里嗅探的是 AWJ CLI 子进程 stdout 里的中文子串，
               // 生产方在 pipeline.ixx:461（", 未达标兜底"）。子进程的输出与日志
               // 固定为中文、不跟随界面语言，本判断才成立——1.0.0 的双语只覆盖
@@ -4995,8 +5043,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               // 否则视觉质量未达标的行会静默不再标警告，且不会有编译错误。
               item.warning = item.warning ||
                              line.find("未达标") != std::string::npos;
+              awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                        make_queue_task_row(item, *queue_index));
             }
-            refresh_queue_rows(app, *state);
           });
           return;
         }
@@ -5421,7 +5470,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     (*app)->set_running(true);
     (*app)->set_progress(0.0f);
     if (!large_index) {
-      (*app)->set_task_rows(rows);
+      awj::ui::bind_queue_model(**app, rows);
       (*app)->set_large_image_rows(large_rows);
       (*app)->set_selected_large_image_index(-1);
     }
@@ -5748,9 +5797,10 @@ void sync_update_ui(AwjStudio& app, const UiState& state) {
 }
 
 void sync_update_history(
-    const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
+    const std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest) {
   if (!rows) return;
+  rows->set_loader([manifest] {
   auto merged_history = awj::ui::embedded_changelog_history();
   for (const auto& entry : manifest.entries) {
     const auto version = awj::update::to_string(entry.version);
@@ -5785,7 +5835,8 @@ void sync_update_history(
         .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
         .changelog_en = to_shared(entry.changelog_en)});
   }
-  rows->set_vector(std::move(history_rows));
+  return history_rows;
+  });
 }
 
 void restore_cached_update_history(UiState& state) {
@@ -6017,13 +6068,21 @@ int run_studio_ui(const wchar_t* health_event,
     state->large_image_rows =
         std::make_shared<slint::VectorModel<LargeImageRow>>();
     state->update_history_rows =
-        std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
+        std::make_shared<awj::ui::DeferredModel<UpdateHistoryRow>>();
     sync_update_history(state->update_history_rows,
                         awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
+    app->on_settings_page_opened([weak, state] {
+      run_ui_callback(weak, "加载系统字体列表失败", [&] {
+        auto app = weak.lock();
+        if (!app || state->ui_font_options_loaded) return;
+        load_system_font_options(**app);
+        state->ui_font_options_loaded = true;
+      });
+    });
     start_import_dispatcher(weak, state);
 
-    app->set_task_rows(state->task_rows);
+    awj::ui::bind_queue_model(*app, state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
     app->set_update_history(state->update_history_rows);
     initialize_ui_defaults(*app, *state);
@@ -6048,7 +6107,6 @@ int run_studio_ui(const wchar_t* health_event,
                                    state->user_preset_errors.size(),
                                    state->user_preset_errors.front());
     }
-    load_system_font_options(*app);
     sync_template_flags(*app);
     // 配置已经读进 language_index，这里让 @tr() 立刻按存下来的语言重算。
     // 必须在组件创建之后调用，此时 AwjStudio::create() 早已完成。
@@ -6259,7 +6317,11 @@ int run_studio_ui(const wchar_t* health_event,
                                       "当前任务正在运行，无法清空队列")) {
           return;
         }
-        state->queue_items.clear();
+        std::vector<QueueImageItem>{}.swap(state->queue_items);
+        state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+        awj::ui::bind_queue_model(**app, state->task_rows);
+        decltype(state->queue_id_indices){}.swap(state->queue_id_indices);
+        decltype(state->queue_run_indices){}.swap(state->queue_run_indices);
         refresh_queue_rows(**app, *state);
         state->large_image_rows->set_vector({});
         state->large_image_items.clear();
@@ -6391,12 +6453,14 @@ int run_studio_ui(const wchar_t* health_event,
       if (!app || (*app)->get_running()) return;
       const auto index = state->parameter_preset_index;
       if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      const auto queue_index = (*app)->get_queue_preset_index();
       auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)], [state] {
         return synchronize_shell_context_menu(state->menu_params);
       });
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
       state->parameter_preset_index = 0;
-      (*app)->set_queue_preset_index(0);
+      (*app)->set_queue_preset_index(
+          queue_index == index ? 0 : queue_index > index ? queue_index - 1 : queue_index);
       reload_user_preset_options(**app, *state);
       select_parameter_preset(**app, *state, 0);
       (*app)->set_preset_editor_open(false);
@@ -6549,20 +6613,7 @@ int run_studio_ui(const wchar_t* health_event,
     });
     app->on_cleanup_legacy_machine_menu([weak] {
       if (auto app = weak.lock(); app && !(*app)->get_running()) {
-        auto exe = awj::executable_path();
-        if (!exe) { (*app)->set_status_text(to_shared(exe.error())); return; }
-        SHELLEXECUTEINFOW launch{sizeof(launch)};
-        launch.fMask = SEE_MASK_NOCLOSEPROCESS;
-        launch.lpVerb = L"runas";
-        launch.lpFile = exe->c_str();
-        launch.lpParameters = L"--cleanup-legacy-machine-menu";
-        launch.nShow = SW_HIDE;
-        if (!ShellExecuteExW(&launch)) {
-          (*app)->set_status_text(to_shared("历史系统菜单清理未启动或已取消。"));
-          return;
-        }
-        if (launch.hProcess) CloseHandle(launch.hProcess);
-        (*app)->set_status_text(to_shared("已请求清理历史系统菜单。"));
+        (*app)->set_status_text(to_shared("AWJ 不会修改或删除 HKLM 系统菜单，请使用系统级注册表管理工具处理历史项目。"));
       }
     });
 
@@ -7266,6 +7317,7 @@ struct LinuxMenuParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   bool strip_metadata{};
   bool install_avif_png_command{};
   int size_limit_index{};
@@ -7273,6 +7325,7 @@ struct LinuxMenuParams {
   std::string max_height_text{};
   std::string max_long_edge_text{};
   std::string max_short_edge_text{};
+  std::string scale_percent_text{};
 };
 
 // 参数页按格式保存会话内的编辑值；普通队列只在开始时读取 queue-format
@@ -7289,6 +7342,7 @@ struct LinuxParameterParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   std::string threads_text{};
   std::string memory_limit_text{};
   int size_limit_index{};
@@ -7296,6 +7350,7 @@ struct LinuxParameterParams {
   std::string max_height_text{};
   std::string max_long_edge_text{};
   std::string max_short_edge_text{};
+  std::string scale_percent_text{};
 };
 
 struct LinuxUiState {
@@ -7303,7 +7358,8 @@ struct LinuxUiState {
   std::jthread update_worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
-  std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
+  std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>> update_history_rows{};
+  bool ui_font_options_loaded{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   std::vector<fs::path> failed_paths{};
   // The visible queue is the source of truth. A manifest is written only
@@ -7360,13 +7416,15 @@ nlohmann::ordered_json linux_menu_params_json(const LinuxMenuParams& params) {
           {"jpegli_progressive_index", params.jpegli_progressive_index},
           {"jpegli_optimize_huffman", params.jpegli_optimize_huffman},
           {"jpegli_xyb", params.jpegli_xyb},
+          {"jxl_jpeg_lossless", params.jxl_jpeg_lossless},
           {"strip_metadata", params.strip_metadata},
           {"install_avif_png_command", params.install_avif_png_command},
           {"size_limit_index", params.size_limit_index},
           {"max_width_text", params.max_width_text},
           {"max_height_text", params.max_height_text},
           {"max_long_edge_text", params.max_long_edge_text},
-          {"max_short_edge_text", params.max_short_edge_text}};
+          {"max_short_edge_text", params.max_short_edge_text},
+          {"scale_percent_text", params.scale_percent_text}};
 }
 
 void load_linux_menu_params(const nlohmann::ordered_json& document,
@@ -7408,6 +7466,7 @@ void load_linux_menu_params(const nlohmann::ordered_json& document,
     integer("jpegli_progressive_index", 0, 2, params.jpegli_progressive_index);
     boolean("jpegli_optimize_huffman", params.jpegli_optimize_huffman);
     boolean("jpegli_xyb", params.jpegli_xyb);
+    boolean("jxl_jpeg_lossless", params.jxl_jpeg_lossless);
     boolean("strip_metadata", params.strip_metadata);
     boolean("install_avif_png_command", params.install_avif_png_command);
     integer("size_limit_index", 0, 2, params.size_limit_index);
@@ -7415,6 +7474,7 @@ void load_linux_menu_params(const nlohmann::ordered_json& document,
     text("max_height_text", params.max_height_text);
     text("max_long_edge_text", params.max_long_edge_text);
     text("max_short_edge_text", params.max_short_edge_text);
+    text("scale_percent_text", params.scale_percent_text);
   }
 }
 
@@ -7727,9 +7787,10 @@ void sync_linux_update_ui(AwjStudio& app, const LinuxUiState& state) {
 }
 
 void sync_linux_update_history(
-    const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
+    const std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest) {
   if (!rows) return;
+  rows->set_loader([manifest] {
   auto merged_history = awj::ui::embedded_changelog_history();
   for (const auto& entry : manifest.entries) {
     const auto version = awj::update::to_string(entry.version);
@@ -7764,7 +7825,8 @@ void sync_linux_update_history(
         .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
         .changelog_en = to_shared(entry.changelog_en)});
   }
-  rows->set_vector(std::move(history_rows));
+  return history_rows;
+  });
 }
 
 void restore_cached_linux_update_history(LinuxUiState& state) {
@@ -8231,13 +8293,15 @@ LinuxMenuParams capture_linux_menu_params(const AwjStudio& app) {
       .jpegli_progressive_index = app.get_menu_jpegli_progressive_index(),
       .jpegli_optimize_huffman = app.get_menu_jpegli_optimize_huffman(),
       .jpegli_xyb = app.get_menu_jpegli_xyb(),
+      .jxl_jpeg_lossless = app.get_menu_jxl_jpeg_lossless(),
       .strip_metadata = app.get_menu_strip_metadata(),
       .install_avif_png_command = app.get_menu_install_avif_png_command(),
       .size_limit_index = app.get_menu_size_limit_index(),
       .max_width_text = shared_to_string(app.get_menu_max_width_text()),
       .max_height_text = shared_to_string(app.get_menu_max_height_text()),
       .max_long_edge_text = shared_to_string(app.get_menu_max_long_edge_text()),
-      .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text())};
+      .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text()),
+      .scale_percent_text = shared_to_string(app.get_menu_scale_percent_text())};
 }
 
 void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
@@ -8252,6 +8316,7 @@ void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_menu_jpegli_xyb(params.jpegli_xyb);
+  app.set_menu_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_menu_strip_metadata(params.strip_metadata);
   app.set_menu_install_avif_png_command(params.install_avif_png_command);
   app.set_menu_size_limit_index(params.size_limit_index);
@@ -8259,6 +8324,7 @@ void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
   app.set_menu_max_height_text(to_shared(params.max_height_text));
   app.set_menu_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_menu_max_short_edge_text(to_shared(params.max_short_edge_text));
+  app.set_menu_scale_percent_text(to_shared(params.scale_percent_text));
 }
 
 void store_linux_menu_params(AwjStudio& app, LinuxUiState& state) {
@@ -8288,6 +8354,7 @@ LinuxMenuParams default_linux_menu_params(int format_index) {
   params.jpegli_progressive_index = awj::encoding_defaults::default_jpegli_progressive_level;
   params.jpegli_optimize_huffman = awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  params.jxl_jpeg_lossless = true;
   return params;
 }
 
@@ -8344,11 +8411,14 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
 
 std::optional<std::size_t> linux_task_row_index_for_path(
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-    const fs::path& path) {
+    const fs::path& path, std::optional<std::size_t> hint = {}) {
   if (!rows) {
     return std::nullopt;
   }
   const auto expected = awj::path_to_utf8(path);
+  if (hint && *hint < rows->row_count()) {
+    if (auto row = rows->row_data(*hint); row && shared_to_string(row->input_path) == expected) return hint;
+  }
   for (std::size_t index = 0; index < rows->row_count(); ++index) {
     if (auto row = rows->row_data(index);
         row && shared_to_string(row->input_path) == expected) {
@@ -8408,21 +8478,22 @@ void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
   }
 }
 
-void mark_task_row_running(
+void mark_linux_task_row_running(AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
     const awj::EncodeResult& result) noexcept {
   if (!rows) return;
   try {
-    if (const auto index = linux_task_row_index_for_path(rows, result.input_path)) {
+    if (const auto index = linux_task_row_index_for_path(rows, result.input_path, result.index)) {
       auto row = rows->row_data(*index);
       if (row) {
         row->status = to_shared("正在转码");
         row->locked = true;
         row->state = 1;
-        rows->set_row_data(*index, *row);
+        awj::ui::replace_queue_row(app, rows, *index, *row);
         return;
       }
     }
+    const auto previous_count = rows->row_count();
     push_task_row(rows,
                   TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
                           .filename = to_shared(awj::path_to_utf8(
@@ -8437,18 +8508,23 @@ void mark_task_row_running(
                            .state = 1,
                            .input_path = to_shared(awj::path_to_utf8(result.input_path)),
                            .output_path = to_shared(awj::path_to_utf8(result.output_path))});
+    if (rows->row_count() > previous_count) awj::ui::adjust_queue_count(app, 1, 1);
   } catch (...) {
   }
 }
 
 void set_linux_task_row_result(
+    AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
     const awj::EncodeResult& result) {
   auto row = task_row_from_result(result);
-  if (const auto index = linux_task_row_index_for_path(rows, result.input_path)) {
-    rows->set_row_data(*index, row);
+  if (const auto index = linux_task_row_index_for_path(rows, result.input_path, result.index)) {
+    awj::ui::replace_queue_row(app, rows, *index, row);
   } else {
+    const auto previous_count = rows->row_count();
+    const int status = row.state;
     push_task_row(rows, std::move(row));
+    if (rows->row_count() > previous_count) awj::ui::adjust_queue_count(app, status, 1);
   }
 }
 
@@ -8944,6 +9020,7 @@ LinuxParameterParams default_linux_parameter_params(int index) {
   params.jpegli_optimize_huffman =
       awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  params.jxl_jpeg_lossless = true;
   return params;
 }
 
@@ -8960,13 +9037,15 @@ LinuxParameterParams capture_linux_parameter_params(const AwjStudio& app) {
           .jpegli_progressive_index = app.get_jpegli_progressive_index(),
           .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
           .jpegli_xyb = app.get_jpegli_xyb(),
+          .jxl_jpeg_lossless = app.get_jxl_jpeg_lossless(),
           .threads_text = shared_to_string(app.get_threads_text()),
           .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
           .size_limit_index = app.get_size_limit_index(),
           .max_width_text = shared_to_string(app.get_max_width_text()),
           .max_height_text = shared_to_string(app.get_max_height_text()),
           .max_long_edge_text = shared_to_string(app.get_max_long_edge_text()),
-          .max_short_edge_text = shared_to_string(app.get_max_short_edge_text())};
+          .max_short_edge_text = shared_to_string(app.get_max_short_edge_text()),
+          .scale_percent_text = shared_to_string(app.get_scale_percent_text())};
 }
 
 void apply_linux_parameter_params(AwjStudio& app,
@@ -8987,6 +9066,7 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_jpegli_xyb(params.jpegli_xyb);
+  app.set_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_threads_text(to_shared(params.threads_text));
   app.set_memory_limit_text(to_shared(params.memory_limit_text));
   app.set_size_limit_index(params.size_limit_index);
@@ -8994,6 +9074,7 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_max_height_text(to_shared(params.max_height_text));
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
+  app.set_scale_percent_text(to_shared(params.scale_percent_text));
   app.set_quality_follows_format(
       params.quality_text == std::format("{}", awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
@@ -9083,6 +9164,7 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
     push_option(args, L"--max-height", awj::wide_from_utf8(params.max_height_text));
     push_option(args, L"--max-long-edge", awj::wide_from_utf8(params.max_long_edge_text));
     push_option(args, L"--max-short-edge", awj::wide_from_utf8(params.max_short_edge_text));
+    push_option(args, L"--scale-percent", awj::wide_from_utf8(params.scale_percent_text));
   }
   if (format_index == 0) {
     push_option(args, L"--avif-encoder", avif_encoder_arg(params.avif_encoder_index));
@@ -9091,6 +9173,10 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
                     params.avif_color_representation_index));
     push_option(args, L"--chroma", chroma_arg(params.chroma_index));
     push_option(args, L"--alpha", alpha_arg(params.alpha_policy_index));
+  } else if (format_index == 2) {
+    if (!params.jxl_jpeg_lossless) {
+      args.push_back(L"--no-jxl-jpeg-lossless");
+    }
   } else if (format_index == 3) {
     push_option(args, L"--chroma", chroma_arg(params.chroma_index));
     push_option(args, L"--jpegli-progressive-level",
@@ -9180,6 +9266,7 @@ LinuxParameterParams linux_parameter_params_from_config(const awj::AppConfig& co
   params.jpegli_progressive_index = config.jpegli_progressive_level;
   params.jpegli_optimize_huffman = config.jpegli_optimize_huffman;
   params.jpegli_xyb = config.jpegli_xyb;
+  params.jxl_jpeg_lossless = config.jxl_jpeg_lossless;
   params.threads_text = config.max_jobs == awj::default_max_jobs()
                             ? std::string{}
                             : std::format("{}", config.max_jobs);
@@ -9200,6 +9287,7 @@ LinuxParameterParams linux_parameter_params_from_config(const awj::AppConfig& co
   params.max_height_text = optional_text(config.image_size_limit.max_height);
   params.max_long_edge_text = optional_text(config.image_size_limit.max_long_edge);
   params.max_short_edge_text = optional_text(config.image_size_limit.max_short_edge);
+  params.scale_percent_text = optional_text(config.image_size_limit.scale_percent);
   return params;
 }
 
@@ -9433,6 +9521,7 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
     if (!trim_copy(params.max_height_text).empty()) append_linux_shell_option(command, "--max-height", trim_copy(params.max_height_text));
     if (!trim_copy(params.max_long_edge_text).empty()) append_linux_shell_option(command, "--max-long-edge", trim_copy(params.max_long_edge_text));
     if (!trim_copy(params.max_short_edge_text).empty()) append_linux_shell_option(command, "--max-short-edge", trim_copy(params.max_short_edge_text));
+    if (!trim_copy(params.scale_percent_text).empty()) append_linux_shell_option(command, "--scale-percent", trim_copy(params.scale_percent_text));
   }
   if (is_avif) {
     append_linux_shell_option(command, "--avif-encoder",
@@ -9447,6 +9536,10 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
                               awj::utf8_from_wide(alpha_arg(params.alpha_policy_index)));
     if (append_png_suffix) {
       append_linux_shell_arg(command, "--append-png-suffix");
+    }
+  } else if (is_jxl) {
+    if (!params.jxl_jpeg_lossless) {
+      append_linux_shell_arg(command, "--no-jxl-jpeg-lossless");
     }
   } else if (is_jpgli) {
     append_linux_shell_option(command, "--chroma",
@@ -9487,6 +9580,7 @@ std::expected<void, std::string> validate_linux_menu_params(
       push_option(args, L"--max-height", awj::wide_from_utf8(trim_copy(params.max_height_text)));
       push_option(args, L"--max-long-edge", awj::wide_from_utf8(trim_copy(params.max_long_edge_text)));
       push_option(args, L"--max-short-edge", awj::wide_from_utf8(trim_copy(params.max_short_edge_text)));
+      push_option(args, L"--scale-percent", awj::wide_from_utf8(trim_copy(params.scale_percent_text)));
     }
     if (is_avif) {
       push_option(args, L"--avif-encoder", avif_encoder_arg(params.avif_encoder_index));
@@ -9495,6 +9589,10 @@ std::expected<void, std::string> validate_linux_menu_params(
                       params.avif_color_representation_index));
       push_option(args, L"--chroma", chroma_arg(params.chroma_index));
       push_option(args, L"--alpha", alpha_arg(params.alpha_policy_index));
+    } else if (is_jxl) {
+      if (!params.jxl_jpeg_lossless) {
+        args.push_back(L"--no-jxl-jpeg-lossless");
+      }
     } else if (is_jpgli) {
       push_option(args, L"--chroma", chroma_arg(params.chroma_index));
       push_option(args, L"--jpegli-progressive-level",
@@ -9735,7 +9833,7 @@ void set_format_quality(AwjStudio& app, int index) {
 }
 
 void initialize_ui(AwjStudio& app) {
-  app.set_task_rows(std::make_shared<slint::VectorModel<TaskRow>>());
+  awj::ui::bind_queue_model(app, std::make_shared<slint::VectorModel<TaskRow>>());
   app.set_large_image_rows(std::make_shared<slint::VectorModel<LargeImageRow>>());
   app.set_wic_ui_visible(false);
   app.set_allow_wic_fallback(false);
@@ -9769,10 +9867,16 @@ int run_studio_ui() {
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
     state->update_history_rows =
-        std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
+        std::make_shared<awj::ui::DeferredModel<UpdateHistoryRow>>();
     sync_linux_update_history(state->update_history_rows,
                               awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
+    app->on_settings_page_opened([weak, state] {
+      if (auto app = weak.lock(); app && !state->ui_font_options_loaded) {
+        load_system_font_options(**app);
+        state->ui_font_options_loaded = true;
+      }
+    });
     initialize_ui(*app);
     for (int i = 0; i < static_cast<int>(state->builtin_params.size()); ++i) {
       state->builtin_params[static_cast<std::size_t>(i)] =
@@ -9792,13 +9896,12 @@ int run_studio_ui() {
     load_linux_update_config(*app, *state);
     restore_cached_linux_update_history(*state);
     sync_linux_update_ui(*app, *state);
-    load_system_font_options(*app);
     state->menu_format_index = 0;
     apply_linux_menu_params(*app, state->menu_params.front());
     if (auto warning = linux_context_menu_warning(state->menu_params)) {
       app->set_context_menu_warning(to_shared(*warning));
     }
-    app->set_task_rows(state->task_rows);
+    awj::ui::bind_queue_model(*app, state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
     app->set_update_history(state->update_history_rows);
     app->set_selected_large_image_index(-1);
@@ -10021,10 +10124,12 @@ int run_studio_ui() {
       if (!app || (*app)->get_running()) return;
       const auto index = state->parameter_preset_index;
       if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      const auto queue_index = (*app)->get_queue_preset_index();
       auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)]);
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
       state->parameter_preset_index = 0;
-      (*app)->set_queue_preset_index(0);
+      (*app)->set_queue_preset_index(
+          queue_index == index ? 0 : queue_index > index ? queue_index - 1 : queue_index);
       reload_linux_user_preset_options(**app, *state);
       select_linux_parameter_preset(**app, *state, 0);
       (*app)->set_preset_editor_open(false);
@@ -10368,9 +10473,9 @@ int run_studio_ui() {
               slint::invoke_from_event_loop([weak, state, rows, event] {
                 if (auto app = weak.lock()) {
                   if (event.kind == awj::BatchEventKind::item_started) {
-                    mark_task_row_running(rows, event.result);
+                    mark_linux_task_row_running(**app, rows, event.result);
                   } else if (event.kind == awj::BatchEventKind::item_finished) {
-                    set_linux_task_row_result(rows, event.result);
+                    set_linux_task_row_result(**app, rows, event.result);
                     std::erase(state->failed_paths, event.result.input_path);
                     if (!event.result.ok && !event.result.canceled) {
                       state->failed_paths.push_back(event.result.input_path);
@@ -10379,8 +10484,8 @@ int run_studio_ui() {
                              awj::BatchEventKind::large_image_queued) {
                     add_large_image_task_row(rows, event.large_image);
                     push_linux_large_image(*state, event.large_image);
+                    refresh_linux_queue_counts(**app, rows);
                   }
-                  refresh_linux_queue_counts(**app, rows);
                   if (event.total > 0) {
                     (*app)->set_progress(
                         static_cast<float>(event.completed) /
@@ -10553,7 +10658,7 @@ int run_studio_ui() {
                                                        true));
       }
       state->task_rows->set_vector(std::move(pending_rows));
-      (*app)->set_task_rows(state->task_rows);
+      awj::ui::bind_queue_model(**app, state->task_rows);
       (*app)->set_large_image_rows(state->large_image_rows);
       (*app)->set_selected_large_image_index(-1);
       refresh_linux_queue_counts(**app, state->task_rows);
@@ -10567,9 +10672,9 @@ int run_studio_ui() {
           slint::invoke_from_event_loop([weak, state, rows, event] {
             if (auto app = weak.lock()) {
               if (event.kind == awj::BatchEventKind::item_started) {
-                mark_task_row_running(rows, event.result);
+                mark_linux_task_row_running(**app, rows, event.result);
               } else if (event.kind == awj::BatchEventKind::item_finished) {
-                set_linux_task_row_result(rows, event.result);
+                set_linux_task_row_result(**app, rows, event.result);
                 std::erase(state->failed_paths, event.result.input_path);
                 if (!event.result.ok && !event.result.canceled) {
                   state->failed_paths.push_back(event.result.input_path);
@@ -10577,11 +10682,11 @@ int run_studio_ui() {
               } else if (event.kind == awj::BatchEventKind::large_image_queued) {
                 add_large_image_task_row(rows, event.large_image);
                 push_linux_large_image(*state, event.large_image);
+                refresh_linux_queue_counts(**app, rows);
                 if ((*app)->get_selected_large_image_index() < 0 && !state->large_image_items.empty()) {
                   (*app)->set_selected_large_image_index(0);
                 }
               }
-              refresh_linux_queue_counts(**app, rows);
               if (event.total > 0) {
                 (*app)->set_progress(static_cast<float>(event.completed) / static_cast<float>(event.total));
               }

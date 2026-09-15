@@ -7,6 +7,7 @@ module;
 #include <format>
 #include <memory>
 #include <new>
+#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -21,6 +22,7 @@ import awj.codec;
 import awj.config;
 import awj.core;
 import awj.gif_codec;
+import awj.heif_codec;
 import awj.image;
 import awj.large_image_plan;
 import awj.jpeg_codec;
@@ -47,6 +49,7 @@ export namespace awj {
 struct DecoderRegistryOptions {
   bool allow_wic_fallback{true};
   int decode_threads{1};
+  std::stop_token stop_token{};
 };
 
 struct DecoderSelection {
@@ -57,9 +60,12 @@ struct DecoderSelection {
 namespace decoder_registry_detail {
 
 template <class Decoder>
-bool try_select(const fs::path& path, DecoderSelection& selection, int decode_threads) {
+bool try_select(const fs::path& path, DecoderSelection& selection, int decode_threads,
+                std::stop_token stop_token = {}) {
   auto decoder = [&] {
-    if constexpr (std::constructible_from<Decoder, int>) {
+    if constexpr (std::constructible_from<Decoder, int, std::stop_token>) {
+      return std::make_unique<Decoder>(decode_threads, stop_token);
+    } else if constexpr (std::constructible_from<Decoder, int>) {
       return std::make_unique<Decoder>(decode_threads);
     } else {
       return std::make_unique<Decoder>();
@@ -149,6 +155,8 @@ std::expected<DecoderSelection, std::string> select_decoder_for_path(
 #endif
         decoder_registry_detail::try_select<GifImageDecoder>(path, selection, decode_threads) ||
         decoder_registry_detail::try_select<TiffImageDecoder>(path, selection, decode_threads) ||
+        decoder_registry_detail::try_select<HeifImageDecoder>(path, selection, decode_threads,
+                                                               options.stop_token) ||
 #if AWJ_HAS_AWJ_RAW_CODEC
         decoder_registry_detail::try_select<RawImageDecoder>(path, selection, decode_threads) ||
 #endif

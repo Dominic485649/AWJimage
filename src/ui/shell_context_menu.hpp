@@ -12,7 +12,7 @@
 
 namespace awj::shell_context_menu {
 
-inline constexpr std::uint32_t schema_version = 4;
+inline constexpr std::uint32_t schema_version = 5;
 inline constexpr std::wstring_view owner_value_name = L"AWJimage.Owner";
 inline constexpr std::wstring_view schema_value_name = L"AWJimage.SchemaVersion";
 inline constexpr std::wstring_view owner_value = L"AWJimage";
@@ -30,6 +30,7 @@ struct FormatParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   bool strip_metadata{};
   bool allow_wic_fallback{true};
   bool close_on_finish{true};
@@ -39,6 +40,7 @@ struct FormatParams {
   std::wstring max_height_text{};
   std::wstring max_long_edge_text{};
   std::wstring max_short_edge_text{};
+  std::wstring scale_percent_text{};
 
   bool operator==(const FormatParams&) const = default;
 };
@@ -88,6 +90,8 @@ std::span<const CommandSpec> command_specs() noexcept;
 std::wstring image_parent_key();
 std::wstring directory_parent_key();
 std::wstring extension_parent_key(std::wstring_view extension);
+std::wstring class_extension_parent_key(std::wstring_view extension);
+std::wstring ico_parent_key();
 std::wstring shared_tree_key(int slot = 0);
 std::wstring legacy_shared_tree_key();
 std::vector<std::wstring> legacy_root_keys();
@@ -119,6 +123,5 @@ std::expected<std::optional<std::string>, std::string> warning(
     const MenuParams& menu_params,
     std::span<const std::wstring> preset_names = {});
 std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands();
-std::expected<void, std::string> remove_legacy_machine_commands();
 
 }  // namespace awj::shell_context_menu

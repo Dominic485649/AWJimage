@@ -12,7 +12,7 @@
 - WebP：libwebp。
 - JXL：libjxl。
 - JPGLI：google/jpegli，Windows 与 Linux GCC Release 均可用；输出为 JPEG 兼容 bitstream，默认扩展名为 `.jpg`，用户可见格式和诊断显示为 `JPGLI` / `jpegli`。
-- PNG/JPEG/TIFF/GIF/BMP/RAW：作为输入解码路径参与批处理和 metadata 透传；JPEG 兼容输入在支持 JPGLI 的构建中优先尝试 Jpegli decoder，失败后按现有策略回退 libjpeg-turbo。WIC、JXR/HD Photo 与 HEIC/HEIF 兜底仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。
+- PNG/JPEG/TIFF/GIF/BMP/RAW：作为输入解码路径参与批处理和 metadata 透传；JPEG 兼容输入在支持 JPGLI 的构建中优先尝试 Jpegli decoder，失败后按现有策略回退 libjpeg-turbo。HEIC/HEIF 由 libheif + libde265 原生解码；WIC 与 JXR/HD Photo 兜底仅限 Windows，Linux 上 WIC 兜底会被忽略并在界面中隐藏。
 
 Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方向，不应恢复为默认内部后端或随 Release 输出携带。
 
@@ -29,7 +29,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 
 ## 保留的功能
 
-- 批量扫描文件或目录，支持 `jpg/jpeg/png/webp/bmp/dib/rle/tif/tiff/gif/jxl/avif/awsraw` 与常见 RAW 扩展；`heic/heif/jxr/wdp/hdp` 通过 Windows WIC 路径支持，Linux 首版不暴露这些 WIC 兜底入口。
+- 批量扫描文件或目录，支持 `jpg/jpeg/png/webp/bmp/dib/rle/tif/tiff/gif/jxl/avif/heic/heif/awsraw` 与常见 RAW 扩展；`heic/heif` 走跨平台 native libheif/libde265，`jxr/wdp/hdp` 仍通过 Windows WIC 路径支持。
 - 输出名模板 `{name}` / `{index}` / `{ext}` / `{date}` / `{time}` / `{datetime}` / `{unix}` / `{rand}` / `{hash}` / `{hash8}` / `{params}`，CLI 默认 `{name}`。
 - 输入为文件夹时保留原始子文件夹结构。
 - 输出格式可选 AVIF、WebP、JXL 或 JPGLI。

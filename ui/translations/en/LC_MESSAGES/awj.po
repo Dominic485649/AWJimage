@@ -765,3 +765,18 @@ msgstr "Append .png suffix"
 
 msgid "默认 YUV"
 msgstr "Default YUV"
+
+msgid "删除预设"
+msgstr "Delete preset"
+
+msgid "缩小至"
+msgstr "Scale to"
+
+msgid "JPG转换走无损"
+msgstr "Lossless for JPG input"
+
+msgid "默认开启"
+msgstr "Enabled by default"
+
+msgid "兼容 JPEG 输入优先无损转封装；需要缩放、移除元数据或源不兼容时自动按普通 JXL 质量重编码。非 JPEG 输入始终使用普通质量编码。"
+msgstr "Compatible JPEG input is losslessly transcoded when possible. Resizing, metadata stripping, or incompatible JPEG input falls back to normal JXL quality encoding. Non-JPEG input always uses normal quality encoding."
