@@ -566,6 +566,12 @@ set(SLINT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_INTERPRETER OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
+# awj_ui_smoke_tests 依赖 Slint 的 testing API（slint::testing::ElementHandle）
+# 来断言真实控件几何，因此测试构建必须打开它；Slint 默认即为 ON，这里只在
+# BUILD_TESTING 打开时显式确认，避免被外部缓存或 -D 关掉而链接失败。
+if(BUILD_TESTING)
+    set(SLINT_FEATURE_TESTING ON CACHE BOOL "" FORCE)
+endif()
 FetchContent_Declare(Slint
     GIT_REPOSITORY ${AWJ_SLINT_GIT_REPOSITORY}
     GIT_TAG ${AWJ_SLINT_GIT_TAG}
@@ -1148,6 +1154,8 @@ if(WIN32)
         src/ui/studio_queue_format.cpp
         src/ui/studio_fonts.cpp
         src/ui/studio_fields.cpp
+        src/ui/studio_menu_params.cpp
+        src/ui/studio_parameter_page.cpp
         src/ui/main.cpp
         src/ui/AWJ.manifest
         src/ui/AWJ.rc)
@@ -1162,6 +1170,8 @@ else()
         src/ui/studio_queue_format.cpp
         src/ui/studio_fonts.cpp
         src/ui/studio_fields.cpp
+        src/ui/studio_menu_params.cpp
+        src/ui/studio_parameter_page.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()

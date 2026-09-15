@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -42,6 +43,25 @@ inline slint::SharedString to_shared(std::string_view text) {
 inline std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
 }
+
+// 下拉选项构造与批量赋值。多个页面模块共用。
+inline ComboOption combo_option(std::string_view text, bool enabled = true) {
+  return ComboOption{.text = to_shared(text), .enabled = enabled};
+}
+
+inline void set_combo_options(
+    AwjStudio& app, const std::vector<ComboOption>& options,
+    void (AwjStudio::*setter)(const std::shared_ptr<slint::Model<ComboOption>>&)
+        const) {
+  auto model = std::make_shared<slint::VectorModel<ComboOption>>();
+  model->set_vector(options);
+  (app.*setter)(model);
+}
+
+inline std::string text_from_wide(std::wstring_view text) {
+  return awj::utf8_from_wide(text);
+}
+inline std::string text_from_int(int value) { return std::format("{}", value); }
 
 struct Win32HandleDeleter {
   using pointer = HANDLE;
