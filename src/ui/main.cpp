@@ -3513,9 +3513,44 @@ std::expected<void, std::string> synchronize_shell_context_menu(
     // the classic registration (or before the first explicit installation).
     return awj::shell_context_menu::remove_sparse_package_registration();
   }
+
+  std::error_code package_path_error;
+  const auto package_path =
+      awj::shell_context_menu::sparse_package_path(*awj_exe);
+  const bool package_asset_available =
+      std::filesystem::is_regular_file(package_path, package_path_error) &&
+      !package_path_error;
+  if (!package_asset_available) {
+    // Development/portable builds may intentionally omit the optional sparse
+    // package. Keep the classic HKCU menu usable and remove any stale modern
+    // file that could otherwise make the classic handler hide itself.
+    auto removed_package =
+        awj::shell_context_menu::remove_sparse_package_registration();
+    auto removed_configuration =
+        awj::shell_context_menu::remove_modern_configuration();
+    if (!removed_package && !removed_configuration) {
+      return std::unexpected{removed_package.error() + " " +
+                             removed_configuration.error()};
+    }
+    if (!removed_package) return removed_package;
+    if (!removed_configuration) return removed_configuration;
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return {};
+  }
+
   auto package =
       awj::shell_context_menu::ensure_sparse_package_registered(*awj_exe);
-  if (!package) return package;
+  if (!package) {
+    // The file-backed configuration is only meaningful when the matching
+    // sparse package is registered. Clear it before surfacing the error so
+    // the classic fallback remains visible in both Explorer and DOpus.
+    auto removed = awj::shell_context_menu::remove_modern_configuration();
+    if (!removed) {
+      return std::unexpected{package.error() + " " + removed.error()};
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return package;
+  }
   // The package supplies the modern Explorer registration.  Publish one more
   // association change after deployment so a first install is visible without
   // requiring the user to restart Explorer after the package is added.

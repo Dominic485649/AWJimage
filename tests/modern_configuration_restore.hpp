@@ -53,6 +53,10 @@ class ModernConfigurationRestore {
     if (!input.good() && !input.eof()) {
       throw std::runtime_error("could not read modern configuration backup");
     }
+    // The MSVC iostream handle does not share FILE_SHARE_DELETE.  Close it
+    // before removing the live file so an existing user configuration can be
+    // isolated on Windows.
+    input.close();
     if (!DeleteFileW(path_->c_str()) && GetLastError() != ERROR_FILE_NOT_FOUND) {
       throw std::runtime_error("could not isolate modern configuration file");
     }

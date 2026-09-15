@@ -119,6 +119,9 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
 std::expected<void, std::string> recover();
 std::expected<bool, std::string> is_installed();
 std::expected<void, std::string> remove();
+// Remove only the file-backed modern Explorer configuration. The classic
+// per-user registration remains untouched.
+std::expected<void, std::string> remove_modern_configuration();
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe,
     const MenuParams& menu_params,

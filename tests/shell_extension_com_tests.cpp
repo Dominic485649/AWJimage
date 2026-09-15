@@ -217,6 +217,14 @@ int wmain(int argc, wchar_t** argv) try {
   check(read_string(kFolderHandler, nullptr) == kClassIdText,
         "folder handler registration is incorrect");
 
+  // The modern package reads the file-backed snapshot exclusively.  Seed it
+  // from the freshly registered HKCU configuration before probing the modern
+  // class factory; a missing snapshot must not silently fall back to the
+  // classic registry path and reintroduce duplicate Explorer commands.
+  write_modern_configuration_file(read_multi_string(
+      kClassRoot,
+      awj::shell_extension::contract::configuration_value_name.data()));
+
   CLSID class_id{};
   check(SUCCEEDED(CLSIDFromString(kClassIdText.c_str(), &class_id)),
         "test CLSID is invalid");
@@ -317,17 +325,16 @@ int wmain(int argc, wchar_t** argv) try {
   explorer_command->Release();
   modern_factory->Release();
 
-  // A preset adds five grouped commands to the serialized runtime
-  // configuration.  Modern Explorer deliberately receives only the five
-  // direct format commands so the classic preset branch cannot be merged into
-  // the packaged command tree as a second copy of those commands.
+  // A preset is serialized into the modern file as well.  The modern
+  // IExplorerCommand tree then exposes the direct format commands followed by
+  // one grouped preset node, instead of relying on a second classic handler.
+  add_test_preset_to_configuration();
   auto modern_file_values = read_multi_string(
       kClassRoot,
       awj::shell_extension::contract::configuration_value_name.data());
   check(modern_file_values.size() > 3,
-        "serialized configuration is missing its menu label");
+        "serialized grouped configuration is missing its menu label");
   modern_file_values[3] = L"Modern file configuration";
-  add_test_preset_to_configuration();
   write_modern_configuration_file(modern_file_values);
   IClassFactory* grouped_factory = nullptr;
   check(SUCCEEDED(get_class_object(
@@ -363,12 +370,52 @@ int wmain(int argc, wchar_t** argv) try {
           "modern direct command is not a leaf after adding a preset");
     child->Release();
   }
+  IExplorerCommand* preset_group = nullptr;
+  ULONG preset_group_fetched = 0;
+  check(grouped_root_children->Next(1, &preset_group, &preset_group_fetched) ==
+                S_OK &&
+            preset_group_fetched == 1 && preset_group != nullptr,
+        "modern root did not expose the injected preset group");
+  EXPCMDFLAGS preset_group_flags{};
+  check(SUCCEEDED(preset_group->GetFlags(&preset_group_flags)) &&
+            preset_group_flags == ECF_HASSUBCOMMANDS,
+        "modern preset group is not a cascading command");
+  PWSTR preset_group_title = nullptr;
+  check(SUCCEEDED(preset_group->GetTitle(nullptr, &preset_group_title)) &&
+            preset_group_title != nullptr &&
+            std::wstring_view{preset_group_title} == L"Test preset",
+        "modern preset group has an unexpected title");
+  CoTaskMemFree(preset_group_title);
+  IEnumExplorerCommand* preset_children = nullptr;
+  check(SUCCEEDED(preset_group->EnumSubCommands(&preset_children)) &&
+            preset_children != nullptr,
+        "modern preset group did not enumerate its children");
+  for (int index = 0; index < 5; ++index) {
+    IExplorerCommand* child = nullptr;
+    ULONG fetched = 0;
+    check(preset_children->Next(1, &child, &fetched) == S_OK &&
+              fetched == 1 && child != nullptr,
+          "modern preset group did not return five children");
+    EXPCMDFLAGS child_flags{};
+    check(SUCCEEDED(child->GetFlags(&child_flags)) &&
+              child_flags == ECF_DEFAULT,
+          "modern preset child is not a leaf");
+    child->Release();
+  }
+  IExplorerCommand* unexpected_preset_child = nullptr;
+  ULONG unexpected_preset_fetched = 0;
+  check(preset_children->Next(1, &unexpected_preset_child,
+                              &unexpected_preset_fetched) == S_FALSE &&
+            unexpected_preset_child == nullptr && unexpected_preset_fetched == 0,
+        "modern preset group exposed an unexpected extra child");
+  preset_children->Release();
+  preset_group->Release();
   IExplorerCommand* unexpected_root_child = nullptr;
   ULONG unexpected_root_fetched = 0;
   check(grouped_root_children->Next(1, &unexpected_root_child,
                                     &unexpected_root_fetched) == S_FALSE &&
             unexpected_root_child == nullptr && unexpected_root_fetched == 0,
-        "modern root exposed duplicate preset commands");
+        "modern root exposed an unexpected extra command");
   grouped_root_children->Release();
   grouped_root->Release();
   grouped_factory->Release();

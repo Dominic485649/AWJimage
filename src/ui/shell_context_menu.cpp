@@ -797,9 +797,6 @@ std::expected<void, std::string> write_modern_configuration_file(
   auto configuration =
       awj::shell_extension::decode_configuration(spec->multi_string_value);
   if (!configuration) return std::unexpected{configuration.error()};
-  std::erase_if(configuration->commands, [](const auto& command) {
-    return !command.group_label.empty();
-  });
   if (configuration->commands.empty()) {
     return std::unexpected{"右键菜单现代配置没有可用命令。"};
   }
@@ -1182,9 +1179,9 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
     if (!removed) {
       return std::unexpected{published.error() + " " + removed.error()};
     }
-    // The modern COM path falls back to the committed HKCU configuration
-    // when the file cannot be published.  Clearing any stale file keeps that
-    // fallback deterministic, so this is still a successful registration.
+    // A missing modern snapshot keeps the classic HKCU handler visible.
+    // Clear any stale file so a failed update cannot leave an older modern
+    // command tree beside that fallback menu.
     notify_shell_configuration_changed();
     return {};
   }
@@ -1226,8 +1223,8 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
   if (!removed) {
     return std::unexpected{published.error() + " " + removed.error()};
   }
-  // Let the modern COM path fall back to the just-committed registry schema
-  // instead of keeping a stale file-backed menu after a publish failure.
+  // A failed modern snapshot leaves the just-committed classic registration
+  // visible instead of keeping a stale file-backed command tree.
   notify_shell_configuration_changed();
   return {};
 }
@@ -1258,6 +1255,14 @@ std::expected<void, std::string> remove() {
     return std::unexpected{verified.error() + (restored ? " 已恢复原注册。" : " " + restored.error())};
   }
   if (auto committed = commit_journal(); !committed) return committed;
+  auto removed = remove_modern_configuration_file();
+  if (removed) notify_shell_configuration_changed();
+  return removed;
+}
+
+std::expected<void, std::string> remove_modern_configuration() {
+  RegistrationLock lock;
+  if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
   auto removed = remove_modern_configuration_file();
   if (removed) notify_shell_configuration_changed();
   return removed;

@@ -190,6 +190,130 @@ std::optional<std::vector<std::wstring>> read_modern_configuration_file() {
                               std::move(values)};
 }
 
+bool process_name_equals(std::wstring_view image_path,
+                         std::wstring_view expected) noexcept {
+  const auto separator = image_path.find_last_of(L"\\/");
+  const auto image_name = separator == std::wstring_view::npos
+                              ? image_path
+                              : image_path.substr(separator + 1);
+  return CompareStringOrdinal(image_name.data(),
+                              static_cast<int>(image_name.size()),
+                              expected.data(),
+                              static_cast<int>(expected.size()), TRUE) ==
+         CSTR_EQUAL;
+}
+
+bool is_explorer_process_name(std::wstring_view image_path) noexcept {
+  return process_name_equals(image_path, L"explorer.exe");
+}
+
+bool is_directory_opus_process_name(std::wstring_view image_path) noexcept {
+  return process_name_equals(image_path, L"dopus.exe") ||
+         process_name_equals(image_path, L"dopusrt.exe") ||
+         process_name_equals(image_path, L"dopuscm.exe");
+}
+
+bool contains_ordinal_insensitive(std::wstring_view value,
+                                  std::wstring_view needle) noexcept {
+  if (needle.empty()) return true;
+  if (value.size() < needle.size()) return false;
+  for (std::size_t offset = 0;
+       offset + needle.size() <= value.size(); ++offset) {
+    if (CompareStringOrdinal(value.data() + offset,
+                             static_cast<int>(needle.size()), needle.data(),
+                             static_cast<int>(needle.size()), TRUE) ==
+        CSTR_EQUAL) {
+      return true;
+    }
+  }
+  return false;
+}
+
+std::optional<std::wstring> current_process_image_path() {
+  std::vector<wchar_t> image_buffer(512);
+  for (;;) {
+    DWORD length = static_cast<DWORD>(image_buffer.size());
+    if (QueryFullProcessImageNameW(GetCurrentProcess(), 0,
+                                   image_buffer.data(), &length) != FALSE) {
+      return std::wstring{image_buffer.data(), length};
+    }
+    const DWORD error = GetLastError();
+    if (error != ERROR_INSUFFICIENT_BUFFER || image_buffer.size() >= 32768) {
+      return std::nullopt;
+    }
+    image_buffer.resize(
+        std::min<std::size_t>(image_buffer.size() * 2, 32768));
+  }
+}
+
+bool current_process_is_modern_menu_host() noexcept {
+  try {
+    const auto image_path = current_process_image_path();
+    if (!image_path) return false;
+
+    if (is_explorer_process_name(*image_path) ||
+        is_directory_opus_process_name(*image_path)) {
+      return true;
+    }
+    // Windows isolates packaged Explorer commands in dllhost.exe. The modern
+    // surrogate names the package CLSID, while the classic HKCU handler may
+    // be hosted by a separate surrogate naming the classic CLSID. Match only
+    // AWJ's two CLSIDs so unrelated dllhost instances retain their menus.
+    if (!process_name_equals(*image_path, L"dllhost.exe")) return false;
+    const wchar_t* command_line = GetCommandLineW();
+    if (command_line == nullptr) return false;
+    // Both the packaged modern CLSID and the per-user classic CLSID can be
+    // hosted by a DCOM surrogate whose parent is svchost.exe rather than
+    // Explorer or Directory Opus.  Matching our CLSIDs is more reliable than
+    // walking that unrelated process tree and cannot affect other handlers.
+    return contains_ordinal_insensitive(
+               command_line, awj::shell_extension::contract::modern_class_id) ||
+           contains_ordinal_insensitive(
+               command_line, awj::shell_extension::contract::class_id);
+  } catch (...) {
+    return false;
+  }
+}
+
+bool modern_nested_subcommands_supported() noexcept {
+  try {
+    const auto image_path = current_process_image_path();
+    if (!image_path) return true;
+    // Directory Opus renders the nested preset branch correctly. Windows
+    // Explorer does not support a subcommand that itself has subcommands;
+    // flatten those records for Explorer and its COM surrogate instead.
+    if (is_directory_opus_process_name(*image_path)) return true;
+    if (is_explorer_process_name(*image_path) ||
+        process_name_equals(*image_path, L"dllhost.exe")) {
+      return false;
+    }
+    // Keep direct COM probes and other classic hosts on the richer tree.
+    return true;
+  } catch (...) {
+    return true;
+  }
+}
+
+bool modern_configuration_is_available() noexcept {
+  try {
+    auto encoded = read_modern_configuration_file();
+    if (!encoded) return false;
+    auto decoded = awj::shell_extension::decode_configuration(*encoded);
+    if (!decoded) return false;
+    if (decoded->commands.empty()) return false;
+    const DWORD attributes = GetFileAttributesW(decoded->executable.c_str());
+    return attributes != INVALID_FILE_ATTRIBUTES &&
+           (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool should_hide_classic_menu_for_modern_host() noexcept {
+  return current_process_is_modern_menu_host() &&
+         modern_configuration_is_available();
+}
+
 HRESULT remove_modern_configuration_file() noexcept {
   const auto path = modern_configuration_path();
   if (!path) return S_OK;
@@ -204,16 +328,17 @@ std::optional<awj::shell_extension::RuntimeConfiguration>
 load_configuration(bool modern_mode = false) {
   auto encoded = modern_mode ? read_modern_configuration_file()
                              : std::nullopt;
-  if (!encoded) encoded = read_registry_configuration();
+  if (!encoded) {
+    // The modern package and the classic HKCU handler are separate
+    // registrations.  Falling back to the registry here would make a stale
+    // package render a second copy of the classic menu in Explorer.
+    if (modern_mode) return std::nullopt;
+    encoded = read_registry_configuration();
+  }
   if (!encoded) return std::nullopt;
   auto decoded = awj::shell_extension::decode_configuration(*encoded);
   if (!decoded) return std::nullopt;
-  if (modern_mode) {
-    std::erase_if(decoded->commands, [](const auto& command) {
-      return !command.group_label.empty();
-    });
-    if (decoded->commands.empty()) return std::nullopt;
-  }
+  if (modern_mode && decoded->commands.empty()) return std::nullopt;
   const DWORD attributes = GetFileAttributesW(decoded->executable.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES ||
       (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
@@ -551,6 +676,13 @@ class ContextMenu final : public IShellExtInit,
     try {
       if ((flags & (CMF_DEFAULTONLY | CMF_NOVERBS)) != 0 ||
           selection_.empty()) {
+        return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
+      }
+      // Explorer and Directory Opus can aggregate this classic HKCU handler
+      // with the packaged IExplorerCommand registration. Once the file-backed
+      // modern command tree is available, let those hosts render it only.
+      // Other classic hosts retain the HKCU fallback menu.
+      if (should_hide_classic_menu_for_modern_host()) {
         return MAKE_HRESULT(SEVERITY_SUCCESS, FACILITY_NULL, 0);
       }
       auto configuration = load_configuration();
@@ -927,6 +1059,24 @@ class ContextMenu final : public IShellExtInit,
             }
             group_commands.push_back(grouped);
             ++index;
+          }
+
+          if (!modern_nested_subcommands_supported()) {
+            // Windows Explorer drops a command whose own subcommands would
+            // create a second nested level. Keep every preset action visible
+            // and executable by making the preset name part of the leaf
+            // label. Directory Opus continues to receive the real cascading
+            // group below.
+            for (const auto& grouped : group_commands) {
+              auto flattened = grouped;
+              flattened.label = group_label + L" - " + grouped.label;
+              const HRESULT created = create_leaf(flattened);
+              if (FAILED(created)) {
+                release_explorer_commands(children);
+                return created;
+              }
+            }
+            continue;
           }
 
           auto* group = new (std::nothrow)
