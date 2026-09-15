@@ -19,6 +19,8 @@
 
 `AWJ.ShellExtension.dll` 同时实现 `IShellExtInit`、`IContextMenu` 和 `IExplorerCommand`。经典宿主从每用户 COM 注册读取配置；Windows 11 现代 Explorer 通过同目录的签名 sparse MSIX package 激活 `IExplorerCommand`。经典 HKCU handler 使用 `{8829EA47-8F26-4670-A910-348D2340DDAA}`，sparse package 使用独立的 `{63CBBCAE-762F-4224-92C6-B7395BFCD9E2}`；两个 CLSID 仍由同一个 DLL 类工厂提供，避免 Explorer 将两条注册路径合并后重复枚举子命令。
 
+主程序 `AWJ.exe` 不嵌入 MSIX package identity。这样即使 sparse package 尚未安装、已失效或指向旧的外部目录，用户仍可直接启动 AWJ；现代右键菜单的 package 注册是可选增强路径，不会阻塞主程序启动。
+
 经典路径继续读取 HKCU 下的 `REG_MULTI_SZ Configuration`，因此可保留用户预设分组并兼容 Directory Opus。现代路径只读取当前用户可写的 `%LOCALAPPDATA%\AWJimage\AWJimage.ShellExtension.Configuration` 文件；该文件由注册流程原子更新，并包含基础格式命令及用户预设分组。Windows 11 Explorer 的 `IExplorerCommand` 不支持“子命令自身再拥有子命令”，因此现代 Explorer 宿主将预设项展平为 `预设名 - 转换为 PNG` 等可执行叶命令，确保注入预设不会消失；DOpus 若直接承载命令对象则保留级联分组，若经 `dllhost.exe` 代理则同样使用展平项。文件不可用时，现代 COM 不回退到 HKCU 注册表，避免把经典菜单再次合并到 Explorer；此时 Explorer 的现代入口不显示，而经典 HKCU 入口仍可供未被抑制的宿主使用。现代 COM 使用 `KF_FLAG_NO_PACKAGE_REDIRECTION` 定位文件，避免 package identity 把路径重定向到另一份配置。两条路径共同提供：
 
 实机发现 Directory Opus 13.25 也会同时聚合 sparse package 的 `IExplorerCommand` 和 HKCU 经典 handler；若两个入口都返回菜单，DOpus 会在同一个父菜单下显示两套格式命令。因而当现代配置文件可用时，经典 `IContextMenu` 入口会在 Windows Explorer、明确命令行包含现代 sparse CLSID 的 `dllhost.exe` COM surrogate，以及 DOpus 的 `dopus.exe`、`dopusrt.exe`、`dopuscm.exe` 宿主中返回空菜单。这样两个宿主都只使用 package-backed 的现代命令树；其他传统宿主仍可使用 HKCU 经典回退。
