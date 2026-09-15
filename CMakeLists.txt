@@ -1161,6 +1161,8 @@ if(WIN32)
         src/ui/studio_shell_cli.cpp
         src/ui/studio_encode_dispatch.cpp
         src/ui/studio_queue_rows.cpp
+        src/ui/studio_update_ui.cpp
+        src/ui/studio_config_io.cpp
         src/ui/main.cpp
         src/ui/AWJ.manifest
         src/ui/AWJ.rc)
@@ -1182,6 +1184,8 @@ else()
         src/ui/studio_shell_cli.cpp
         src/ui/studio_encode_dispatch.cpp
         src/ui/studio_queue_rows.cpp
+        src/ui/studio_update_ui.cpp
+        src/ui/studio_config_io.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
