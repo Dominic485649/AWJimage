@@ -8,6 +8,7 @@
 #include <utility>
 
 #include "changelog_history.h"
+#include "studio_config_io.h"
 #include "studio_ui_util.h"
 
 import awj.core;
@@ -233,6 +234,115 @@ awj::update::ChannelPreference update_preference(const UiState& state) {
   return state.update_channel == "prerelease"
              ? awj::update::ChannelPreference::stable_and_prerelease
              : awj::update::ChannelPreference::stable_only;
+}
+
+void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
+                        const std::shared_ptr<UiState>& state) {
+  if (state->update_check_active) return;
+  if (state->update_worker.joinable()) state->update_worker.join();
+  state->update_check_active = true;
+  if (auto app = weak.lock()) {
+    (*app)->set_update_checking(true);
+    state->update_status_zh = "正在检查更新…";
+    state->update_status_en = "Checking for updates...";
+    sync_update_ui(**app, *state);
+  }
+  const auto last_sequence = state->last_verified_manifest_v2_sequence < 0
+                                 ? std::uint64_t{0}
+                                 : static_cast<std::uint64_t>(
+                                       state->last_verified_manifest_v2_sequence);
+  const auto preference = update_preference(*state);
+  state->update_worker = std::jthread(
+      [weak, state, last_sequence, preference](std::stop_token token) {
+        auto fetched = awj::update::fetch_verified_archive_manifest_v2(
+            last_sequence, token);
+        post_to_ui(weak, [state, preference,
+                          fetched = std::move(fetched)](AwjStudio& app) mutable {
+          state->update_check_active = false;
+          app.set_update_checking(false);
+          if (!fetched) {
+            state->update_status_zh =
+                std::format("检查失败：{}", fetched.error());
+            state->update_status_en = "Update check failed.";
+            sync_update_ui(app, *state);
+            return;
+          }
+          if (fetched->manifest.sequence >
+              static_cast<std::uint64_t>(
+                  std::numeric_limits<std::int64_t>::max())) {
+            state->update_status_zh = "检查失败：manifest sequence 超出本机范围。";
+            state->update_status_en = "Update check failed: sequence is out of range.";
+            sync_update_ui(app, *state);
+            return;
+          }
+
+          const auto before = capture_update_state(*state);
+          state->update_manifest_v2_raw = fetched->raw_bytes;
+          state->update_manifest_v2_signature = fetched->signature_base64;
+          state->update_keyring_raw = fetched->keyring_raw_bytes;
+          state->update_keyring_signature = fetched->keyring_signature_envelope;
+          if (const auto pending =
+                  awj::update::parse_version(state->pending_update_version);
+              pending && awj::update::should_clear_pending_for_revocation(
+                             awj::update::archive_manifest_v2_for_history(
+                                 fetched->manifest), *pending)) {
+            clear_pending_update(*state);
+          }
+          const auto current = awj::update::parse_version(AWJ_BUILD_VERSION);
+          if (!current) {
+            restore_update_state(*state, before);
+            state->update_status_zh = "检查失败：当前构建版本号非法。";
+            state->update_status_en = "Update check failed: invalid build version.";
+            sync_update_ui(app, *state);
+            return;
+          }
+          const auto candidate = awj::update::select_archive_candidate_v2(
+              fetched->manifest,
+              {.current_version = *current,
+               .updater_version = *current,
+               .preference = preference});
+          if (candidate) {
+            state->pending_update_version =
+                awj::update::to_string(candidate->version);
+            state->pending_update_channel =
+                std::string{awj::update::channel_name(candidate->channel)};
+            state->pending_update_release_url = candidate->release_url;
+            state->pending_update_published_at = candidate->published_at;
+            state->pending_update_changelog_zh_cn = candidate->changelog.zh_cn;
+            state->pending_update_changelog_en = candidate->changelog.en;
+          }
+          state->last_successful_update_check_at =
+              std::chrono::duration_cast<std::chrono::seconds>(
+                  std::chrono::system_clock::now().time_since_epoch())
+                  .count();
+          state->last_verified_manifest_v2_sequence =
+              static_cast<std::int64_t>(fetched->manifest.sequence);
+          const bool retained_pending = !candidate && pending_update_is_newer(*state);
+          state->update_status_zh =
+              candidate ? "发现可用更新。"
+                        : retained_pending ? "检查成功；保留之前发现的更新。"
+                                           : "已是最新版。";
+          state->update_status_en =
+              candidate ? "An update is available."
+                        : retained_pending
+                              ? "Check succeeded; the previously found update remains available."
+                              : "Up to date.";
+
+          if (auto saved = persist_studio_config_if_changed(app, *state);
+              !saved) {
+            restore_update_state(*state, before);
+            state->update_status_zh =
+                std::format("检查失败：无法持久化状态：{}", saved.error());
+            state->update_status_en =
+                "Update check failed: state could not be saved.";
+          } else {
+            sync_update_history(state->update_history_rows,
+                                awj::update::archive_manifest_v2_for_history(
+                                    fetched->manifest));
+          }
+          sync_update_ui(app, *state);
+        });
+      });
 }
 
 }  // namespace awj::studio

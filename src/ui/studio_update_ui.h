@@ -48,6 +48,8 @@ bool changelog_should_open_on_start(const UiState& state);
 void restore_cached_update_history(UiState& state);
 awj::update::ChannelPreference update_preference(const UiState& state);
 void sync_update_ui(AwjStudio& app, const UiState& state);
+void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
+                        const std::shared_ptr<UiState>& state);
 void sync_update_history(
     const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest);
