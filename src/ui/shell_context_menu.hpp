@@ -12,12 +12,15 @@
 
 namespace awj::shell_context_menu {
 
-inline constexpr std::uint32_t schema_version = 4;
+inline constexpr std::uint32_t schema_version = 5;
 inline constexpr std::wstring_view owner_value_name = L"AWJimage.Owner";
 inline constexpr std::wstring_view schema_value_name = L"AWJimage.SchemaVersion";
 inline constexpr std::wstring_view owner_value = L"AWJimage";
 inline constexpr std::wstring_view parent_canonical_verb = L"AWJimage.Convert";
-inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v4.A";
+// The shared tree is retained only for optional user preset entries. Built-in
+// conversion verbs are exposed through the static CommandStore/SubCommands
+// layout because third-party file managers do not all resolve recursive trees.
+inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v5.Presets.A";
 
 struct FormatParams {
   std::wstring quality_text{};
@@ -79,6 +82,8 @@ struct RegistrySchema {
   std::vector<std::wstring> parent_roots{};
   std::vector<std::wstring> keys{};
   std::vector<RegistryValueSpec> values{};
+  std::vector<std::wstring> machine_keys{};
+  std::vector<RegistryValueSpec> machine_values{};
 
   bool operator==(const RegistrySchema&) const = default;
 };
@@ -88,10 +93,17 @@ std::span<const CommandSpec> command_specs() noexcept;
 std::wstring image_parent_key();
 std::wstring directory_parent_key();
 std::wstring extension_parent_key(std::wstring_view extension);
+std::wstring class_extension_parent_key(std::wstring_view extension);
+std::wstring ico_parent_key();
 std::wstring shared_tree_key(int slot = 0);
+std::wstring machine_command_store_key(std::wstring_view command_key);
+std::wstring machine_command_store_name(std::wstring_view command_key);
+std::wstring static_subcommands(bool install_avif_png_command);
 std::wstring legacy_shared_tree_key();
 std::vector<std::wstring> legacy_root_keys();
 std::vector<std::wstring> owned_root_keys();
+std::vector<std::wstring> legacy_v4_transaction_roots();
+std::vector<std::wstring> owned_machine_root_keys();
 InstallPlan build_install_plan();
 std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
                                         std::wstring_view format,
