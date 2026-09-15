@@ -1166,6 +1166,7 @@ if(WIN32)
         src/ui/studio_import.cpp
         src/ui/studio_template_theme.cpp
         src/ui/studio_import_dispatch.cpp
+        src/ui/studio_presets.cpp
         src/ui/main.cpp
         src/ui/AWJ.manifest
         src/ui/AWJ.rc)
@@ -1192,6 +1193,7 @@ else()
         src/ui/studio_import.cpp
         src/ui/studio_template_theme.cpp
         src/ui/studio_import_dispatch.cpp
+        src/ui/studio_presets.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
