@@ -742,6 +742,11 @@ void handle_queue_pointer_event(AwjStudio& app,
     }
     auto& item = state->queue_items[static_cast<std::size_t>(index)];
     const auto now = std::chrono::steady_clock::now();
+    if (kind == 4) {
+      state->drag_reordered = true;
+      state->last_click_id = 0;
+      return;
+    }
     if (kind == 0) {
       state->drag_reordered = false;
       return;

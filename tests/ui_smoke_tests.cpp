@@ -284,6 +284,9 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
   app->set_queue_failed_only(false);
   app->set_task_rows(task_rows());
   app->set_selected_queue_index(-1);
+  app->set_queue_filename_width(170.0f);
+  app->set_queue_size_width(72.0f);
+  app->set_queue_status_width(104.0f);
   app->window().set_size(slint::LogicalSize({1220.0f, 827.0f}));
   slint::select_bundled_translation("");
 
@@ -350,7 +353,7 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
   const auto before_status = app->get_queue_status_width();
   drag(header_status, -18.0f);
   if (std::fabs(app->get_queue_status_width() - before_status + 18.0f) > 1.0f)
-    return fail("status column pointer drag failed");
+    return fail(std::format("status column pointer drag failed: {} -> {}", before_status, app->get_queue_status_width()));
   return 0;
 }
 

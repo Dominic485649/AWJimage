@@ -534,6 +534,9 @@ export component QueuePage inherits VerticalLayout {
                          return root.queue-drag-dropped(event, drop-row.drop-index);
                      }
                      row-drag := DragArea {
+                         changed dragging => {
+                             if (self.dragging) { root.queue-row-pointer-event(drop-row.source-index, 0, 4, 0); }
+                         }
                          enabled: !root.running && !row.locked;
                          allow-move: !root.running && !row.locked;
                          data: root.queue-drag-data(drop-row.source-index);

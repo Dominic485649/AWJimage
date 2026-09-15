@@ -127,11 +127,14 @@ std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands();
 
 std::expected<bool, std::string> compatibility_installed();
 std::expected<void, std::string> stage_user_menu(
-    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+    std::wstring_view id, bool machine, const std::filesystem::path& exe, const MenuParams& params,
     std::span<const std::wstring> names, bool compatibility, bool remove_menu);
+std::expected<void, std::string> finish_user_menu(std::wstring_view id, bool commit);
 std::expected<void, std::string> stage_machine_menu(
-    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
-    bool remove_menu);
+    const std::filesystem::path& exe, const MenuParams& params,
+    bool remove_menu, std::wstring_view id, std::wstring_view sid);
+std::expected<void, std::string> recover_machine_menu();
+std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid);
 std::expected<bool, std::string> machine_menu_matches(
     const std::filesystem::path& exe, const MenuParams& params);
 

@@ -3,9 +3,9 @@
 #endif
 #include <windows.h>
 #include <aclapi.h>
-#include <ktmw32.h>
 #include "shell_context_menu.hpp"
 #include "shell_elevation.hpp"
+#include "menu_transaction_state.hpp"
 #include "isolated_registry.hpp"
 #include <cstdio>
 #include <filesystem>
@@ -90,22 +90,15 @@ int wmain(int argc, wchar_t** argv) try {
   menu::MenuParams params{};
   for (auto& value : params) value.quality_text = L"73";
   params[0].install_avif_png_command = true;
-  // KTM rollback and commit use the same isolated HKCU as journal tests.
-  {
-    const auto tx = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
-    check(tx != INVALID_HANDLE_VALUE, "cannot create rollback transaction");
-    menu::MenuTransaction rollback{tx};
-    require(menu::stage_user_menu(tx, exe, params, {}, false, false));
-    check(!*menu::is_installed(), "staged user menu became visible before commit");
-  }
+  const std::wstring rollback_id = L"{62B1DC4C-FAF4-46E9-A5E0-FE7DBD677210}";
+  require(menu::stage_user_menu(rollback_id, false, exe, params, {}, false, false));
+  check(!menu::reconcile(exe, params), "another operation recovered a live staged menu");
+  require(menu::finish_user_menu(rollback_id, false));
   check(!*menu::is_installed(), "abandoned transaction left a menu");
-  {
-    const auto tx = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
-    check(tx != INVALID_HANDLE_VALUE, "cannot create commit transaction");
-    menu::MenuTransaction commit{tx};
-    require(menu::stage_user_menu(tx, exe, params, {}, false, false));
-    require(commit.commit());
-  }
+  const std::wstring commit_id = L"{62B1DC4C-FAF4-46E9-A5E0-FE7DBD677211}";
+  require(menu::stage_user_menu(commit_id, false, exe, params, {}, false, false));
+  require(menu::record_menu_commit(commit_id, false));
+  require(menu::finish_user_menu(commit_id, true));
   healthy(exe, params);
   const std::vector<std::wstring> compatibility_presets{L"测试预设"};
   require(menu::reconcile(exe, params, compatibility_presets, false, true));

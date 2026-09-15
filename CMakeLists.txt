@@ -1240,12 +1240,13 @@ target_link_libraries(awj_update_manifest_sign PRIVATE unofficial-sodium::sodium
 if(WIN32)
     add_library(awj_shell_context_menu STATIC
         src/ui/menu_config_journal.cpp
+        src/ui/menu_transaction_state.cpp
         src/ui/shell_context_menu.cpp
         src/ui/shell_elevation.cpp)
     avif_enable_common_options(awj_shell_context_menu)
     target_include_directories(awj_shell_context_menu PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
-    target_link_libraries(awj_shell_context_menu PUBLIC shlwapi shell32 ole32 ktmw32)
+    target_link_libraries(awj_shell_context_menu PUBLIC shlwapi shell32 ole32)
 endif()
 
 if(WIN32)

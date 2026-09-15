@@ -1,8 +1,8 @@
 #include "shell_elevation.hpp"
+#include "menu_transaction_state.hpp"
 
 #define NOMINMAX
 #include <windows.h>
-#include <ktmw32.h>
 #include <objbase.h>
 #include <sddl.h>
 #include <shellapi.h>
@@ -17,6 +17,15 @@
 #include <utility>
 
 namespace awj::shell_context_menu {
+struct MenuTransaction::Impl {
+  HANDLE pipe{}, child{};
+  std::wstring id;
+  bool machine{}, user_staged{}, committed{};
+  ~Impl() {
+    if (pipe && pipe != INVALID_HANDLE_VALUE) CloseHandle(pipe);
+    if (child) CloseHandle(child);
+  }
+};
 namespace {
 
 struct Handle {
@@ -38,7 +47,6 @@ struct WireFormat {
 };
 struct Request {
   std::uint64_t magic{0x41574a4d454e5514ull};
-  std::uint64_t transaction{};
   std::uint32_t remove{};
   std::array<WireFormat, 5> formats{};
 };
@@ -161,11 +169,8 @@ FormatParams decode(const WireFormat& wire) {
       .max_long_edge_text = text[5], .max_short_edge_text = text[6], .scale_percent_text = text[7]};
 }
 
-void elevated_stage(HANDLE transaction, const MenuParams& params, bool remove_menu) {
-  GUID guid{};
-  if (FAILED(CoCreateGuid(&guid))) system_error("Create menu session");
-  wchar_t nonce[40]{};
-  StringFromGUID2(guid, nonce, 40);
+void elevated_stage(MenuTransaction::Impl& session, const MenuParams& params, bool remove_menu) {
+  const auto& nonce = session.id;
   const auto pid = GetCurrentProcessId();
   const auto name = std::format(L"\\\\.\\pipe\\AWJimage.Menu.{}.{}", pid, nonce);
   PSECURITY_DESCRIPTOR raw_security{};
@@ -212,7 +217,6 @@ void elevated_stage(HANDLE transaction, const MenuParams& params, bool remove_me
   if (!GetNamedPipeClientProcessId(pipe.value, &client) || client != GetProcessId(child.value) ||
       !same_executable(child.value)) throw std::runtime_error("Unexpected menu helper process.");
   Request request;
-  request.transaction = reinterpret_cast<std::uintptr_t>(transaction);
   request.remove = remove_menu;
   for (std::size_t i = 0; i < params.size(); ++i) request.formats[i] = encode(params[i]);
   transfer(pipe.value, &request, sizeof(request), true);
@@ -222,27 +226,61 @@ void elevated_stage(HANDLE transaction, const MenuParams& params, bool remove_me
     reply.message.back() = '\0';
     throw std::runtime_error(reply.message.data());
   }
-  if (WaitForSingleObject(child.value, 30000) != WAIT_OBJECT_0)
-    throw std::runtime_error("Menu helper did not exit; transaction rolled back.");
-  DWORD exit_code{};
-  if (!GetExitCodeProcess(child.value, &exit_code) || exit_code)
-    throw std::runtime_error("Menu helper failed; transaction rolled back.");
+  session.pipe = std::exchange(pipe.value, nullptr);
+  session.child = std::exchange(child.value, nullptr);
 }
 
 }  // namespace
 
-MenuTransaction::~MenuTransaction() {
-  if (handle_) {
-    RollbackTransaction(handle_);
-    CloseHandle(handle_);
-  }
-}
+MenuTransaction::MenuTransaction(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
+MenuTransaction::~MenuTransaction() { if (impl_ && !impl_->committed) (void)rollback(); }
+std::wstring_view MenuTransaction::id() const noexcept { return impl_->id; }
+bool MenuTransaction::machine() const noexcept { return impl_->machine; }
 
 std::expected<void, std::string> MenuTransaction::commit() {
-  if (!handle_ || !CommitTransaction(handle_))
-    return std::unexpected{std::format("提交右键菜单事务失败：{}。", GetLastError())};
-  CloseHandle(std::exchange(handle_, nullptr));
+  try {
+    if (impl_->machine) {
+      DWORD decision = 1;
+      transfer(impl_->pipe, &decision, sizeof(decision), true);
+      Reply reply;
+      transfer(impl_->pipe, &reply, sizeof(reply), false);
+      if (reply.error) {
+        reply.message.back() = '\0';
+        throw std::runtime_error(reply.message.data());
+      }
+    } else if (auto recorded = record_menu_commit(impl_->id, false); !recorded)
+      return recorded;
+  } catch (const std::exception& error) {
+    auto committed = menu_commit_recorded(impl_->id, impl_->machine);
+    if (!committed || !*committed) return std::unexpected{error.what()};
+  }
+  impl_->committed = true;
+  (void)finish_user_menu(impl_->id, true);
+  if (impl_->child) WaitForSingleObject(impl_->child, 30000);
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
+}
+
+std::expected<void, std::string> MenuTransaction::rollback() {
+  std::string error;
+  if (impl_->pipe) {
+    try {
+      DWORD decision = 0;
+      transfer(impl_->pipe, &decision, sizeof(decision), true);
+      Reply reply;
+      transfer(impl_->pipe, &reply, sizeof(reply), false);
+      if (reply.error) { reply.message.back() = '\0'; error = reply.message.data(); }
+    } catch (const std::exception& failure) { error = failure.what(); }
+    CloseHandle(std::exchange(impl_->pipe, nullptr));
+    if (WaitForSingleObject(impl_->child, 30000) != WAIT_OBJECT_0)
+      error += " 提权进程尚未完成恢复，下一次菜单操作将重试。";
+  }
+  if (impl_->user_staged) {
+    if (auto restored = finish_user_menu(impl_->id, false); !restored) error += restored.error();
+    impl_->user_staged = false;
+  }
+  impl_->committed = true;
+  if (!error.empty()) return std::unexpected{error};
   return {};
 }
 
@@ -257,22 +295,23 @@ std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change
     if (!previous) return std::unexpected{previous.error()};
     const auto machine = legacy_machine_commands();
     if (!machine) return std::unexpected{machine.error()};
-    Handle raw{CreateTransaction(nullptr, nullptr, 0, 0, 0, 120000, nullptr)};
-    if (raw.value == INVALID_HANDLE_VALUE) system_error("Create registry transaction");
-    auto transaction = std::make_shared<MenuTransaction>(raw.value);
-    raw.value = nullptr;
-    if ((!remove_menu && compatibility) || *previous || !machine->empty()) {
+    auto session = std::make_unique<MenuTransaction::Impl>();
+    GUID guid{};
+    if (FAILED(CoCreateGuid(&guid))) system_error("Create menu session");
+    wchar_t id[40]{};
+    StringFromGUID2(guid, id, 40);
+    session->id = id;
+    session->machine = (!remove_menu && compatibility) || *previous || !machine->empty();
+    if (session->machine) {
       const bool remove_machine = remove_menu || !compatibility;
-      if (elevated()) {
-        if (auto staged = stage_machine_menu(transaction->handle(), exe, params, remove_machine); !staged)
-          return std::unexpected{staged.error()};
-      } else {
-        elevated_stage(transaction->handle(), params, remove_machine);
-      }
+      elevated_stage(*session, params, remove_machine);
     }
-    if (auto staged = stage_user_menu(transaction->handle(), exe, params, names,
+    auto* prepared = session.get();
+    auto transaction = std::make_shared<MenuTransaction>(std::move(session));
+    if (auto staged = stage_user_menu(prepared->id, prepared->machine, exe, params, names,
                                       compatibility, remove_menu); !staged)
       return std::unexpected{staged.error()};
+    prepared->user_staged = true;
     return transaction;
   } catch (const std::exception& error) {
     return std::unexpected{error.what()};
@@ -300,26 +339,26 @@ int run_elevation_helper(int argc, wchar_t* argv[]) noexcept {
     if (pipe.value == INVALID_HANDLE_VALUE) return 3;
     ULONG server{};
     if (!GetNamedPipeServerProcessId(pipe.value, &server) || server != pid) return 4;
-    Handle parent{OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_DUP_HANDLE,
+    Handle parent{OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION,
                               FALSE, server)};
     if (!parent.value || !same_executable(parent.value)) return 4;
+    auto sid = process_user_sid(parent.value);
+    if (!sid) return 4;
+    Handle registration{CreateMutexW(nullptr, FALSE, L"Global\\AWJimage.MachineMenu")};
+    if (!registration.value) return 4;
+    const auto locked = WaitForSingleObject(registration.value, 0);
+    if (locked != WAIT_OBJECT_0 && locked != WAIT_ABANDONED) return 4;
+    struct Unlock { HANDLE handle; ~Unlock() { ReleaseMutex(handle); } } unlock{registration.value};
+    struct Recovery { ~Recovery() { try { (void)recover_machine_menu(); } catch (...) {} } } recovery;
     Request request;
     transfer(pipe.value, &request, sizeof(request), false);
     if (request.magic != Request{}.magic || request.remove > 1) return 5;
     Reply reply;
     try {
-      HANDLE duplicated{};
-      if (!DuplicateHandle(parent.value, reinterpret_cast<HANDLE>(request.transaction),
-          GetCurrentProcess(), &duplicated, 0, FALSE, DUPLICATE_SAME_ACCESS))
-        system_error("Duplicate caller transaction");
-      Handle transaction{duplicated};
-      DWORD outcome{}, isolation{}, flags{}, timeout{};
-      if (!GetTransactionInformation(duplicated, &outcome, &isolation, &flags, &timeout, 0, nullptr))
-        system_error("Validate caller transaction");
       MenuParams params;
       for (std::size_t i = 0; i < params.size(); ++i) params[i] = decode(request.formats[i]);
       const auto exe = process_exe(GetCurrentProcess());
-      if (auto result = stage_machine_menu(duplicated, exe, params, request.remove != 0); !result)
+      if (auto result = stage_machine_menu(exe, params, request.remove != 0, nonce, *sid); !result)
         throw std::runtime_error(result.error());
     } catch (const std::exception& error) {
       reply.error = 1;
@@ -327,6 +366,16 @@ int run_elevation_helper(int argc, wchar_t* argv[]) noexcept {
       std::copy_n(text.begin(), std::min(text.size(), reply.message.size() - 1), reply.message.begin());
     }
     transfer(pipe.value, &reply, sizeof(reply), true);
+    if (!reply.error) {
+      DWORD decision{};
+      transfer(pipe.value, &decision, sizeof(decision), false);
+      auto result = decision == 1 ? commit_machine_menu(nonce, *sid) : recover_machine_menu();
+      if (!result) {
+        reply.error = 1;
+        std::copy_n(result.error().begin(), std::min(result.error().size(), reply.message.size() - 1), reply.message.begin());
+      }
+      transfer(pipe.value, &reply, sizeof(reply), true);
+    }
     return reply.error ? 1 : 0;
   } catch (...) {
     return 6;

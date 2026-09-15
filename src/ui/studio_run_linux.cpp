@@ -2694,6 +2694,8 @@ int run_studio_ui() {
       if (button != 0) return;
       if (kind == 0) {
         state->drag_reordered = false;
+      } else if (kind == 4) {
+        state->drag_reordered = true;
       } else if (kind == 1) {
         const bool dragged = std::exchange(state->drag_reordered, false);
         if (auto app = weak.lock(); app && !dragged && index >= 0 &&

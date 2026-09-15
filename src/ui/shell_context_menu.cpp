@@ -4,7 +4,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <ktmw32.h>
+#include "menu_transaction_state.hpp"
+#include <objbase.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
 #include <shlwapi.h>
@@ -19,31 +20,33 @@
 namespace awj::shell_context_menu {
 namespace {
 
-thread_local HANDLE native_transaction{};
 thread_local HKEY native_hive{HKEY_CURRENT_USER};
 thread_local REGSAM native_view{};
+thread_local std::wstring staged_id;
+thread_local bool staged_machine{};
+thread_local bool defer_commit{};
+
+struct StageScope {
+  bool previous{defer_commit};
+  StageScope() { defer_commit = true; }
+  ~StageScope() { defer_commit = previous; staged_id.clear(); staged_machine = false; }
+};
 
 struct NativeRegistryScope {
-  HANDLE transaction{native_transaction};
   HKEY hive{native_hive};
   REGSAM view{native_view};
-  NativeRegistryScope(HANDLE tx, bool machine) {
-    native_transaction = tx;
+  explicit NativeRegistryScope(bool machine) {
     native_hive = machine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
     native_view = machine ? KEY_WOW64_64KEY : 0;
   }
   ~NativeRegistryScope() {
-    native_transaction = transaction;
     native_hive = hive;
     native_view = view;
   }
 };
 
 LSTATUS open_native_key(const wchar_t* path, REGSAM access, HKEY* key) {
-  return native_transaction
-      ? RegOpenKeyTransactedW(native_hive, path, 0, access | native_view,
-                              key, native_transaction, nullptr)
-      : RegOpenKeyExW(native_hive, path, 0, access | native_view, key);
+  return RegOpenKeyExW(native_hive, path, 0, access | native_view, key);
 }
 
 LSTATUS get_native_value(const wchar_t* path, const wchar_t* name, DWORD flags,
@@ -56,24 +59,14 @@ LSTATUS get_native_value(const wchar_t* path, const wchar_t* name, DWORD flags,
   return result;
 }
 
-LSTATUS delete_native_tree(const std::wstring& path, unsigned depth = 0) {
-  if (!native_transaction) return RegDeleteTreeW(native_hive, path.c_str());
-  if (depth > 64) return ERROR_INVALID_DATA;
+LSTATUS delete_native_tree(const std::wstring& path) {
   HKEY key{};
   auto status = open_native_key(path.c_str(), KEY_READ | KEY_WRITE | DELETE, &key);
   if (status != ERROR_SUCCESS) return status;
-  for (;;) {
-    wchar_t child[256]{};
-    DWORD length = 256;
-    status = RegEnumKeyExW(key, 0, child, &length, nullptr, nullptr, nullptr, nullptr);
-    if (status != ERROR_SUCCESS) break;
-    status = delete_native_tree(path + L"\\" + child, depth + 1);
-    if (status != ERROR_SUCCESS) break;
-  }
+  status = RegDeleteTreeW(key, nullptr);
   RegCloseKey(key);
-  if (status != ERROR_NO_MORE_ITEMS) return status;
-  return RegDeleteKeyTransactedW(native_hive, path.c_str(), native_view, 0,
-                                 native_transaction, nullptr);
+  if (status != ERROR_SUCCESS) return status;
+  return RegDeleteKeyExW(native_hive, path.c_str(), native_view, 0);
 }
 
 constexpr std::wstring_view kImageParent =
@@ -173,11 +166,7 @@ std::expected<RegistryKey, std::string> create_key(std::wstring_view subkey,
                                                   REGSAM access = KEY_READ | KEY_WRITE) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = native_transaction
-      ? RegCreateKeyTransactedW(native_hive, path.c_str(), 0, nullptr,
-          REG_OPTION_NON_VOLATILE, access | native_view, nullptr, &raw, nullptr,
-          native_transaction, nullptr)
-      : RegCreateKeyExW(native_hive, path.c_str(), 0, nullptr,
+  const auto status = RegCreateKeyExW(native_hive, path.c_str(), 0, nullptr,
           REG_OPTION_NON_VOLATILE, access | native_view, nullptr, &raw, nullptr);
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("创建右键菜单注册表项", subkey, status)};
@@ -893,10 +882,19 @@ std::expected<std::vector<SnapshotRoot>, std::string> snapshot_roots(
 }
 
 std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& roots) {
-  if (native_transaction) return {};
   if (auto r = set_string(kTransaction, owner_value_name, owner_value); !r) return r;
   if (auto r = set_dword(kTransaction, schema_value_name, schema_version); !r) return r;
   if (auto r = set_dword(kTransaction, L"State", 0); !r) return r;
+  if (!staged_id.empty()) {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+      return std::unexpected{"无法记录菜单事务进程身份。"};
+    if (auto r = set_string(kTransaction, L"Id", staged_id); !r) return r;
+    if (auto r = set_dword(kTransaction, L"Machine", staged_machine); !r) return r;
+    if (auto r = set_dword(kTransaction, L"Pid", GetCurrentProcessId()); !r) return r;
+    if (auto r = set_dword(kTransaction, L"CreatedLow", created.dwLowDateTime); !r) return r;
+    if (auto r = set_dword(kTransaction, L"CreatedHigh", created.dwHighDateTime); !r) return r;
+  }
   for (std::size_t index = 0; index < roots.size(); ++index) {
     const auto& root = roots[index];
     const auto key = std::format(L"{}\\{:03}", kTransaction, index);
@@ -913,7 +911,6 @@ std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& 
 }
 
 std::expected<void, std::string> recover_locked() {
-  if (native_transaction) return {};
   auto exists = key_exists(kTransaction);
   if (!exists) return std::unexpected{exists.error()};
   if (!*exists) return {};
@@ -926,6 +923,22 @@ std::expected<void, std::string> recover_locked() {
   // State 0 never changes live registrations; State 2 has fully committed.
   if (!*state || **state == 0 || **state == 2) return delete_tree(kTransaction);
   if (**state != 1) return std::unexpected{"注册事务状态无效。"};
+  auto id = read_string(kTransaction, L"Id");
+  if (!id) return std::unexpected{id.error()};
+  if (*id) {
+    auto machine = read_dword(kTransaction, L"Machine");
+    auto pid = read_dword(kTransaction, L"Pid");
+    auto low = read_dword(kTransaction, L"CreatedLow");
+    auto high = read_dword(kTransaction, L"CreatedHigh");
+    if (!machine || !*machine || **machine > 1 || !pid || !*pid || !low || !*low || !high || !*high)
+      return std::unexpected{"菜单事务进程身份无效。"};
+    auto committed = menu_commit_recorded(**id, **machine != 0);
+    if (!committed) return std::unexpected{committed.error()};
+    if (*committed) return delete_tree(kTransaction);
+    if (menu_owner_active(**pid, FILETIME{**low, **high}) &&
+        !(defer_commit && **pid == GetCurrentProcessId() && staged_id == **id))
+      return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+  }
   auto count = read_dword(kTransaction, L"Count");
   const auto allowed = owned_root_keys();
   if (!count || !*count || **count != allowed.size()) {
@@ -1013,7 +1026,7 @@ std::expected<void, std::string> verify_no_obsolete_roots(const RegistrySchema& 
 }
 
 std::expected<void, std::string> commit_journal() {
-  if (native_transaction) return {};
+  if (defer_commit) return {};
   if (auto result = set_dword(kTransaction, L"State", 2); !result) return result;
   if (auto result = flush_journal(); !result) return result;
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -1044,21 +1057,6 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names,
                                          bool force_install, bool compatibility) {
-  if (compatibility && !native_transaction) {
-    const auto transaction = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
-    if (transaction == INVALID_HANDLE_VALUE)
-      return std::unexpected{"无法创建用户菜单事务。"};
-    struct TransactionGuard {
-      HANDLE handle;
-      ~TransactionGuard() { RollbackTransaction(handle); CloseHandle(handle); }
-    } guard{transaction};
-    NativeRegistryScope scope{transaction, false};
-    auto result = reconcile(awj_exe, menu_params, preset_names, force_install, true);
-    if (!result) return result;
-    if (!CommitTransaction(transaction)) return std::unexpected{"提交用户菜单事务失败。"};
-    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-    return {};
-  }
   RegistrationLock lock;
   if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
   if (auto recovered = recover_locked(); !recovered) return recovered;
@@ -1083,6 +1081,15 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
     return std::unexpected{saved.error() + (recovered ? "" : " " + recovered.error())};
   }
   auto apply = [&]() -> std::expected<void, std::string> {
+    if (compatibility) {
+      auto preview = build_registry_schema(exe, menu_params, plan, preset_names, 1, true);
+      const auto preview_root = shared_tree_key(1);
+      std::erase_if(preview.keys, [&](const auto& key) { return !key.starts_with(preview_root); });
+      std::erase_if(preview.values, [&](const auto& value) { return !value.key.starts_with(preview_root); });
+      if (auto r = delete_tree(preview_root); !r) return r;
+      if (auto r = apply_schema(preview); !r) return r;
+      if (auto r = verify_schema(preview); !r) return r;
+    }
     const auto shared = shared_tree_key(next);
     if (auto r = delete_tree(shared); !r) return r;
     RegistrySchema tree = schema;
@@ -1227,18 +1234,33 @@ RegistrySchema machine_schema(const std::filesystem::path& exe,
 }
 
 std::expected<void, std::string> stage_user_menu(
-    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+    std::wstring_view id, bool machine, const std::filesystem::path& exe, const MenuParams& params,
     std::span<const std::wstring> names, bool compatibility, bool remove_menu) {
-  if (!transaction) return std::unexpected{"注册表事务句柄无效。"};
-  NativeRegistryScope scope{transaction, false};
+  if (auto restored = recover(); !restored) return restored;
+  StageScope scope;
+  staged_id = id;
+  staged_machine = machine;
   return remove_menu ? remove() : reconcile(exe, params, names, true, compatibility);
 }
 
-std::expected<void, std::string> stage_machine_menu(
-    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+std::expected<void, std::string> finish_user_menu(std::wstring_view id, bool commit) {
+  RegistrationLock lock;
+  if (!lock.held) return std::unexpected{"无法锁定菜单事务。"};
+  auto stored = read_string(kTransaction, L"Id");
+  if (!stored) return std::unexpected{stored.error()};
+  if (!*stored) return {};
+  if (**stored != id) return std::unexpected{"菜单事务身份不匹配。"};
+  if (commit) return commit_journal();
+  StageScope scope;
+  staged_id = id;
+  return recover_locked();
+}
+
+namespace {
+constexpr wchar_t machine_journal[] = L"SOFTWARE\\AWJimage.MenuTransaction";
+std::expected<void, std::string> apply_machine_menu(
+    const std::filesystem::path& exe, const MenuParams& params,
     bool remove_menu) {
-  if (!transaction) return std::unexpected{"机器注册必须使用受保护的系统事务。"};
-  NativeRegistryScope scope{transaction, true};
   const auto schema = machine_schema(exe, params);
   if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
   for (const auto name : kMachineCommands) {
@@ -1265,10 +1287,86 @@ std::expected<void, std::string> stage_machine_menu(
   if (auto applied = apply_schema(schema); !applied) return applied;
   return verify_schema(schema);
 }
+}
+
+std::expected<void, std::string> recover_machine_menu() {
+  NativeRegistryScope scope{true};
+  auto exists = key_exists(machine_journal);
+  if (!exists) return std::unexpected{exists.error()};
+  if (!*exists) return {};
+  auto protected_key = protected_machine_key(machine_journal, false);
+  if (!protected_key) return std::unexpected{protected_key.error()};
+  RegistryKey secured{*protected_key};
+  auto state = read_dword(machine_journal, L"State");
+  if (!state) return std::unexpected{state.error()};
+  if (!*state || **state == 0) return delete_tree(machine_journal);
+  if (**state != 1) return std::unexpected{"机器菜单事务状态无效。"};
+  auto id = read_string(machine_journal, L"Id");
+  auto sid = read_string(machine_journal, L"Sid");
+  if (!id || !*id || !sid || !*sid) return std::unexpected{"机器菜单事务身份缺失。"};
+  auto committed = menu_commit_recorded(**id, true, **sid);
+  if (!committed) return std::unexpected{committed.error()};
+  if (*committed) return delete_tree(machine_journal);
+  std::array<bool, std::size(kMachineCommands)> present{};
+  for (std::size_t i = 0; i < present.size(); ++i) {
+    const auto backup = std::format(L"{}\\{:03}", machine_journal, i);
+    auto value = read_dword(backup, L"Present");
+    if (!value || !*value || **value > 1) return std::unexpected{"受保护的机器菜单快照无效。"};
+    present[i] = **value != 0;
+    if (present[i]) {
+      auto data = key_exists(backup + L"\\Data");
+      if (!data || !*data) return std::unexpected{"受保护的机器菜单快照缺失。"};
+    }
+  }
+  for (std::size_t i = 0; i < present.size(); ++i) {
+    const auto target = std::wstring{kMachineCommandPrefix} + std::wstring{kMachineCommands[i]};
+    if (auto removed = delete_tree(target); !removed) return removed;
+    if (present[i]) {
+      if (auto copied = copy_tree(std::format(L"{}\\{:03}\\Data", machine_journal, i), target); !copied) return copied;
+    }
+  }
+  return delete_tree(machine_journal);
+}
+
+std::expected<void, std::string> stage_machine_menu(
+    const std::filesystem::path& exe, const MenuParams& params, bool remove_menu,
+    std::wstring_view id, std::wstring_view sid) {
+  if (auto restored = recover_machine_menu(); !restored) return restored;
+  NativeRegistryScope scope{true};
+  const auto schema = machine_schema(exe, params);
+  if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
+  auto protected_key = protected_machine_key(machine_journal, false);
+  if (!protected_key) return std::unexpected{protected_key.error()};
+  RegistryKey secured{*protected_key};
+  if (auto r = set_dword(machine_journal, L"State", 0); !r) return r;
+  if (auto r = set_string(machine_journal, L"Id", id); !r) return r;
+  if (auto r = set_string(machine_journal, L"Sid", sid); !r) return r;
+  for (std::size_t i = 0; i < std::size(kMachineCommands); ++i) {
+    const auto source = std::wstring{kMachineCommandPrefix} + std::wstring{kMachineCommands[i]};
+    const auto backup = std::format(L"{}\\{:03}", machine_journal, i);
+    auto present = key_exists(source);
+    if (!present) return std::unexpected{present.error()};
+    if (auto r = set_dword(backup, L"Present", *present); !r) return r;
+    if (*present) {
+      if (auto r = copy_tree(source, backup + L"\\Data"); !r) return r;
+    }
+  }
+  if (auto r = set_dword(machine_journal, L"State", 1); !r) return r;
+  if (RegFlushKey(secured.get()) != ERROR_SUCCESS) return std::unexpected{"无法持久化机器菜单快照。"};
+  return apply_machine_menu(exe, params, remove_menu);
+}
+
+std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid) {
+  if (auto recorded = record_menu_commit(id, true, sid); !recorded) return recorded;
+  NativeRegistryScope scope{true};
+  // The receipt is the durable commit point; leftover backup cleanup is retryable.
+  (void)delete_tree(machine_journal);
+  return {};
+}
 
 std::expected<bool, std::string> machine_menu_matches(
     const std::filesystem::path& exe, const MenuParams& params) {
-  NativeRegistryScope scope{nullptr, true};
+  NativeRegistryScope scope{true};
   return verify_schema(machine_schema(exe, params)).has_value();
 }
 

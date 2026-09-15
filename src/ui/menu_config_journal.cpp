@@ -1,4 +1,5 @@
 #include "menu_config_journal.hpp"
+#include "menu_transaction_state.hpp"
 #define NOMINMAX
 #include <windows.h>
 #include <cstdint>
@@ -44,11 +45,11 @@ std::expected<void, std::string> discard_menu_config_journal() {
 }
 
 std::expected<void, std::string> begin_menu_config_journal(
-    void* transaction, const std::filesystem::path& exe,
+    std::wstring_view id, bool machine, const std::filesystem::path& exe,
     const std::optional<std::string>& previous) {
   JournalLock lock;
   if (!lock.held) return failure();
-  if (!transaction || (previous && previous->size() > maximum_size)) return failure();
+  if (id.size() != 38 || (previous && previous->size() > maximum_size)) return failure();
   Key key;
   DWORD disposition{};
   if (RegCreateKeyExW(HKEY_CURRENT_USER, journal, 0, nullptr, 0, KEY_ALL_ACCESS,
@@ -57,26 +58,25 @@ std::expected<void, std::string> begin_menu_config_journal(
   Header header{.pid = GetCurrentProcessId(), .existed = previous.has_value()};
   FILETIME exited{}, kernel{}, user{};
   if (!GetProcessTimes(GetCurrentProcess(), &header.created, &exited, &kernel, &user)) {
-    discard_menu_config_journal();
+    (void)discard_menu_config_journal();
     return failure();
   }
   const auto path = exe.wstring();
   const DWORD ready = 1;
+  const DWORD machine_value = machine;
+  const std::wstring id_value{id};
   const auto set = [&](const wchar_t* name, DWORD type, const void* data, DWORD bytes) {
     return RegSetValueExW(key.value, name, 0, type, static_cast<const BYTE*>(data), bytes) == ERROR_SUCCESS;
   };
   if (!set(L"Owner", REG_BINARY, &header, sizeof(header)) ||
+      !set(L"Id", REG_SZ, id_value.c_str(), static_cast<DWORD>((id_value.size() + 1) * sizeof(wchar_t))) ||
+      !set(L"Machine", REG_DWORD, &machine_value, sizeof(machine_value)) ||
       !set(L"Exe", REG_SZ, path.c_str(), static_cast<DWORD>((path.size() + 1) * sizeof(wchar_t))) ||
       !set(L"Previous", REG_BINARY, previous ? previous->data() : "",
            previous ? static_cast<DWORD>(previous->size()) : 0) ||
       !set(L"Ready", REG_DWORD, &ready, sizeof(ready)) ||
       RegFlushKey(key.value) != ERROR_SUCCESS) {
-    discard_menu_config_journal();
-    return failure();
-  }
-  // Committing the menu also deletes the recovery record. A rollback retains it.
-  if (RegDeleteKeyTransactedW(HKEY_CURRENT_USER, journal, 0, 0, transaction, nullptr) != ERROR_SUCCESS) {
-    discard_menu_config_journal();
+    (void)discard_menu_config_journal();
     return failure();
   }
   return {};
@@ -95,8 +95,18 @@ std::expected<void, std::string> recover_menu_config_journal(
                                         nullptr, &ready, &ready_bytes);
   if (ready_status == ERROR_FILE_NOT_FOUND) return discard_menu_config_journal();
   if (ready_status != ERROR_SUCCESS || ready != 1) return failure();
+  wchar_t id[40]{};
+  DWORD machine{}, bytes = sizeof(id);
+  if (RegGetValueW(key.value, nullptr, L"Id", RRF_RT_REG_SZ, nullptr, id, &bytes) != ERROR_SUCCESS)
+    return failure();
+  bytes = sizeof(machine);
+  if (RegGetValueW(key.value, nullptr, L"Machine", RRF_RT_REG_DWORD, nullptr, &machine, &bytes) != ERROR_SUCCESS || machine > 1)
+    return failure();
+  auto committed = menu_commit_recorded(id, machine != 0);
+  if (!committed) return std::unexpected{committed.error()};
+  if (*committed) return discard_menu_config_journal();
   Header header;
-  DWORD bytes = sizeof(header);
+  bytes = sizeof(header);
   if (RegGetValueW(key.value, nullptr, L"Owner", RRF_RT_REG_BINARY, nullptr, &header, &bytes) != ERROR_SUCCESS ||
       bytes != sizeof(header) || header.existed > 1) return failure();
   const auto owner = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE, FALSE, header.pid);

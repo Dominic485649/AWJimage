@@ -7,14 +7,17 @@ namespace awj::shell_context_menu {
 
 class MenuTransaction {
  public:
-  explicit MenuTransaction(void* handle) : handle_(handle) {}
+  struct Impl;
+  explicit MenuTransaction(std::unique_ptr<Impl> impl);
   ~MenuTransaction();
   MenuTransaction(const MenuTransaction&) = delete;
   MenuTransaction& operator=(const MenuTransaction&) = delete;
   std::expected<void, std::string> commit();
-  void* handle() const noexcept { return handle_; }
+  std::expected<void, std::string> rollback();
+  std::wstring_view id() const noexcept;
+  bool machine() const noexcept;
  private:
-  void* handle_{};
+  std::unique_ptr<Impl> impl_;
 };
 
 std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change(

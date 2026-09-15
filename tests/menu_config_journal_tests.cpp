@@ -1,9 +1,9 @@
 #define NOMINMAX
 #include <windows.h>
-#include <ktmw32.h>
 #include "isolated_registry.hpp"
 #include "menu_config_journal.hpp"
 #include "shell_elevation.hpp"
+#include "menu_transaction_state.hpp"
 #include <cstdio>
 #include <stdexcept>
 
@@ -18,15 +18,12 @@ std::filesystem::path own_exe() {
   check(GetModuleFileNameW(nullptr, path, 32768) != 0, "read process path failed");
   return path;
 }
-HANDLE transaction() {
-  const auto tx = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
-  check(tx != INVALID_HANDLE_VALUE, "create transaction failed");
-  return tx;
-}
 }
 
 int wmain(int argc, wchar_t** argv) try {
   const auto exe = own_exe();
+  const std::wstring committed_id = L"{02B1DC4C-FAF4-46E9-A5E0-FE7DBD677211}";
+  const std::wstring crashed_id = L"{02B1DC4C-FAF4-46E9-A5E0-FE7DBD677212}";
   const std::string previous = "{\n  \"shell_menu_compatibility\": false\n}\n";
   if (argc == 3 && std::wstring_view{argv[1]} == L"--crash") {
     check(std::wstring_view{argv[2]}.starts_with(L"Software\\AWJimage.Tests\\"), "invalid sandbox");
@@ -34,9 +31,8 @@ int wmain(int argc, wchar_t** argv) try {
     check(RegOpenKeyExW(HKEY_CURRENT_USER, argv[2], 0, KEY_ALL_ACCESS, &sandbox) == ERROR_SUCCESS,
           "open child sandbox failed");
     check(RegOverridePredefKey(HKEY_CURRENT_USER, sandbox) == ERROR_SUCCESS, "override child HKCU failed");
-    const auto tx = transaction();
-    require(menu::begin_menu_config_journal(tx, exe, previous));
-    ExitProcess(0); // Deliberately skip C++ cleanup, exercising OS rollback.
+    require(menu::begin_menu_config_journal(crashed_id, false, exe, previous));
+    ExitProcess(0); // Deliberately skip C++ cleanup, leaving a recovery record.
   }
   check(argc == 1, "unexpected arguments");
   IsolatedRegistry sandbox;
@@ -47,12 +43,10 @@ int wmain(int argc, wchar_t** argv) try {
     return {};
   };
   {
-    menu::MenuTransaction tx{transaction()};
-    require(menu::begin_menu_config_journal(tx.handle(), exe, previous));
+    require(menu::begin_menu_config_journal(committed_id, false, exe, previous));
     check(!menu::recover_menu_config_journal(exe, restore), "recovered a live operation");
-    menu::MenuTransaction concurrent{transaction()};
-    check(!menu::begin_menu_config_journal(concurrent.handle(), exe, previous), "concurrent journal accepted");
-    require(tx.commit());
+    check(!menu::begin_menu_config_journal(crashed_id, false, exe, previous), "concurrent journal accepted");
+    require(menu::record_menu_commit(committed_id, false));
   }
   require(menu::recover_menu_config_journal(exe, restore));
   check(!restored, "committed transaction restored stale config");
