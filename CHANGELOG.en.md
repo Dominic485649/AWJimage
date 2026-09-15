@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.14 - 2026-09-16
+
+- Includes 1.0.13 cumulatively. Native HEIC/HEIF decoding, percentage scaling, lossless JPEG-to-JXL conversion, and updater endpoint fixes retain their separate entry below.
+- Added a default-off Windows setting above WIC fallback: Compatibility context menu (requires administrator privileges). Without an installed menu, the preference applies on the next installation. Existing menus migrate immediately. Default mode retains the per-user shared tree; compatibility mode uses static SubCommands and the 64-bit machine CommandStore while presets remain owned by the original user.
+- Elevation runs only for explicit menu operations. The helper verifies its IPC peer and handles fixed machine entries only, without trusting user-writable machine recovery snapshots. Native registry transactions coordinate migration and configuration recovery. Failure or cancellation retains the original menu and setting; repeated actions are blocked during the operation.
+- Unified translucent blue drop feedback. Queue details open on normal release and remain closed after drag reordering. Fixed Linux event binding, source-row mapping under failure filtering, and moving column-resizer coordinates while keeping headers aligned with rows.
+- Queue deduplication uses a set and reuses scan results, with exception-safe insertion into the list and set. Linux path keys preserve case. Ordinary work uses a typical estimate for concurrency planning and cumulative memory admission to fill available capacity; oversized inputs are rejected before decoding and identical output paths remain serial.
+- Closing during conversion requires confirmation. Windows keeps the window open if forced termination fails; Linux requests cancellation and waits for cleanup. Split Windows Studio configuration, queue, import, menus, updates, and execution into focused modules.
+
 ## 1.0.13 - 2026-09-16
 
 - Added proportional 1–100% scaling to Manual Size. The percentage shares one target-size calculation with maximum width, height, long edge, and short edge; Studio, shell-menu parameters, user presets, and `--scale-percent` all use the same value. Any actual resize disables AVIF lossless passthrough and JPEG-to-JXL bitstream transcode so size limits cannot be bypassed.

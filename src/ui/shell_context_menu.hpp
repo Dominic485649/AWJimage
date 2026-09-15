@@ -105,7 +105,7 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
                                      std::span<const std::wstring> preset_names = {},
-                                     int slot = 0);
+                                     int slot = 0, bool compatibility = false);
 
 std::expected<InstallPlan, std::string> detect_install_plan();
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
@@ -114,14 +114,25 @@ std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names = {},
-                                         bool force_install = false);
+                                         bool force_install = false,
+                                         bool compatibility = false);
 std::expected<void, std::string> recover();
 std::expected<bool, std::string> is_installed();
 std::expected<void, std::string> remove();
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe,
     const MenuParams& menu_params,
-    std::span<const std::wstring> preset_names = {});
+    std::span<const std::wstring> preset_names = {}, bool compatibility = false);
 std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands();
+
+std::expected<bool, std::string> compatibility_installed();
+std::expected<void, std::string> stage_user_menu(
+    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+    std::span<const std::wstring> names, bool compatibility, bool remove_menu);
+std::expected<void, std::string> stage_machine_menu(
+    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+    bool remove_menu);
+std::expected<bool, std::string> machine_menu_matches(
+    const std::filesystem::path& exe, const MenuParams& params);
 
 }  // namespace awj::shell_context_menu

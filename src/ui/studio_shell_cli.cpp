@@ -472,7 +472,10 @@ std::expected<void, std::string> synchronize_shell_context_menu(
   if (!awj_exe) return std::unexpected{awj_exe.error()};
   auto names = awj::injected_user_preset_names();
   if (!names) return std::unexpected{names.error()};
-  return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names, force_install);
+  auto compatibility = awj::shell_context_menu::compatibility_installed();
+  if (!compatibility) return std::unexpected{compatibility.error()};
+  return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names,
+                                           force_install, *compatibility);
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {
@@ -487,7 +490,13 @@ std::optional<std::string> shell_context_menu_warning(
   }
   auto names = awj::injected_user_preset_names();
   if (!names) return names.error();
-  auto checked = awj::shell_context_menu::warning(*awj_exe, shell_menu_params(menu_params), *names);
+  auto compatibility = awj::shell_context_menu::compatibility_installed();
+  if (!compatibility) return compatibility.error();
+  if (*compatibility) {
+    auto matches = awj::shell_context_menu::machine_menu_matches(*awj_exe, shell_menu_params(menu_params));
+    if (!matches || !*matches) return "兼容性菜单需要修复；点击修复时需要管理员权限。";
+  }
+  auto checked = awj::shell_context_menu::warning(*awj_exe, shell_menu_params(menu_params), *names, *compatibility);
   if (!checked) {
     return "检查右键菜单注册表失败：" + checked.error();
   }
@@ -651,7 +660,7 @@ bool reject_when_worker_active(AwjStudio& app,
                                const char* message) {
   {
     std::scoped_lock lock{state->mutex};
-    if (!state->worker_active) {
+    if (!state->worker_active && !state->menu_operation_active) {
       return false;
     }
   }

@@ -1,4 +1,5 @@
 module;
+#include "../core/work_memory_admission.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -312,10 +313,13 @@ std::uint64_t typical_decoded_bytes_per_file(
     std::nth_element(sorted.begin(), middle, sorted.end());
     return std::max<std::uint64_t>(1, *middle);
   } catch (...) {
-    // 分配失败时退回逐个取中位数的等价保守值，不放大估计。
-    return std::max<std::uint64_t>(1, files.front().estimated_bytes);
+    std::uint64_t largest = 1;
+    for (const auto& file : files) largest = std::max(largest, file.estimated_bytes);
+    return largest;
   }
 }
+
+std::uint64_t estimated_large_working_set_bytes(const BatchLargeImageItem& item) noexcept;
 
 std::expected<void, std::string> reject_over_memory_budget(
     ClassifiedWork& classified, std::uint64_t memory_limit) {
@@ -353,7 +357,24 @@ std::expected<void, std::string> reject_over_memory_budget(
   if (auto result = reject_from(classified.ordinary); !result) {
     return result;
   }
-  return reject_from(classified.deferred_tail);
+  if (auto result = reject_from(classified.deferred_tail); !result) return result;
+  try {
+    std::vector<BatchLargeImageItem> retained;
+    retained.reserve(classified.large_mode.size());
+    for (auto& image : classified.large_mode) {
+      const auto estimate = estimated_large_working_set_bytes(image);
+      if (estimate > memory_limit)
+        classified.memory_rejected.push_back({.file = std::move(image.file),
+                                               .estimated_bytes = estimate});
+      else retained.push_back(std::move(image));
+    }
+    classified.large_mode = std::move(retained);
+    return {};
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"大图内存预算预检列表内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"大图内存预算预检列表数量超过运行时限制。"};
+  }
 }
 
 std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
@@ -986,56 +1007,13 @@ void report_worker_exception_noexcept(FileLogger& logger,
                                  "[WARN] 工作线程异常，已停止该线程。");
 }
 
-// 运行时内存准入闸门。并发线程数按「典型」单图占用决定，但每个工作组真正进入
-// 编码前要在这里按组峰值估算预约内存；预约不下就等待其他组释放。这样绝大多数
-// 小图能按常规并发回填，少数吃内存的大图自然串行，不会因为队列里有一张大图就
-// 把整批压成单线程（旧的静态 max 估算就是这么退化的）。
-class MemoryAdmission {
- public:
-  explicit MemoryAdmission(std::uint64_t limit_bytes) noexcept
-      : limit_(limit_bytes) {}
-
-  // 返回实际预约的字节数，供 release 使用。limit 为 0 表示不限制。
-  std::uint64_t acquire(std::uint64_t bytes, std::stop_token stop) {
-    if (limit_ == 0) {
-      return 0;
-    }
-    // 单组峰值可能超过总预算：夹到预算值，让它独占运行而不是死等。
-    const std::uint64_t want = std::min(bytes, limit_);
-    std::unique_lock lock{mutex_};
-    cv_.wait(lock, stop, [&] { return reserved_ + want <= limit_; });
-    if (stop.stop_requested()) {
-      return 0;
-    }
-    reserved_ += want;
-    return want;
-  }
-
-  void release(std::uint64_t amount) noexcept {
-    if (limit_ == 0 || amount == 0) {
-      return;
-    }
-    try {
-      std::scoped_lock lock{mutex_};
-      reserved_ = reserved_ > amount ? reserved_ - amount : 0;
-      cv_.notify_all();
-    } catch (...) {
-    }
-  }
-
- private:
-  std::uint64_t limit_{};
-  std::uint64_t reserved_{};
-  std::mutex mutex_{};
-  std::condition_variable_any cv_{};
-};
 
 struct MemoryAdmissionGuard {
-  MemoryAdmission* admission{};
+  WorkMemoryAdmission* admission{};
   std::uint64_t amount{};
 
   MemoryAdmissionGuard() = default;
-  MemoryAdmissionGuard(MemoryAdmission& owner, std::uint64_t reserved) noexcept
+  MemoryAdmissionGuard(WorkMemoryAdmission& owner, std::uint64_t reserved) noexcept
       : admission(&owner), amount(reserved) {}
   ~MemoryAdmissionGuard() {
     if (admission != nullptr) {
@@ -1060,9 +1038,8 @@ WorkExecutionResult encode_work_groups(
       std::max(1, std::min({resource_plan.file_parallelism,
                             resource_plan.memory_file_parallelism,
                             count_to_int_saturated(work.size())}));
-  std::atomic<std::size_t> next{0};
   std::atomic<int> worker_failures{0};
-  MemoryAdmission admission{resource_plan.memory_limit_bytes};
+  WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
 
   std::vector<std::jthread> workers;
   try {
@@ -1120,14 +1097,10 @@ WorkExecutionResult encode_work_groups(
               break;
             }
 
-            const auto work_index = next.fetch_add(1);
-            if (work_index >= work.size()) {
-              break;
-            }
-            const auto& group = work[work_index];
-            // 按组峰值预约内存：预约不下就在这里等，让并发按实际可用内存回填。
-            MemoryAdmissionGuard reservation{
-                admission, admission.acquire(group.estimated_bytes, stop_token)};
+            const auto ticket = admission.acquire(stop_token);
+            if (!ticket) break;
+            const auto& group = work[ticket->index];
+            MemoryAdmissionGuard reservation{admission, ticket->bytes};
             if (stop_token.stop_requested()) {
               break;
             }
@@ -1300,9 +1273,8 @@ WorkExecutionResult encode_large_work_groups(
       std::max(1, std::min({resource_plan.file_parallelism,
                             resource_plan.memory_file_parallelism,
                             count_to_int_saturated(work.size())}));
-  std::atomic<std::size_t> next{0};
   std::atomic<int> worker_failures{0};
-  MemoryAdmission admission{resource_plan.memory_limit_bytes};
+  WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
 
   std::vector<std::jthread> workers;
   try {
@@ -1361,13 +1333,10 @@ WorkExecutionResult encode_large_work_groups(
               break;
             }
 
-            const auto work_index = next.fetch_add(1);
-            if (work_index >= work.size()) {
-              break;
-            }
-            const auto& group = work[work_index];
-            MemoryAdmissionGuard reservation{
-                admission, admission.acquire(group.estimated_bytes, stop_token)};
+            const auto ticket = admission.acquire(stop_token);
+            if (!ticket) break;
+            const auto& group = work[ticket->index];
+            MemoryAdmissionGuard reservation{admission, ticket->bytes};
             if (stop_token.stop_requested()) {
               break;
             }

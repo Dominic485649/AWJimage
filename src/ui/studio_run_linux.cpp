@@ -122,11 +122,15 @@ struct LinuxUiState {
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>> update_history_rows{};
   bool ui_font_options_loaded{};
+  bool drag_reordered{};
+  bool close_requested{};
+  slint::Timer close_timer{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   std::vector<fs::path> failed_paths{};
   // The visible queue is the source of truth. A manifest is written only
   // immediately before a run so changing UI settings cannot rescan a folder.
   std::vector<awj::ImageFile> queue_files{};
+  std::unordered_set<std::wstring> queue_path_keys{};
   std::uint64_t next_queue_run_id{1};
   std::array<LinuxParameterParams, 5> builtin_params{};
   std::array<LinuxParameterParams, 5> parameter_preset_params{};
@@ -1363,14 +1367,11 @@ void set_input_path_preserving_output(AwjStudio& app, const fs::path& path) {
 std::wstring linux_queue_path_key(const fs::path& path) {
   std::error_code ec;
   const auto absolute = fs::absolute(path, ec);
-  return awj::normalized_lower_path_key(ec ? path : absolute);
+  return awj::wide_from_utf8((ec ? path : absolute).lexically_normal().native());
 }
 
 bool linux_queue_contains_path(const LinuxUiState& state, const fs::path& path) {
-  const auto key = linux_queue_path_key(path);
-  return std::ranges::any_of(state.queue_files, [&](const awj::ImageFile& file) {
-    return linux_queue_path_key(file.path) == key;
-  });
+  return state.queue_path_keys.contains(linux_queue_path_key(path));
 }
 
 TaskRow pending_linux_queue_row(const awj::ImageFile& file, std::size_t index,
@@ -1425,7 +1426,8 @@ std::expected<bool, std::string> add_linux_queue_from_path(
     if (!ec) {
       file.path = absolute;
     }
-    if (linux_queue_contains_path(state, file.path)) {
+    const auto key = linux_queue_path_key(file.path);
+    if (state.queue_path_keys.contains(key)) {
       continue;
     }
     file.index = state.queue_files.size();
@@ -1433,7 +1435,14 @@ std::expected<bool, std::string> add_linux_queue_from_path(
     file.extension_disambiguated = false;
     file.resolved_output_path.clear();
     file.output_path_resolved = false;
-    state.queue_files.push_back(std::move(file));
+    const auto [position, inserted] = state.queue_path_keys.insert(key);
+    if (!inserted) continue;
+    try {
+      state.queue_files.push_back(std::move(file));
+    } catch (...) {
+      state.queue_path_keys.erase(position);
+      throw;
+    }
     ++added;
   }
   if (update_input_path) {
@@ -1646,6 +1655,7 @@ slint::language::DragAction linux_queue_drag_dropped(
     return slint::language::DragAction::None;
   }
   auto file = std::move(state.queue_files[*current]);
+  state.drag_reordered = true;
   state.queue_files.erase(state.queue_files.begin() +
                           static_cast<std::ptrdiff_t>(*current));
   state.queue_files.insert(state.queue_files.begin() +
@@ -2619,6 +2629,24 @@ void initialize_ui(AwjStudio& app) {
 
 }  // namespace
 
+bool finish_linux_close(AwjStudio& app, LinuxUiState& state) noexcept {
+  try {
+    state.update_worker.request_stop();
+    const auto before = capture_linux_update_state(state);
+    state.last_changelog_exit_version = AWJ_BUILD_VERSION;
+    if (auto saved = persist_linux_update_config(app, state); !saved) {
+      restore_linux_update_state(state, before);
+      app.set_status_text(to_shared(saved.error()));
+      state.close_requested = false;
+      return false;
+    }
+    return true;
+  } catch (...) {
+    state.close_requested = false;
+    return false;
+  }
+}
+
 int run_studio_ui() {
   try {
     auto app = AwjStudio::create();
@@ -2640,6 +2668,40 @@ int run_studio_ui() {
       }
     });
     initialize_ui(*app);
+    app->set_force_close_supported(false);
+    app->on_close_confirm_dismissed([weak] {
+      if (auto app = weak.lock()) (*app)->set_close_confirm_open(false);
+    });
+    app->on_close_confirm_force_quit([weak, state] {
+      if (auto app = weak.lock()) {
+        (*app)->set_close_confirm_open(false);
+        (*app)->set_status_text(to_shared("正在停止编码，完成清理后退出。"));
+        state->close_requested = true;
+        state->worker.request_stop();
+        state->close_timer.start(slint::TimerMode::Repeated,
+            std::chrono::milliseconds{50},
+            [weak, pending = std::weak_ptr<LinuxUiState>{state}] {
+          auto state = pending.lock();
+          auto app = weak.lock();
+          if (!state || !app || (*app)->get_running()) return;
+          state->close_timer.stop();
+          if (finish_linux_close(**app, *state)) (*app)->window().hide();
+        });
+      }
+    });
+    app->on_queue_row_pointer_event([weak, state](int index, int button,
+                                                 int kind, float) {
+      if (button != 0) return;
+      if (kind == 0) {
+        state->drag_reordered = false;
+      } else if (kind == 1) {
+        const bool dragged = std::exchange(state->drag_reordered, false);
+        if (auto app = weak.lock(); app && !dragged && index >= 0 &&
+            static_cast<std::size_t>(index) < state->task_rows->row_count()) {
+          (*app)->set_selected_queue_index(index);
+        }
+      }
+    });
     for (int i = 0; i < static_cast<int>(state->builtin_params.size()); ++i) {
       state->builtin_params[static_cast<std::size_t>(i)] =
           default_linux_parameter_params(i);
@@ -2948,6 +3010,7 @@ int run_studio_ui() {
           return;
         }
         state->queue_files.clear();
+        state->queue_path_keys.clear();
         state->task_rows->set_vector({});
         state->failed_paths.clear();
         refresh_linux_queue_counts(**app, state->task_rows);
@@ -3492,16 +3555,13 @@ int run_studio_ui() {
       start_linux_update_check(weak, state);
     }
     app->window().on_close_requested([weak, state] {
-      state->worker.request_stop();
-      state->update_worker.request_stop();
       if (auto app = weak.lock()) {
-        const auto before = capture_linux_update_state(*state);
-        state->last_changelog_exit_version = AWJ_BUILD_VERSION;
-        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
-          restore_linux_update_state(*state, before);
-          (*app)->set_status_text(to_shared(
-              std::format("关闭时保存更新设置失败：{}", saved.error())));
+        if ((*app)->get_running()) {
+          if (!state->close_requested) (*app)->set_close_confirm_open(true);
+          return slint::CloseRequestResponse::KeepWindowShown;
         }
+        if (!finish_linux_close(**app, *state))
+          return slint::CloseRequestResponse::KeepWindowShown;
       }
       return slint::CloseRequestResponse::HideWindow;
     });

@@ -225,6 +225,7 @@ struct StudioConfigSnapshot {
   int language_index{};
   std::string ui_font_family{};
   bool allow_wic_fallback{};
+  bool shell_menu_compatibility{};
   bool visual_quality_gpu{true};
   bool visual_quality_fallback{true};
   std::array<MenuFormatParams, 5> menu_params{};
@@ -260,6 +261,9 @@ struct StudioConfigSnapshot {
 struct UiState {
   std::jthread worker{};
   std::jthread update_worker{};
+  std::jthread menu_worker{};
+  bool menu_operation_active{};
+  slint::Timer menu_timer{};
   std::unique_ptr<awj::ui_import::Dispatcher> import_dispatcher{};
   std::optional<awj::ui_drop::Registration> native_drop{};
   slint::Timer native_drop_timer{};

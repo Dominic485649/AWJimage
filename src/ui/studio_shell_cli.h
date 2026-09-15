@@ -32,6 +32,12 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
 std::expected<void, std::string> synchronize_shell_context_menu(
     const std::array<MenuFormatParams, 5>& menu_params,
     bool force_install = false);
+awj::shell_context_menu::MenuParams shell_menu_params(
+    const std::array<MenuFormatParams, 5>& params);
+void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
+                               const std::shared_ptr<UiState>& state,
+                               bool install, bool remove);
+std::expected<void, std::string> recover_shell_menu_config();
 std::expected<void, std::string> remove_shell_context_menu();
 std::optional<std::string> shell_context_menu_warning(
     const std::array<MenuFormatParams, 5>& menu_params);

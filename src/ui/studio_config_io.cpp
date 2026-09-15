@@ -55,6 +55,7 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .language_index = app.get_language_index(),
       .ui_font_family = shared_to_string(app.get_ui_font_family()),
       .allow_wic_fallback = app.get_allow_wic_fallback(),
+      .shell_menu_compatibility = app.get_shell_menu_compatibility(),
       .visual_quality_gpu = app.get_visual_quality_gpu(),
       .visual_quality_fallback = app.get_visual_quality_fallback(),
       .menu_params = menu_params_snapshot(app, state)};
@@ -284,6 +285,11 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
     return result;
   }
   if (auto result = apply(apply_config_bool(
+          app, *values, "shell_menu_compatibility",
+          &AwjStudio::set_shell_menu_compatibility)); !result) {
+    return result;
+  }
+  if (auto result = apply(apply_config_bool(
           app, *values, "visual_quality_gpu",
           &AwjStudio::set_visual_quality_gpu));
       !result) {
@@ -389,10 +395,13 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
 
 std::expected<void, std::string> persist_studio_config_if_changed(
     AwjStudio& app, UiState& state) {
-  if (!state.config_defaults) {
+  if (!state.config_defaults || state.menu_operation_active) {
     return {};
   }
   auto current = capture_studio_config(app, &state);
+  // Machine parameters are applied only by an explicit save/repair action.
+  if (current.shell_menu_compatibility && state.last_config_snapshot)
+    current.menu_params = state.last_config_snapshot->menu_params;
   if (state.last_config_snapshot &&
       current == *state.last_config_snapshot) {
     return {};

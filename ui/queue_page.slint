@@ -33,12 +33,12 @@ component ColumnResizer inherits Rectangle {
         pointer-event(event) => {
             if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
                 root.pressed-width = root.target-width;
-                root.grab-x = resizer-touch.mouse-x;
+                root.grab-x = resizer-touch.absolute-position.x + resizer-touch.mouse-x;
             }
         }
         moved => {
             if (self.pressed) {
-                root.resized(clamp(root.pressed-width + self.mouse-x - root.grab-x,
+                root.resized(clamp(root.pressed-width + self.absolute-position.x + self.mouse-x - root.grab-x,
                                    root.resize-min, root.resize-max));
             }
         }
@@ -436,10 +436,7 @@ export component QueuePage inherits VerticalLayout {
                     // 手柄绝对定位在列右缘、不参与布局，因此不影响列宽分配。
                     property <length> h-pad: 10px;
                     property <length> h-spacing: 10px;
-                    property <length> h-dir-width: max(0px,
-                        self.width - 2 * self.h-pad - root.queue-index-width
-                        - root.queue-filename-width - root.queue-size-width
-                        - root.queue-status-width - 5 * self.h-spacing);
+                    property <length> h-dir-width: root.queue-dir-width;
                     property <length> h-filename-edge: self.h-pad + root.queue-index-width
                         + self.h-spacing + root.queue-filename-width;
                     property <length> h-size-edge: self.h-filename-edge + self.h-spacing

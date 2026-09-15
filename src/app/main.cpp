@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #ifdef _WIN32
+#include "shell_elevation.hpp"
 #include <windows.h>
 #include "../ui/shell_context_menu.hpp"
 #else
@@ -280,6 +281,9 @@ int wmain(int argc, wchar_t* argv[]) {
     return run_guarded("update-health-check", [argv] {
       return run_studio_ui(argv[2], argv[3]);
     });
+  }
+  if (argc >= 2 && std::wcscmp(argv[1], L"--shell-menu-helper") == 0) {
+    return awj::shell_context_menu::run_elevation_helper(argc, argv);
   }
   if (awj::update::launch_update_recovery_if_needed()) {
     return 0;

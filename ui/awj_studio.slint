@@ -33,10 +33,14 @@ export component AwjStudio inherits Window {
     // 编码中关窗的确认层：C++ 侧拦截 close-requested 后置 true，由用户决定返回
     // 还是强制停止退出。见 main.cpp 的 on_close_requested。
     in-out property <bool> close-confirm-open: false;
+    in property <bool> force-close-supported: true;
     callback close-confirm-dismissed();
     callback close-confirm-force-quit();
     in-out property <bool> preset-editor-delete-confirmation: false;
     in property <bool> shell-menu-injection-supported: true;
+    in-out property <bool> shell-menu-compatibility: false;
+    in-out property <bool> menu-operation-active: false;
+    callback shell-menu-compatibility-requested();
     in-out property <bool> legacy-machine-menu-present: false;
     callback delete-parameter-preset();
     callback cleanup-legacy-machine-menu();
@@ -852,6 +856,10 @@ export component AwjStudio inherits Window {
                 }
 
                 if root.selected-page == 2: SettingsPage {
+    shell-menu-injection-supported: root.shell-menu-injection-supported;
+    shell-menu-compatibility <=> root.shell-menu-compatibility;
+    menu-operation-active: root.menu-operation-active;
+    shell-menu-compatibility-requested => { root.shell-menu-compatibility-requested(); }
     accent-strong : root.accent-strong;
     allow-wic-fallback <=> root.allow-wic-fallback;
     combo-bg : root.combo-bg;
@@ -896,6 +904,27 @@ export component AwjStudio inherits Window {
     visual-quality-gpu-help-text <=> root.visual-quality-gpu-help-text;
     wic-ui-visible <=> root.wic-ui-visible;
 }
+            }
+        }
+
+        if root.menu-operation-active: Rectangle {
+            background: root.panel-bg;
+            opacity: 0.95;
+            TouchArea { width: parent.width; height: parent.height; }
+            FocusScope {
+                init => { self.focus(); }
+                key-pressed(event) => { return accept; }
+                key-released(event) => { return accept; }
+            }
+            Text {
+                text: @tr("正在应用右键菜单设置；修改机器菜单时需要管理员权限。");
+                color: root.text-strong;
+                font-size: 16px;
+                x: 24px; width: max(0px, parent.width - 48px);
+                y: (parent.height - self.height) / 2;
+                height: self.preferred-height;
+                horizontal-alignment: center;
+                wrap: word-wrap;
             }
         }
 
@@ -961,7 +990,7 @@ export component AwjStudio inherits Window {
                         height: self.preferred-height;
                     }
                     Text {
-                        text: @tr("强制停止编码并退出");
+                        text: root.force-close-supported ? @tr("强制停止编码并退出") : @tr("停止编码后退出");
                         color: root.warning;
                         font-size: 13px;
                         font-weight: 700;
@@ -984,7 +1013,7 @@ export component AwjStudio inherits Window {
                         }
                         SoftButton {
                             dark-mode: root.dark-mode;
-                            text: @tr("强制停止并退出");
+                            text: root.force-close-supported ? @tr("强制停止并退出") : @tr("停止编码并退出");
                             variant: "danger";
                             width: 150px;
                             height: 42px;

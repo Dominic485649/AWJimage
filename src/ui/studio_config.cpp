@@ -171,6 +171,8 @@ std::expected<void, std::string> write_studio_config_file(
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);
+  add_bool("shell_menu_compatibility", current.shell_menu_compatibility,
+           defaults.shell_menu_compatibility);
   add_bool("visual_quality_gpu", current.visual_quality_gpu,
            defaults.visual_quality_gpu);
   add_bool("visual_quality_fallback", current.visual_quality_fallback,

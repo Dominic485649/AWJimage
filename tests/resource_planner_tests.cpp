@@ -2,6 +2,11 @@
 #include <cstdio>
 #include <string>
 #include <string_view>
+#include <array>
+#include <future>
+#include <chrono>
+#include <limits>
+#include "../src/core/work_memory_admission.h"
 
 import awj.codec;
 import awj.config;
@@ -20,6 +25,45 @@ int fail(std::string_view message) {
 }  // namespace
 
 int main() {
+  struct Group { std::uint64_t estimated_bytes; };
+  {
+    const std::array groups{Group{8}, Group{7}, Group{2}};
+    awj::WorkMemoryAdmission queue{10, groups};
+    const auto first = queue.acquire({});
+    const auto second = queue.acquire({});
+    if (!first || !second || first->index != 0 || second->index != 2)
+      return fail("A waiting large group prevented small-work backfill");
+    std::stop_source cancel;
+    auto waiter = std::async(std::launch::async, [&] { return queue.acquire(cancel.get_token()); });
+    cancel.request_stop();
+    if (waiter.wait_for(std::chrono::seconds{2}) != std::future_status::ready || waiter.get())
+      return fail("Memory admission did not wake on cancellation");
+    queue.release(first->bytes);
+    const auto third = queue.acquire({});
+    if (!third || third->index != 1) return fail("Released capacity was not reused");
+    queue.release(second->bytes);
+    queue.release(third->bytes);
+    if (queue.acquire({})) return fail("Work was dispatched more than once");
+  }
+  {
+    constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+    const std::array groups{Group{maximum - 1}, Group{2}, Group{1}};
+    awj::WorkMemoryAdmission queue{maximum, groups};
+    const auto first = queue.acquire({});
+    const auto second = queue.acquire({});
+    if (!first || !second || second->bytes != 1)
+      return fail("Memory reservation overflow admitted excess work");
+    queue.release(first->bytes);
+    queue.release(second->bytes);
+    const auto third = queue.acquire({});
+    if (!third || third->bytes != 2) return fail("Overflow boundary lost work");
+    queue.release(third->bytes);
+  }
+  try {
+    const std::array groups{Group{11}};
+    awj::WorkMemoryAdmission queue{10, groups};
+    return fail("Oversize work was silently clamped to the memory budget");
+  } catch (const std::invalid_argument&) {}
   constexpr std::uint64_t gib = 1024ull * 1024ull * 1024ull;
   const auto aom_working_set = awj::avif_encode_working_set_bytes_for_dimensions(
       awj::make_image_dimensions(4096, 4096));

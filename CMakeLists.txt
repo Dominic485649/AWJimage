@@ -1239,11 +1239,13 @@ target_link_libraries(awj_update_manifest_sign PRIVATE unofficial-sodium::sodium
 
 if(WIN32)
     add_library(awj_shell_context_menu STATIC
-        src/ui/shell_context_menu.cpp)
+        src/ui/menu_config_journal.cpp
+        src/ui/shell_context_menu.cpp
+        src/ui/shell_elevation.cpp)
     avif_enable_common_options(awj_shell_context_menu)
     target_include_directories(awj_shell_context_menu PUBLIC
         "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
-    target_link_libraries(awj_shell_context_menu PUBLIC shlwapi shell32)
+    target_link_libraries(awj_shell_context_menu PUBLIC shlwapi shell32 ole32 ktmw32)
 endif()
 
 if(WIN32)
@@ -1264,6 +1266,7 @@ if(WIN32)
         src/ui/studio_ui_util.cpp
         src/ui/studio_worker_control.cpp
         src/ui/studio_shell_cli.cpp
+        src/ui/studio_shell_menu.cpp
         src/ui/studio_encode_dispatch.cpp
         src/ui/studio_queue_rows.cpp
         src/ui/studio_update_ui.cpp
@@ -1374,6 +1377,12 @@ if(BUILD_TESTING AND WIN32)
     target_link_libraries(awj_shell_context_menu_logic_tests PRIVATE awj_shell_context_menu)
     awj_set_runtime_directory(awj_shell_context_menu_logic_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
     add_test(NAME shell_context_menu_logic COMMAND awj_shell_context_menu_logic_tests)
+    add_executable(awj_menu_config_journal_tests tests/menu_config_journal_tests.cpp)
+    avif_enable_common_options(awj_menu_config_journal_tests)
+    target_link_libraries(awj_menu_config_journal_tests PRIVATE awj_shell_context_menu)
+    awj_set_runtime_directory(awj_menu_config_journal_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME menu_config_journal COMMAND awj_menu_config_journal_tests)
+    set_tests_properties(menu_config_journal PROPERTIES TIMEOUT 30)
 
     add_executable(awj_shell_context_menu_registry_tests
         tests/shell_context_menu_registry_tests.cpp)

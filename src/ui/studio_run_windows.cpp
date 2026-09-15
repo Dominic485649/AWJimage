@@ -381,6 +381,10 @@ int run_studio_ui(const wchar_t* health_event,
     app->set_system_dark_mode(windows_prefers_dark_mode());
     state->config_defaults = capture_studio_config(*app, state.get());
     std::optional<std::string> config_warning;
+    if (auto recovered = awj::studio::recover_shell_menu_config(); !recovered) {
+      MessageBoxA(nullptr, recovered.error().c_str(), "AWJimage", MB_OK | MB_ICONERROR);
+      return 1;
+    }
     if (auto loaded = apply_studio_config_file(*app, *state); !loaded) {
       config_warning = std::format("读取 Studio 配置失败：{}", loaded.error());
     }
@@ -389,6 +393,10 @@ int run_studio_ui(const wchar_t* health_event,
         }); !recovered) config_warning = recovered.error();
     if (auto synced = synchronize_shell_context_menu(state->menu_params); !synced)
       config_warning = synced.error();
+    if (auto installed = awj::shell_context_menu::is_installed(); installed && *installed) {
+      if (auto mode = awj::shell_context_menu::compatibility_installed(); mode)
+        app->set_shell_menu_compatibility(*mode);
+    }
     if (auto legacy = awj::shell_context_menu::legacy_machine_commands(); legacy)
       app->set_legacy_machine_menu_present(!legacy->empty());
     reload_user_preset_options(*app, *state);
@@ -741,7 +749,7 @@ int run_studio_ui(const wchar_t* health_event,
 
     app->on_delete_parameter_preset([weak, state] {
       auto app = weak.lock();
-      if (!app || (*app)->get_running()) return;
+      if (!app || (*app)->get_running() || state->menu_operation_active) return;
       const auto index = state->parameter_preset_index;
       if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
       const auto queue_index = (*app)->get_queue_preset_index();
@@ -812,77 +820,25 @@ int run_studio_ui(const wchar_t* health_event,
 
     app->on_install_context_menu_requested([weak, state] {
       run_ui_callback(weak, "安装右键菜单失败", [&] {
-        if (auto app = weak.lock()) {
-          if (reject_when_worker_active(**app, state,
-                                        "当前任务正在运行，无法修改右键菜单")) {
-            return;
-          }
-          store_current_menu_params(**app, *state);
-          if (auto valid = validate_menu_params(state->menu_params); !valid) {
-            (*app)->set_context_menu_status(to_shared(valid.error()));
-            (*app)->set_status_text(to_shared(valid.error()));
-            return;
-          }
-          if (auto saved = write_studio_config_file(capture_studio_config(**app, state.get()),
-                                                    *state->config_defaults); !saved) {
-            (*app)->set_context_menu_status(to_shared(saved.error()));
-            (*app)->set_status_text(to_shared(saved.error()));
-            return;
-          }
-          if (auto result = synchronize_shell_context_menu(state->menu_params, true); !result) {
-            (*app)->set_context_menu_status(to_shared(result.error()));
-            (*app)->set_status_text(to_shared(result.error()));
-            return;
-          }
-          state->last_config_snapshot = capture_studio_config(**app, state.get());
-          (*app)->set_context_menu_warning({});
-          (*app)->set_context_menu_status(to_shared("右键菜单已安装。"));
-          (*app)->set_status_text(to_shared("右键菜单已安装。"));
-        }
+        awj::studio::request_shell_menu_change(weak, state, true, false);
       });
     });
 
     app->on_remove_context_menu_requested([weak, state] {
       run_ui_callback(weak, "移除右键菜单失败", [&] {
-        if (auto app = weak.lock()) {
-          if (reject_when_worker_active(**app, state,
-                                        "当前任务正在运行，无法修改右键菜单")) {
-            return;
-          }
-          if (auto result = remove_shell_context_menu(); !result) {
-            (*app)->set_context_menu_status(to_shared(result.error()));
-            (*app)->set_status_text(to_shared(result.error()));
-            return;
-          }
-          (*app)->set_context_menu_warning({});
-          (*app)->set_context_menu_status(to_shared("右键菜单已移除。"));
-          (*app)->set_status_text(to_shared("右键菜单已移除。"));
-        }
+        awj::studio::request_shell_menu_change(weak, state, false, true);
       });
     });
 
     app->on_save_menu_params_requested([weak, state] {
       run_ui_callback(weak, "保存菜单参数失败", [&] {
-        if (auto app = weak.lock()) {
-          store_current_menu_params(**app, *state);
-          if (auto valid = validate_menu_params(state->menu_params); !valid) {
-            (*app)->set_context_menu_status(to_shared(valid.error()));
-            (*app)->set_status_text(to_shared(valid.error()));
-            return;
-          }
-          if (auto saved = persist_studio_config_if_changed(**app, *state); !saved) {
-            (*app)->set_context_menu_status(to_shared(saved.error()));
-            (*app)->set_status_text(to_shared(saved.error()));
-            return;
-          }
-          if (auto synced = synchronize_shell_context_menu(state->menu_params); !synced) {
-            (*app)->set_context_menu_warning(to_shared(synced.error()));
-            return;
-          }
-          (*app)->set_context_menu_warning({});
-          (*app)->set_context_menu_status(to_shared("菜单参数已保存。"));
-          (*app)->set_status_text(to_shared("菜单参数已保存。"));
-        }
+        awj::studio::request_shell_menu_change(weak, state, false, false);
+      });
+    });
+
+    app->on_shell_menu_compatibility_requested([weak, state] {
+      run_ui_callback(weak, "切换右键菜单模式失败", [&] {
+        awj::studio::request_shell_menu_change(weak, state, false, false);
       });
     });
 
@@ -896,11 +852,9 @@ int run_studio_ui(const wchar_t* health_event,
     });
 
     app->on_context_menu_warning_clicked([weak, state] {
-      if (auto app = weak.lock(); app && !(*app)->get_running()) {
-        auto result = synchronize_shell_context_menu(state->menu_params);
-        (*app)->set_context_menu_warning(result ? slint::SharedString{} : to_shared(result.error()));
-        (*app)->set_status_text(to_shared(result ? "右键菜单已修复。" : result.error()));
-      }
+      run_ui_callback(weak, "修复右键菜单失败", [&] {
+        awj::studio::request_shell_menu_change(weak, state, false, false);
+      });
     });
     app->on_cleanup_legacy_machine_menu([weak] {
       if (auto app = weak.lock(); app && !(*app)->get_running()) {
@@ -1182,8 +1136,22 @@ int run_studio_ui(const wchar_t* health_event,
 
     app->on_close_confirm_force_quit([weak, state] {
       run_ui_callback(weak, "强制停止退出失败", [&] {
-        force_stop_current_worker(state);
+        const auto stopped = force_stop_current_worker(state);
         if (auto app = weak.lock()) {
+          if (stopped == awj::studio::ForceStopResult::terminate_failed) {
+            (*app)->set_status_text(to_shared("无法终止编码进程，窗口将保持打开。"));
+            return;
+          }
+          state->native_drop_registration_finished = true;
+          state->native_drop_timer.stop();
+          state->native_drop.reset();
+          if (state->import_dispatcher) state->import_dispatcher->request_stop();
+          state->update_worker.request_stop();
+          state->last_changelog_exit_version = AWJ_BUILD_VERSION;
+          if (auto saved = persist_studio_config_if_changed(**app, *state); !saved) {
+            (*app)->set_status_text(to_shared(saved.error()));
+            return;
+          }
           (*app)->set_close_confirm_open(false);
           // 置 false 后再关窗，避免再次进入确认分支。
           (*app)->set_running(false);
@@ -1327,6 +1295,7 @@ int run_studio_ui(const wchar_t* health_event,
     // 这里抛出的异常会穿回 Rust 侧的 winit 栈帧（panic="abort"），必须自己接住；
     // 无论保存成功与否都要放行关窗，否则窗口会关不掉。
     app->window().on_close_requested([weak, state] {
+      if (state->menu_operation_active) return slint::CloseRequestResponse::KeepWindowShown;
       // 编码中先弹确认层，不直接关窗：用户可返回继续，或确认强制停止退出。
       if (worker_active(state)) {
         run_ui_callback(weak, "显示关闭确认失败", [&] {

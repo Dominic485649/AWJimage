@@ -277,9 +277,7 @@ int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
   return 0;
 }
 
-// 验证队列固定列宽可拖动，且表头与数据行同步。
-// 拖动手柄改变的是 root.queue-*-width；表头与数据行都读同一属性，
-// 所以只要改属性后两侧的列位置一致偏移，就说明对齐关系成立。
+// Exercise pointer capture while each handle moves with its column edge.
 int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
   using Role = slint::language::AccessibleRole;
   app->set_selected_page(1);
@@ -324,7 +322,16 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
 
   // 拖动文件名列：该列自身应变宽（拖拽生效），且表头与数据行仍逐列对齐。
   const auto before_filename_width = header_filename->size().width;
-  app->set_queue_filename_width(before_filename_width + 60.0f);
+  const auto drag = [&](const auto& header, float delta) {
+    const auto position = header->absolute_position();
+    const float x = position.x + header->size().width;
+    const float y = position.y + header->size().height / 2;
+    app->window().dispatch_pointer_press_event(slint::LogicalPosition({x, y}), slint::PointerEventButton::Left);
+    for (int step = 1; step <= 6; ++step)
+      app->window().dispatch_pointer_move_event(slint::LogicalPosition({x + delta * step / 6, y}));
+    app->window().dispatch_pointer_release_event(slint::LogicalPosition({x + delta, y}), slint::PointerEventButton::Left);
+  };
+  drag(header_filename, 60.0f);
   if (std::fabs(header_filename->size().width - (before_filename_width + 60.0f)) > 1.0f) {
     return fail(std::format("filename column did not widen: {} -> {}",
                             before_filename_width, header_filename->size().width));
@@ -336,6 +343,14 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
       std::fabs(header_status->absolute_position().x - row_status->absolute_position().x) > 2.0f) {
     return fail("fixed columns lost alignment after resize");
   }
+  const auto before_size = app->get_queue_size_width();
+  drag(header_size, 24.0f);
+  if (std::fabs(app->get_queue_size_width() - before_size - 24.0f) > 1.0f)
+    return fail("size column pointer drag failed");
+  const auto before_status = app->get_queue_status_width();
+  drag(header_status, -18.0f);
+  if (std::fabs(app->get_queue_status_width() - before_status + 18.0f) > 1.0f)
+    return fail("status column pointer drag failed");
   return 0;
 }
 

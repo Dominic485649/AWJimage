@@ -3,7 +3,9 @@
 #endif
 #include <windows.h>
 #include <aclapi.h>
+#include <ktmw32.h>
 #include "shell_context_menu.hpp"
+#include "shell_elevation.hpp"
 #include "isolated_registry.hpp"
 #include <cstdio>
 #include <filesystem>
@@ -88,6 +90,34 @@ int wmain(int argc, wchar_t** argv) try {
   menu::MenuParams params{};
   for (auto& value : params) value.quality_text = L"73";
   params[0].install_avif_png_command = true;
+  // KTM rollback and commit use the same isolated HKCU as journal tests.
+  {
+    const auto tx = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
+    check(tx != INVALID_HANDLE_VALUE, "cannot create rollback transaction");
+    menu::MenuTransaction rollback{tx};
+    require(menu::stage_user_menu(tx, exe, params, {}, false, false));
+    check(!*menu::is_installed(), "staged user menu became visible before commit");
+  }
+  check(!*menu::is_installed(), "abandoned transaction left a menu");
+  {
+    const auto tx = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
+    check(tx != INVALID_HANDLE_VALUE, "cannot create commit transaction");
+    menu::MenuTransaction commit{tx};
+    require(menu::stage_user_menu(tx, exe, params, {}, false, false));
+    require(commit.commit());
+  }
+  healthy(exe, params);
+  const std::vector<std::wstring> compatibility_presets{L"测试预设"};
+  require(menu::reconcile(exe, params, compatibility_presets, false, true));
+  check(*menu::compatibility_installed(), "compatibility registration not detected");
+  check(read(menu::directory_parent_key(), L"SubCommands").ends_with(L";AWJImage.presets"),
+        "compatibility preset bridge missing");
+  auto compatibility_warning = menu::warning(exe, params, compatibility_presets, true);
+  check(compatibility_warning && !*compatibility_warning, "compatibility schema is unhealthy");
+  require(menu::reconcile(exe, params, {}, false, true));
+  require(menu::reconcile(exe, params, {}, false, false));
+  healthy(exe, params);
+  require(menu::remove());
   require(menu::reconcile(exe, params));
   check(!*menu::is_installed(), "parameter save unexpectedly installed a menu");
   const std::wstring legacy = L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJImage";

@@ -4,6 +4,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <ktmw32.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
 #include <shlwapi.h>
@@ -17,6 +18,63 @@
 
 namespace awj::shell_context_menu {
 namespace {
+
+thread_local HANDLE native_transaction{};
+thread_local HKEY native_hive{HKEY_CURRENT_USER};
+thread_local REGSAM native_view{};
+
+struct NativeRegistryScope {
+  HANDLE transaction{native_transaction};
+  HKEY hive{native_hive};
+  REGSAM view{native_view};
+  NativeRegistryScope(HANDLE tx, bool machine) {
+    native_transaction = tx;
+    native_hive = machine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+    native_view = machine ? KEY_WOW64_64KEY : 0;
+  }
+  ~NativeRegistryScope() {
+    native_transaction = transaction;
+    native_hive = hive;
+    native_view = view;
+  }
+};
+
+LSTATUS open_native_key(const wchar_t* path, REGSAM access, HKEY* key) {
+  return native_transaction
+      ? RegOpenKeyTransactedW(native_hive, path, 0, access | native_view,
+                              key, native_transaction, nullptr)
+      : RegOpenKeyExW(native_hive, path, 0, access | native_view, key);
+}
+
+LSTATUS get_native_value(const wchar_t* path, const wchar_t* name, DWORD flags,
+                        DWORD* type, void* data, DWORD* bytes) {
+  HKEY key{};
+  const auto opened = open_native_key(path, KEY_QUERY_VALUE, &key);
+  if (opened != ERROR_SUCCESS) return opened;
+  const auto result = RegGetValueW(key, nullptr, name, flags, type, data, bytes);
+  RegCloseKey(key);
+  return result;
+}
+
+LSTATUS delete_native_tree(const std::wstring& path, unsigned depth = 0) {
+  if (!native_transaction) return RegDeleteTreeW(native_hive, path.c_str());
+  if (depth > 64) return ERROR_INVALID_DATA;
+  HKEY key{};
+  auto status = open_native_key(path.c_str(), KEY_READ | KEY_WRITE | DELETE, &key);
+  if (status != ERROR_SUCCESS) return status;
+  for (;;) {
+    wchar_t child[256]{};
+    DWORD length = 256;
+    status = RegEnumKeyExW(key, 0, child, &length, nullptr, nullptr, nullptr, nullptr);
+    if (status != ERROR_SUCCESS) break;
+    status = delete_native_tree(path + L"\\" + child, depth + 1);
+    if (status != ERROR_SUCCESS) break;
+  }
+  RegCloseKey(key);
+  if (status != ERROR_NO_MORE_ITEMS) return status;
+  return RegDeleteKeyTransactedW(native_hive, path.c_str(), native_view, 0,
+                                 native_transaction, nullptr);
+}
 
 constexpr std::wstring_view kImageParent =
     L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJimage.Convert";
@@ -115,9 +173,12 @@ std::expected<RegistryKey, std::string> create_key(std::wstring_view subkey,
                                                   REGSAM access = KEY_READ | KEY_WRITE) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, nullptr,
-                                      REG_OPTION_NON_VOLATILE,
-                                      access, nullptr, &raw, nullptr);
+  const auto status = native_transaction
+      ? RegCreateKeyTransactedW(native_hive, path.c_str(), 0, nullptr,
+          REG_OPTION_NON_VOLATILE, access | native_view, nullptr, &raw, nullptr,
+          native_transaction, nullptr)
+      : RegCreateKeyExW(native_hive, path.c_str(), 0, nullptr,
+          REG_OPTION_NON_VOLATILE, access | native_view, nullptr, &raw, nullptr);
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("创建右键菜单注册表项", subkey, status)};
   }
@@ -128,7 +189,7 @@ std::expected<RegistryKey, std::string> open_key(std::wstring_view subkey,
                                                  REGSAM access) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, access, &raw);
+  const auto status = open_native_key(path.c_str(), access, &raw);
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("打开右键菜单注册表项", subkey, status)};
   }
@@ -171,7 +232,7 @@ std::expected<void, std::string> set_dword(std::wstring_view subkey,
 std::expected<bool, std::string> key_exists(std::wstring_view subkey) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &raw);
+  const auto status = open_native_key(path.c_str(), KEY_READ, &raw);
   if (status == ERROR_SUCCESS) {
     RegCloseKey(raw);
     return true;
@@ -182,7 +243,7 @@ std::expected<bool, std::string> key_exists(std::wstring_view subkey) {
 
 std::expected<void, std::string> delete_tree(std::wstring_view subkey) {
   const std::wstring path{subkey};
-  const auto status = RegDeleteTreeW(HKEY_CURRENT_USER, path.c_str());
+  const auto status = delete_native_tree(path);
   if (status == ERROR_SUCCESS || missing_registry_status(status)) return {};
   return std::unexpected{registry_error("删除右键菜单注册表项", subkey, status)};
 }
@@ -193,7 +254,7 @@ std::expected<std::optional<std::wstring>, std::string> read_string(
   const std::wstring name_storage{name};
   DWORD bytes = 0;
   DWORD type = 0;
-  const auto first = RegGetValueW(HKEY_CURRENT_USER, path.c_str(),
+  const auto first = get_native_value(path.c_str(),
                                   name.empty() ? nullptr : name_storage.c_str(),
                                   RRF_RT_REG_SZ, &type, nullptr, &bytes);
   if (missing_registry_status(first)) return std::optional<std::wstring>{};
@@ -201,7 +262,7 @@ std::expected<std::optional<std::wstring>, std::string> read_string(
     return std::unexpected{registry_error("读取右键菜单字符串值", subkey, first)};
   }
   std::wstring value(bytes / sizeof(wchar_t), L'\0');
-  const auto second = RegGetValueW(HKEY_CURRENT_USER, path.c_str(),
+  const auto second = get_native_value(path.c_str(),
                                    name.empty() ? nullptr : name_storage.c_str(),
                                    RRF_RT_REG_SZ, &type, value.data(), &bytes);
   if (second != ERROR_SUCCESS) {
@@ -218,7 +279,7 @@ std::expected<std::optional<std::uint32_t>, std::string> read_dword(
   DWORD value = 0;
   DWORD bytes = sizeof(value);
   DWORD type = 0;
-  const auto status = RegGetValueW(HKEY_CURRENT_USER, path.c_str(), name_storage.c_str(),
+  const auto status = get_native_value(path.c_str(), name_storage.c_str(),
                                    RRF_RT_REG_DWORD, &type, &value, &bytes);
   if (missing_registry_status(status)) return std::optional<std::uint32_t>{};
   if (status != ERROR_SUCCESS) {
@@ -596,9 +657,15 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
                                      std::span<const std::wstring> preset_names,
-                                     int slot) {
+                                     int slot, bool compatibility) {
   RegistrySchema schema{.plan = plan};
   schema.parent_roots.push_back(directory_parent_key());
+  if (compatibility) {
+    schema.parent_roots.push_back(image_parent_key());
+    schema.parent_roots.push_back(ico_parent_key());
+    for (const auto& extension : plan.extensions)
+      schema.parent_roots.push_back(class_extension_parent_key(extension));
+  }
   for (const auto& extension : plan.extensions) {
     schema.parent_roots.push_back(extension_parent_key(extension));
   }
@@ -614,6 +681,7 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
   append_owned_markers(schema.values, shared);
 
   for (const auto& command : kCommands) {
+    if (compatibility) break;
     if (command.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
     const auto verb_key = std::format(L"{}\\{}", shared_shell, command.canonical_verb);
     const auto command_key = verb_key + L"\\command";
@@ -665,8 +733,20 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
     append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
     append_string_spec(schema.values, parent, L"Icon", icon);
     append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-    append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
-                       shared.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
+    if (compatibility) {
+      std::wstring commands;
+      for (const auto& spec : kCommands) {
+        if (spec.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
+        if (!commands.empty()) commands += L';';
+        commands += L"AWJImage.";
+        commands += spec.append_png_suffix ? L"avif-png" : spec.format;
+      }
+      if (!preset_names.empty()) commands += L";AWJImage.presets";
+      append_string_spec(schema.values, parent, L"SubCommands", std::move(commands));
+    }
+    if (!compatibility)
+      append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
+                         shared.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
     append_owned_markers(schema.values, parent);
   }
   return schema;
@@ -813,6 +893,7 @@ std::expected<std::vector<SnapshotRoot>, std::string> snapshot_roots(
 }
 
 std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& roots) {
+  if (native_transaction) return {};
   if (auto r = set_string(kTransaction, owner_value_name, owner_value); !r) return r;
   if (auto r = set_dword(kTransaction, schema_value_name, schema_version); !r) return r;
   if (auto r = set_dword(kTransaction, L"State", 0); !r) return r;
@@ -832,6 +913,7 @@ std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& 
 }
 
 std::expected<void, std::string> recover_locked() {
+  if (native_transaction) return {};
   auto exists = key_exists(kTransaction);
   if (!exists) return std::unexpected{exists.error()};
   if (!*exists) return {};
@@ -931,6 +1013,7 @@ std::expected<void, std::string> verify_no_obsolete_roots(const RegistrySchema& 
 }
 
 std::expected<void, std::string> commit_journal() {
+  if (native_transaction) return {};
   if (auto result = set_dword(kTransaction, L"State", 2); !result) return result;
   if (auto result = flush_journal(); !result) return result;
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -960,7 +1043,22 @@ std::expected<bool, std::string> is_installed() {
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names,
-                                         bool force_install) {
+                                         bool force_install, bool compatibility) {
+  if (compatibility && !native_transaction) {
+    const auto transaction = CreateTransaction(nullptr, nullptr, 0, 0, 0, 30000, nullptr);
+    if (transaction == INVALID_HANDLE_VALUE)
+      return std::unexpected{"无法创建用户菜单事务。"};
+    struct TransactionGuard {
+      HANDLE handle;
+      ~TransactionGuard() { RollbackTransaction(handle); CloseHandle(handle); }
+    } guard{transaction};
+    NativeRegistryScope scope{transaction, false};
+    auto result = reconcile(awj_exe, menu_params, preset_names, force_install, true);
+    if (!result) return result;
+    if (!CommitTransaction(transaction)) return std::unexpected{"提交用户菜单事务失败。"};
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return {};
+  }
   RegistrationLock lock;
   if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
   if (auto recovered = recover_locked(); !recovered) return recovered;
@@ -973,11 +1071,11 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
   auto active = active_slot();
   if (!active) return std::unexpected{active.error()};
   const auto plan = build_install_plan();
-  auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active);
+  auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active, compatibility);
   if (auto valid = validate_request(exe, current, preset_names); !valid) return valid;
   if (verify_schema(current) && verify_no_obsolete_roots(current)) return {};
-  const int next = *installed ? 1 - *active : 0;
-  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next);
+  const int next = compatibility ? 0 : (*installed ? 1 - *active : 0);
+  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next, compatibility);
   auto roots = snapshot_roots(schema);
   if (!roots) return std::unexpected{roots.error()};
   if (auto saved = begin_journal(*roots); !saved) {
@@ -1052,13 +1150,13 @@ std::expected<void, std::string> remove() {
 
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe, const MenuParams& menu_params,
-    std::span<const std::wstring> preset_names) {
+    std::span<const std::wstring> preset_names, bool compatibility) {
   auto installed = is_installed();
   if (!installed) return std::unexpected{installed.error()};
   if (!*installed) return std::optional<std::string>{};
   auto slot = active_slot();
   if (!slot) return std::unexpected{slot.error()};
-  const auto schema = build_registry_schema(awj_exe, menu_params, build_install_plan(), preset_names, *slot);
+  const auto schema = build_registry_schema(awj_exe, menu_params, build_install_plan(), preset_names, *slot, compatibility);
   if (auto valid = verify_schema(schema); !valid) return std::optional<std::string>{valid.error()};
   if (auto valid = verify_no_obsolete_roots(schema); !valid) return std::optional<std::string>{valid.error()};
   return std::optional<std::string>{};
@@ -1070,7 +1168,7 @@ constexpr std::wstring_view kMachineCommandPrefix =
 // PR #3 used exactly these six names. Never accept registry paths from argv.
 constexpr std::wstring_view kMachineCommands[] = {
     L"AWJImage.png", L"AWJImage.webp", L"AWJImage.avif",
-    L"AWJImage.avif-png", L"AWJImage.jxl", L"AWJImage.jpgli"};
+    L"AWJImage.avif-png", L"AWJImage.jxl", L"AWJImage.jpgli", L"AWJImage.presets"};
 }
 
 std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands() {
@@ -1086,6 +1184,92 @@ std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands() 
     if (is_awj_command(command)) found.emplace_back(name);
   }
   return found;
+}
+
+std::expected<bool, std::string> compatibility_installed() {
+  for (const auto& root : current_parent_roots_for_all_extensions()) {
+    auto ours = owned(root);
+    if (!ours) return std::unexpected{ours.error()};
+    if (!*ours) continue;
+    auto commands = read_string(root, L"SubCommands");
+    if (!commands) return std::unexpected{commands.error()};
+    if (*commands && (**commands).starts_with(L"AWJImage.")) return true;
+  }
+  return false;
+}
+
+namespace {
+RegistrySchema machine_schema(const std::filesystem::path& exe,
+                              const MenuParams& params) {
+  RegistrySchema schema;
+  const auto presets = std::wstring{kMachineCommandPrefix} + L"AWJImage.presets";
+  schema.keys.push_back(presets);
+  append_owned_markers(schema.values, presets);
+  append_string_spec(schema.values, presets, L"MUIVerb", L"用户预设 / User presets");
+  append_string_spec(schema.values, presets, L"Icon", icon_value(exe));
+  append_string_spec(schema.values, presets, std::wstring{kExtendedSubCommandsKey},
+                     std::wstring{shared_tree_reference});
+  for (const auto& command : kCommands) {
+    const auto suffix = command.append_png_suffix ? L"avif-png" : command.format;
+    const auto root = std::wstring{kMachineCommandPrefix} + L"AWJImage." + std::wstring{suffix};
+    schema.keys.push_back(root);
+    schema.keys.push_back(root + L"\\command");
+    append_owned_markers(schema.values, root);
+    append_string_spec(schema.values, root, L"MUIVerb", std::wstring{command.label});
+    append_string_spec(schema.values, root, L"Icon", icon_value(exe));
+    append_string_spec(schema.values, root, L"MultiSelectModel", std::wstring{kMultiSelectModel});
+    append_string_spec(schema.values, root + L"\\command", L"",
+        build_convert_command_line(exe, command.format, params[command.params_index],
+                                   command.append_png_suffix));
+  }
+  return schema;
+}
+}
+
+std::expected<void, std::string> stage_user_menu(
+    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+    std::span<const std::wstring> names, bool compatibility, bool remove_menu) {
+  if (!transaction) return std::unexpected{"注册表事务句柄无效。"};
+  NativeRegistryScope scope{transaction, false};
+  return remove_menu ? remove() : reconcile(exe, params, names, true, compatibility);
+}
+
+std::expected<void, std::string> stage_machine_menu(
+    void* transaction, const std::filesystem::path& exe, const MenuParams& params,
+    bool remove_menu) {
+  if (!transaction) return std::unexpected{"机器注册必须使用受保护的系统事务。"};
+  NativeRegistryScope scope{transaction, true};
+  const auto schema = machine_schema(exe, params);
+  if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
+  for (const auto name : kMachineCommands) {
+    const auto root = std::wstring{kMachineCommandPrefix} + std::wstring{name};
+    auto exists = key_exists(root);
+    if (!exists) return std::unexpected{exists.error()};
+    if (!*exists) continue;
+    if (name == L"AWJImage.presets") {
+      auto marker = read_string(root, owner_value_name);
+      auto icon = read_string(root, L"Icon");
+      if (!marker || !icon || !*marker || !*icon || **marker != owner_value || **icon != icon_value(exe))
+        return std::unexpected{"机器预设菜单已被其他程序位置占用，未修改。"};
+      if (auto removed = delete_tree(root); !removed) return removed;
+      continue;
+    }
+    auto command = read_string(root + L"\\command", L"");
+    if (!command) return std::unexpected{command.error()};
+    const auto prefix = quote_windows_arg(exe.wstring(), true) + L" --shell-window --shell-convert ";
+    if (!*command || !(**command).starts_with(prefix))
+      return std::unexpected{"机器菜单已被其他程序位置占用，未修改。"};
+    if (auto removed = delete_tree(root); !removed) return removed;
+  }
+  if (remove_menu) return {};
+  if (auto applied = apply_schema(schema); !applied) return applied;
+  return verify_schema(schema);
+}
+
+std::expected<bool, std::string> machine_menu_matches(
+    const std::filesystem::path& exe, const MenuParams& params) {
+  NativeRegistryScope scope{nullptr, true};
+  return verify_schema(machine_schema(exe, params)).has_value();
 }
 
 }  // namespace awj::shell_context_menu

@@ -5,6 +5,10 @@ import { StudioTheme } from "studio_theme.slint";
 export component SettingsPage inherits ScrollView {
     in property <color> accent-strong;
     in-out property <bool> allow-wic-fallback;
+    in property <bool> shell-menu-injection-supported;
+    in property <bool> menu-operation-active;
+    in-out property <bool> shell-menu-compatibility;
+    callback shell-menu-compatibility-requested();
     in property <color> combo-bg;
     in property <color> combo-bg-disabled;
     in property <color> combo-bg-hover;
@@ -230,6 +234,12 @@ export component SettingsPage inherits ScrollView {
                 padding: 24px;
                 spacing: root.page-gap;
                 Text { text: @tr("高级与实验功能"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                if root.shell-menu-injection-supported: CheckBox {
+                    text: @tr("兼容性右键菜单（需要管理员权限）");
+                    checked <=> root.shell-menu-compatibility;
+                    enabled: !root.running && !root.menu-operation-active;
+                    toggled => { root.shell-menu-compatibility-requested(); }
+                }
                 if root.wic-ui-visible: VerticalLayout {
                     spacing: 8px;
                     width: 100%;

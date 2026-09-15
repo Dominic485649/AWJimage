@@ -180,7 +180,8 @@ std::expected<bool, std::string> append_queue_image_path(
     UiState& state, const std::filesystem::path& path,
     const std::filesystem::path& source_root) {
   try {
-    if (queue_contains_path(state, path)) {
+    const auto key = queue_path_key(path);
+    if (state.queue_path_keys.contains(key)) {
       return false;
     }
     std::error_code ec;
@@ -204,15 +205,23 @@ std::expected<bool, std::string> append_queue_image_path(
       return std::unexpected{std::format("输入文件超过当前输入上限: {}。",
                                          awj::display_path_for_user(path))};
     }
-    state.queue_items.push_back(QueueImageItem{
-        .id = state.next_queue_id++,
+    QueueImageItem item{
+        .id = state.next_queue_id,
         .path = path,
         .source_root = source_root,
         .relative_dir =
             source_root.empty() ? std::filesystem::path{}
                                 : queue_relative_dir_for(source_root, path),
-        .bytes = bytes});
-    state.queue_path_keys.insert(queue_path_key(path));
+        .bytes = bytes};
+    const auto [position, inserted] = state.queue_path_keys.insert(key);
+    if (!inserted) return false;
+    try {
+      state.queue_items.push_back(std::move(item));
+    } catch (...) {
+      state.queue_path_keys.erase(position);
+      throw;
+    }
+    ++state.next_queue_id;
     return true;
   } catch (const std::bad_alloc&) {
     return std::unexpected{"添加队列项时内存不足。"};
@@ -226,16 +235,25 @@ std::expected<bool, std::string> append_queue_image_path(
 std::expected<bool, std::string> append_prepared_import_file(
     UiState& state, const awj::ui_import::File& file) {
   try {
-    if (queue_contains_path(state, file.path)) return false;
-    state.queue_items.push_back(QueueImageItem{
-        .id = state.next_queue_id++,
+    const auto key = queue_path_key(file.path);
+    if (state.queue_path_keys.contains(key)) return false;
+    QueueImageItem item{
+        .id = state.next_queue_id,
         .path = file.path,
         .source_root = file.source_root,
         .relative_dir = file.source_root.empty()
                             ? std::filesystem::path{}
                             : queue_relative_dir_for(file.source_root, file.path),
-        .bytes = file.bytes});
-    state.queue_path_keys.insert(queue_path_key(file.path));
+        .bytes = file.bytes};
+    const auto [position, inserted] = state.queue_path_keys.insert(key);
+    if (!inserted) return false;
+    try {
+      state.queue_items.push_back(std::move(item));
+    } catch (...) {
+      state.queue_path_keys.erase(position);
+      throw;
+    }
+    ++state.next_queue_id;
     return true;
   } catch (const std::bad_alloc&) {
     return std::unexpected{"添加导入结果时内存不足。"};
