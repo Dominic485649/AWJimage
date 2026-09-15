@@ -54,6 +54,7 @@
 #include "import_service.h"
 #include "path_picker_win32.h"
 #include "shell_context_menu.hpp"
+#include "sparse_package.hpp"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -623,13 +624,52 @@ void load_system_font_options(AwjStudio& app) {
   }
 }
 
-std::filesystem::path studio_config_path() {
+std::filesystem::path local_app_data_root() {
+  PWSTR raw = nullptr;
+  if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_LocalAppData, KF_FLAG_DEFAULT,
+                                     nullptr, &raw)) &&
+      raw != nullptr) {
+    std::filesystem::path root{raw};
+    CoTaskMemFree(raw);
+    root /= L"AWJimage";
+    return root;
+  }
+  if (raw != nullptr) CoTaskMemFree(raw);
+  return {};
+}
+
+std::filesystem::path adjacent_studio_config_path() {
   if (auto directory = awj::executable_directory()) {
     return *directory /
            awj::wide_from_utf8(
                std::string{awj::studio_defaults::config_file_name});
   }
   return {};
+}
+
+std::filesystem::path local_studio_config_path() {
+  auto root = local_app_data_root();
+  if (root.empty()) return {};
+  return root /
+         awj::wide_from_utf8(
+             std::string{awj::studio_defaults::config_file_name});
+}
+
+std::filesystem::path studio_config_path() {
+  const auto local = local_studio_config_path();
+  std::error_code ec;
+  if (!local.empty() && std::filesystem::is_regular_file(local, ec) && !ec) {
+    return local;
+  }
+  const auto adjacent = adjacent_studio_config_path();
+  ec.clear();
+  if (!adjacent.empty() && std::filesystem::is_regular_file(adjacent, ec) &&
+      !ec) {
+    return adjacent;
+  }
+  // New installations use the per-user directory. Existing portable copies
+  // remain readable from the executable directory for backward compatibility.
+  return local.empty() ? adjacent : local;
 }
 
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
@@ -1581,7 +1621,30 @@ std::expected<void, std::string> write_studio_config_file(
   }
   content += "}\n";
 
-  return write_file_atomically(path, content);
+  const auto write_to = [&](const std::filesystem::path& target)
+      -> std::expected<void, std::string> {
+    if (target.empty()) {
+      return std::unexpected{"无法定位用户配置文件路径。"};
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(target.parent_path(), ec);
+    if (ec) {
+      return std::unexpected{
+          std::format("无法创建用户配置目录：{}", ec.message())};
+    }
+    return write_file_atomically(target, content);
+  };
+
+  if (auto saved = write_to(path); saved) return saved;
+
+  // A legacy portable configuration may still live beside an executable in a
+  // protected directory. Keep reading it, but persist the next change under
+  // LocalAppData so an ordinary user never needs elevation.
+  const auto local = local_studio_config_path();
+  if (!local.empty() && local != path) {
+    if (auto saved = write_to(local); saved) return saved;
+  }
+  return write_to(path);
 } catch (const std::bad_alloc&) {
   return std::unexpected{"写入 Studio 配置时内存不足。"};
 } catch (const std::length_error&) {
@@ -3440,11 +3503,70 @@ std::expected<void, std::string> synchronize_shell_context_menu(
   if (!awj_exe) return std::unexpected{awj_exe.error()};
   auto names = awj::injected_user_preset_names();
   if (!names) return std::unexpected{names.error()};
-  return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names, force_install);
+  auto result = awj::shell_context_menu::reconcile(
+      *awj_exe, shell_menu_params(menu_params), *names, force_install);
+  if (!result) return result;
+  auto installed = awj::shell_context_menu::is_installed();
+  if (!installed) return std::unexpected{installed.error()};
+  if (!*installed) {
+    // Do not leave a modern Explorer package behind after the user removes
+    // the classic registration (or before the first explicit installation).
+    return awj::shell_context_menu::remove_sparse_package_registration();
+  }
+
+  std::error_code package_path_error;
+  const auto package_path =
+      awj::shell_context_menu::sparse_package_path(*awj_exe);
+  const bool package_asset_available =
+      std::filesystem::is_regular_file(package_path, package_path_error) &&
+      !package_path_error;
+  if (!package_asset_available) {
+    // Development/portable builds may intentionally omit the optional sparse
+    // package. Keep the classic HKCU menu usable and remove any stale modern
+    // file that could otherwise make the classic handler hide itself.
+    auto removed_package =
+        awj::shell_context_menu::remove_sparse_package_registration();
+    auto removed_configuration =
+        awj::shell_context_menu::remove_modern_configuration();
+    if (!removed_package && !removed_configuration) {
+      return std::unexpected{removed_package.error() + " " +
+                             removed_configuration.error()};
+    }
+    if (!removed_package) return removed_package;
+    if (!removed_configuration) return removed_configuration;
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return {};
+  }
+
+  auto package =
+      awj::shell_context_menu::ensure_sparse_package_registered(*awj_exe);
+  if (!package) {
+    // The file-backed configuration is only meaningful when the matching
+    // sparse package is registered. Clear it before surfacing the error so
+    // the classic fallback remains visible in both Explorer and DOpus.
+    auto removed = awj::shell_context_menu::remove_modern_configuration();
+    if (!removed) {
+      return std::unexpected{package.error() + " " + removed.error()};
+    }
+    SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+    return package;
+  }
+  // The package supplies the modern Explorer registration.  Publish one more
+  // association change after deployment so a first install is visible without
+  // requiring the user to restart Explorer after the package is added.
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {
-  return awj::shell_context_menu::remove();
+  auto package = awj::shell_context_menu::remove_sparse_package_registration();
+  auto classic = awj::shell_context_menu::remove();
+  if (!package && !classic) {
+    return std::unexpected{package.error() + " " + classic.error()};
+  }
+  if (!package) return std::unexpected{package.error()};
+  if (!classic) return std::unexpected{classic.error()};
+  return {};
 }
 
 std::optional<std::string> shell_context_menu_warning(

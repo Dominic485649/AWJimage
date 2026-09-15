@@ -43,6 +43,10 @@ export namespace awj::update {
 
 namespace windows_detail {
 
+constexpr wchar_t kShellExtensionFileName[] = L"AWJ.ShellExtension.dll";
+constexpr wchar_t kShellQuarantineMarkerName[] =
+    L"AWJ.ShellExtension.dll.renamed";
+
 struct HandleCloser {
   using pointer = HANDLE;
   void operator()(HANDLE handle) const noexcept {
@@ -288,34 +292,145 @@ std::filesystem::path transaction_pointer(
   return install_directory / L".awj-update-transaction";
 }
 
+std::expected<std::filesystem::path, std::string> shell_quarantine_path(
+    const std::filesystem::path& install_directory,
+    const std::filesystem::path& stage) {
+  auto marker = read_file(stage / kShellQuarantineMarkerName, 512);
+  if (!marker) return std::unexpected{marker.error()};
+  while (!marker->empty() &&
+         (marker->back() == '\r' || marker->back() == '\n')) {
+    marker->pop_back();
+  }
+  if (marker->empty() ||
+      std::ranges::any_of(*marker, [](unsigned char value) {
+        return value < 0x21 || value >= 0x7f || value == '/' ||
+               value == '\\' || value == ':';
+      })) {
+    return std::unexpected{"Shell Extension 回滚标记无效。"};
+  }
+  constexpr std::string_view prefix =
+      "AWJ.ShellExtension.dll.awj-update-old-";
+  if (!marker->starts_with(prefix)) {
+    return std::unexpected{"Shell Extension 回滚文件名无效。"};
+  }
+  const std::wstring filename{marker->begin(), marker->end()};
+  return install_directory / filename;
+}
+
 std::expected<void, std::string> restore_backups(
     const std::filesystem::path& install_directory,
     const std::filesystem::path& stage) {
   const auto old_exe = stage / L"AWJ.exe.old";
   const auto old_com = stage / L"AWJ.com.old";
+  const auto old_shell = stage / L"AWJ.ShellExtension.dll.old";
+  const auto shell_was_absent = stage / L"AWJ.ShellExtension.dll.absent";
+  const auto shell_was_renamed = stage / kShellQuarantineMarkerName;
   std::error_code ec;
-  if (std::filesystem::exists(old_exe, ec) && !ec) {
+  const bool old_exe_exists = std::filesystem::exists(old_exe, ec);
+  if (ec) return std::unexpected{"无法检查 AWJ.exe 回滚副本。"};
+  if (old_exe_exists) {
     if (auto copied = flush_copy(old_exe, install_directory / L"AWJ.exe", false);
         !copied) {
       return std::unexpected{copied.error()};
     }
   }
   ec.clear();
-  if (std::filesystem::exists(old_com, ec) && !ec) {
+  const bool old_com_exists = std::filesystem::exists(old_com, ec);
+  if (ec) return std::unexpected{"无法检查 AWJ.com 回滚副本。"};
+  if (old_com_exists) {
     if (auto copied = flush_copy(old_com, install_directory / L"AWJ.com", false);
         !copied) {
       return std::unexpected{copied.error()};
     }
   }
+  ec.clear();
+  const auto target_shell = install_directory / kShellExtensionFileName;
+  const bool shell_was_renamed_exists =
+      std::filesystem::exists(shell_was_renamed, ec);
+  if (ec) return std::unexpected{"无法检查 Shell Extension 回滚状态。"};
+  if (shell_was_renamed_exists) {
+    auto quarantine = shell_quarantine_path(install_directory, stage);
+    if (!quarantine) return std::unexpected{quarantine.error()};
+    ec.clear();
+    const bool quarantine_exists = std::filesystem::exists(*quarantine, ec);
+    if (ec) return std::unexpected{"无法检查 Shell Extension 隔离副本。"};
+    if (quarantine_exists) {
+      ec.clear();
+      const bool target_exists = std::filesystem::exists(target_shell, ec);
+      if (ec) return std::unexpected{"无法检查待回滚的 Shell Extension。"};
+      if (target_exists && !std::filesystem::remove(target_shell, ec)) {
+        return std::unexpected{"无法删除待回滚的 Shell Extension。"};
+      }
+      if (ec || MoveFileExW(quarantine->c_str(), target_shell.c_str(),
+                           MOVEFILE_REPLACE_EXISTING |
+                               MOVEFILE_WRITE_THROUGH) == FALSE) {
+        return std::unexpected{"无法恢复旧版 Shell Extension。"};
+      }
+    } else {
+      // The marker is written before the rename. If the quarantine file does
+      // not exist, the rename did not complete; leave the original target
+      // untouched rather than overwriting a possibly locked DLL.
+      ec.clear();
+      const bool target_exists = std::filesystem::exists(target_shell, ec);
+      if (ec) return std::unexpected{"无法检查 Shell Extension 目标文件。"};
+      if (!target_exists) {
+        const bool old_shell_exists = std::filesystem::exists(old_shell, ec);
+        if (ec) return std::unexpected{"无法检查 Shell Extension 回滚副本。"};
+        if (old_shell_exists) {
+          if (auto copied = flush_copy(old_shell, target_shell, false); !copied) {
+            return std::unexpected{copied.error()};
+          }
+        } else {
+          return std::unexpected{"缺少旧版 Shell Extension 隔离副本。"};
+        }
+      }
+    }
+  } else {
+    ec.clear();
+    const bool old_shell_exists = std::filesystem::exists(old_shell, ec);
+    if (ec) return std::unexpected{"无法检查 Shell Extension 回滚副本。"};
+    if (old_shell_exists) {
+      if (auto copied = flush_copy(old_shell, target_shell, false); !copied) {
+        return std::unexpected{copied.error()};
+      }
+    }
+    ec.clear();
+    const bool shell_was_absent_exists =
+        std::filesystem::exists(shell_was_absent, ec);
+    if (ec) return std::unexpected{"无法检查 Shell Extension 缺失标记。"};
+    if (shell_was_absent_exists) {
+      ec.clear();
+      const bool target_exists = std::filesystem::exists(target_shell, ec);
+      if (ec) return std::unexpected{"无法检查待删除的 Shell Extension。"};
+      if (target_exists && !std::filesystem::remove(target_shell, ec)) {
+        return std::unexpected{"无法删除新增的 Shell Extension。"};
+      }
+      if (ec) return std::unexpected{"无法删除新增的 Shell Extension。"};
+    }
+  }
+  ec.clear();
   std::filesystem::remove(transaction_pointer(install_directory), ec);
+  if (ec) return std::unexpected{"无法清理更新事务指针。"};
   return {};
 }
 
-void cleanup_stage_after_success(const std::filesystem::path& stage) noexcept {
+void cleanup_stage_after_success(
+    const std::filesystem::path& install_directory,
+    const std::filesystem::path& stage) noexcept {
   std::error_code ec;
-  for (const auto* name : {L"AWJ.exe.old", L"AWJ.com.old", L"manifest-v2.json",
+  if (auto quarantine = shell_quarantine_path(install_directory, stage);
+      quarantine) {
+    std::filesystem::remove(*quarantine, ec);
+    ec.clear();
+  }
+  for (const auto* name : {L"AWJ.exe.old", L"AWJ.com.old",
+                           L"AWJ.ShellExtension.dll.old", L"manifest-v2.json",
                            L"manifest-v2.sig", L"update-keyring-v1.json",
-                           L"update-keyring-v1.sig", L"version.txt", L"state.txt"}) {
+                           L"update-keyring-v1.sig", L"version.txt", L"state.txt",
+                           L"AWJ.exe.new", L"AWJ.com.new",
+                           L"AWJ.ShellExtension.dll.new",
+                           L"AWJ.ShellExtension.dll.renamed",
+                           L"AWJ.ShellExtension.dll.absent"}) {
     std::filesystem::remove(stage / name, ec);
     ec.clear();
   }
@@ -368,10 +483,16 @@ std::expected<void, std::string> stage_and_launch_update(
     cleanup_on_failure();
     return std::unexpected{"签名 v2 manifest 的 Windows 归档缺少 AWJ.exe 或 AWJ.com。"};
   }
+  // The shell extension was added after the original updater contract. Keep
+  // this member optional so historical archives remain installable, while new
+  // archives update the per-user COM handler alongside the main binaries.
+  const auto* shell_member = find_archive_member(
+      entry->windows_x64_archive, "AWJ.ShellExtension.dll");
   const auto archive_path = *stage / L"AWJ_Win.7z";
   const auto unpacked = *stage / L"unpacked";
   const auto new_exe = *stage / L"AWJ.exe.new";
   const auto new_com = *stage / L"AWJ.com.new";
+  const auto new_shell = *stage / L"AWJ.ShellExtension.dll.new";
   if (auto downloaded = download_https_asset(
           entry->windows_x64_archive.archive.url, archive_path,
           entry->windows_x64_archive.archive.size_bytes, token);
@@ -395,6 +516,14 @@ std::expected<void, std::string> stage_and_launch_update(
     cleanup_on_failure();
     return copied;
   }
+  if (shell_member != nullptr) {
+    if (auto copied = windows_detail::flush_copy(
+            unpacked / windows_detail::kShellExtensionFileName, new_shell, true);
+        !copied) {
+      cleanup_on_failure();
+      return copied;
+    }
+  }
   if (auto valid = verify_asset_file(new_exe, exe_member->asset); !valid) {
     cleanup_on_failure();
     return valid;
@@ -402,6 +531,12 @@ std::expected<void, std::string> stage_and_launch_update(
   if (auto valid = verify_asset_file(new_com, com_member->asset); !valid) {
     cleanup_on_failure();
     return valid;
+  }
+  if (shell_member != nullptr) {
+    if (auto valid = verify_asset_file(new_shell, shell_member->asset); !valid) {
+      cleanup_on_failure();
+      return valid;
+    }
   }
   std::error_code extraction_cleanup_error;
   std::filesystem::remove_all(unpacked, extraction_cleanup_error);
@@ -478,6 +613,7 @@ int run_update_helper(DWORD parent_pid) noexcept {
     if (!parent_path || parent_path->parent_path() == stage) return 22;
     const auto install = parent_path->parent_path();
     const auto target_com = install / L"AWJ.com";
+    const auto target_shell = install / kShellExtensionFileName;
     std::error_code ec;
     if (!std::filesystem::is_regular_file(target_com, ec) || ec) return 23;
     auto version = read_file(stage / L"version.txt", 64);
@@ -509,20 +645,52 @@ int run_update_helper(DWORD parent_pid) noexcept {
     const auto* exe_member = find_archive_member(entry->windows_x64_archive, "AWJ.exe");
     const auto* com_member = find_archive_member(entry->windows_x64_archive, "AWJ.com");
     if (exe_member == nullptr || com_member == nullptr) return 27;
+    const auto* shell_member = find_archive_member(
+        entry->windows_x64_archive, "AWJ.ShellExtension.dll");
     const auto new_exe = stage / L"AWJ.exe.new";
     const auto new_com = stage / L"AWJ.com.new";
+    const auto new_shell = stage / L"AWJ.ShellExtension.dll.new";
     if (!verify_asset_file(new_exe, exe_member->asset) ||
         !verify_asset_file(new_com, com_member->asset)) {
+      return 28;
+    }
+    if (shell_member != nullptr &&
+        !verify_asset_file(new_shell, shell_member->asset)) {
       return 28;
     }
     if (WaitForSingleObject(parent.get(), 60000) != WAIT_OBJECT_0) return 29;
 
     const auto old_exe = stage / L"AWJ.exe.old";
     const auto old_com = stage / L"AWJ.com.old";
+    const auto old_shell = stage / L"AWJ.ShellExtension.dll.old";
+    const auto shell_was_renamed = stage / kShellQuarantineMarkerName;
+    const auto shell_was_absent = stage / L"AWJ.ShellExtension.dll.absent";
+    std::optional<std::filesystem::path> shell_quarantine;
     if (!flush_copy(*parent_path, old_exe, true) ||
         !flush_copy(target_com, old_com, true)) {
       return 30;
     }
+    if (shell_member != nullptr) {
+      ec.clear();
+      const bool shell_exists = std::filesystem::exists(target_shell, ec);
+      if (ec) return 30;
+      if (shell_exists) {
+        if (!std::filesystem::is_regular_file(target_shell, ec) || ec) {
+          return 30;
+        }
+        const auto quarantine_name = std::format(
+            "AWJ.ShellExtension.dll.awj-update-old-{}-{}",
+            GetCurrentProcessId(),
+            static_cast<unsigned long long>(GetTickCount64()));
+        shell_quarantine = install /
+            std::filesystem::path{std::wstring{quarantine_name.begin(),
+                                                quarantine_name.end()}};
+        if (!write_text(shell_was_renamed, quarantine_name)) return 30;
+      } else if (!write_text(shell_was_absent, "")) {
+        return 30;
+      }
+    }
+    ec.clear();
     const auto pointer = transaction_pointer(install);
     const auto stage_utf8 = stage.u8string();
     const std::string pointer_text{
@@ -539,6 +707,21 @@ int run_update_helper(DWORD parent_pid) noexcept {
     if (!replace_from_stage(new_com, target_com)) {
       (void)restore_backups(install, stage);
       return 33;
+    }
+    if (shell_member != nullptr) {
+      // A loaded shell DLL may keep the original pathname open. Rename the
+      // old image out of the way first, then install the new image at the
+      // registered pathname; this avoids overwriting an in-use DLL.
+      if (shell_quarantine.has_value() &&
+          MoveFileExW(target_shell.c_str(), shell_quarantine->c_str(),
+                      MOVEFILE_WRITE_THROUGH) == FALSE) {
+        (void)restore_backups(install, stage);
+        return 33;
+      }
+      if (!replace_from_stage(new_shell, target_shell)) {
+        (void)restore_backups(install, stage);
+        return 33;
+      }
     }
     (void)atomic_text_replace(stage / L"state.txt", "files-replaced");
 
@@ -573,7 +756,7 @@ int run_update_helper(DWORD parent_pid) noexcept {
     }
     (void)atomic_text_replace(stage / L"state.txt", "committed");
     std::filesystem::remove(pointer, ec);
-    cleanup_stage_after_success(stage);
+    cleanup_stage_after_success(install, stage);
     return 0;
   } catch (...) {
     return 39;
@@ -643,7 +826,10 @@ int run_update_recovery_helper(DWORD parent_pid) noexcept {
     std::error_code ec;
     for (const auto* name : {L"manifest-v2.json", L"manifest-v2.sig",
                              L"update-keyring-v1.json", L"update-keyring-v1.sig",
-                             L"version.txt", L"state.txt", L"AWJ.exe.new", L"AWJ.com.new"}) {
+                             L"version.txt", L"state.txt", L"AWJ.exe.new",
+                             L"AWJ.com.new", L"AWJ.ShellExtension.dll.new",
+                             L"AWJ.ShellExtension.dll.renamed",
+                             L"AWJ.ShellExtension.dll.absent"}) {
       std::filesystem::remove(stage / name, ec);
       ec.clear();
     }

@@ -207,7 +207,12 @@ int list_user_presets_for_cli() {
     return 1;
   }
   if (catalog->presets.empty()) {
-    print_line("[INFO] 未找到有效用户预设。预设目录位于程序同目录 preset/。");
+    if (auto directory = awj::user_preset_directory()) {
+      print_line(std::format("[INFO] 未找到有效用户预设。预设目录：{}。",
+                             awj::path_to_utf8(*directory)));
+    } else {
+      print_line("[INFO] 未找到有效用户预设。未能定位预设目录。");
+    }
   } else {
     print_line("[INFO] 可用用户预设：");
     for (const auto& preset : catalog->presets) {

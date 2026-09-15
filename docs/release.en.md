@@ -43,16 +43,18 @@ Before creating the immutable 1.0.5 Release, run the packager once with `-Bridge
 
 ## 1.0.9 updater/package-fix prerelease
 
-1. Starting with 1.0.9, the public Windows archive `AWJ_Win.7z` has a fixed, exact, flat four-file contract with no subdirectories or extra members:
+The public Windows archive `AWJ_Win.7z` has a fixed, exact, flat six-file contract with no subdirectories or extra members:
 
    ```text
    AWJ.exe
    AWJ.com
+   AWJ.ShellExtension.dll
+   AWJ.ContextMenu.msix
    LICENSE
    NOTICE.txt
    ```
 
-   `NOTICE.txt` consolidates build information, the third-party notices from `THIRD_PARTY_NOTICES.txt`, and the full third-party license texts required for distribution from `licenses/`. Do not place `.sha256` sidecars, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, or `THIRD_PARTY_LICENSES/` inside the archive. The signed v2 manifest still binds the archive and each member by size and SHA-256, so in-package checksum sidecars are unnecessary.
+   `AWJ.ContextMenu.msix` is the sparse package required by the Windows 11 File Explorer modern context menu. It contains no second copy of the application or DLL; it supplies package identity and points at the external installation directory. The MSIX must be signed with a certificate trusted by target machines before publication. `NOTICE.txt` consolidates build information, the third-party notices from `THIRD_PARTY_NOTICES.txt`, and the full third-party license texts required for distribution from `licenses/`. Do not place `.sha256` sidecars, `BUILD_INFO.txt`, `THIRD_PARTY_NOTICES.txt`, or `THIRD_PARTY_LICENSES/` inside the archive. The signed v2 manifest still binds the archive and each member by size and SHA-256, so in-package checksum sidecars are unnecessary.
 2. `AWJ_Linux.7z` is likewise fixed to the flat three-file set `AWJ`, `LICENSE`, and `NOTICE.txt`. Both `scripts/package-linux-release.sh` and `scripts/package-release.ps1` must verify the exact member set before 7z integrity, fresh extraction, per-file hashing, and smoke tests.
 3. For backward compatibility with 1.0.4–1.0.8 archives, the updater may skip only safe directory entries necessarily implied by signed file-member paths; directories themselves are not manifest members. Extra directories, traversal, links, special entries, duplicate/case-colliding members, and unsigned files remain fail-closed.
 4. Build 1.0.9 Windows and native-Linux assets from a clean `1.0.9` tag, sign a strictly increasing v2 sequence with the external release seed, and upload only `AWJ_Win.7z` and `AWJ_Linux.7z` to a prerelease. Commit the already-generated `update-manifest-v2.json` and signature only after public-download verification; never rerun packaging merely to re-sign.

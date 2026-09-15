@@ -820,9 +820,9 @@ std::string help_text() {
   --color-range <0|1>        AVIF color range；显式指定时覆盖源值，未指定时保留源 PC/full 或 TV/limited，未知源使用 full；AOM/libavif 可应用
   --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时使用较小的右列和底行 cell，保持原始尺寸不变，默认开启；奇数输出尺寸或奇数 cell 尺寸与 420/422 色度仍不兼容，需要 --chroma 444
   --no-experimental-clamped-grid-padding 禁用 AVIF grid 较小边缘 cell；不可整除分割会报错
-  -p, --preset <名称>         从程序同目录 preset/ 按 JSONC 内 name 加载用户预设；未指定使用当前内置默认
+  -p, --preset <名称>         从用户预设目录按 JSONC 内 name 加载；未指定使用当前内置默认
   --preset-file <路径>        加载指定 JSONC 用户预设；显式 CLI 参数始终覆盖预设
-  --list-presets              列出程序同目录 preset/ 中可用的用户预设及简介
+  --list-presets              列出用户预设目录中可用的用户预设及简介
   -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
   --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
   --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/运行时上限（默认关闭，不写入配置）

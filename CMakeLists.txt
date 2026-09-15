@@ -26,6 +26,48 @@ option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targe
 option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets in Release builds" OFF)
 option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
+option(AWJ_ENABLE_SPARSE_PACKAGE
+    "Build the optional per-user sparse MSIX package for modern Explorer menus" ON)
+set(AWJ_SPARSE_PACKAGE_NAME "AWJimage.ContextMenu" CACHE STRING
+    "Stable sparse MSIX package identity name")
+set(AWJ_SPARSE_PACKAGE_PUBLISHER "CN=AWJimage" CACHE STRING
+    "Sparse MSIX package publisher (must match the signing certificate when signed)")
+set(AWJ_SHELL_EXTENSION_CLSID "8829EA47-8F26-4670-A910-348D2340DDAA" CACHE STRING
+    "CLSID exposed by AWJ.ShellExtension.dll")
+set(AWJ_MODERN_SHELL_EXTENSION_CLSID "63CBBCAE-762F-4224-92C6-B7395BFCD9E2" CACHE STRING
+    "Separate CLSID used by the sparse package for modern Explorer menus")
+# Keep a package-only revision so a manifest/COM registration change is not
+# mistaken for the already-installed package with the same application version.
+set(AWJ_SPARSE_PACKAGE_VERSION "${PROJECT_VERSION}.1")
+
+if(WIN32 AND AWJ_ENABLE_SPARSE_PACKAGE)
+    # makeappx.exe is shipped with the Windows SDK but is not normally on PATH.
+    # Prefer an explicitly discovered SDK copy and fall back to the newest SDK
+    # installed in the standard location.
+    find_program(AWJ_MAKEAPPX_EXECUTABLE NAMES makeappx.exe)
+    if(NOT AWJ_MAKEAPPX_EXECUTABLE)
+        set(_awj_makeappx_candidates)
+        if(DEFINED ENV{WindowsSdkDir})
+            file(GLOB _awj_makeappx_candidates
+                "$ENV{WindowsSdkDir}/bin/*/x64/makeappx.exe")
+        endif()
+        file(GLOB _awj_makeappx_standard_candidates
+            "C:/Program Files (x86)/Windows Kits/10/bin/*/x64/makeappx.exe")
+        list(APPEND _awj_makeappx_candidates ${_awj_makeappx_standard_candidates})
+        if(_awj_makeappx_candidates)
+            list(SORT _awj_makeappx_candidates COMPARE NATURAL ORDER DESCENDING)
+            list(GET _awj_makeappx_candidates 0 AWJ_MAKEAPPX_EXECUTABLE)
+        endif()
+    endif()
+    if(AWJ_MAKEAPPX_EXECUTABLE)
+        message(STATUS "AWJ sparse package tool: ${AWJ_MAKEAPPX_EXECUTABLE}")
+    else()
+        message(WARNING
+            "AWJ_ENABLE_SPARSE_PACKAGE is ON but makeappx.exe was not found; "
+            "the classic per-user menu will still build, but AWJ.ContextMenu.msix "
+            "will not be generated.")
+    endif()
+endif()
 set(AWJ_UPDATE_PUBLIC_KEY_HEX "ebdb1a49b8686f34a5791f7c0f2a0215e4cdc03ad99281e5bf8606cb62fcf1b1" CACHE STRING
     "Ed25519 update-manifest public key as 64 lowercase hexadecimal characters")
 set(AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX "652b506c2fbd71d75ae48cca3d0196cd5914605dd811c1a2b786c6bbd259f05f" CACHE STRING
@@ -328,6 +370,36 @@ function(avif_enable_common_options target)
     endif()
     if(AVIF_RELEASE_IPO_SUPPORTED)
         set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+    endif()
+endfunction()
+
+# Shell extensions execute inside Explorer and third-party file managers. Keep
+# this target on the baseline x64 ISA even when the main AWJ binary enables
+# AWJ_ENABLE_X64_V3.
+function(awj_enable_shell_extension_options target)
+    target_compile_features(${target} PUBLIC cxx_std_23)
+    target_compile_definitions(${target} PUBLIC
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN)
+    if(MSVC)
+        target_compile_options(${target} PUBLIC
+            /utf-8
+            /permissive-
+            /EHsc
+            $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/W4>
+            $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/sdl>
+            $<$<CONFIG:Release>:/O2>
+            $<$<CONFIG:Release>:/Oi>
+            $<$<CONFIG:Release>:/Gy>
+            $<$<CONFIG:Release>:/Gw>
+            $<$<CONFIG:Release>:/GF>)
+        get_target_property(target_type ${target} TYPE)
+        if(NOT target_type STREQUAL "STATIC_LIBRARY")
+            target_link_options(${target} PRIVATE
+                $<$<CONFIG:Release>:/OPT:REF>
+                $<$<CONFIG:Release>:/OPT:ICF>
+                $<$<CONFIG:Release>:/INCREMENTAL:NO>)
+        endif()
     endif()
 endfunction()
 
@@ -672,7 +744,7 @@ target_link_libraries(awj_base PUBLIC
     nlohmann_json::nlohmann_json
     awj_libplacebo)
 if(WIN32)
-    target_link_libraries(awj_base PUBLIC bcrypt d3d11)
+    target_link_libraries(awj_base PUBLIC bcrypt d3d11 shell32)
     target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=1 AWJ_HAS_VULKAN=0)
 else()
     target_link_libraries(awj_base PUBLIC Vulkan::Vulkan Threads::Threads)
@@ -909,6 +981,26 @@ if(BUILD_TESTING)
     target_link_libraries(awj_user_preset_tests PRIVATE awj_base)
     awj_set_runtime_directory(awj_user_preset_tests "${CMAKE_CURRENT_BINARY_DIR}/preset-contract")
     add_test(NAME user_preset_contract COMMAND awj_user_preset_tests)
+    set_tests_properties(user_preset_contract PROPERTIES
+        ENVIRONMENT
+        "AWJIMAGE_TEST_LOCAL_APPDATA=${CMAKE_CURRENT_BINARY_DIR}/preset-contract/$<CONFIG>/local-appdata")
+
+    if(WIN32)
+        add_executable(awj_user_preset_directory_tests
+            tests/user_preset_directory_tests.cpp)
+        avif_enable_common_options(awj_user_preset_directory_tests)
+        target_link_libraries(awj_user_preset_directory_tests PRIVATE
+            awj_base
+            advapi32
+            shell32)
+        awj_set_runtime_directory(awj_user_preset_directory_tests
+            "${CMAKE_CURRENT_BINARY_DIR}/preset-fallback-contract")
+        add_test(NAME user_preset_directory_fallback
+            COMMAND awj_user_preset_directory_tests)
+        set_tests_properties(user_preset_directory_fallback PROPERTIES
+            ENVIRONMENT
+            "AWJIMAGE_TEST_LOCAL_APPDATA=${CMAKE_CURRENT_BINARY_DIR}/preset-fallback-contract/$<CONFIG>/local-appdata")
+    endif()
 
     add_executable(awj_process_tests tests/process_tests.cpp)
     avif_enable_common_options(awj_process_tests)
@@ -1127,12 +1219,44 @@ avif_enable_common_options(awj_update_manifest_sign)
 target_link_libraries(awj_update_manifest_sign PRIVATE unofficial-sodium::sodium)
 
 if(WIN32)
+    add_library(awj_shell_extension_core STATIC
+        src/shell_extension/shell_extension_core.cpp)
+    awj_enable_shell_extension_options(awj_shell_extension_core)
+    target_include_directories(awj_shell_extension_core PUBLIC
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/shell_extension")
+
+    add_library(awj_shell_extension SHARED
+        src/shell_extension/classic_context_menu.cpp
+        src/shell_extension/AWJ.ShellExtension.def)
+    awj_enable_shell_extension_options(awj_shell_extension)
+    target_link_libraries(awj_shell_extension PRIVATE
+        awj_shell_extension_core
+        ole32
+        shell32
+        shlwapi)
+    set_target_properties(awj_shell_extension PROPERTIES
+        OUTPUT_NAME "AWJ.ShellExtension"
+        PREFIX "")
+    awj_set_runtime_directory(awj_shell_extension
+        "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64")
+
     add_library(awj_shell_context_menu STATIC
-        src/ui/shell_context_menu.cpp)
+        src/ui/shell_context_menu.cpp
+        src/ui/sparse_package.cpp)
     avif_enable_common_options(awj_shell_context_menu)
     target_include_directories(awj_shell_context_menu PUBLIC
-        "${CMAKE_CURRENT_SOURCE_DIR}/src/ui")
-    target_link_libraries(awj_shell_context_menu PUBLIC shlwapi shell32)
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/ui"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/shell_extension")
+    target_link_libraries(awj_shell_context_menu PUBLIC
+        awj_shell_extension_core
+        shlwapi
+        shell32
+        windowsapp)
+    target_compile_definitions(awj_shell_context_menu PRIVATE
+        AWJ_SPARSE_PACKAGE_MAJOR=${PROJECT_VERSION_MAJOR}
+        AWJ_SPARSE_PACKAGE_MINOR=${PROJECT_VERSION_MINOR}
+        AWJ_SPARSE_PACKAGE_BUILD=${PROJECT_VERSION_PATCH}
+        AWJ_SPARSE_PACKAGE_REVISION=1)
 endif()
 
 if(WIN32)
@@ -1204,12 +1328,78 @@ if(WIN32)
         uxtheme
         imm32
         opengl32)
+    add_dependencies(AWJ awj_shell_extension)
 endif()
 avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
 
+if(WIN32 AND AWJ_ENABLE_SPARSE_PACKAGE AND AWJ_MAKEAPPX_EXECUTABLE)
+    # A sparse package deliberately contains no executable or DLL.  Its
+    # manifest points at the files in the external installation directory;
+    # this keeps package registration per-user and avoids a second copy of the
+    # application.  The package is rebuilt next to AWJ.exe for every config.
+    set(AWJ_SPARSE_MANIFEST_DIR
+        "${CMAKE_CURRENT_BINARY_DIR}/generated/sparse-package")
+    set(AWJ_SPARSE_MANIFEST
+        "${AWJ_SPARSE_MANIFEST_DIR}/AppxManifest.xml")
+    # Appx package versions require four numeric components.  Keep the
+    # template variable name explicit so a generated manifest never ends up
+    # with an empty Identity/@Version attribute.
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/AppxManifest.xml.in"
+        "${AWJ_SPARSE_MANIFEST}" @ONLY)
+    set(AWJ_SPARSE_PACKAGE_STAGE
+        "${CMAKE_CURRENT_BINARY_DIR}/sparse-package-stage/$<CONFIG>")
+    set(AWJ_SPARSE_PACKAGE_OUTPUT
+        "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/$<CONFIG>/AWJ.ContextMenu.msix")
+    add_custom_command(TARGET AWJ POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E rm -rf "${AWJ_SPARSE_PACKAGE_STAGE}"
+        COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${AWJ_SPARSE_PACKAGE_STAGE}/Assets"
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${AWJ_SPARSE_MANIFEST}"
+                "${AWJ_SPARSE_PACKAGE_STAGE}/AppxManifest.xml"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+                "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/Assets"
+                "${AWJ_SPARSE_PACKAGE_STAGE}/Assets"
+        COMMAND ${CMAKE_COMMAND} -E rm -f "${AWJ_SPARSE_PACKAGE_OUTPUT}"
+        COMMAND "${AWJ_MAKEAPPX_EXECUTABLE}" pack
+                /d "${AWJ_SPARSE_PACKAGE_STAGE}"
+                /p "${AWJ_SPARSE_PACKAGE_OUTPUT}"
+                /nv
+                /o
+        COMMAND ${CMAKE_COMMAND} -E copy
+                "${AWJ_SPARSE_MANIFEST}"
+                "${AWJ_SPARSE_PACKAGE_STAGE}/AppxManifest.xml"
+        COMMENT "Packing AWJ modern Explorer sparse package"
+        VERBATIM)
+endif()
+
 if(BUILD_TESTING AND WIN32)
+    add_executable(awj_shell_extension_core_tests
+        tests/shell_extension_core_tests.cpp)
+    awj_enable_shell_extension_options(awj_shell_extension_core_tests)
+    target_link_libraries(awj_shell_extension_core_tests PRIVATE
+        awj_shell_extension_core
+        shell32)
+    awj_set_runtime_directory(awj_shell_extension_core_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME shell_extension_core COMMAND awj_shell_extension_core_tests)
+
+    add_executable(awj_shell_extension_com_tests
+        tests/shell_extension_com_tests.cpp)
+    awj_enable_shell_extension_options(awj_shell_extension_com_tests)
+    target_include_directories(awj_shell_extension_com_tests PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/tests"
+        "${CMAKE_CURRENT_SOURCE_DIR}/src/shell_extension")
+    target_link_libraries(awj_shell_extension_com_tests PRIVATE ole32)
+    add_dependencies(awj_shell_extension_com_tests awj_shell_extension)
+    awj_set_runtime_directory(awj_shell_extension_com_tests
+        "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME shell_extension_com
+        COMMAND awj_shell_extension_com_tests "$<TARGET_FILE:awj_shell_extension>")
+
     add_executable(awj_shell_context_menu_logic_tests
         tests/shell_context_menu_logic_tests.cpp)
     avif_enable_common_options(awj_shell_context_menu_logic_tests)
@@ -1233,12 +1423,14 @@ if(BUILD_TESTING AND WIN32)
     target_link_libraries(awj_shell_context_menu_explorer_tests PRIVATE
         awj_shell_context_menu
         awj_native_codecs
+        advapi32
         ole32)
     add_dependencies(awj_shell_context_menu_explorer_tests AWJ)
     awj_set_runtime_directory(awj_shell_context_menu_explorer_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
     add_test(NAME shell_context_menu_explorer
         COMMAND awj_shell_context_menu_explorer_tests "$<TARGET_FILE:AWJ>")
-    set_tests_properties(shell_context_menu_registry shell_context_menu_explorer
+    set_tests_properties(shell_extension_com shell_context_menu_registry
+        shell_context_menu_explorer
         PROPERTIES RESOURCE_LOCK awj_shell_registry)
     set_tests_properties(shell_context_menu_explorer PROPERTIES TIMEOUT 1200)
 endif()
