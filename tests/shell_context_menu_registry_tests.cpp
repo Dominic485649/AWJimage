@@ -5,6 +5,7 @@
 #include <aclapi.h>
 
 #include "isolated_registry.hpp"
+#include "modern_configuration_restore.hpp"
 #include "shell_context_menu.hpp"
 #include "shell_extension_contract.hpp"
 
@@ -148,6 +149,7 @@ struct TempDirectory {
 int wmain(int argc, wchar_t** argv) try {
   check(argc == 2, "expected executable path");
   IsolatedRegistry sandbox;
+  awj::test::ModernConfigurationRestore modern_configuration_restore;
   const auto exe = std::filesystem::absolute(argv[1]);
   check(std::filesystem::is_regular_file(menu::shell_extension_path(exe)),
         "shell extension DLL is not beside AWJ.exe");

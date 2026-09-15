@@ -17,11 +17,13 @@
 
 ## 最终实现
 
-`AWJ.ShellExtension.dll` 同时实现 `IShellExtInit`、`IContextMenu` 和 `IExplorerCommand`。经典宿主从每用户 COM 注册读取配置；Windows 11 现代 Explorer 通过同目录的签名 sparse MSIX package 激活 `IExplorerCommand`。两条路径共享同一份 `REG_MULTI_SZ Configuration`，动态生成：
+`AWJ.ShellExtension.dll` 同时实现 `IShellExtInit`、`IContextMenu` 和 `IExplorerCommand`。经典宿主从每用户 COM 注册读取配置；Windows 11 现代 Explorer 通过同目录的签名 sparse MSIX package 激活 `IExplorerCommand`。经典 HKCU handler 使用 `{8829EA47-8F26-4670-A910-348D2340DDAA}`，sparse package 使用独立的 `{63CBBCAE-762F-4224-92C6-B7395BFCD9E2}`；两个 CLSID 仍由同一个 DLL 类工厂提供，避免 Explorer 将两条注册路径合并后重复枚举子命令。
+
+经典路径继续读取 HKCU 下的 `REG_MULTI_SZ Configuration`，因此可保留用户预设分组并兼容 Directory Opus。现代路径优先读取当前用户可写的 `%LOCALAPPDATA%\AWJimage\AWJimage.ShellExtension.Configuration` 文件；该文件由注册流程原子更新，只序列化未分组的基础格式命令（通常五项，启用 AVIF.png 时为六项），故不会把经典预设分组再次合并到 Explorer 的现代菜单中。文件不可用时，现代 COM 回退到 HKCU 注册表并过滤 grouped commands。现代 COM 使用 `KF_FLAG_NO_PACKAGE_REDIRECTION` 定位文件，避免 package identity 把路径重定向到另一份配置。两条路径共同提供：
 
 - `AWJimage 转换` 父菜单；
-- PNG、WebP、AVIF、JXL、JPGLI 五个格式命令；
-- 配置中的预设分组及其格式子项。
+- PNG、WebP、AVIF、JXL、JPGLI 五个格式命令（可选追加 AVIF.png）；
+- 经典路径中的配置预设分组及其格式子项；现代路径只保留直接格式子项（通常五项，启用 AVIF.png 时六项）。
 
 经典菜单注册表只写当前用户：
 
@@ -40,7 +42,7 @@ UI 注册流程使用事务快照、所有权标记、漂移校验和失败回�
 1. 通过 `rundll32.exe AWJ.ShellExtension.dll,DllRegisterServer` 注册到当前用户，未出现 UAC；
 2. DOpus 单选 PNG 时显示父菜单和五个格式子项，执行 PNG 后生成带编号的输出文件；
 3. DOpus 多选两个 PNG 时仍显示完整子菜单，执行 WebP 后为两个输入分别生成输出；
-4. 现代 Explorer package 注册后重启 Explorer；COM probe 确认 sparse manifest 可激活 `IExplorerCommand`，经典 Shell API 测试覆盖单选、多选、目录和六种命令路径；
+4. 现代 Explorer package 注册后重启 Explorer；在 AVIF.png 关闭的配置下，普通 COM probe 与 package surrogate probe 确认 sparse manifest 可激活 `IExplorerCommand`，现代根节点均返回五个子命令；经典 Shell API 测试覆盖单选、多选、目录和六种命令路径；
 5. 注销后确认 CLSID、文件入口、目录入口和注册事务均从 HKCU 删除，并移除当前用户 sparse package。
 
 证据截图：
@@ -56,7 +58,7 @@ Release 构建：
 cmake --build build\\x64\\Release --config Release --parallel 1
 ```
 
-CTest：Release 全量测试共 49 项；与本改动直接相关的 `shell_extension_core`、`shell_extension_com`、`shell_context_menu_logic`、`shell_context_menu_registry`、`shell_context_menu_explorer` 均通过。现代 Explorer 的可视化点击仍需在目标桌面会话中人工确认；本机已验证 package 注册状态为 `Ok`，COM surrogate 可激活。
+CTest：Release 全量测试共 49 项，全部通过；与本改动直接相关的 `shell_extension_core`、`shell_extension_com`、`shell_context_menu_logic`、`shell_context_menu_registry`、`shell_context_menu_explorer` 均通过。`shell_extension_com` 还验证了“HKCU 含预设 + 文件配置存在”时 modern COM 优先读取文件且仍只枚举五个根子命令。现代 Explorer 的可视化点击仍需在目标桌面会话中人工确认；本机已验证 package 注册状态为 `Ok`，COM surrogate 可激活。
 
 ## 限制
 

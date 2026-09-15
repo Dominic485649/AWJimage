@@ -8,6 +8,7 @@
 #include "shell_context_menu.hpp"
 #include "shell_extension_contract.hpp"
 #include "shell_extension_core.hpp"
+#include "modern_configuration_restore.hpp"
 
 #include <algorithm>
 #include <array>
@@ -752,6 +753,7 @@ int wmain(int argc, wchar_t** argv) try {
   }
 
   RegistryRestore registry_cleanup;
+  awj::test::ModernConfigurationRestore modern_configuration_restore;
   const auto root = std::filesystem::temp_directory_path() /
       (L"AWJ Explorer API 验证 空格 " +
        std::to_wstring(GetCurrentProcessId()) + L"-" +

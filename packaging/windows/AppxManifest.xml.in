@@ -52,12 +52,12 @@
             <desktop5:ItemType Type="*">
               <desktop5:Verb
                 Id="AWJimage"
-                Clsid="@AWJ_SHELL_EXTENSION_CLSID@" />
+                Clsid="@AWJ_MODERN_SHELL_EXTENSION_CLSID@" />
             </desktop5:ItemType>
             <desktop5:ItemType Type="Directory">
               <desktop5:Verb
                 Id="AWJimage"
-                Clsid="@AWJ_SHELL_EXTENSION_CLSID@" />
+                Clsid="@AWJ_MODERN_SHELL_EXTENSION_CLSID@" />
             </desktop5:ItemType>
           </desktop4:FileExplorerContextMenus>
         </desktop4:Extension>
@@ -65,7 +65,7 @@
           <com:ComServer>
             <com:SurrogateServer DisplayName="AWJimage Context Menu">
               <com:Class
-                Id="@AWJ_SHELL_EXTENSION_CLSID@"
+                Id="@AWJ_MODERN_SHELL_EXTENSION_CLSID@"
                 Path="AWJ.ShellExtension.dll"
                 ThreadingModel="STA" />
             </com:SurrogateServer>

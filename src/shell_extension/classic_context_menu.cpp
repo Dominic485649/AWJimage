@@ -32,6 +32,11 @@ constexpr CLSID kClassId = {
     0x8f26,
     0x4670,
     {0xa9, 0x10, 0x34, 0x8d, 0x23, 0x40, 0xdd, 0xaa}};
+constexpr CLSID kModernClassId = {
+    0x63cbbcae,
+    0x762f,
+    0x4224,
+    {0x92, 0xc6, 0xb7, 0x39, 0x5b, 0xfc, 0xd9, 0xe2}};
 constexpr wchar_t kOwnerValueName[] = L"AWJimage.Owner";
 constexpr wchar_t kSchemaValueName[] = L"AWJimage.SchemaVersion";
 constexpr wchar_t kOwnerValue[] = L"AWJimage";
@@ -95,7 +100,7 @@ std::optional<RegistryKey> open_user_key(std::wstring_view path,
   return RegistryKey{key};
 }
 
-std::optional<std::vector<std::wstring>> read_configuration_value() {
+std::optional<std::vector<std::wstring>> read_registry_configuration() {
   auto root = open_user_key(awj::shell_extension::contract::class_root);
   if (!root) return std::nullopt;
   const std::wstring value_name{
@@ -129,12 +134,86 @@ std::optional<std::vector<std::wstring>> read_configuration_value() {
   return values;
 }
 
+std::optional<std::filesystem::path> modern_configuration_path() {
+  PWSTR raw = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData,
+                                  KF_FLAG_NO_PACKAGE_REDIRECTION,
+                                  nullptr, &raw)) || raw == nullptr) {
+    if (raw != nullptr) CoTaskMemFree(raw);
+    return std::nullopt;
+  }
+  std::filesystem::path path{raw};
+  CoTaskMemFree(raw);
+  path /= L"AWJimage";
+  path /= std::wstring{
+      awj::shell_extension::contract::modern_configuration_file_name};
+  return path;
+}
+
+std::optional<std::vector<std::wstring>> read_modern_configuration_file() {
+  auto path = modern_configuration_path();
+  if (!path) return std::nullopt;
+  HANDLE file = CreateFileW(path->c_str(), GENERIC_READ,
+                            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL,
+                            nullptr);
+  if (file == INVALID_HANDLE_VALUE) return std::nullopt;
+  LARGE_INTEGER size{};
+  if (!GetFileSizeEx(file, &size) || size.QuadPart < 2 * sizeof(wchar_t) ||
+      size.QuadPart > static_cast<LONGLONG>(kMaximumConfigurationBytes) ||
+      size.QuadPart % sizeof(wchar_t) != 0) {
+    CloseHandle(file);
+    return std::nullopt;
+  }
+  std::vector<wchar_t> buffer(static_cast<std::size_t>(size.QuadPart /
+                                                       sizeof(wchar_t)));
+  DWORD read = 0;
+  const BOOL ok = ReadFile(file, buffer.data(),
+                           static_cast<DWORD>(size.QuadPart), &read, nullptr);
+  CloseHandle(file);
+  if (!ok || read != static_cast<DWORD>(size.QuadPart) || buffer.size() < 2 ||
+      buffer[buffer.size() - 1] != L'\0' ||
+      buffer[buffer.size() - 2] != L'\0') {
+    return std::nullopt;
+  }
+  std::vector<std::wstring> values;
+  const wchar_t* cursor = buffer.data();
+  const wchar_t* const final_terminator = buffer.data() + buffer.size() - 1;
+  while (cursor < final_terminator && *cursor != L'\0') {
+    const wchar_t* terminator = std::find(cursor, final_terminator, L'\0');
+    if (terminator == final_terminator) return std::nullopt;
+    values.emplace_back(cursor, terminator);
+    cursor = terminator + 1;
+  }
+  return values.empty() ? std::nullopt
+                        : std::optional<std::vector<std::wstring>>{
+                              std::move(values)};
+}
+
+HRESULT remove_modern_configuration_file() noexcept {
+  const auto path = modern_configuration_path();
+  if (!path) return S_OK;
+  if (DeleteFileW(path->c_str()) != FALSE) {
+    return S_OK;
+  }
+  const DWORD error = GetLastError();
+  return error == ERROR_FILE_NOT_FOUND ? S_OK : HRESULT_FROM_WIN32(error);
+}
+
 std::optional<awj::shell_extension::RuntimeConfiguration>
-load_configuration() {
-  auto encoded = read_configuration_value();
+load_configuration(bool modern_mode = false) {
+  auto encoded = modern_mode ? read_modern_configuration_file()
+                             : std::nullopt;
+  if (!encoded) encoded = read_registry_configuration();
   if (!encoded) return std::nullopt;
   auto decoded = awj::shell_extension::decode_configuration(*encoded);
   if (!decoded) return std::nullopt;
+  if (modern_mode) {
+    std::erase_if(decoded->commands, [](const auto& command) {
+      return !command.group_label.empty();
+    });
+    if (decoded->commands.empty()) return std::nullopt;
+  }
   const DWORD attributes = GetFileAttributesW(decoded->executable.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES ||
       (attributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
@@ -358,11 +437,25 @@ class ContextMenu final : public IShellExtInit,
                           public IContextMenu,
                           public IExplorerCommand {
  public:
-  ContextMenu() { ++g_live_objects; }
+  explicit ContextMenu(bool modern_mode = false) : modern_mode_(modern_mode) {
+    ++g_live_objects;
+  }
   explicit ContextMenu(awj::shell_extension::MenuCommand command,
                        std::filesystem::path executable)
       : explorer_command_(std::move(command)),
-        explorer_executable_(std::move(executable)) {
+        explorer_executable_(std::move(executable)),
+        modern_mode_(true) {
+    ++g_live_objects;
+  }
+  explicit ContextMenu(std::wstring group_label,
+                       std::wstring group_canonical_verb,
+                       std::vector<awj::shell_extension::MenuCommand> commands,
+                       std::filesystem::path executable)
+      : explorer_group_label_(std::move(group_label)),
+        explorer_group_canonical_verb_(std::move(group_canonical_verb)),
+        explorer_group_commands_(std::move(commands)),
+        explorer_executable_(std::move(executable)),
+        modern_mode_(true) {
     ++g_live_objects;
   }
   ContextMenu(const ContextMenu&) = delete;
@@ -371,12 +464,17 @@ class ContextMenu final : public IShellExtInit,
   STDMETHODIMP QueryInterface(REFIID interface_id, void** result) override {
     if (result == nullptr) return E_POINTER;
     *result = nullptr;
-    if (IsEqualIID(interface_id, IID_IUnknown) ||
-        IsEqualIID(interface_id, IID_IContextMenu)) {
+    if (IsEqualIID(interface_id, IID_IUnknown)) {
+      if (modern_mode_) {
+        *result = static_cast<IExplorerCommand*>(this);
+      } else {
+        *result = static_cast<IContextMenu*>(this);
+      }
+    } else if (!modern_mode_ && IsEqualIID(interface_id, IID_IContextMenu)) {
       *result = static_cast<IContextMenu*>(this);
-    } else if (IsEqualIID(interface_id, IID_IShellExtInit)) {
+    } else if (!modern_mode_ && IsEqualIID(interface_id, IID_IShellExtInit)) {
       *result = static_cast<IShellExtInit*>(this);
-    } else if (IsEqualIID(interface_id, IID_IExplorerCommand)) {
+    } else if (modern_mode_ && IsEqualIID(interface_id, IID_IExplorerCommand)) {
       *result = static_cast<IExplorerCommand*>(this);
     } else {
       return E_NOINTERFACE;
@@ -600,9 +698,10 @@ class ContextMenu final : public IShellExtInit,
     }
   }
 
-  // Modern Windows 11 context menus use IExplorerCommand.  The same COM
-  // object continues to expose IContextMenu for classic hosts such as
-  // Directory Opus and Explorer's "Show more options" menu.
+  // Modern Windows 11 context menus use IExplorerCommand on instances created
+  // through the packaged CLSID.  Classic instances expose IContextMenu and
+  // IShellExtInit for hosts such as Directory Opus and Explorer's "Show more
+  // options" menu; QueryInterface gates these surfaces by mode.
   STDMETHODIMP GetTitle(IShellItemArray*, LPWSTR* name) override {
     if (name == nullptr) return E_POINTER;
     *name = nullptr;
@@ -610,7 +709,10 @@ class ContextMenu final : public IShellExtInit,
       if (explorer_command_) {
         return SHStrDupW(explorer_command_->label.c_str(), name);
       }
-      auto configuration = load_configuration();
+      if (explorer_group_commands_) {
+        return SHStrDupW(explorer_group_label_.c_str(), name);
+      }
+      auto configuration = load_configuration(modern_mode_);
       const std::wstring_view title =
           configuration ? std::wstring_view{configuration->menu_label}
                         : std::wstring_view{L"AWJimage 转换"};
@@ -628,7 +730,7 @@ class ContextMenu final : public IShellExtInit,
     try {
       std::filesystem::path executable = explorer_executable_;
       if (executable.empty()) {
-        auto configuration = load_configuration();
+        auto configuration = load_configuration(true);
         if (configuration) executable = configuration->executable;
       }
       if (executable.empty()) return S_FALSE;
@@ -667,7 +769,7 @@ class ContextMenu final : public IShellExtInit,
     }
 
     try {
-      auto configuration = load_configuration();
+      auto configuration = load_configuration(true);
       if (!configuration || configuration->commands.empty()) return S_OK;
       if (explorer_command_ && explorer_executable_.empty()) return S_OK;
       if (explorer_command_) {
@@ -676,6 +778,21 @@ class ContextMenu final : public IShellExtInit,
               return value.canonical_verb == explorer_command_->canonical_verb;
             });
         if (command == configuration->commands.end()) return S_OK;
+      }
+      if (explorer_group_commands_) {
+        if (explorer_group_commands_->empty() ||
+            explorer_executable_.empty()) {
+          return S_OK;
+        }
+        const auto group = std::ranges::find_if(
+            configuration->commands, [this](const auto& value) {
+              return !value.group_canonical_verb.empty() &&
+                     CompareStringOrdinal(
+                         value.group_canonical_verb.c_str(), -1,
+                         explorer_group_canonical_verb_.c_str(), -1,
+                         TRUE) == CSTR_EQUAL;
+            });
+        if (group == configuration->commands.end()) return S_OK;
       }
       // Explorer may probe the command before it has a concrete selection
       // (notably while constructing a folder/background menu).  A valid
@@ -699,7 +816,7 @@ class ContextMenu final : public IShellExtInit,
   STDMETHODIMP Invoke(IShellItemArray* item_array, IBindCtx*) override {
     if (!explorer_command_) return E_NOTIMPL;
     try {
-      auto configuration = load_configuration();
+      auto configuration = load_configuration(true);
       if (!configuration || configuration->commands.empty()) return E_FAIL;
       if (explorer_executable_.empty()) return E_FAIL;
       const auto command_it = std::ranges::find_if(
@@ -750,32 +867,92 @@ class ContextMenu final : public IShellExtInit,
     if (explorer_command_) return E_NOTIMPL;
     std::vector<IExplorerCommand*> children;
     try {
-      auto configuration = load_configuration();
+      auto configuration = load_configuration(true);
       if (!configuration || configuration->commands.empty()) return E_NOTIMPL;
 
-      children.reserve(configuration->commands.size());
-      for (const auto& command : configuration->commands) {
+      const auto create_leaf = [&](const auto& command) -> HRESULT {
         auto* child = new (std::nothrow)
             ContextMenu{command, configuration->executable};
-        if (child == nullptr) {
-          release_explorer_commands(children);
-          return E_OUTOFMEMORY;
-        }
+        if (child == nullptr) return E_OUTOFMEMORY;
         IExplorerCommand* interface_pointer = nullptr;
         const HRESULT query = child->QueryInterface(
             IID_IExplorerCommand,
             reinterpret_cast<void**>(&interface_pointer));
         child->Release();
-        if (FAILED(query)) {
-          release_explorer_commands(children);
-          return query;
-        }
+        if (FAILED(query)) return query;
         try {
           children.push_back(interface_pointer);
         } catch (...) {
           interface_pointer->Release();
-          release_explorer_commands(children);
           throw;
+        }
+        return S_OK;
+      };
+
+      if (explorer_group_commands_) {
+        children.reserve(explorer_group_commands_->size());
+        for (const auto& command : *explorer_group_commands_) {
+          const HRESULT created = create_leaf(command);
+          if (FAILED(created)) {
+            release_explorer_commands(children);
+            return created;
+          }
+        }
+      } else {
+        children.reserve(configuration->commands.size());
+        for (std::size_t index = 0; index < configuration->commands.size();) {
+          const auto& command = configuration->commands[index];
+          if (command.group_label.empty()) {
+            const HRESULT created = create_leaf(command);
+            if (FAILED(created)) {
+              release_explorer_commands(children);
+              return created;
+            }
+            ++index;
+            continue;
+          }
+
+          const std::wstring group_label = command.group_label;
+          const std::wstring group_canonical_verb =
+              command.group_canonical_verb;
+          std::vector<awj::shell_extension::MenuCommand> group_commands;
+          while (index < configuration->commands.size()) {
+            const auto& grouped = configuration->commands[index];
+            if (grouped.group_label.empty() ||
+                CompareStringOrdinal(
+                    grouped.group_canonical_verb.c_str(), -1,
+                    group_canonical_verb.c_str(), -1,
+                    TRUE) != CSTR_EQUAL) {
+              break;
+            }
+            group_commands.push_back(grouped);
+            ++index;
+          }
+
+          auto* group = new (std::nothrow)
+              ContextMenu{group_label, group_canonical_verb,
+                          std::move(group_commands),
+                          configuration->executable};
+          if (group == nullptr) {
+            release_explorer_commands(children);
+            return E_OUTOFMEMORY;
+          }
+          IExplorerCommand* interface_pointer = nullptr;
+          const HRESULT query = group->QueryInterface(
+              IID_IExplorerCommand,
+              reinterpret_cast<void**>(&interface_pointer));
+          group->Release();
+          if (FAILED(query)) {
+            release_explorer_commands(children);
+            return query;
+          }
+          try {
+            children.push_back(interface_pointer);
+          } catch (...) {
+            interface_pointer->Release();
+            release_explorer_commands(children);
+            throw;
+          }
         }
       }
       auto* enumerator = new (std::nothrow)
@@ -869,12 +1046,19 @@ class ContextMenu final : public IShellExtInit,
   std::filesystem::path executable_{};
   UINT command_id_first_{};
   std::optional<awj::shell_extension::MenuCommand> explorer_command_{};
+  std::wstring explorer_group_label_{};
+  std::wstring explorer_group_canonical_verb_{};
+  std::optional<std::vector<awj::shell_extension::MenuCommand>>
+      explorer_group_commands_{};
   std::filesystem::path explorer_executable_{};
+  bool modern_mode_{};
 };
 
 class ClassFactory final : public IClassFactory {
  public:
-  ClassFactory() { ++g_live_objects; }
+  explicit ClassFactory(bool modern_mode) : modern_mode_(modern_mode) {
+    ++g_live_objects;
+  }
 
   STDMETHODIMP QueryInterface(REFIID interface_id, void** result) override {
     if (result == nullptr) return E_POINTER;
@@ -901,7 +1085,7 @@ class ClassFactory final : public IClassFactory {
     if (result == nullptr) return E_POINTER;
     *result = nullptr;
     if (outer != nullptr) return CLASS_E_NOAGGREGATION;
-    auto* instance = new (std::nothrow) ContextMenu;
+    auto* instance = new (std::nothrow) ContextMenu{modern_mode_};
     if (instance == nullptr) return E_OUTOFMEMORY;
     const HRESULT queried = instance->QueryInterface(interface_id, result);
     instance->Release();
@@ -920,6 +1104,7 @@ class ClassFactory final : public IClassFactory {
  private:
   ~ClassFactory() { --g_live_objects; }
   std::atomic_ulong references_{1};
+  bool modern_mode_{};
 };
 
 LSTATUS set_user_string(std::wstring_view path, const wchar_t* name,
@@ -983,6 +1168,20 @@ LSTATUS delete_user_tree(std::wstring_view path) {
     return key;
   }
   return ERROR_SUCCESS;
+}
+
+LSTATUS delete_user_value(std::wstring_view path, const wchar_t* name) {
+  const std::wstring path_storage{path};
+  HKEY raw = nullptr;
+  const LSTATUS opened = RegOpenKeyExW(
+      HKEY_CURRENT_USER, path_storage.c_str(), 0, KEY_SET_VALUE, &raw);
+  if (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND) {
+    return ERROR_SUCCESS;
+  }
+  if (opened != ERROR_SUCCESS) return opened;
+  RegistryKey key{raw};
+  const LSTATUS removed = RegDeleteValueW(key.get(), name);
+  return removed == ERROR_FILE_NOT_FOUND ? ERROR_SUCCESS : removed;
 }
 
 LSTATUS delete_handler_if_owned(std::wstring_view path) {
@@ -1102,10 +1301,10 @@ HRESULT register_server() {
                      awj::shell_extension::contract::friendly_name);
     }
     if (SUCCEEDED(result)) {
-      result = write(
+      const auto status = delete_user_value(
           awj::shell_extension::contract::class_root,
-          awj::shell_extension::contract::context_menu_opt_in_value_name.data(),
-          L"");
+          awj::shell_extension::contract::context_menu_opt_in_value_name.data());
+      result = status == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(status);
     }
     if (SUCCEEDED(result)) result = write(inproc, nullptr, path->native());
     if (SUCCEEDED(result)) result = write(inproc, L"ThreadingModel", L"Apartment");
@@ -1175,8 +1374,13 @@ HRESULT unregister_server() {
         awj::shell_extension::contract::folder_handler_root);
   }
   if (status == ERROR_SUCCESS) status = delete_class_if_owned();
+  HRESULT modern_file_status = S_OK;
+  if (status == ERROR_SUCCESS) {
+    modern_file_status = remove_modern_configuration_file();
+  }
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  return status == ERROR_SUCCESS ? S_OK : HRESULT_FROM_WIN32(status);
+  if (status != ERROR_SUCCESS) return HRESULT_FROM_WIN32(status);
+  return modern_file_status;
 }
 
 }  // namespace
@@ -1199,8 +1403,12 @@ extern "C" HRESULT __stdcall DllGetClassObject(REFCLSID class_id,
                                                  void** result) {
   if (result == nullptr) return E_POINTER;
   *result = nullptr;
-  if (!IsEqualCLSID(class_id, kClassId)) return CLASS_E_CLASSNOTAVAILABLE;
-  auto* factory = new (std::nothrow) ClassFactory;
+  if (!IsEqualCLSID(class_id, kClassId) &&
+      !IsEqualCLSID(class_id, kModernClassId)) {
+    return CLASS_E_CLASSNOTAVAILABLE;
+  }
+  auto* factory = new (std::nothrow)
+      ClassFactory{IsEqualCLSID(class_id, kModernClassId) != FALSE};
   if (factory == nullptr) return E_OUTOFMEMORY;
   const HRESULT queried = factory->QueryInterface(interface_id, result);
   factory->Release();

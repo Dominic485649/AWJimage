@@ -3506,7 +3506,21 @@ std::expected<void, std::string> synchronize_shell_context_menu(
   auto result = awj::shell_context_menu::reconcile(
       *awj_exe, shell_menu_params(menu_params), *names, force_install);
   if (!result) return result;
-  return awj::shell_context_menu::ensure_sparse_package_registered(*awj_exe);
+  auto installed = awj::shell_context_menu::is_installed();
+  if (!installed) return std::unexpected{installed.error()};
+  if (!*installed) {
+    // Do not leave a modern Explorer package behind after the user removes
+    // the classic registration (or before the first explicit installation).
+    return awj::shell_context_menu::remove_sparse_package_registration();
+  }
+  auto package =
+      awj::shell_context_menu::ensure_sparse_package_registered(*awj_exe);
+  if (!package) return package;
+  // The package supplies the modern Explorer registration.  Publish one more
+  // association change after deployment so a first install is visible without
+  // requiring the user to restart Explorer after the package is added.
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+  return {};
 }
 
 std::expected<void, std::string> remove_shell_context_menu() {

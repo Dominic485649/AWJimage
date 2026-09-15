@@ -34,6 +34,11 @@ set(AWJ_SPARSE_PACKAGE_PUBLISHER "CN=AWJimage" CACHE STRING
     "Sparse MSIX package publisher (must match the signing certificate when signed)")
 set(AWJ_SHELL_EXTENSION_CLSID "8829EA47-8F26-4670-A910-348D2340DDAA" CACHE STRING
     "CLSID exposed by AWJ.ShellExtension.dll")
+set(AWJ_MODERN_SHELL_EXTENSION_CLSID "63CBBCAE-762F-4224-92C6-B7395BFCD9E2" CACHE STRING
+    "Separate CLSID used by the sparse package for modern Explorer menus")
+# Keep a package-only revision so a manifest/COM registration change is not
+# mistaken for the already-installed package with the same application version.
+set(AWJ_SPARSE_PACKAGE_VERSION "${PROJECT_VERSION}.1")
 
 if(WIN32 AND AWJ_ENABLE_SPARSE_PACKAGE)
     # makeappx.exe is shipped with the Windows SDK but is not normally on PATH.
@@ -1247,6 +1252,11 @@ if(WIN32)
         shlwapi
         shell32
         windowsapp)
+    target_compile_definitions(awj_shell_context_menu PRIVATE
+        AWJ_SPARSE_PACKAGE_MAJOR=${PROJECT_VERSION_MAJOR}
+        AWJ_SPARSE_PACKAGE_MINOR=${PROJECT_VERSION_MINOR}
+        AWJ_SPARSE_PACKAGE_BUILD=${PROJECT_VERSION_PATCH}
+        AWJ_SPARSE_PACKAGE_REVISION=1)
 endif()
 
 if(WIN32)
@@ -1336,7 +1346,6 @@ if(WIN32 AND AWJ_ENABLE_SPARSE_PACKAGE AND AWJ_MAKEAPPX_EXECUTABLE)
     # Appx package versions require four numeric components.  Keep the
     # template variable name explicit so a generated manifest never ends up
     # with an empty Identity/@Version attribute.
-    set(AWJ_SPARSE_PACKAGE_VERSION "${PROJECT_VERSION}.0")
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/packaging/windows/AppxManifest.xml.in"
         "${AWJ_SPARSE_MANIFEST}" @ONLY)
@@ -1420,7 +1429,8 @@ if(BUILD_TESTING AND WIN32)
     awj_set_runtime_directory(awj_shell_context_menu_explorer_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
     add_test(NAME shell_context_menu_explorer
         COMMAND awj_shell_context_menu_explorer_tests "$<TARGET_FILE:AWJ>")
-    set_tests_properties(shell_context_menu_registry shell_context_menu_explorer
+    set_tests_properties(shell_extension_com shell_context_menu_registry
+        shell_context_menu_explorer
         PROPERTIES RESOURCE_LOCK awj_shell_registry)
     set_tests_properties(shell_context_menu_explorer PROPERTIES TIMEOUT 1200)
 endif()

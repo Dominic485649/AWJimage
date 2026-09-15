@@ -25,6 +25,13 @@
 namespace awj::shell_context_menu {
 namespace {
 
+#ifndef AWJ_SPARSE_PACKAGE_MAJOR
+#define AWJ_SPARSE_PACKAGE_MAJOR 0
+#define AWJ_SPARSE_PACKAGE_MINOR 0
+#define AWJ_SPARSE_PACKAGE_BUILD 0
+#define AWJ_SPARSE_PACKAGE_REVISION 0
+#endif
+
 constexpr std::wstring_view kPackageName = L"AWJimage.ContextMenu";
 
 std::string hresult_error_text(std::string_view operation,
@@ -71,6 +78,19 @@ bool external_location_matches(
   } catch (...) {
     // Older package registrations may not expose the UserExternalLocation
     // property. Treat them as stale and re-register them below.
+    return false;
+  }
+}
+
+bool package_version_matches(
+    const winrt::Windows::ApplicationModel::Package& package) {
+  try {
+    const auto version = package.Id().Version();
+    return version.Major == AWJ_SPARSE_PACKAGE_MAJOR &&
+           version.Minor == AWJ_SPARSE_PACKAGE_MINOR &&
+           version.Build == AWJ_SPARSE_PACKAGE_BUILD &&
+           version.Revision == AWJ_SPARSE_PACKAGE_REVISION;
+  } catch (...) {
     return false;
   }
 }
@@ -144,7 +164,8 @@ std::expected<void, std::string> ensure_sparse_package_registered(
         bool current = false;
         for (const auto& package : manager.FindPackagesForUser(L"")) {
           if (package.Id().Name() != kPackageName) continue;
-          if (external_location_matches(package, external_directory)) {
+          if (external_location_matches(package, external_directory) &&
+              package_version_matches(package)) {
             current = true;
             break;
           }

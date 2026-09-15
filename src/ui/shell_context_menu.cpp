@@ -750,10 +750,6 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
   }
   append_string_spec(schema.values, class_root, L"",
                      std::wstring{awj::shell_extension::contract::friendly_name});
-  append_string_spec(
-      schema.values, class_root,
-      std::wstring{awj::shell_extension::contract::context_menu_opt_in_value_name},
-      L"");
   append_owned_markers(schema.values, class_root);
   append_string_spec(schema.values, inproc, L"",
                      shell_extension_path(awj_exe).wstring());
@@ -771,6 +767,94 @@ std::expected<InstallPlan, std::string> detect_install_plan() {
 }
 
 namespace {
+
+std::optional<std::filesystem::path> modern_configuration_path() {
+  PWSTR raw = nullptr;
+  if (FAILED(SHGetKnownFolderPath(FOLDERID_LocalAppData,
+                                  KF_FLAG_NO_PACKAGE_REDIRECTION,
+                                  nullptr, &raw)) || raw == nullptr) {
+    if (raw != nullptr) CoTaskMemFree(raw);
+    return std::nullopt;
+  }
+  std::filesystem::path path{raw};
+  CoTaskMemFree(raw);
+  path /= L"AWJimage";
+  path /= std::wstring{
+      awj::shell_extension::contract::modern_configuration_file_name};
+  return path;
+}
+
+std::expected<void, std::string> write_modern_configuration_file(
+    const RegistrySchema& schema) {
+  const auto spec = std::ranges::find_if(
+      schema.values, [](const RegistryValueSpec& value) {
+        return value.kind == RegistryValueKind::multi_string &&
+               value.name == awj::shell_extension::contract::configuration_value_name;
+      });
+  if (spec == schema.values.end()) {
+    return std::unexpected{"右键菜单现代配置缺少序列化数据。"};
+  }
+  auto configuration =
+      awj::shell_extension::decode_configuration(spec->multi_string_value);
+  if (!configuration) return std::unexpected{configuration.error()};
+  std::erase_if(configuration->commands, [](const auto& command) {
+    return !command.group_label.empty();
+  });
+  if (configuration->commands.empty()) {
+    return std::unexpected{"右键菜单现代配置没有可用命令。"};
+  }
+  auto encoded = awj::shell_extension::encode_configuration(*configuration);
+  if (!encoded) return std::unexpected{encoded.error()};
+
+  auto path = modern_configuration_path();
+  if (!path) return std::unexpected{"无法定位现代右键菜单配置路径。"};
+  std::error_code error;
+  std::filesystem::create_directories(path->parent_path(), error);
+  if (error) {
+    return std::unexpected{"无法创建现代右键菜单配置目录：" + error.message()};
+  }
+  auto temporary = *path;
+  temporary += L".tmp";
+  HANDLE file = CreateFileW(temporary.c_str(), GENERIC_WRITE, 0, nullptr,
+                            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) {
+    return std::unexpected{"无法创建现代右键菜单配置文件。"};
+  }
+  std::vector<wchar_t> buffer;
+  std::size_t characters = 1;
+  for (const auto& value : *encoded) characters += value.size() + 1;
+  buffer.reserve(characters);
+  for (const auto& value : *encoded) {
+    buffer.insert(buffer.end(), value.begin(), value.end());
+    buffer.push_back(L'\0');
+  }
+  buffer.push_back(L'\0');
+  const DWORD bytes = static_cast<DWORD>(buffer.size() * sizeof(wchar_t));
+  DWORD written = 0;
+  const BOOL write_ok = WriteFile(file, buffer.data(), bytes, &written, nullptr);
+  const BOOL flush_ok = write_ok && written == bytes && FlushFileBuffers(file);
+  CloseHandle(file);
+  if (!flush_ok || MoveFileExW(temporary.c_str(), path->c_str(),
+                               MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) ==
+                       FALSE) {
+    std::filesystem::remove(temporary, error);
+    return std::unexpected{"写入现代右键菜单配置文件失败。"};
+  }
+  return {};
+}
+
+std::expected<void, std::string> remove_modern_configuration_file() {
+  auto path = modern_configuration_path();
+  if (!path) return {};
+  if (DeleteFileW(path->c_str()) == FALSE && GetLastError() != ERROR_FILE_NOT_FOUND) {
+    return std::unexpected{"删除现代右键菜单配置文件失败。"};
+  }
+  return {};
+}
+
+void notify_shell_configuration_changed() {
+  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
+}
 
 struct RegistrationLock {
   HANDLE handle{CreateMutexW(nullptr, FALSE, L"Local\\AWJimage.ContextMenu.v4")};
@@ -1077,14 +1161,33 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
   if (auto recovered = recover_locked(); !recovered) return recovered;
   auto installed = is_installed();
   if (!installed) return std::unexpected{installed.error()};
-  if (!*installed && !force_install) return {};
+  if (!*installed && !force_install) {
+    auto removed = remove_modern_configuration_file();
+    if (removed) notify_shell_configuration_changed();
+    return removed;
+  }
   std::error_code ec;
   const auto exe = std::filesystem::absolute(awj_exe, ec).lexically_normal();
   if (ec) return std::unexpected{"无法确定程序的绝对路径。"};
   const auto plan = build_install_plan();
   const auto schema = build_registry_schema(exe, menu_params, plan, preset_names);
   if (auto valid = validate_request(exe, schema, preset_names); !valid) return valid;
-  if (verify_schema(schema) && verify_no_obsolete_roots(schema)) return {};
+  if (verify_schema(schema) && verify_no_obsolete_roots(schema)) {
+    auto published = write_modern_configuration_file(schema);
+    if (published) {
+      notify_shell_configuration_changed();
+      return {};
+    }
+    auto removed = remove_modern_configuration_file();
+    if (!removed) {
+      return std::unexpected{published.error() + " " + removed.error()};
+    }
+    // The modern COM path falls back to the committed HKCU configuration
+    // when the file cannot be published.  Clearing any stale file keeps that
+    // fallback deterministic, so this is still a successful registration.
+    notify_shell_configuration_changed();
+    return {};
+  }
   auto roots = snapshot_roots(schema);
   if (!roots) return std::unexpected{roots.error()};
   if (auto saved = begin_journal(*roots); !saved) {
@@ -1102,13 +1205,31 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
       if (auto r = delete_tree(root.path); !r) return r;
     }
     if (auto r = verify_no_obsolete_roots(schema); !r) return r;
-    return verify_schema(schema);
+    if (auto r = verify_schema(schema); !r) return r;
+    return {};
   };
   if (auto applied = apply(); !applied) {
     auto rolled_back = recover_locked();
     return std::unexpected{applied.error() + (rolled_back ? " 已恢复原注册。" : " 回滚失败：" + rolled_back.error())};
   }
-  return commit_journal();
+  // The registry journal is the rollback boundary.  Publish the file-backed
+  // modern configuration only after the registry transaction is committed;
+  // otherwise a late commit failure could leave the file describing a
+  // registration that was subsequently restored from the journal.
+  if (auto committed = commit_journal(); !committed) return committed;
+  auto published = write_modern_configuration_file(schema);
+  if (published) {
+    notify_shell_configuration_changed();
+    return {};
+  }
+  auto removed = remove_modern_configuration_file();
+  if (!removed) {
+    return std::unexpected{published.error() + " " + removed.error()};
+  }
+  // Let the modern COM path fall back to the just-committed registry schema
+  // instead of keeping a stale file-backed menu after a publish failure.
+  notify_shell_configuration_changed();
+  return {};
 }
 
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
@@ -1136,7 +1257,10 @@ std::expected<void, std::string> remove() {
     auto restored = recover_locked();
     return std::unexpected{verified.error() + (restored ? " 已恢复原注册。" : " " + restored.error())};
   }
-  return commit_journal();
+  if (auto committed = commit_journal(); !committed) return committed;
+  auto removed = remove_modern_configuration_file();
+  if (removed) notify_shell_configuration_changed();
+  return removed;
 }
 
 std::expected<std::optional<std::string>, std::string> warning(
