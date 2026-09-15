@@ -253,9 +253,8 @@ int wmain(int argc, wchar_t* argv[]) {
   // 最先装崩溃留痕：后面任何一步失败都还能留下一行原因。
   install_crash_diagnostics();
   if (argc == 2 && std::wcscmp(argv[1], L"--cleanup-legacy-machine-menu") == 0) {
-    const auto result = awj::shell_context_menu::remove_legacy_machine_commands();
-    if (!result) std::fprintf(stderr, "%s\n", result.error().c_str());
-    return result ? 0 : 1;
+    std::fprintf(stderr, "AWJ 1.0.13 refuses machine-level menu modification. Remove legacy HKLM entries with system administration tools.\n");
+    return 1;
   }
   const auto parse_pid = [](const wchar_t* text) -> DWORD {
     if (text == nullptr || *text == L'\0') return 0;

@@ -30,7 +30,7 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
                  .size = to_shared(awj::format_size(item.bytes)),
                  .status = to_shared(status),
                  .output = to_shared(output),
-                  .log = to_shared(item.log_text),
+                  .log = item.log_text,
                   .warning = item.warning,
                   .locked = !queue_item_editable(item),
                   .state = queue_status_code(item.status),
@@ -46,6 +46,8 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
 }
 
 void refresh_queue_rows(AwjStudio& app, UiState& state) {
+  state.queue_id_indices.clear();
+  state.queue_run_indices.clear();
   std::vector<TaskRow> rows;
   rows.reserve(state.queue_items.size());
   int pending_count = 0;
@@ -54,6 +56,10 @@ void refresh_queue_rows(AwjStudio& app, UiState& state) {
   int failed_count = 0;
   for (std::size_t i = 0; i < state.queue_items.size(); ++i) {
     const auto& item = state.queue_items[i];
+    state.queue_id_indices.emplace(item.id, i);
+    if (item.run_index != std::numeric_limits<std::size_t>::max()) {
+      state.queue_run_indices.emplace(item.run_index, i);
+    }
     rows.push_back(make_queue_task_row(item, i));
     switch (item.status) {
       case QueueItemStatus::running:
@@ -73,8 +79,14 @@ void refresh_queue_rows(AwjStudio& app, UiState& state) {
         break;
     }
   }
-  state.task_rows->set_vector(std::move(rows));
-  app.set_task_rows(state.task_rows);
+  const auto previous_count = state.task_rows->row_count();
+  for (std::size_t i = 0; i < std::min(previous_count, rows.size()); ++i) {
+    if (state.task_rows->row_data(i) != rows[i]) state.task_rows->set_row_data(i, rows[i]);
+  }
+  while (state.task_rows->row_count() > rows.size()) {
+    state.task_rows->erase(state.task_rows->row_count() - 1);
+  }
+  for (std::size_t i = previous_count; i < rows.size(); ++i) state.task_rows->push_back(rows[i]);
   app.set_queue_pending_count(pending_count);
   app.set_queue_running_count(running_count);
   app.set_queue_success_count(success_count);
@@ -87,21 +99,15 @@ void refresh_queue_rows(AwjStudio& app, UiState& state) {
 
 std::optional<std::size_t> queue_index_for_id(const UiState& state,
                                               std::uint64_t id) noexcept {
-  for (std::size_t i = 0; i < state.queue_items.size(); ++i) {
-    if (state.queue_items[i].id == id) {
-      return i;
-    }
-  }
+  if (const auto it = state.queue_id_indices.find(id);
+      it != state.queue_id_indices.end()) return it->second;
   return std::nullopt;
 }
 
 std::optional<std::size_t> queue_index_for_run_index(
     const UiState& state, std::size_t run_index) noexcept {
-  for (std::size_t i = 0; i < state.queue_items.size(); ++i) {
-    if (state.queue_items[i].run_index == run_index) {
-      return i;
-    }
-  }
+  if (const auto it = state.queue_run_indices.find(run_index);
+      it != state.queue_run_indices.end()) return it->second;
   return std::nullopt;
 }
 

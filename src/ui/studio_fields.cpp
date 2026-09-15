@@ -114,7 +114,7 @@ std::expected<std::uint64_t, std::string> parse_memory_limit_field(
 
 std::expected<awj::ImageSizeLimit, std::string> image_size_limit_from_fields(
     int mode_index, std::string max_width_text, std::string max_height_text,
-    std::string max_long_edge_text, std::string max_short_edge_text) {
+    std::string max_long_edge_text, std::string max_short_edge_text, std::string scale_percent_text) {
   awj::ImageSizeLimit limit{};
   limit.mode = mode_index == 1   ? awj::ImageSizeLimitMode::none
                : mode_index == 2 ? awj::ImageSizeLimitMode::manual
@@ -145,6 +145,11 @@ std::expected<awj::ImageSizeLimit, std::string> image_size_limit_from_fields(
     return std::unexpected{value.error()};
   } else {
     limit.max_short_edge = *value;
+  }
+  if (auto value = parse_optional_int_field(std::move(scale_percent_text), "缩小至 (%)", 1, 100); !value) {
+    return std::unexpected{value.error()};
+  } else {
+    limit.scale_percent = *value;
   }
   return limit;
 }

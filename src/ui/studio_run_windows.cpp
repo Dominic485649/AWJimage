@@ -358,13 +358,21 @@ int run_studio_ui(const wchar_t* health_event,
     state->large_image_rows =
         std::make_shared<slint::VectorModel<LargeImageRow>>();
     state->update_history_rows =
-        std::make_shared<slint::VectorModel<UpdateHistoryRow>>();
+        std::make_shared<awj::ui::DeferredModel<UpdateHistoryRow>>();
     sync_update_history(state->update_history_rows,
                         awj::update::Manifest{.schema = 1});
     auto weak = slint::ComponentWeakHandle(app);
+    app->on_settings_page_opened([weak, state] {
+      run_ui_callback(weak, "加载系统字体列表失败", [&] {
+        auto app = weak.lock();
+        if (!app || state->ui_font_options_loaded) return;
+        load_system_font_options(**app);
+        state->ui_font_options_loaded = true;
+      });
+    });
     start_import_dispatcher(weak, state);
 
-    app->set_task_rows(state->task_rows);
+    awj::ui::bind_queue_model(*app, state->task_rows);
     app->set_large_image_rows(state->large_image_rows);
     app->set_update_history(state->update_history_rows);
     initialize_ui_defaults(*app, *state);
@@ -389,7 +397,6 @@ int run_studio_ui(const wchar_t* health_event,
                                    state->user_preset_errors.size(),
                                    state->user_preset_errors.front());
     }
-    load_system_font_options(*app);
     sync_template_flags(*app);
     // 配置已经读进 language_index，这里让 @tr() 立刻按存下来的语言重算。
     // 必须在组件创建之后调用，此时 AwjStudio::create() 早已完成。
@@ -600,7 +607,11 @@ int run_studio_ui(const wchar_t* health_event,
                                       "当前任务正在运行，无法清空队列")) {
           return;
         }
-        state->queue_items.clear();
+        std::vector<QueueImageItem>{}.swap(state->queue_items);
+        state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+        awj::ui::bind_queue_model(**app, state->task_rows);
+        decltype(state->queue_id_indices){}.swap(state->queue_id_indices);
+        decltype(state->queue_run_indices){}.swap(state->queue_run_indices);
         state->queue_path_keys.clear();
         refresh_queue_rows(**app, *state);
         state->large_image_rows->set_vector({});
@@ -733,12 +744,14 @@ int run_studio_ui(const wchar_t* health_event,
       if (!app || (*app)->get_running()) return;
       const auto index = state->parameter_preset_index;
       if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      const auto queue_index = (*app)->get_queue_preset_index();
       auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)], [state] {
         return synchronize_shell_context_menu(state->menu_params);
       });
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
       state->parameter_preset_index = 0;
-      (*app)->set_queue_preset_index(0);
+      (*app)->set_queue_preset_index(
+          queue_index == index ? 0 : queue_index > index ? queue_index - 1 : queue_index);
       reload_user_preset_options(**app, *state);
       select_parameter_preset(**app, *state, 0);
       (*app)->set_preset_editor_open(false);
@@ -891,20 +904,7 @@ int run_studio_ui(const wchar_t* health_event,
     });
     app->on_cleanup_legacy_machine_menu([weak] {
       if (auto app = weak.lock(); app && !(*app)->get_running()) {
-        auto exe = awj::executable_path();
-        if (!exe) { (*app)->set_status_text(to_shared(exe.error())); return; }
-        SHELLEXECUTEINFOW launch{sizeof(launch)};
-        launch.fMask = SEE_MASK_NOCLOSEPROCESS;
-        launch.lpVerb = L"runas";
-        launch.lpFile = exe->c_str();
-        launch.lpParameters = L"--cleanup-legacy-machine-menu";
-        launch.nShow = SW_HIDE;
-        if (!ShellExecuteExW(&launch)) {
-          (*app)->set_status_text(to_shared("历史系统菜单清理未启动或已取消。"));
-          return;
-        }
-        if (launch.hProcess) CloseHandle(launch.hProcess);
-        (*app)->set_status_text(to_shared("已请求清理历史系统菜单。"));
+        (*app)->set_status_text(to_shared("AWJ 不会修改或删除 HKLM 系统菜单，请使用系统级注册表管理工具处理历史项目。"));
       }
     });
 

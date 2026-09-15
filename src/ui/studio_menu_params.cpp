@@ -20,6 +20,7 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
                           .jpegli_progressive_index = app.get_menu_jpegli_progressive_index(),
                           .jpegli_optimize_huffman = app.get_menu_jpegli_optimize_huffman(),
                           .jpegli_xyb = app.get_menu_jpegli_xyb(),
+                          .jxl_jpeg_lossless = app.get_menu_jxl_jpeg_lossless(),
                           .strip_metadata = app.get_menu_strip_metadata(),
                           .allow_wic_fallback = app.get_menu_allow_wic_fallback(),
                           .close_on_finish = app.get_menu_close_on_finish(),
@@ -29,7 +30,8 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
                           .max_width_text = shared_to_string(app.get_menu_max_width_text()),
                           .max_height_text = shared_to_string(app.get_menu_max_height_text()),
                           .max_long_edge_text = shared_to_string(app.get_menu_max_long_edge_text()),
-                          .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text())};
+                          .max_short_edge_text = shared_to_string(app.get_menu_max_short_edge_text()),
+                          .scale_percent_text = shared_to_string(app.get_menu_scale_percent_text())};
 }
 
 void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
@@ -44,6 +46,7 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_menu_jpegli_xyb(params.jpegli_xyb);
+  app.set_menu_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_menu_strip_metadata(params.strip_metadata);
   app.set_menu_allow_wic_fallback(params.allow_wic_fallback);
   app.set_menu_close_on_finish(params.close_on_finish);
@@ -53,6 +56,7 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_max_height_text(to_shared(params.max_height_text));
   app.set_menu_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_menu_max_short_edge_text(to_shared(params.max_short_edge_text));
+  app.set_menu_scale_percent_text(to_shared(params.scale_percent_text));
 }
 
 void store_current_menu_params(AwjStudio& app, UiState& state) {

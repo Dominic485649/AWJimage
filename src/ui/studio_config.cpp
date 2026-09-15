@@ -240,6 +240,7 @@ std::expected<void, std::string> write_studio_config_file(
     add_int(menu_config_key(prefix, "jpegli_progressive_index"), value.jpegli_progressive_index, fallback.jpegli_progressive_index);
     add_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), value.jpegli_optimize_huffman, fallback.jpegli_optimize_huffman);
     add_bool(menu_config_key(prefix, "jpegli_xyb"), value.jpegli_xyb, fallback.jpegli_xyb);
+    add_bool(menu_config_key(prefix, "jxl_jpeg_lossless"), value.jxl_jpeg_lossless, fallback.jxl_jpeg_lossless);
     add_bool(menu_config_key(prefix, "strip_metadata"), value.strip_metadata, fallback.strip_metadata);
     add_bool(menu_config_key(prefix, "allow_wic_fallback"), value.allow_wic_fallback, fallback.allow_wic_fallback);
     add_bool(menu_config_key(prefix, "close_on_finish"), value.close_on_finish, fallback.close_on_finish);
@@ -249,6 +250,7 @@ std::expected<void, std::string> write_studio_config_file(
     add_string(menu_config_key(prefix, "max_height_text"), value.max_height_text, fallback.max_height_text);
     add_string(menu_config_key(prefix, "max_long_edge_text"), value.max_long_edge_text, fallback.max_long_edge_text);
     add_string(menu_config_key(prefix, "max_short_edge_text"), value.max_short_edge_text, fallback.max_short_edge_text);
+    add_string(menu_config_key(prefix, "scale_percent_text"), value.scale_percent_text, fallback.scale_percent_text);
   }
 
   // 先在内存里拼出完整内容，再原子落盘。直接 truncate 写目标文件的话，进程在

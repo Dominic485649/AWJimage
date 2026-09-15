@@ -3,6 +3,9 @@
 // AWJ Studio（Windows 半区）的共享状态类型。
 // 从 main.cpp 拆出，供 studio_json / studio_config / studio_queue 等模块共用。
 
+#include "queue_model.h"
+#include "deferred_model.h"
+
 #ifdef _WIN32
 
 #include <dwmapi.h>
@@ -21,6 +24,8 @@
 #include <string>
 #include <thread>
 #include <unordered_set>
+#include <unordered_map>
+#include <limits>
 #include <vector>
 
 #include "awj_studio.h"
@@ -102,7 +107,7 @@ struct QueueImageItem {
   std::size_t run_index{std::numeric_limits<std::size_t>::max()};
   std::filesystem::path locked_output_path{};
   std::string status_text{"等待编码"};
-  std::string log_text{};
+  slint::SharedString log_text{};
   std::string encoder_id{};
   int encoder_threads{};
   double decode_seconds{-1.0};
@@ -174,6 +179,7 @@ struct MenuFormatParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   bool strip_metadata{};
   bool allow_wic_fallback{true};
   bool close_on_finish{true};
@@ -183,6 +189,7 @@ struct MenuFormatParams {
   std::string max_height_text{};
   std::string max_long_edge_text{};
   std::string max_short_edge_text{};
+  std::string scale_percent_text{};
 
   bool operator==(const MenuFormatParams&) const = default;
 };
@@ -201,6 +208,7 @@ struct ParameterFormatParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   std::string threads_text{};
   std::string memory_limit_text{};
   int size_limit_index{};
@@ -208,6 +216,7 @@ struct ParameterFormatParams {
   std::string max_height_text{};
   std::string max_long_edge_text{};
   std::string max_short_edge_text{};
+  std::string scale_percent_text{};
 };
 
 struct StudioConfigSnapshot {
@@ -258,8 +267,11 @@ struct UiState {
   bool native_drop_registration_finished{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
-  std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
+  std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>> update_history_rows{};
+  bool ui_font_options_loaded{};
   std::vector<QueueImageItem> queue_items{};
+  std::unordered_map<std::uint64_t, std::size_t> queue_id_indices{};
+  std::unordered_map<std::size_t, std::size_t> queue_run_indices{};
   // 与 queue_items 同步维护的路径键集合（绝对+规范化+Windows 小写）。
   // 加入队列时用它做 O(1) 判重，避免逐个新文件线性扫描整个队列并重复
   // 规范化路径——上万张图时那是 O(n²)。

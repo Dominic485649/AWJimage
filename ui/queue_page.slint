@@ -67,7 +67,12 @@ export component QueuePage inherits VerticalLayout {
     in property <bool> dark-mode;
     in property <int> language-index;
     property <length> path-label-width: root.language-index == 1 ? 90px : 78px;
-    property <length> options-single-row-width: root.timestamp-ui-visible ? (root.language-index == 1 ? 1400px : 1100px) : 760px;
+    property <length> queue-option-width: root.language-index == 1
+        ? max(180px, max(max(max(option-strip-measure.preferred-width, option-summary-measure.preferred-width), option-log-measure.preferred-width), max(max(option-creation-measure.preferred-width, option-modification-measure.preferred-width), option-access-measure.preferred-width)))
+        : max(max(max(option-strip-measure.preferred-width, option-summary-measure.preferred-width), option-log-measure.preferred-width), max(max(option-creation-measure.preferred-width, option-modification-measure.preferred-width), option-access-measure.preferred-width));
+    property <length> options-single-row-width: root.timestamp-ui-visible
+        ? (root.language-index == 1 ? 1400px : 1100px)
+        : 760px;
     property <length> queue-selector-width: min(root.parameter-control-width, (root.width - 32px - root.path-label-width - 42px - 40px) / 2);
     in property <color> field-bg;
     in property <color> field-border;
@@ -131,6 +136,8 @@ export component QueuePage inherits VerticalLayout {
     in-out property <string> status-text;
     in-out property <bool> strip-metadata;
     in property <[TaskRow]> task-rows;
+    in property <[TaskRow]> failed-task-rows;
+    pure callback failed-row-source-index(int) -> int;
     in-out property <bool> template-date-selected;
     in-out property <bool> template-hash8-selected;
     in-out property <bool> template-params-selected;
@@ -161,6 +168,21 @@ export component QueuePage inherits VerticalLayout {
         border-color: root.panel-border;
         border-width: 1px;
         animate background, border-color { duration: 180ms; easing: ease-out; }
+
+        // Measure the actual localized checkbox widgets once and give every
+        // visible option the widest intrinsic width. The zero-sized host keeps
+        // these metrics out of the layout and accessibility tree.
+        Rectangle {
+            width: 0px;
+            height: 0px;
+            visible: false;
+            option-strip-measure := CheckBox { text: @tr("移除元数据"); }
+            option-summary-measure := CheckBox { text: @tr("写入 CSV 报告"); }
+            option-log-measure := CheckBox { text: @tr("写入运行日志"); }
+            option-creation-measure := CheckBox { text: @tr("保留创建时间"); }
+            option-modification-measure := CheckBox { text: @tr("保留修改时间"); }
+            option-access-measure := CheckBox { text: @tr("保留访问时间"); }
+        }
 
         VerticalLayout {
             padding: 16px;
@@ -302,37 +324,40 @@ export component QueuePage inherits VerticalLayout {
                 }
 
                 if root.window-width >= root.options-single-row-width: HorizontalLayout {
-                    spacing: root.page-gap;
-                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    spacing: 10px;
+                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; width: root.queue-option-width; }
+                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; width: root.queue-option-width; }
+                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; width: root.queue-option-width; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; width: root.queue-option-width; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; width: root.queue-option-width; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; width: root.queue-option-width; }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
                 if root.window-width >= 760px && root.window-width < root.options-single-row-width: VerticalLayout {
                     spacing: 6px;
                     HorizontalLayout {
-                        spacing: root.page-gap;
-                        CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                        CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                        CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                        spacing: 10px;
+                        CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; width: root.queue-option-width; }
+                        CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; width: root.queue-option-width; }
+                        CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; width: root.queue-option-width; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
                     }
                     if root.timestamp-ui-visible: HorizontalLayout {
-                        spacing: root.page-gap;
-                        CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                        CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                        CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                        spacing: 10px;
+                        CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; width: root.queue-option-width; }
+                        CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; width: root.queue-option-width; }
+                        CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; width: root.queue-option-width; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
                     }
                 }
                 if root.window-width < 760px: VerticalLayout {
                     spacing: 6px;
-                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
-                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; horizontal-stretch: 1; min-width: 0px; preferred-width: 0px; }
+                    CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; width: root.queue-option-width; }
+                    CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; width: root.queue-option-width; }
+                    CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; width: root.queue-option-width; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; width: root.queue-option-width; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; width: root.queue-option-width; }
+                    if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; width: root.queue-option-width; }
                 }
 
                 HorizontalLayout {
@@ -495,11 +520,13 @@ export component QueuePage inherits VerticalLayout {
                  accessible-role: list;
                  accessible-label: @tr("编码任务");
                  accessible-item-count: root.queue-failed-only ? root.queue-failed-count : root.task-rows.length;
-                 for row[index] in root.task-rows: Rectangle {
-                     height: (!root.queue-failed-only || row.state == 3) ? 34px : 0px;
-                     if !root.queue-failed-only || row.state == 3: drop-row := DropArea {
+                 for row[index] in (root.queue-failed-only ? root.failed-task-rows : root.task-rows): Rectangle {
+                     property <int> source-index: root.queue-failed-only ? root.failed-row-source-index(index) : index;
+                     height: 34px;
+                     drop-row := DropArea {
                      property <length> hover-y: 0px;
-                     property <int> drop-index: index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
+                     property <int> source-index: parent.source-index;
+                     property <int> drop-index: self.source-index + (drop-row.hover-y > drop-row.height / 2 ? 1 : 0);
                      width: parent.width;
                      height: 34px;
                      can-drop(event) => {
@@ -512,17 +539,17 @@ export component QueuePage inherits VerticalLayout {
                      row-drag := DragArea {
                          enabled: !root.running && !row.locked;
                          allow-move: !root.running && !row.locked;
-                         data: root.queue-drag-data(index);
+                         data: root.queue-drag-data(drop-row.source-index);
                          opacity: row-drag.dragging ? 0.45 : 1.0;
                          Rectangle {
                              width: parent.width;
                              height: parent.height;
-                             background: root.selected-queue-index == index ? root.accent-soft : (drop-row.has-drag ? (root.dark-mode ? #303030 : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #343434 : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #272727 : #f4f8fe) : transparent)));
+                             background: root.selected-queue-index == drop-row.source-index ? root.accent-soft : (drop-row.has-drag ? (root.dark-mode ? #303030 : #e7f1ff) : (row-touch.has-hover ? (root.dark-mode ? #343434 : #edf5ff) : (index / 2 * 2 == index ? (root.dark-mode ? #272727 : #f4f8fe) : transparent)));
                              border-radius: 3px;
                              accessible-role: list-item;
                              accessible-label: row.filename + "，" + row.status;
                              accessible-item-selectable: true;
-                             accessible-item-selected: root.selected-queue-index == index;
+                             accessible-item-selected: root.selected-queue-index == drop-row.source-index;
                              animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                              HorizontalLayout {
                                  // 与表头同宽同 padding：弹性「目录」列宽度才会一致，
@@ -545,10 +572,10 @@ export component QueuePage inherits VerticalLayout {
                                      // 选中与详情由 C++ 侧在 up 事件处理：那里能读到
                                      // drag_reordered，避免拖动排序后的释放误开详情。
                                      if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
-                                         root.open-queue-menu(index, row-touch.absolute-position.x + row-touch.mouse-x, row-touch.absolute-position.y + row-touch.mouse-y);
+                                         root.open-queue-menu(drop-row.source-index, row-touch.absolute-position.x + row-touch.mouse-x, row-touch.absolute-position.y + row-touch.mouse-y);
                                      }
                                      root.queue-row-pointer-event(
-                                         index,
+                                         drop-row.source-index,
                                          event.button == PointerEventButton.left ? 0 : (event.button == PointerEventButton.right ? 1 : 2),
                                          event.kind == PointerEventKind.down ? 0 : (event.kind == PointerEventKind.up ? 1 : (event.kind == PointerEventKind.move ? 2 : 3)),
                                          row-touch.mouse-y / 1px

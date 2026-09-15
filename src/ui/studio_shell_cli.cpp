@@ -119,6 +119,7 @@ std::vector<std::wstring> cli_arguments_from_config(
       if (cfg.image_size_limit.max_height) push_cli_option(args, L"--max-height", std::to_wstring(*cfg.image_size_limit.max_height));
       if (cfg.image_size_limit.max_long_edge) push_cli_option(args, L"--max-long-edge", std::to_wstring(*cfg.image_size_limit.max_long_edge));
       if (cfg.image_size_limit.max_short_edge) push_cli_option(args, L"--max-short-edge", std::to_wstring(*cfg.image_size_limit.max_short_edge));
+      if (cfg.image_size_limit.scale_percent) push_cli_option(args, L"--scale-percent", std::to_wstring(*cfg.image_size_limit.scale_percent));
       break;
     case awj::ImageSizeLimitMode::automatic:
     default:
@@ -176,6 +177,9 @@ std::vector<std::wstring> cli_arguments_from_config(
                     cli_avif_encoder_arg(cfg.avif_encoder));
     push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
     push_cli_option(args, L"--alpha", cli_alpha_arg(cfg.alpha_policy));
+  }
+  if (cfg.output_format == awj::OutputFormat::jxl && !cfg.jxl_jpeg_lossless) {
+    args.push_back(L"--no-jxl-jpeg-lossless");
   }
   if (cfg.output_format == awj::OutputFormat::jpgli) {
     push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
@@ -297,6 +301,7 @@ awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams
       .jpegli_progressive_index = params.jpegli_progressive_index,
       .jpegli_optimize_huffman = params.jpegli_optimize_huffman,
       .jpegli_xyb = params.jpegli_xyb,
+      .jxl_jpeg_lossless = params.jxl_jpeg_lossless,
       .strip_metadata = params.strip_metadata,
       .allow_wic_fallback = params.allow_wic_fallback,
       .close_on_finish = params.close_on_finish,
@@ -305,7 +310,8 @@ awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams
       .max_width_text = text(params.max_width_text),
       .max_height_text = text(params.max_height_text),
       .max_long_edge_text = text(params.max_long_edge_text),
-      .max_short_edge_text = text(params.max_short_edge_text)};
+      .max_short_edge_text = text(params.max_short_edge_text),
+      .scale_percent_text = text(params.scale_percent_text)};
 }
 
 awj::shell_context_menu::MenuParams shell_menu_params(

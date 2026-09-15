@@ -224,7 +224,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       }
       item.status = QueueItemStatus::pending;
       item.status_text = "等待编码";
-      item.log_text.clear();
+      item.log_text = {};
       item.encoder_id.clear();
       item.encoder_threads = 0;
       item.decode_seconds = -1.0;
@@ -310,8 +310,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
                 item.status_text = "失败";
                 break;
             }
+            awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                      make_queue_task_row(item, *queue_index));
           }
-          refresh_queue_rows(app, *state);
           app.set_progress(static_cast<float>(event.completed) /
                            static_cast<float>(event.total));
           app.set_status_text(to_shared(
@@ -356,8 +357,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               item.prepare_seconds = seconds(detail.prepare_microseconds);
               item.encode_seconds = seconds(detail.encode_microseconds);
               item.write_seconds = seconds(detail.write_microseconds);
+              awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                        make_queue_task_row(item, *queue_index));
             }
-            refresh_queue_rows(app, *state);
           });
           return;
         }
@@ -373,7 +375,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
             if (auto queue_index =
                     queue_index_for_run_index(*state, event.index)) {
               auto& item = state->queue_items[*queue_index];
-              item.log_text = line;
+              item.log_text = to_shared(line);
               // 跨进程约定：这里嗅探的是 AWJ CLI 子进程 stdout 里的中文子串，
               // 生产方在 pipeline.ixx:461（", 未达标兜底"）。子进程的输出与日志
               // 固定为中文、不跟随界面语言，本判断才成立——1.0.0 的双语只覆盖
@@ -383,8 +385,9 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
               // 否则视觉质量未达标的行会静默不再标警告，且不会有编译错误。
               item.warning = item.warning ||
                              line.find("未达标") != std::string::npos;
+              awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                        make_queue_task_row(item, *queue_index));
             }
-            refresh_queue_rows(app, *state);
           });
           return;
         }
@@ -811,7 +814,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     (*app)->set_running(true);
     (*app)->set_progress(0.0f);
     if (!large_index) {
-      (*app)->set_task_rows(rows);
+      awj::ui::bind_queue_model(**app, rows);
       (*app)->set_large_image_rows(large_rows);
       (*app)->set_selected_large_image_index(-1);
     }

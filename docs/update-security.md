@@ -14,7 +14,7 @@ C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex
 
 ## 信任链与防重放
 
-客户端先验签原始 UTF-8 字节，再解析 JSON。`update-keyring-v1.json` 由编译进客户端的三把 root 中至少两把不同密钥签名；签名封套为 `update-keyring-v1.json.sig`，每项含 `key_id` 与 detached Ed25519 signature。keyring 有自己的递增 `sequence`、`issued_at`、`expires_at`，并委派有 `key_id`、公钥、有效期和 `revoked` 标志的 release key。
+客户端先验签原始 UTF-8 字节，再解析 JSON。1.0.13 起公开 canonical 名称为 `update-keyring.json` / `update-keyring.json.sig`；打包脚本同时保留字节完全一致的 `update-keyring-v1.json` / `update-keyring-v1.json.sig` 兼容入口。keyring 由编译进客户端的三把 root 中至少两把不同密钥签名，签名封套每项含 `key_id` 与 detached Ed25519 signature。客户端仅在 canonical 文档或签名返回 404 时成对读取旧名称；其他网络错误、验签失败、解析失败和防重放失败均 fail-closed。keyring 有自己的递增 `sequence`、`issued_at`、`expires_at`，并委派有 `key_id`、公钥、有效期和 `revoked` 标志的 release key。
 
 v1、v2 manifest 也必须有已签名的 `key_id`、`issued_at`、`expires_at`。有效期最多 180 天；过期或明显晚于本机时间的文档拒绝，避免有效签名被无限冻结重放。客户端把 v1、v2 与 keyring 各自最后验证的 sequence 和原始 SHA-256 写到可执行文件同目录 `.awj-update-security-state.json`：独占跨进程锁、同目录临时文件、刷盘和原子替换。较小 sequence、同一 sequence 的不同内容和损坏状态均 fail-closed。该状态是重启后仍有效的反重放锚点；`AWJ.jsonc` 的旧 sequence 只作为迁移时的额外下限。
 
@@ -27,7 +27,7 @@ v1、v2 manifest 也必须有已签名的 `key_id`、`issued_at`、`expires_at`�
 
    ```powershell
    .\scripts\sign-update-keyring.ps1 `
-     -KeyringPath .\update-keyring-v1.json `
+     -KeyringPath .\update-keyring.json `
      -RootSeedFiles @{
        'root-legacy-2026' = 'C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex'
        'root-recovery-a-2026' = 'C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-root-recovery-a-2026.hex'

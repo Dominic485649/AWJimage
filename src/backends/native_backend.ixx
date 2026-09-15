@@ -536,6 +536,8 @@ PixelFormat jpeg_pixel_format_from_sampling(std::uint8_t component_count,
 }
 
 struct JpegBitstreamSourceDiagnostics {
+  std::size_t width{};
+  std::size_t height{};
   PixelFormat pixel_format{PixelFormat::unknown};
   std::optional<int> bit_depth{};
   bool has_icc{};
@@ -606,6 +608,8 @@ JpegBitstreamSourceDiagnostics inspect_jpeg_bitstream_source(
       if (payload_size >= 6 + static_cast<std::size_t>(component_count) * 3 && component_count > 0) {
         const auto sampling = std::to_integer<std::uint8_t>(bytes[payload_offset + 7]);
         diagnostics.bit_depth = static_cast<int>(precision);
+        diagnostics.height = read_be_u16(bytes, payload_offset + 1);
+        diagnostics.width = read_be_u16(bytes, payload_offset + 3);
         diagnostics.pixel_format = jpeg_pixel_format_from_sampling(
             component_count,
             static_cast<std::uint8_t>(sampling >> 4),
@@ -757,51 +761,6 @@ std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format
 }
 
 
-std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
-    const ImageBuffer& image, const AppConfig& cfg) {
-  if (image.width == 0 || image.height == 0 ||
-      cfg.image_size_limit.mode == ImageSizeLimitMode::none) {
-    return std::nullopt;
-  }
-  double scale = 1.0;
-  const auto apply_edge = [&](std::optional<int> limit, std::size_t value) {
-    if (limit && value > static_cast<std::size_t>(*limit)) {
-      scale = std::min(scale, static_cast<double>(*limit) / static_cast<double>(value));
-    }
-  };
-  if (cfg.image_size_limit.mode == ImageSizeLimitMode::automatic) {
-    switch (cfg.output_format) {
-      case OutputFormat::avif:
-        // AOM/Grid preserves dimensions; only explicit manual limits resize AVIF.
-        break;
-      case OutputFormat::webp:
-        apply_edge(16383, std::max(image.width, image.height));
-        break;
-      case OutputFormat::jpgli:
-        apply_edge(65535, std::max(image.width, image.height));
-        break;
-      case OutputFormat::png:
-      case OutputFormat::jxl:
-      default:
-        break;
-    }
-  } else {
-    apply_edge(cfg.image_size_limit.max_width, image.width);
-    apply_edge(cfg.image_size_limit.max_height, image.height);
-    apply_edge(cfg.image_size_limit.max_long_edge, std::max(image.width, image.height));
-    apply_edge(cfg.image_size_limit.max_short_edge, std::min(image.width, image.height));
-  }
-  if (scale >= 1.0) {
-    return std::nullopt;
-  }
-  const auto width = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(image.width * scale)));
-  const auto height = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(image.height * scale)));
-  if (width == image.width && height == image.height) {
-    return std::nullopt;
-  }
-  return std::pair{width, height};
-}
-
 std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
     const ImageBuffer& image, std::size_t new_width, std::size_t new_height) {
   if (image.pixel_format != PixelFormat::rgba || image.planes.empty() ||
@@ -846,7 +805,7 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
 
 std::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
                                                        const AppConfig& cfg) {
-  const auto dims = limited_dimensions(decoded.image, cfg);
+  const auto dims = limited_dimensions(decoded.image.width, decoded.image.height, cfg);
   if (!dims) {
     return {};
   }
@@ -952,7 +911,7 @@ bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
 
 bool jxl_jpeg_bitstream_transcode_allowed(const AppConfig& cfg,
                                           const fs::path& path) {
-  return cfg.output_format == OutputFormat::jxl && jxl_jpeg_bitstream_source(path) &&
+  return cfg.jxl_jpeg_lossless && cfg.output_format == OutputFormat::jxl && jxl_jpeg_bitstream_source(path) &&
          !cfg.strip_metadata && !has_user_color_settings(cfg);
 }
 
@@ -1951,6 +1910,9 @@ class NativeBackend final {
     if (!container_info) {
       return std::nullopt;
     }
+    if (limited_dimensions(container_info->width, container_info->height, cfg_)) {
+      return std::nullopt;
+    }
     if (!container_info->source_info ||
         (container_info->source_info->pixel_format != PixelFormat::yuv420 &&
          container_info->source_info->pixel_format != PixelFormat::yuv422 &&
@@ -2025,10 +1987,11 @@ class NativeBackend final {
 
     auto bytes = decoder_common::read_file_bytes(image.path, "JPEG");
     if (!bytes) {
-      mark_failed(result, redact_path_for_user(bytes.error(), image.path));
-      return result;
+      return std::nullopt;
     }
-    if (native_backend_detail::inspect_jpeg_bitstream_source(*bytes).has_mpf) {
+    const auto source = native_backend_detail::inspect_jpeg_bitstream_source(*bytes);
+    if (source.has_mpf || source.width == 0 || source.height == 0 ||
+        limited_dimensions(source.width, source.height, cfg_)) {
       return std::nullopt;
     }
     if (cancel_if_requested(result, stop_token)) {
@@ -2046,10 +2009,13 @@ class NativeBackend final {
     if (!encoded) {
       if (stop_token.stop_requested()) {
         cancel_if_requested(result, stop_token);
-      } else {
-        mark_failed(result, encoded.error());
+        return result;
       }
-      return result;
+      native_backend_detail::log_info_noexcept(logger_, [&] {
+        return std::format("native jpeg bitstream transcode unavailable, fallback to pixels: item={:04}",
+                           result.index + 1);
+      });
+      return std::nullopt;
     }
 
     if (cancel_if_requested(result, stop_token)) {
@@ -2087,11 +2053,12 @@ class NativeBackend final {
   }
 
   [[nodiscard]] std::expected<DecodedInput, std::string> decode_input(
-      const ImageFile& image) const {
+      const ImageFile& image, std::stop_token stop_token) const {
     auto decoded = decode_image_for_path(
         image.path,
         DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback,
-                               .decode_threads = resources_.encoder_threads_per_file});
+                               .decode_threads = resources_.encoder_threads_per_file,
+                               .stop_token = stop_token});
     if (!decoded) {
       return std::unexpected{redact_path_for_user(decoded.error(), image.path)};
     }
@@ -2667,7 +2634,7 @@ class NativeBackend final {
       }
 
       const auto decode_started = native_backend_detail::Clock::now();
-      auto decoded_input = decode_input(image);
+      auto decoded_input = decode_input(image, stop_token);
       result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
       if (!decoded_input) {
         mark_failed(result, decoded_input.error());

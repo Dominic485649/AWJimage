@@ -153,9 +153,10 @@ void sync_update_ui(AwjStudio& app, const UiState& state) {
 }
 
 void sync_update_history(
-    const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
+    const std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest) {
   if (!rows) return;
+  rows->set_loader([manifest] {
   auto merged_history = awj::ui::embedded_changelog_history();
   for (const auto& entry : manifest.entries) {
     const auto version = awj::update::to_string(entry.version);
@@ -190,7 +191,8 @@ void sync_update_history(
         .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
         .changelog_en = to_shared(entry.changelog_en)});
   }
-  rows->set_vector(std::move(history_rows));
+  return history_rows;
+  });
 }
 
 void restore_cached_update_history(UiState& state) {

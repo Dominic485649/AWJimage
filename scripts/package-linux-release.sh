@@ -28,6 +28,8 @@ binary=$(realpath -e -- "$binary")
 
 version=$(tr -d '\r\n' < "$repo/VERSION")
 [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die 'VERSION is invalid'
+actual_version=$("$binary" --version) || die 'binary --version failed'
+[[ "$actual_version" == "AWJimage $version" ]] || die "binary version mismatch: expected AWJimage $version, actual $actual_version"
 [[ -z $(git -C "$repo" status --porcelain --untracked-files=no) ]] || die 'tracked source changes are not allowed'
 head=$(git -C "$repo" rev-parse HEAD)
 if [[ -n "$candidate_head" ]]; then
@@ -77,6 +79,8 @@ cp -- "$repo/LICENSE" "$package/LICENSE"
     "Slint commit: $slint_commit" \
     'libplacebo: v7.360.1' \
     'libarchive: v3.8.9' \
+    'libheif: 1.23.4 (decoder-only; libde265 backend)' \
+    'libde265: 1.1.2 (decoder library only)' \
     'Source: https://github.com/Dominic485649/AWJimage' \
     '' \
     'THIRD-PARTY SOFTWARE NOTICES' \
@@ -119,5 +123,6 @@ while IFS= read -r -d '' source; do
 done < <(find "$package" -type f -print0)
 [[ $(find "$package" -type f | wc -l) == $(find "$verify_dir" -type f | wc -l) ]] || die 'archive contains an unexpected file'
 "$verify_dir/AWJ" --help >/dev/null
+[[ $("$verify_dir/AWJ" --version) == "AWJimage $version" ]] || die 'extracted binary version mismatch'
 
 printf 'Linux package: %s\nLinux archive: %s\n' "$package" "$archive"

@@ -219,6 +219,7 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_int(menu_config_key(prefix, "jpegli_progressive_index"), 0, 2, param.jpegli_progressive_index)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), param.jpegli_optimize_huffman)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "jpegli_xyb"), param.jpegli_xyb)); !r) return r;
+    if (auto r = one(apply_bool(menu_config_key(prefix, "jxl_jpeg_lossless"), param.jxl_jpeg_lossless)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "strip_metadata"), param.strip_metadata)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "allow_wic_fallback"), param.allow_wic_fallback)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "close_on_finish"), param.close_on_finish)); !r) return r;
@@ -228,6 +229,7 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_string(menu_config_key(prefix, "max_height_text"), param.max_height_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_long_edge_text"), param.max_long_edge_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_short_edge_text"), param.max_short_edge_text)); !r) return r;
+    if (auto r = one(apply_string(menu_config_key(prefix, "scale_percent_text"), param.scale_percent_text)); !r) return r;
   }
   return {};
 }

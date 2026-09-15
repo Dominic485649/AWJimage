@@ -32,8 +32,12 @@ import awj.update_model;
 export namespace awj::update {
 
 inline constexpr std::string_view update_keyring_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring-v1.json";
+    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring.json";
 inline constexpr std::string_view update_keyring_signature_url =
+    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring.json.sig";
+inline constexpr std::string_view legacy_update_keyring_url =
+    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring-v1.json";
+inline constexpr std::string_view legacy_update_keyring_signature_url =
     "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring-v1.json.sig";
 inline constexpr std::uint32_t supported_update_keyring_schema = 1;
 

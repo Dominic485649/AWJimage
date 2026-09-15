@@ -33,9 +33,11 @@ export component MenuParameterPage inherits Rectangle {
     in-out property <bool> menu-jpegli-optimize-huffman;
     in-out property <int> menu-jpegli-progressive-index;
     in-out property <bool> menu-jpegli-xyb;
+    in-out property <bool> menu-jxl-jpeg-lossless;
     in-out property <string> menu-max-height-text;
     in-out property <string> menu-max-long-edge-text;
     in-out property <string> menu-max-short-edge-text;
+    in-out property <string> menu-scale-percent-text;
     in-out property <string> menu-max-width-text;
     in-out property <string> menu-quality-text;
     in-out property <int> menu-size-limit-index;
@@ -85,8 +87,8 @@ export component MenuParameterPage inherits Rectangle {
             spacing: 10px;
             if root.legacy-machine-menu-present: HorizontalLayout {
                 spacing: 10px;
-                Text { text: @tr("检测到旧版系统级 AWJ 菜单，清理需要管理员权限。"); horizontal-stretch: 1; color: root.text-body; wrap: word-wrap; }
-                SoftButton { dark-mode: root.dark-mode; text: @tr("清理历史系统菜单"); enabled: !root.running; clicked => { root.cleanup-legacy-machine-menu(); } }
+                Text { text: @tr("检测到旧版系统级 AWJ 菜单。当前版本不会修改 HKLM，请使用系统级注册表管理工具处理。"); horizontal-stretch: 1; color: root.text-body; wrap: word-wrap; }
+                SoftButton { dark-mode: root.dark-mode; text: @tr("查看说明"); enabled: !root.running; clicked => { root.cleanup-legacy-machine-menu(); } }
             }
             HorizontalLayout {
                 height: 40px;
@@ -112,6 +114,7 @@ export component MenuParameterPage inherits Rectangle {
             }
 
             ParameterForm {
+                available-width: root.width;
                 menu-mode: true;
                 alpha-policy-index <=> root.menu-alpha-policy-index;
                 avif-color-representation-index <=> root.menu-avif-color-representation-index;
@@ -138,9 +141,11 @@ export component MenuParameterPage inherits Rectangle {
                 jpegli-optimize-huffman <=> root.menu-jpegli-optimize-huffman;
                 jpegli-progressive-index <=> root.menu-jpegli-progressive-index;
                 jpegli-xyb <=> root.menu-jpegli-xyb;
+                jxl-jpeg-lossless <=> root.menu-jxl-jpeg-lossless;
                 max-height-text <=> root.menu-max-height-text;
                 max-long-edge-text <=> root.menu-max-long-edge-text;
                 max-short-edge-text <=> root.menu-max-short-edge-text;
+                scale-percent-text <=> root.menu-scale-percent-text;
                 max-width-text <=> root.menu-max-width-text;
                 memory-limit-text <=> root.memory-limit-text;
                 panel-bg : root.panel-bg;

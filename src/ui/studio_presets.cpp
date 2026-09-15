@@ -80,6 +80,7 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_max_height_text({});
   app.set_max_long_edge_text({});
   app.set_max_short_edge_text({});
+  app.set_scale_percent_text({});
   app.set_format_index(0);
   app.set_visual_quality_gpu(defaults.visual_quality_gpu);
   app.set_visual_quality_fallback(defaults.visual_quality_fallback);
@@ -93,6 +94,7 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_jpegli_optimize_huffman(
       awj::encoding_defaults::default_jpegli_optimize_huffman);
   app.set_jpegli_xyb(awj::encoding_defaults::default_jpegli_xyb);
+  app.set_jxl_jpeg_lossless(true);
   app.set_alpha_policy_index(1);
   app.set_quality_follows_format(true);
   app.set_bit_depth_follows_format(true);
@@ -182,11 +184,13 @@ std::expected<awj::AppConfig, std::string> config_from_parameter_params(
       .jpegli_progressive_index = params.jpegli_progressive_index,
       .jpegli_optimize_huffman = params.jpegli_optimize_huffman,
       .jpegli_xyb = params.jpegli_xyb,
+      .jxl_jpeg_lossless = params.jxl_jpeg_lossless,
       .size_limit_index = params.size_limit_index,
       .max_width_text = params.max_width_text,
       .max_height_text = params.max_height_text,
       .max_long_edge_text = params.max_long_edge_text,
-      .max_short_edge_text = params.max_short_edge_text};
+      .max_short_edge_text = params.max_short_edge_text,
+      .scale_percent_text = params.scale_percent_text};
   auto config = config_from_menu_params(format, menu);
   if (!config) return std::unexpected{config.error()};
   if (png_lossless) {
@@ -274,6 +278,7 @@ ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config)
   params.jpegli_progressive_index = config.jpegli_progressive_level;
   params.jpegli_optimize_huffman = config.jpegli_optimize_huffman;
   params.jpegli_xyb = config.jpegli_xyb;
+  params.jxl_jpeg_lossless = config.jxl_jpeg_lossless;
   params.threads_text = config.max_jobs == awj::default_max_jobs()
                             ? std::string{}
                             : text_from_int(config.max_jobs);
@@ -298,6 +303,7 @@ ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config)
   params.max_height_text = optional_text(config.image_size_limit.max_height);
   params.max_long_edge_text = optional_text(config.image_size_limit.max_long_edge);
   params.max_short_edge_text = optional_text(config.image_size_limit.max_short_edge);
+  params.scale_percent_text = optional_text(config.image_size_limit.scale_percent);
   return params;
 }
 

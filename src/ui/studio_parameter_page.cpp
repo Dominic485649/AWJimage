@@ -146,9 +146,10 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
                                       : params.jpegli_optimize_huffman;
     cfg.jpegli_xyb = params.jpegli_xyb;
   }
+  cfg.jxl_jpeg_lossless = params.jxl_jpeg_lossless;
   const auto size_limit = image_size_limit_from_fields(
       params.size_limit_index, params.max_width_text, params.max_height_text,
-      params.max_long_edge_text, params.max_short_edge_text);
+      params.max_long_edge_text, params.max_short_edge_text, params.scale_percent_text);
   if (!size_limit) return std::unexpected{size_limit.error()};
   cfg.image_size_limit = *size_limit;
   if (auto valid = awj::finalize_config_defaults(cfg, true, false); !valid) {
@@ -182,6 +183,7 @@ MenuFormatParams default_menu_params_for_index(int index) {
   params.jpegli_progressive_index = awj::encoding_defaults::default_jpegli_progressive_level;
   params.jpegli_optimize_huffman = awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  params.jxl_jpeg_lossless = true;
   params.allow_wic_fallback = awj::encoding_defaults::default_allow_wic_fallback;
   params.alpha_policy_index = 1;
   return params;
@@ -204,6 +206,7 @@ ParameterFormatParams default_parameter_params_for_index(int index) {
   params.jpegli_optimize_huffman =
       awj::encoding_defaults::default_jpegli_optimize_huffman;
   params.jpegli_xyb = awj::encoding_defaults::default_jpegli_xyb;
+  params.jxl_jpeg_lossless = true;
   return params;
 }
 
@@ -221,13 +224,15 @@ ParameterFormatParams capture_parameter_params_from_ui(const AwjStudio& app) {
       .jpegli_progressive_index = app.get_jpegli_progressive_index(),
       .jpegli_optimize_huffman = app.get_jpegli_optimize_huffman(),
       .jpegli_xyb = app.get_jpegli_xyb(),
+      .jxl_jpeg_lossless = app.get_jxl_jpeg_lossless(),
       .threads_text = shared_to_string(app.get_threads_text()),
       .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
       .size_limit_index = app.get_size_limit_index(),
       .max_width_text = shared_to_string(app.get_max_width_text()),
       .max_height_text = shared_to_string(app.get_max_height_text()),
       .max_long_edge_text = shared_to_string(app.get_max_long_edge_text()),
-      .max_short_edge_text = shared_to_string(app.get_max_short_edge_text())};
+      .max_short_edge_text = shared_to_string(app.get_max_short_edge_text()),
+      .scale_percent_text = shared_to_string(app.get_scale_percent_text())};
 }
 
 void apply_parameter_params_to_ui(AwjStudio& app,
@@ -249,6 +254,7 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
   app.set_jpegli_xyb(params.jpegli_xyb);
+  app.set_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_threads_text(to_shared(params.threads_text));
   app.set_memory_limit_text(to_shared(params.memory_limit_text));
   app.set_size_limit_index(params.size_limit_index);
@@ -256,6 +262,7 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_max_height_text(to_shared(params.max_height_text));
   app.set_max_long_edge_text(to_shared(params.max_long_edge_text));
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
+  app.set_scale_percent_text(to_shared(params.scale_percent_text));
   app.set_quality_follows_format(
       params.quality_text == text_from_int(awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(

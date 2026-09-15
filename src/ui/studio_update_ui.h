@@ -51,7 +51,7 @@ void sync_update_ui(AwjStudio& app, const UiState& state);
 void start_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                         const std::shared_ptr<UiState>& state);
 void sync_update_history(
-    const std::shared_ptr<slint::VectorModel<UpdateHistoryRow>>& rows,
+    const std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>>& rows,
     const awj::update::Manifest& manifest);
 
 }  // namespace awj::studio

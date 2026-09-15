@@ -7,12 +7,14 @@
 #include <format>
 #include <fstream>
 #include <iterator>
+#include <memory>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 #include <windows.h>
+#include <jxl/decode.h>
 
 import awj.config;
 import awj.core;
@@ -326,6 +328,54 @@ int main() {
     return fail("native backend JPEG->JXL did not use bitstream transcode.");
   }
 
+  {
+    const auto compressed = read_text(jxl_jpeg_result.output_path);
+    std::unique_ptr<JxlDecoder, decltype(&JxlDecoderDestroy)> decoder{
+        JxlDecoderCreate(nullptr), JxlDecoderDestroy};
+    if (!decoder || JxlDecoderSubscribeEvents(decoder.get(), JXL_DEC_JPEG_RECONSTRUCTION | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
+        JxlDecoderSetInput(decoder.get(), reinterpret_cast<const std::uint8_t*>(compressed.data()), compressed.size()) != JXL_DEC_SUCCESS) {
+      return fail("could not initialize JPEG reconstruction verification");
+    }
+    JxlDecoderCloseInput(decoder.get());
+    std::vector<std::uint8_t> reconstructed(static_cast<std::size_t>(jpeg_bytes) + 1024);
+    bool recovered = false;
+    for (;;) {
+      const auto status = JxlDecoderProcessInput(decoder.get());
+      if (status == JXL_DEC_JPEG_RECONSTRUCTION) {
+        if (JxlDecoderSetJPEGBuffer(decoder.get(), reconstructed.data(), reconstructed.size()) != JXL_DEC_SUCCESS)
+          return fail("could not provide JPEG reconstruction buffer");
+      } else if (status == JXL_DEC_FULL_IMAGE) {
+        const auto size = reconstructed.size() - JxlDecoderReleaseJPEGBuffer(decoder.get());
+        recovered = size == source_jpeg->encoded.bytes.size() &&
+            std::equal(reconstructed.begin(), reconstructed.begin() + size,
+                reinterpret_cast<const std::uint8_t*>(source_jpeg->encoded.bytes.data()));
+      } else if (status == JXL_DEC_SUCCESS) {
+        break;
+      } else {
+        return fail("JPEG reconstruction did not complete");
+      }
+    }
+    if (!recovered) return fail("JPEG -> JXL -> JPEG changed the original bytes");
+  }
+  for (const bool resize : {false, true}) {
+    auto branch_cfg = cfg;
+    branch_cfg.output_dir = output / (resize ? "jxl-scaled" : "jxl-quality");
+    branch_cfg.jxl_jpeg_lossless = resize;
+    if (resize) branch_cfg.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = 50};
+    awj::NativeBackend branch{branch_cfg, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto result = branch.encode(awj::ImageFile{.index = 0, .path = jpeg_input, .bytes = jpeg_bytes});
+    if (!result.ok || result.integration_mode == "jxl-jpeg-bitstream-transcode") {
+      return fail("JXL ignored the disabled lossless switch or bypassed percentage resize");
+    }
+    if (resize) {
+      auto decoded = awj::JXLImageDecoder{}.decode(result.output_path);
+      const auto expected = awj::limited_dimensions(make_test_image().width, make_test_image().height, branch_cfg);
+      if (!decoded || !expected || decoded->image.width != expected->first || decoded->image.height != expected->second)
+        return fail("JXL percentage resize produced incorrect dimensions");
+    }
+  }
+
   cfg.strip_metadata = true;
   awj::NativeBackend jxl_strip_backend{cfg, logger, awj::ResourcePlan{
                                                         .file_parallelism = 1,
@@ -514,6 +564,21 @@ int main() {
   }
 
   const auto alpha_source = make_alpha_test_image();
+  {
+    auto scaled_cfg = passthrough_cfg;
+    scaled_cfg.output_dir = output / "passthrough-scaled";
+    scaled_cfg.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = 50};
+    awj::NativeBackend scaled{scaled_cfg, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto result = scaled.encode(awj::ImageFile{.index = 0,
+        .path = passthrough_seed_result.output_path, .bytes = passthrough_seed_result.output_bytes});
+    if (!result.ok || result.integration_mode == "avif-lossless-passthrough")
+      return fail("AVIF passthrough bypassed percentage resize");
+    auto decoded = avif_decoder->decode(result.output_path);
+    const auto expected = awj::limited_dimensions(make_test_image().width, make_test_image().height, scaled_cfg);
+    if (!decoded || !expected || decoded->image.width != expected->first || decoded->image.height != expected->second)
+      return fail("AVIF percentage resize produced incorrect dimensions");
+  }
   const auto alpha_input = root / "alpha-input.webp";
   auto alpha_webp = encoder.encode(
       alpha_source,
