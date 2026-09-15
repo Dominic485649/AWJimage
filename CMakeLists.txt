@@ -1147,6 +1147,7 @@ if(WIN32)
         src/ui/studio_worker_events.cpp
         src/ui/studio_queue_format.cpp
         src/ui/studio_fonts.cpp
+        src/ui/studio_fields.cpp
         src/ui/main.cpp
         src/ui/AWJ.manifest
         src/ui/AWJ.rc)
@@ -1160,6 +1161,7 @@ else()
         src/ui/studio_worker_events.cpp
         src/ui/studio_queue_format.cpp
         src/ui/studio_fonts.cpp
+        src/ui/studio_fields.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
