@@ -63,6 +63,8 @@
 #include "studio_fields.h"
 #include "studio_menu_params.h"
 #include "studio_parameter_page.h"
+#include "studio_ui_util.h"
+#include "studio_worker_control.h"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -87,6 +89,17 @@ namespace {
 
 // 共享状态类型已拆到 studio_state.h，这里引入以便本文件其余代码沿用原名。
 using awj::studio::adopt_win32_handle;
+using awj::studio::clear_run_if_callback_not_posted;
+using awj::studio::post_to_ui;
+using awj::studio::report_ui_callback_failure;
+using awj::studio::reset_failed_run;
+using awj::studio::run_ui_callback;
+using awj::studio::force_stop_current_worker;
+using awj::studio::ForceStopResult;
+using awj::studio::request_all_workers_stop;
+using awj::studio::request_all_workers_stop_locked;
+using awj::studio::set_status_text_noexcept;
+using awj::studio::worker_active;
 using awj::studio::MenuFormatParams;
 using awj::studio::active_parameter_params;
 using awj::studio::apply_parameter_params_to_ui;
@@ -1139,97 +1152,6 @@ void apply_title_bar_theme(slint::Window& window, bool dark_mode) noexcept {
   }
 }
 
-void set_status_text_noexcept(AwjStudio& app, std::string_view text) noexcept {
-  try {
-    app.set_status_text(to_shared(text));
-  } catch (...) {
-  }
-}
-
-void reset_failed_run(AwjStudio& app, UiState& state, std::uint64_t run_id,
-                      std::string_view message) noexcept {
-  try {
-    std::scoped_lock lock{state.mutex};
-    if (run_id != 0 && state.run_id == run_id) {
-      state.update_timer.stop();
-      state.pending_events.clear();
-      state.worker_active = false;
-    }
-  } catch (...) {
-  }
-  try {
-    app.set_running(false);
-  } catch (...) {
-  }
-  set_status_text_noexcept(app, message);
-}
-
-bool clear_run_if_callback_not_posted(UiState& state,
-                                      std::uint64_t run_id) noexcept {
-  try {
-    std::scoped_lock lock{state.mutex};
-    if (state.run_id != run_id) {
-      return false;
-    }
-    state.pending_events.clear();
-    state.worker_active = false;
-    if (state.active_child) {
-      state.active_child->terminate();
-      state.active_child.reset();
-    }
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
-
-void report_ui_callback_failure(slint::ComponentWeakHandle<AwjStudio> weak,
-                                std::string_view context,
-                                std::string_view detail) noexcept {
-  try {
-    if (auto app = weak.lock()) {
-      try {
-        set_status_text_noexcept(**app, std::format("{}：{}", context, detail));
-      } catch (...) {
-        set_status_text_noexcept(**app, "界面操作失败。");
-      }
-    }
-  } catch (...) {
-  }
-}
-
-template <class Function>
-void run_ui_callback(slint::ComponentWeakHandle<AwjStudio> weak,
-                     std::string_view context, Function&& fn) noexcept {
-  try {
-    std::forward<Function>(fn)();
-  } catch (const std::bad_alloc&) {
-    report_ui_callback_failure(weak, context, "内存不足。");
-  } catch (const std::length_error&) {
-    report_ui_callback_failure(weak, context, "数据超过运行时限制。");
-  } catch (const std::exception&) {
-    report_ui_callback_failure(weak, context, "发生未预期异常。");
-  } catch (...) {
-    report_ui_callback_failure(weak, context, "发生未知异常。");
-  }
-}
-
-template <class Function>
-bool post_to_ui(slint::ComponentWeakHandle<AwjStudio> weak, Function&& fn) {
-  try {
-    slint::invoke_from_event_loop(
-        [weak, fn = std::forward<Function>(fn)]() mutable {
-          run_ui_callback(weak, "界面更新失败", [&] {
-            if (auto app = weak.lock()) {
-              fn(**app);
-            }
-          });
-        });
-    return true;
-  } catch (...) {
-    return false;
-  }
-}
 
 void apply_import_result(AwjStudio& app, UiState& state,
                          awj::ui_import::Request request,
@@ -1851,68 +1773,6 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
   }
 }
 
-bool request_all_workers_stop_locked(UiState& state) noexcept {
-  if (state.active_child != nullptr) {
-    state.active_child->request_cancel();
-    return true;
-  }
-  if (!state.worker_active) {
-    return false;
-  }
-  state.worker.request_stop();
-  return true;
-}
-
-bool request_all_workers_stop(const std::shared_ptr<UiState>& state) noexcept {
-  if (state == nullptr) {
-    return false;
-  }
-  try {
-    std::scoped_lock lock{state->mutex};
-    return request_all_workers_stop_locked(*state);
-  } catch (...) {
-    return false;
-  }
-}
-
-bool worker_active(const std::shared_ptr<UiState>& state) noexcept {
-  if (state == nullptr) {
-    return false;
-  }
-  try {
-    std::scoped_lock lock{state->mutex};
-    return state->worker_active;
-  } catch (...) {
-    return false;
-  }
-}
-
-enum class ForceStopResult { no_worker, terminated, terminate_failed };
-
-ForceStopResult force_stop_current_worker(
-    const std::shared_ptr<UiState>& state) noexcept {
-  if (state == nullptr) {
-    return ForceStopResult::no_worker;
-  }
-  std::shared_ptr<StudioChildProcess> child;
-  bool had_worker = false;
-  try {
-    std::scoped_lock lock{state->mutex};
-    had_worker = state->worker_active || state->active_child != nullptr;
-    child = state->active_child;
-    if (child == nullptr && state->worker_active) {
-      state->worker.request_stop();
-    }
-  } catch (...) {
-    return ForceStopResult::terminate_failed;
-  }
-  if (child != nullptr) {
-    return child->terminate() ? ForceStopResult::terminated
-                              : ForceStopResult::terminate_failed;
-  }
-  return had_worker ? ForceStopResult::terminate_failed
-                    : ForceStopResult::no_worker;
-}
 
 std::wstring cli_output_format_arg(awj::OutputFormat format) {
   switch (format) {
