@@ -274,6 +274,68 @@ int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
   return 0;
 }
 
+// 验证队列固定列宽可拖动，且表头与数据行同步。
+// 拖动手柄改变的是 root.queue-*-width；表头与数据行都读同一属性，
+// 所以只要改属性后两侧的列位置一致偏移，就说明对齐关系成立。
+int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  app->set_selected_page(1);
+  app->set_queue_failed_only(false);
+  app->set_task_rows(task_rows());
+  app->set_selected_queue_index(-1);
+  app->window().set_size(slint::LogicalSize({1220.0f, 827.0f}));
+  slint::select_bundled_translation("");
+
+  const auto header_filename = find_one(app, "文件名", Role::Text);
+  const auto header_size = find_one(app, "大小", Role::Text);
+  const auto header_status = find_one(app, "状态", Role::Text);
+  const auto header_log = find_one(app, "输出或日志", Role::Text);
+  const auto header_dir = find_one(app, "目录", Role::Text);
+  if (!header_filename || !header_size || !header_status) {
+    return fail("queue header columns are missing");
+  }
+  const auto row_filename = find_one(app, "completed.png", Role::Text);
+  const auto row_status = find_one(app, "完成", Role::Text);
+  const auto row_size = find_one(app, "1.0 MiB", Role::Text);
+  if (!row_filename || !row_status || !row_size) {
+    return fail("queue data row columns are missing");
+  }
+
+  const auto header_size_x = header_size->absolute_position().x;
+  const auto header_status_x = header_status->absolute_position().x;
+  const auto row_size_x = row_size->absolute_position().x;
+  const auto row_status_x = row_status->absolute_position().x;
+
+  // 核心修复：表头与数据行的固定列必须逐列对齐。两者处在不同容器里
+  // （表头在 queue-table 下，数据行在 ListView 视口里），错位正是本次要修的。
+  if (std::fabs(header_size_x - row_size_x) > 2.0f) {
+    return fail(std::format(
+        "header size column misaligned with data row: header={} row={}",
+        header_size_x, row_size_x));
+  }
+  if (std::fabs(header_status_x - row_status_x) > 2.0f) {
+    return fail(std::format(
+        "header status column misaligned with data row: header={} row={}",
+        header_status_x, row_status_x));
+  }
+
+  // 拖动文件名列：该列自身应变宽（拖拽生效），且表头与数据行仍逐列对齐。
+  const auto before_filename_width = header_filename->size().width;
+  app->set_queue_filename_width(before_filename_width + 60.0f);
+  if (std::fabs(header_filename->size().width - (before_filename_width + 60.0f)) > 1.0f) {
+    return fail(std::format("filename column did not widen: {} -> {}",
+                            before_filename_width, header_filename->size().width));
+  }
+  if (std::fabs(row_filename->size().width - header_filename->size().width) > 1.0f) {
+    return fail("filename column width diverged between header and data row");
+  }
+  if (std::fabs(header_size->absolute_position().x - row_size->absolute_position().x) > 2.0f ||
+      std::fabs(header_status->absolute_position().x - row_status->absolute_position().x) > 2.0f) {
+    return fail("fixed columns lost alignment after resize");
+  }
+  return 0;
+}
+
 int run_scale(const slint::ComponentHandle<AwjStudio>& app,
               float scale_factor) {
   app->window().window_handle().set_const_scale_factor(scale_factor);
@@ -655,7 +717,8 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   if (const int result = verify_parameter_matrix(app)) return result;
-  return verify_queue_option_layout(app);
+  if (const int result = verify_queue_option_layout(app)) return result;
+  return verify_queue_column_resize(app);
 }
 
 }  // namespace

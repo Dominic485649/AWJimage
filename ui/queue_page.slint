@@ -111,6 +111,17 @@ export component QueuePage inherits VerticalLayout {
     in-out property <length> queue-size-width: 72px;
     in-out property <length> queue-status-width: 104px;
     property <length> queue-index-width: 40px;
+    // 「目录」列也显式定宽、两侧共用。表头与数据行处在不同容器里（表头直接在
+    // queue-table 下，数据行在 ListView 视口里），让这一列弹性分配会得到不同
+    // 宽度（实测差约 20px），后面的固定列随之错位。共用一个由 queue-table
+    // 宽度算出的值，两侧逐列严格对齐。
+    // 常数项 = 左右 padding 20 + 五处间距 50 + 固定列合计 + 日志列预留 140
+    // （含 5 个 10px 间距与序号列）；窗口最小宽度下仍保底 60px，避免算成 0。
+    property <length> queue-fixed-columns: root.queue-index-width
+        + root.queue-filename-width + root.queue-size-width
+        + root.queue-status-width;
+    property <length> queue-dir-width: max(60px,
+        queue-table.width - 210px - root.queue-fixed-columns);
     in-out property <int> queue-success-count;
     callback retry-failed();
     in-out property <bool> running;
@@ -395,10 +406,22 @@ export component QueuePage inherits VerticalLayout {
                 queue-header := Rectangle {
                     x: 0px;
                     y: 0px;
-                    // 表头与数据行共用同一内容宽度：ListView 的竖直滚动条是 14px
-                    // 覆盖层（fluent scrollview.slint 里 flickable.width = parent.width），
-                    // 两侧都减去 14px，固定列才不会错位。
-                    width: parent.width - 14px;
+                    // 表头与数据行同宽（都铺满视口）且 padding 一致，弹性「目录」列
+                    // 才会得到相同宽度，固定列随之对齐。列位置由下面的属性算出，
+                    // 手柄绝对定位在列右缘、不参与布局，因此不影响列宽分配。
+                    property <length> h-pad: 10px;
+                    property <length> h-spacing: 10px;
+                    property <length> h-dir-width: max(0px,
+                        self.width - 2 * self.h-pad - root.queue-index-width
+                        - root.queue-filename-width - root.queue-size-width
+                        - root.queue-status-width - 5 * self.h-spacing);
+                    property <length> h-filename-edge: self.h-pad + root.queue-index-width
+                        + self.h-spacing + root.queue-filename-width;
+                    property <length> h-size-edge: self.h-filename-edge + self.h-spacing
+                        + self.h-dir-width + self.h-spacing + root.queue-size-width;
+                    property <length> h-status-edge: self.h-size-edge + self.h-spacing
+                        + root.queue-status-width;
+                    width: parent.width;
                     height: 34px;
                     background: root.field-bg;
                     border-color: root.field-border;
@@ -409,27 +432,32 @@ export component QueuePage inherits VerticalLayout {
                         padding-right: 10px;
                         spacing: 10px;
                         Text { text: "#"; width: root.queue-index-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                        // 可拖列：手柄叠加在列右缘内，不占用布局宽度，列位不随手柄偏移。
-                        Rectangle {
-                            width: root.queue-filename-width;
-                            background: transparent;
-                            Text { text: @tr("文件名"); width: parent.width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                            ColumnResizer { x: parent.width - 3px; resize-min: 60px; resize-max: 480px; target-width: root.queue-filename-width; line-color: root.field-border; resized(w) => { root.queue-filename-width = w; } }
-                        }
-                        Text { text: @tr("目录"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Rectangle {
-                            width: root.queue-size-width;
-                            background: transparent;
-                            Text { text: @tr("大小"); width: parent.width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                            ColumnResizer { x: parent.width - 3px; resize-min: 48px; resize-max: 200px; target-width: root.queue-size-width; line-color: root.field-border; resized(w) => { root.queue-size-width = w; } }
-                        }
-                        Rectangle {
-                            width: root.queue-status-width;
-                            background: transparent;
-                            Text { text: @tr("状态"); width: parent.width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                            ColumnResizer { x: parent.width - 3px; resize-min: 60px; resize-max: 280px; target-width: root.queue-status-width; line-color: root.field-border; resized(w) => { root.queue-status-width = w; } }
-                        }
+                        Text { text: @tr("文件名"); width: root.queue-filename-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("目录"); width: root.queue-dir-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("大小"); width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: @tr("状态"); width: root.queue-status-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
                         Text { text: @tr("输出或日志"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                    }
+                    ColumnResizer {
+                        x: queue-header.h-filename-edge - 3px;
+                        y: 0px; height: parent.height;
+                        resize-min: 60px; resize-max: 480px; target-width: root.queue-filename-width;
+                        line-color: root.field-border;
+                        resized(w) => { root.queue-filename-width = w; }
+                    }
+                    ColumnResizer {
+                        x: queue-header.h-size-edge - 3px;
+                        y: 0px; height: parent.height;
+                        resize-min: 48px; resize-max: 200px; target-width: root.queue-size-width;
+                        line-color: root.field-border;
+                        resized(w) => { root.queue-size-width = w; }
+                    }
+                    ColumnResizer {
+                        x: queue-header.h-status-edge - 3px;
+                        y: 0px; height: parent.height;
+                        resize-min: 60px; resize-max: 280px; target-width: root.queue-status-width;
+                        line-color: root.field-border;
+                        resized(w) => { root.queue-status-width = w; }
                     }
                 }
 
@@ -497,14 +525,15 @@ export component QueuePage inherits VerticalLayout {
                              accessible-item-selected: root.selected-queue-index == index;
                              animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                              HorizontalLayout {
+                                 // 与表头同宽同 padding：弹性「目录」列宽度才会一致，
+                                 // 固定列随之逐列对齐。滚动条是 14px 覆盖层，靠右侧
+                                 // 的「输出或日志」弹性列自然让出空间。
                                  padding-left: 10px;
-                                 // 表头宽度已扣掉 14px 滚动条；行背景仍铺满整行，但文本
-                                 // 右缘多留 14px，使固定列与表头逐列对齐。
-                                 padding-right: 24px;
+                                 padding-right: 10px;
                                  spacing: 10px;
                                  Text { text: row.order; width: root.queue-index-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
                                  Text { text: row.filename; width: root.queue-filename-width; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                 Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                                 Text { text: row.folder; width: root.queue-dir-width; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                  Text { text: row.size; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
                                  Text { text: row.status; width: root.queue-status-width; color: row.warning ? root.warning : root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                  Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
