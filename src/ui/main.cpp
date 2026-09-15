@@ -57,6 +57,9 @@
 #include "studio_config.h"
 #include "studio_json.h"
 #include "studio_state.h"
+#include "studio_worker_events.h"
+#include "studio_queue_format.h"
+#include "studio_fonts.h"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -84,10 +87,26 @@ using awj::studio::adopt_win32_handle;
 using awj::studio::MenuFormatParams;
 using awj::studio::ParameterFormatParams;
 using awj::studio::QueueImageItem;
+using awj::studio::apply_system_ui_font;
+using awj::studio::load_system_font_options;
 using awj::studio::QueueItemStatus;
+using awj::studio::select_system_ui_font_family;
+using awj::studio::queue_item_editable;
+using awj::studio::queue_item_runnable;
+using awj::studio::queue_item_selected_for_run;
+using awj::studio::queue_status_code;
+using awj::studio::queue_status_label;
+using awj::studio::stage_seconds_text;
+using awj::studio::stage_timings_text;
 using awj::studio::StudioChildProcess;
 using awj::studio::StudioConfigSnapshot;
 using awj::studio::UiState;
+using awj::studio::parse_studio_worker_detail_event;
+using awj::studio::parse_studio_worker_item_event;
+using awj::studio::StudioWorkerDetailEvent;
+using awj::studio::StudioWorkerItemEvent;
+using awj::studio::shared_to_string;
+using awj::studio::to_shared;
 using awj::studio::UniqueWin32Handle;
 using awj::studio::json_escape;
 using awj::studio::menu_config_key;
@@ -110,11 +129,6 @@ awj::LargeImageDecision manual_large_image_decision(
 
 LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
                                    std::string_view status);
-std::string shared_to_string(const slint::SharedString& value) {
-  return std::string{value.data(), value.size()};
-}
-
-slint::SharedString to_shared(std::string_view text);
 
 std::expected<void, std::string> add_manual_large_image_path(
     UiState& state, const std::filesystem::path& path, bool allow_wic_fallback,
@@ -303,98 +317,12 @@ std::expected<awj::ImageSizeLimit, std::string> image_size_limit_from_fields(
   return limit;
 }
 
-slint::SharedString to_shared(std::string_view text) {
-  return slint::SharedString{std::string{text}.c_str()};
-}
-
 std::string text_from_wide(std::wstring_view text) {
   return awj::utf8_from_wide(text);
 }
 
 std::string text_from_int(int value) { return std::format("{}", value); }
 
-int CALLBACK enum_font_family_proc(const LOGFONTW*, const TEXTMETRICW*, DWORD,
-                                   LPARAM param) {
-  *reinterpret_cast<bool*>(param) = true;
-  return 0;
-}
-
-int CALLBACK collect_font_family_proc(const LOGFONTW* font, const TEXTMETRICW*,
-                                      DWORD, LPARAM param) {
-  const std::wstring_view family{font->lfFaceName};
-  if (!family.empty() && family.front() != L'@') {
-    reinterpret_cast<std::unordered_set<std::wstring>*>(param)->emplace(family);
-  }
-  return 1;
-}
-
-bool system_font_available(std::wstring_view family) noexcept {
-  if (family.empty()) {
-    return false;
-  }
-  HDC dc = GetDC(nullptr);
-  if (dc == nullptr) {
-    return false;
-  }
-  LOGFONTW query{};
-  query.lfCharSet = DEFAULT_CHARSET;
-  const auto length =
-      std::min<std::size_t>(family.size(), std::size(query.lfFaceName) - 1);
-  std::copy_n(family.begin(), length, query.lfFaceName);
-  bool found = false;
-  EnumFontFamiliesExW(dc, &query, enum_font_family_proc,
-                      reinterpret_cast<LPARAM>(&found), 0);
-  ReleaseDC(nullptr, dc);
-  return found;
-}
-
-std::string select_system_ui_font_family() {
-  const std::array<std::wstring_view, 8> candidates{
-      L"鸿蒙黑体",       L"HarmonyOS Sans SC", L"Microsoft YaHei UI",
-      L"Microsoft YaHei", L"微软雅黑",          L"Segoe UI",
-      L"SimHei",         L"SimSun"};
-  for (const auto family : candidates) {
-    if (system_font_available(family)) {
-      return awj::utf8_from_wide(family);
-    }
-  }
-  return {};
-}
-
-void apply_system_ui_font(AwjStudio& app) {
-  const auto family = select_system_ui_font_family();
-  app.set_ui_font_family(to_shared(family));
-}
-
-void load_system_font_options(AwjStudio& app) {
-  std::unordered_set<std::wstring> families;
-  if (HDC dc = GetDC(nullptr); dc != nullptr) {
-    LOGFONTW query{};
-    query.lfCharSet = DEFAULT_CHARSET;
-    EnumFontFamiliesExW(dc, &query, collect_font_family_proc,
-                        reinterpret_cast<LPARAM>(&families), 0);
-    ReleaseDC(nullptr, dc);
-  }
-  std::vector<std::string> sorted;
-  sorted.reserve(families.size());
-  for (const auto& family : families) sorted.push_back(awj::utf8_from_wide(family));
-  std::ranges::sort(sorted);
-  std::vector<ComboOption> options;
-  options.reserve(sorted.size() + 1);
-  options.push_back(ComboOption{.text = to_shared("系统默认字体"), .enabled = true});
-  for (const auto& family : sorted) {
-    options.push_back(ComboOption{.text = to_shared(family), .enabled = true});
-  }
-  app.set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
-  const auto selected = shared_to_string(app.get_ui_font_family());
-  const auto found = std::ranges::find(sorted, selected);
-  if (found == sorted.end()) {
-    app.set_ui_font_family({});
-    app.set_ui_font_index(0);
-  } else {
-    app.set_ui_font_index(static_cast<int>(std::distance(sorted.begin(), found)) + 1);
-  }
-}
 
 
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
@@ -864,73 +792,6 @@ std::expected<void, std::string> persist_studio_config_if_changed(
   return {};
 }
 
-std::string queue_status_label(QueueItemStatus status) {
-  switch (status) {
-    case QueueItemStatus::running:
-      return "正在编码";
-    case QueueItemStatus::done:
-      return "完成";
-    case QueueItemStatus::failed:
-      return "失败";
-    case QueueItemStatus::skipped:
-      return "已跳过";
-    case QueueItemStatus::canceled:
-      return "已取消";
-    case QueueItemStatus::pending:
-    default:
-      return "等待编码";
-  }
-}
-
-int queue_status_code(QueueItemStatus status) noexcept {
-  switch (status) {
-    case QueueItemStatus::running:
-      return 1;
-    case QueueItemStatus::done:
-    case QueueItemStatus::skipped:
-      return 2;
-    case QueueItemStatus::failed:
-      return 3;
-    case QueueItemStatus::canceled:
-      return 4;
-    case QueueItemStatus::pending:
-    default:
-      return 0;
-  }
-}
-
-std::string stage_seconds_text(double seconds) {
-  return seconds < 0.0 ? std::string{"-"} : std::format("{:.3f}s", seconds);
-}
-
-std::string stage_timings_text(double decode_seconds, double prepare_seconds,
-                               double encode_seconds, double write_seconds) {
-  if (decode_seconds < 0.0 && prepare_seconds < 0.0 &&
-      encode_seconds < 0.0 && write_seconds < 0.0) {
-    return {};
-  }
-  return std::format("decode {} · prepare {} · encode {} · write {}",
-                     stage_seconds_text(decode_seconds),
-                     stage_seconds_text(prepare_seconds),
-                     stage_seconds_text(encode_seconds),
-                     stage_seconds_text(write_seconds));
-}
-
-bool queue_item_editable(const QueueImageItem& item) noexcept {
-  return item.status == QueueItemStatus::pending;
-}
-
-bool queue_item_runnable(const QueueImageItem& item) noexcept {
-  return item.status == QueueItemStatus::pending ||
-         item.status == QueueItemStatus::failed ||
-         item.status == QueueItemStatus::canceled;
-}
-
-bool queue_item_selected_for_run(const QueueImageItem& item,
-                                 bool failed_only) noexcept {
-  return failed_only ? item.status == QueueItemStatus::failed
-                     : queue_item_runnable(item);
-}
 
 TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
   const auto folder = item.path.parent_path();
@@ -3893,120 +3754,6 @@ create_studio_queue_manifest(std::uint64_t run_id,
   }
 }
 
-struct StudioWorkerItemEvent {
-  std::size_t index{};
-  char status{};
-  std::size_t completed{};
-  std::size_t total{};
-};
-
-struct StudioWorkerDetailEvent {
-  std::size_t index{};
-  std::string encoder_id{};
-  int encoder_threads{};
-  std::int64_t decode_microseconds{-1};
-  std::int64_t prepare_microseconds{-1};
-  std::int64_t encode_microseconds{-1};
-  std::int64_t write_microseconds{-1};
-};
-
-std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
-    std::string_view line) {
-  constexpr std::string_view prefix = "@AWJ-STUDIO/1 ITEM ";
-  if (!line.starts_with(prefix)) {
-    return std::nullopt;
-  }
-  line.remove_prefix(prefix.size());
-  std::array<std::string_view, 4> fields;
-  for (auto& field : fields) {
-    const auto separator = line.find(' ');
-    if (separator == std::string_view::npos) {
-      field = line;
-      line = {};
-    } else {
-      field = line.substr(0, separator);
-      line.remove_prefix(separator + 1);
-    }
-    if (field.empty()) {
-      return std::nullopt;
-    }
-  }
-  if (!line.empty() || fields[1].size() != 1 ||
-      (fields[1][0] != 'R' && fields[1][0] != 'D' &&
-       fields[1][0] != 'S' &&
-       fields[1][0] != 'C' && fields[1][0] != 'F')) {
-    return std::nullopt;
-  }
-  const auto parse_size = [](std::string_view field)
-      -> std::optional<std::size_t> {
-    const auto value = scn::scan_int<std::size_t>(field);
-    if (!value || value->begin() != value->end()) {
-      return std::nullopt;
-    }
-    return value->value();
-  };
-  const auto index = parse_size(fields[0]);
-  const auto completed = parse_size(fields[2]);
-  const auto total = parse_size(fields[3]);
-  if (!index || !completed || !total || *total == 0 ||
-      *index >= *total || *completed > *total) {
-    return std::nullopt;
-  }
-  return StudioWorkerItemEvent{.index = *index,
-                               .status = fields[1][0],
-                               .completed = *completed,
-                               .total = *total};
-}
-
-std::optional<StudioWorkerDetailEvent> parse_studio_worker_detail_event(
-    std::string_view line) {
-  constexpr std::string_view prefix = "@AWJ-STUDIO/1 DETAIL ";
-  if (!line.starts_with(prefix)) {
-    return std::nullopt;
-  }
-  line.remove_prefix(prefix.size());
-  std::array<std::string_view, 7> fields;
-  for (auto& field : fields) {
-    const auto separator = line.find(' ');
-    if (separator == std::string_view::npos) {
-      field = line;
-      line = {};
-    } else {
-      field = line.substr(0, separator);
-      line.remove_prefix(separator + 1);
-    }
-    if (field.empty()) {
-      return std::nullopt;
-    }
-  }
-  if (!line.empty()) {
-    return std::nullopt;
-  }
-  const auto index = scn::scan_int<std::size_t>(fields[0]);
-  const auto threads = scn::scan_int<int>(fields[2]);
-  const auto decode = scn::scan_int<std::int64_t>(fields[3]);
-  const auto prepare = scn::scan_int<std::int64_t>(fields[4]);
-  const auto encode = scn::scan_int<std::int64_t>(fields[5]);
-  const auto write = scn::scan_int<std::int64_t>(fields[6]);
-  if (!index || index->begin() != index->end() || !threads ||
-      threads->begin() != threads->end() || !decode ||
-      decode->begin() != decode->end() || !prepare ||
-      prepare->begin() != prepare->end() || !encode ||
-      encode->begin() != encode->end() || !write ||
-      write->begin() != write->end() || threads->value() < 0 ||
-      decode->value() < -1 || prepare->value() < -1 ||
-      encode->value() < -1 || write->value() < -1) {
-    return std::nullopt;
-  }
-  return StudioWorkerDetailEvent{
-      .index = index->value(),
-      .encoder_id = fields[1] == "-" ? std::string{} : std::string{fields[1]},
-      .encoder_threads = threads->value(),
-      .decode_microseconds = decode->value(),
-      .prepare_microseconds = prepare->value(),
-      .encode_microseconds = encode->value(),
-      .write_microseconds = write->value()};
-}
 
 void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
                                  const std::shared_ptr<UiState>& state,

@@ -35,6 +35,14 @@ import awj.studio_defaults;
 
 namespace awj::studio {
 
+// Slint 字符串与 std::string 互转。多个拆分模块都要用，放在共享头里内联。
+inline slint::SharedString to_shared(std::string_view text) {
+  return slint::SharedString{std::string{text}.c_str()};
+}
+inline std::string shared_to_string(const slint::SharedString& value) {
+  return std::string{value.data(), value.size()};
+}
+
 struct Win32HandleDeleter {
   using pointer = HANDLE;
   void operator()(HANDLE value) const noexcept {
