@@ -54,6 +54,9 @@
 #include "import_service.h"
 #include "path_picker_win32.h"
 #include "shell_context_menu.hpp"
+#include "studio_config.h"
+#include "studio_json.h"
+#include "studio_state.h"
 
 import awj.avif_aom_codec;
 import awj.avif_registry;
@@ -76,6 +79,23 @@ import awj.update_windows;
 
 namespace {
 
+// 共享状态类型已拆到 studio_state.h，这里引入以便本文件其余代码沿用原名。
+using awj::studio::adopt_win32_handle;
+using awj::studio::MenuFormatParams;
+using awj::studio::ParameterFormatParams;
+using awj::studio::QueueImageItem;
+using awj::studio::QueueItemStatus;
+using awj::studio::StudioChildProcess;
+using awj::studio::StudioConfigSnapshot;
+using awj::studio::UiState;
+using awj::studio::UniqueWin32Handle;
+using awj::studio::json_escape;
+using awj::studio::menu_config_key;
+using awj::studio::menu_config_prefixes;
+using awj::studio::studio_config_path;
+using awj::studio::write_file_atomically;
+using awj::studio::write_studio_config_file;
+
 awj::LargeImageDecision manual_large_image_decision(
     awj::ImageDimensions dimensions, bool grid_available) {
   auto decision =
@@ -87,253 +107,6 @@ awj::LargeImageDecision manual_large_image_decision(
   return decision;
 }
 
-struct Win32HandleDeleter {
-  using pointer = HANDLE;
-  void operator()(HANDLE value) const noexcept {
-    if (value != nullptr && value != INVALID_HANDLE_VALUE) {
-      CloseHandle(value);
-    }
-  }
-};
-
-using UniqueWin32Handle = std::unique_ptr<void, Win32HandleDeleter>;
-
-// CreateFileW / CreateMailslotW 这类 API 失败时返回 INVALID_HANDLE_VALUE 而不是
-// nullptr，而 unique_ptr 的 operator bool 只和 nullptr 比较——直接把返回值包进去，
-// 失败会被当成成功，随后对 (HANDLE)-1 发起 I/O。统一在这里归一化成 nullptr，
-// 让 `if (handle)` 对两类 API 都成立。返回 nullptr 的 API（CreateMutexW、
-// CreateJobObjectW）走这里同样正确。
-[[nodiscard]] UniqueWin32Handle adopt_win32_handle(HANDLE value) noexcept {
-  return UniqueWin32Handle{value == INVALID_HANDLE_VALUE ? nullptr : value};
-}
-
-enum class QueueItemStatus {
-  pending,
-  running,
-  done,
-  failed,
-  skipped,
-  canceled
-};
-
-struct QueueImageItem {
-  std::uint64_t id{};
-  std::filesystem::path path{};
-  std::filesystem::path source_root{};
-  std::filesystem::path relative_dir{};
-  std::uintmax_t bytes{};
-  QueueItemStatus status{QueueItemStatus::pending};
-  std::size_t run_index{std::numeric_limits<std::size_t>::max()};
-  std::filesystem::path locked_output_path{};
-  std::string status_text{"等待编码"};
-  std::string log_text{};
-  std::string encoder_id{};
-  int encoder_threads{};
-  double decode_seconds{-1.0};
-  double prepare_seconds{-1.0};
-  double encode_seconds{-1.0};
-  double write_seconds{-1.0};
-  bool warning{};
-};
-
-struct StudioChildProcess {
-  UniqueWin32Handle process{};
-  UniqueWin32Handle thread{};
-  UniqueWin32Handle job{};
-  UniqueWin32Handle cancel_event{};
-  UniqueWin32Handle output_read{};
-  std::wstring command_line{};
-  std::filesystem::path queue_manifest_path{};
-  std::vector<std::filesystem::path> temp_directories{};
-  DWORD process_id{};
-  std::atomic_bool cancel_requested{};
-  std::mutex termination_mutex{};
-  bool force_terminated{};
-  bool process_tree_terminated{};
-
-  void request_cancel() noexcept {
-    cancel_requested.store(true, std::memory_order_release);
-    if (cancel_event != nullptr) {
-      SetEvent(cancel_event.get());
-    }
-  }
-
-  bool terminate(DWORD exit_code =
-                     awj::studio_defaults::worker_force_stop_exit_code) noexcept {
-    std::scoped_lock lock{termination_mutex};
-    if (process_tree_terminated) {
-      return true;
-    }
-    request_cancel();
-    if (job != nullptr && TerminateJobObject(job.get(), exit_code) != FALSE) {
-      force_terminated = true;
-      process_tree_terminated = true;
-      return true;
-    }
-    if (!force_terminated && process != nullptr &&
-        WaitForSingleObject(process.get(), 0) == WAIT_TIMEOUT &&
-        TerminateProcess(process.get(), exit_code) != FALSE) {
-      force_terminated = true;
-      process_tree_terminated = true;
-      return true;
-    }
-    return false;
-  }
-
-  bool was_force_terminated() noexcept {
-    std::scoped_lock lock{termination_mutex};
-    return force_terminated;
-  }
-};
-
-
-struct MenuFormatParams {
-  std::string quality_text{};
-  std::string bit_depth_text{};
-  std::string speed_text{};
-  int avif_encoder_index{};
-  int avif_color_representation_index{};
-  int chroma_index{};
-  int alpha_policy_index{1};
-  int jpegli_progressive_index{2};
-  bool jpegli_optimize_huffman{true};
-  bool jpegli_xyb{};
-  bool strip_metadata{};
-  bool allow_wic_fallback{true};
-  bool close_on_finish{true};
-  bool install_avif_png_command{};
-  int size_limit_index{};
-  std::string max_width_text{};
-  std::string max_height_text{};
-  std::string max_long_edge_text{};
-  std::string max_short_edge_text{};
-
-  bool operator==(const MenuFormatParams&) const = default;
-};
-
-// 参数页的五组会话内参数。它们从不写入 AWJ.jsonc；队列在启动时只取选中
-// 格式的一个快照，因此切换“编辑格式”绝不会暗中改变队列输出格式。
-struct ParameterFormatParams {
-  std::string quality_text{};
-  std::string visual_quality_text{};
-  std::string bit_depth_text{};
-  std::string speed_text{};
-  int avif_encoder_index{};
-  int avif_color_representation_index{};
-  int chroma_index{};
-  int alpha_policy_index{1};
-  int jpegli_progressive_index{2};
-  bool jpegli_optimize_huffman{true};
-  bool jpegli_xyb{};
-  std::string threads_text{};
-  std::string memory_limit_text{};
-  int size_limit_index{};
-  std::string max_width_text{};
-  std::string max_height_text{};
-  std::string max_long_edge_text{};
-  std::string max_short_edge_text{};
-};
-
-struct StudioConfigSnapshot {
-  int theme_index{};
-  // 界面语言：0 = 中文（.slint 里的 msgid 原文），1 = English（bundled 翻译）。
-  int language_index{};
-  std::string ui_font_family{};
-  bool allow_wic_fallback{};
-  bool visual_quality_gpu{true};
-  bool visual_quality_fallback{true};
-  std::array<MenuFormatParams, 5> menu_params{};
-
-  std::string update_channel{"stable"};
-  bool show_update_changelog{true};
-  bool hide_update_changelog_after_exit{true};
-  bool show_update_changelog_after_update{true};
-  std::string last_changelog_exit_version{};
-  std::int64_t last_successful_update_check_at{};
-  // schema 1 remains cached solely for already-installed 1.0.3 bridge
-  // clients; current Studio uses the independent v2 replay counter.
-  std::int64_t last_verified_manifest_sequence{};
-  std::int64_t last_verified_manifest_v2_sequence{};
-  std::string pending_update_version{};
-  std::string pending_update_channel{};
-  std::string pending_update_release_url{};
-  std::string pending_update_published_at{};
-  std::string pending_update_changelog_zh_cn{};
-  std::string pending_update_changelog_en{};
-  // 已通过 Ed25519 验证的 manifest 缓存。启动时会重新验签后才用于
-  // 展示更新历史，避免把本地可写配置直接当成发布记录。
-  std::string update_manifest_raw{};
-  std::string update_manifest_signature{};
-  std::string update_manifest_v2_raw{};
-  std::string update_manifest_v2_signature{};
-  std::string update_keyring_raw{};
-  std::string update_keyring_signature{};
-
-  bool operator==(const StudioConfigSnapshot&) const = default;
-};
-
-struct UiState {
-  std::jthread worker{};
-  std::jthread update_worker{};
-  std::unique_ptr<awj::ui_import::Dispatcher> import_dispatcher{};
-  std::optional<awj::ui_drop::Registration> native_drop{};
-  slint::Timer native_drop_timer{};
-  std::size_t native_drop_attempts{};
-  bool native_drop_registration_finished{};
-  std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
-  std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
-  std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows{};
-  std::vector<QueueImageItem> queue_items{};
-  std::vector<awj::BatchLargeImageItem> large_image_items{};
-  slint::Timer theme_timer{};
-  slint::Timer update_timer{};
-  slint::Timer config_timer{};
-  std::optional<StudioConfigSnapshot> config_defaults{};
-  std::optional<StudioConfigSnapshot> last_config_snapshot{};
-  std::uint64_t run_id{};
-  std::uint64_t next_queue_id{1};
-  std::mutex mutex{};
-  std::vector<awj::BatchProgress> pending_events{};
-  std::shared_ptr<StudioChildProcess> active_child{};
-  bool worker_active{};
-  std::uint64_t last_click_id{};
-  std::chrono::steady_clock::time_point last_click_time{};
-  bool drag_reordered{};
-  std::array<ParameterFormatParams, 5> builtin_params{};
-  // 用户预设在参数页内有独立的编辑缓冲；只有点击保存才写入 preset/*.jsonc，
-  // 因此它不会意外改变“内置默认”队列的会话参数。
-  std::array<ParameterFormatParams, 5> parameter_preset_params{};
-  std::array<MenuFormatParams, 5> menu_params{};
-  std::vector<awj::UserPreset> user_presets{};
-  std::vector<std::string> user_preset_errors{};
-  int parameter_preset_index{};
-  int last_format_index{};
-  int last_menu_format_index{};
-
-  std::string update_channel{"stable"};
-  bool show_update_changelog{true};
-  bool hide_update_changelog_after_exit{true};
-  bool show_update_changelog_after_update{true};
-  std::string last_changelog_exit_version{};
-  std::int64_t last_successful_update_check_at{};
-  std::int64_t last_verified_manifest_sequence{};
-  std::int64_t last_verified_manifest_v2_sequence{};
-  std::string pending_update_version{};
-  std::string pending_update_channel{};
-  std::string pending_update_release_url{};
-  std::string pending_update_published_at{};
-  std::string pending_update_changelog_zh_cn{};
-  std::string pending_update_changelog_en{};
-  std::string update_manifest_raw{};
-  std::string update_manifest_signature{};
-  std::string update_manifest_v2_raw{};
-  std::string update_manifest_v2_signature{};
-  std::string update_keyring_raw{};
-  std::string update_keyring_signature{};
-  bool update_check_active{};
-  std::string update_status_zh{"尚未检查"};
-  std::string update_status_en{"Not checked yet"};
-};
 
 LargeImageRow make_large_image_row(const awj::BatchLargeImageItem& item,
                                    std::string_view status);
@@ -623,14 +396,6 @@ void load_system_font_options(AwjStudio& app) {
   }
 }
 
-std::filesystem::path studio_config_path() {
-  if (auto directory = awj::executable_directory()) {
-    return *directory /
-           awj::wide_from_utf8(
-               std::string{awj::studio_defaults::config_file_name});
-  }
-  return {};
-}
 
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
   try {
@@ -770,286 +535,13 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
   return snapshot;
 }
 
-std::string strip_jsonc_comments(std::string_view text) {
-  std::string out;
-  out.reserve(text.size());
-  bool in_string = false;
-  bool escaped = false;
-  for (std::size_t i = 0; i < text.size(); ++i) {
-    const char ch = text[i];
-    if (in_string) {
-      out.push_back(ch);
-      if (escaped) {
-        escaped = false;
-      } else if (ch == '\\') {
-        escaped = true;
-      } else if (ch == '"') {
-        in_string = false;
-      }
-      continue;
-    }
-    if (ch == '"') {
-      in_string = true;
-      out.push_back(ch);
-      continue;
-    }
-    if (ch == '/' && i + 1 < text.size() && text[i + 1] == '/') {
-      while (i < text.size() && text[i] != '\n') {
-        ++i;
-      }
-      if (i < text.size()) {
-        out.push_back('\n');
-      }
-      continue;
-    }
-    if (ch == '/' && i + 1 < text.size() && text[i + 1] == '*') {
-      i += 2;
-      while (i + 1 < text.size() && !(text[i] == '*' && text[i + 1] == '/')) {
-        out.push_back(text[i] == '\n' ? '\n' : ' ');
-        ++i;
-      }
-      if (i + 1 < text.size()) {
-        ++i;
-      }
-      continue;
-    }
-    out.push_back(ch);
-  }
-  return out;
-}
-
-struct JsonConfigValue {
-  enum class Kind { boolean, integer, string };
-  Kind kind{};
-  bool boolean{};
-  // 用 64 位存整数：更新状态里有 Unix 时间戳，2038 年会超出 32 位 int。
-  // 取值时再按各自的合法区间收窄回 int。
-  std::int64_t integer{};
-  std::string string{};
-};
-
-void skip_json_ws(std::string_view text, std::size_t& pos) noexcept {
-  while (pos < text.size() &&
-         std::isspace(static_cast<unsigned char>(text[pos])) != 0) {
-    ++pos;
-  }
-}
-
-std::expected<std::string, std::string> parse_json_string(std::string_view text,
-                                                          std::size_t& pos) {
-  if (pos >= text.size() || text[pos] != '"') {
-    return std::unexpected{"期望字符串。"};
-  }
-  ++pos;
-  std::string out;
-  while (pos < text.size()) {
-    const char ch = text[pos++];
-    if (ch == '"') {
-      return out;
-    }
-    if (ch != '\\') {
-      out.push_back(ch);
-      continue;
-    }
-    if (pos >= text.size()) {
-      return std::unexpected{"字符串转义不完整。"};
-    }
-    const char esc = text[pos++];
-    switch (esc) {
-      case '"':
-      case '\\':
-      case '/':
-        out.push_back(esc);
-        break;
-      case 'b':
-        out.push_back('\b');
-        break;
-      case 'f':
-        out.push_back('\f');
-        break;
-      case 'n':
-        out.push_back('\n');
-        break;
-      case 'r':
-        out.push_back('\r');
-        break;
-      case 't':
-        out.push_back('\t');
-        break;
-      default:
-        return std::unexpected{"不支持的字符串转义。"};
-    }
-  }
-  return std::unexpected{"字符串未闭合。"};
-}
-
-std::expected<JsonConfigValue, std::string> parse_json_value(
-    std::string_view text, std::size_t& pos) {
-  skip_json_ws(text, pos);
-  if (pos >= text.size()) {
-    return std::unexpected{"配置值不完整。"};
-  }
-  if (text[pos] == '"') {
-    auto value = parse_json_string(text, pos);
-    if (!value) {
-      return std::unexpected{value.error()};
-    }
-    return JsonConfigValue{.kind = JsonConfigValue::Kind::string,
-                           .string = std::move(*value)};
-  }
-  if (text.substr(pos, 4) == "true") {
-    pos += 4;
-    return JsonConfigValue{.kind = JsonConfigValue::Kind::boolean,
-                           .boolean = true};
-  }
-  if (text.substr(pos, 5) == "false") {
-    pos += 5;
-    return JsonConfigValue{.kind = JsonConfigValue::Kind::boolean};
-  }
-  const std::size_t start = pos;
-  if (text[pos] == '-') {
-    ++pos;
-  }
-  while (pos < text.size() &&
-         std::isdigit(static_cast<unsigned char>(text[pos])) != 0) {
-    ++pos;
-  }
-  if (pos == start || (pos == start + 1 && text[start] == '-')) {
-    return std::unexpected{"配置值只支持布尔、整数或字符串。"};
-  }
-  const auto parsed = scn::scan_int<std::int64_t>(text.substr(start, pos - start));
-  if (!parsed) {
-    return std::unexpected{"整数配置值无效。"};
-  }
-  return JsonConfigValue{.kind = JsonConfigValue::Kind::integer,
-                         .integer = parsed->value()};
-}
-
-std::expected<std::unordered_map<std::string, JsonConfigValue>, std::string>
-parse_jsonc_config(std::string_view source) {
-  const auto text = strip_jsonc_comments(source);
-  std::string_view view{text};
-  std::unordered_map<std::string, JsonConfigValue> values;
-  std::size_t pos = 0;
-  skip_json_ws(view, pos);
-  if (pos >= view.size()) {
-    return values;
-  }
-  if (view[pos++] != '{') {
-    return std::unexpected{"配置文件根节点必须是对象。"};
-  }
-  while (true) {
-    skip_json_ws(view, pos);
-    if (pos < view.size() && view[pos] == '}') {
-      ++pos;
-      break;
-    }
-    auto key = parse_json_string(view, pos);
-    if (!key) {
-      return std::unexpected{key.error()};
-    }
-    skip_json_ws(view, pos);
-    if (pos >= view.size() || view[pos++] != ':') {
-      return std::unexpected{"配置项缺少冒号。"};
-    }
-    auto value = parse_json_value(view, pos);
-    if (!value) {
-      return std::unexpected{value.error()};
-    }
-    values.insert_or_assign(std::move(*key), std::move(*value));
-    skip_json_ws(view, pos);
-    if (pos < view.size() && view[pos] == ',') {
-      ++pos;
-      continue;
-    }
-    if (pos < view.size() && view[pos] == '}') {
-      ++pos;
-      break;
-    }
-    return std::unexpected{"配置项之间缺少逗号。"};
-  }
-  skip_json_ws(view, pos);
-  if (pos != view.size()) {
-    return std::unexpected{"配置对象后存在多余内容。"};
-  }
-  return values;
-}
-
-std::expected<int, std::string> config_int(
-    const std::unordered_map<std::string, JsonConfigValue>& values,
-    std::string_view key, int minimum, int maximum) {
-  const auto it = values.find(std::string{key});
-  if (it == values.end()) {
-    return std::unexpected{""};
-  }
-  if (it->second.kind != JsonConfigValue::Kind::integer) {
-    return std::unexpected{std::format("{} 必须是整数。", key)};
-  }
-  // 先按 64 位比较再收窄：值本身可能超出 int，直接转换是未定义行为。
-  if (it->second.integer < static_cast<std::int64_t>(minimum) ||
-      it->second.integer > static_cast<std::int64_t>(maximum)) {
-    return std::unexpected{
-        std::format("{} 范围必须在 {} 到 {} 之间。", key, minimum, maximum)};
-  }
-  return static_cast<int>(it->second.integer);
-}
-
-// 64 位整数配置项（Unix 时间戳、manifest 序号）。
-std::expected<std::int64_t, std::string> config_int64(
-    const std::unordered_map<std::string, JsonConfigValue>& values,
-    std::string_view key, std::int64_t minimum, std::int64_t maximum) {
-  const auto it = values.find(std::string{key});
-  if (it == values.end()) {
-    return std::unexpected{""};
-  }
-  if (it->second.kind != JsonConfigValue::Kind::integer) {
-    return std::unexpected{std::format("{} 必须是整数。", key)};
-  }
-  if (it->second.integer < minimum || it->second.integer > maximum) {
-    return std::unexpected{
-        std::format("{} 范围必须在 {} 到 {} 之间。", key, minimum, maximum)};
-  }
-  return it->second.integer;
-}
-
-std::expected<bool, std::string> config_bool(
-    const std::unordered_map<std::string, JsonConfigValue>& values,
-    std::string_view key) {
-  const auto it = values.find(std::string{key});
-  if (it == values.end()) {
-    return std::unexpected{""};
-  }
-  if (it->second.kind != JsonConfigValue::Kind::boolean) {
-    return std::unexpected{std::format("{} 必须是布尔值。", key)};
-  }
-  return it->second.boolean;
-}
-
-std::expected<std::string, std::string> config_string(
-    const std::unordered_map<std::string, JsonConfigValue>& values,
-    std::string_view key) {
-  const auto it = values.find(std::string{key});
-  if (it == values.end()) {
-    return std::unexpected{""};
-  }
-  if (it->second.kind != JsonConfigValue::Kind::string) {
-    return std::unexpected{std::format("{} 必须是字符串。", key)};
-  }
-  return it->second.string;
-}
-
-bool config_has_key(
-    const std::unordered_map<std::string, JsonConfigValue>& values,
-    std::string_view key) {
-  return values.contains(std::string{key});
-}
 
 template <class Setter>
 std::expected<void, std::string> apply_config_int(
     AwjStudio& app,
-    const std::unordered_map<std::string, JsonConfigValue>& values,
+    const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::string_view key, int minimum, int maximum, Setter setter) {
-  auto value = config_int(values, key, minimum, maximum);
+  auto value = awj::studio_json::config_int(values, key, minimum, maximum);
   if (!value) {
     return value.error().empty() ? std::expected<void, std::string>{}
                                  : std::unexpected{value.error()};
@@ -1061,9 +553,9 @@ std::expected<void, std::string> apply_config_int(
 template <class Setter>
 std::expected<void, std::string> apply_config_bool(
     AwjStudio& app,
-    const std::unordered_map<std::string, JsonConfigValue>& values,
+    const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::string_view key, Setter setter) {
-  auto value = config_bool(values, key);
+  auto value = awj::studio_json::config_bool(values, key);
   if (!value) {
     return value.error().empty() ? std::expected<void, std::string>{}
                                  : std::unexpected{value.error()};
@@ -1075,9 +567,9 @@ std::expected<void, std::string> apply_config_bool(
 template <class Setter>
 std::expected<void, std::string> apply_config_string(
     AwjStudio& app,
-    const std::unordered_map<std::string, JsonConfigValue>& values,
+    const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::string_view key, Setter setter) {
-  auto value = config_string(values, key);
+  auto value = awj::studio_json::config_string(values, key);
   if (!value) {
     return value.error().empty() ? std::expected<void, std::string>{}
                                  : std::unexpected{value.error()};
@@ -1088,22 +580,22 @@ std::expected<void, std::string> apply_config_string(
 
 std::expected<void, std::string> apply_config_window_size(
     AwjStudio& app,
-    const std::unordered_map<std::string, JsonConfigValue>& values) {
-  const bool has_width = config_has_key(values, "window_width");
-  const bool has_height = config_has_key(values, "window_height");
+    const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values) {
+  const bool has_width = awj::studio_json::config_has_key(values, "window_width");
+  const bool has_height = awj::studio_json::config_has_key(values, "window_height");
   if (!has_width && !has_height) {
     return {};
   }
   if (has_width != has_height) {
     return std::unexpected{"window_width 与 window_height 必须同时设置。"};
   }
-  auto width = config_int(values, "window_width",
+  auto width = awj::studio_json::config_int(values, "window_width",
                           awj::studio_defaults::min_window_width,
                           awj::studio_defaults::max_window_width);
   if (!width) {
     return std::unexpected{width.error()};
   }
-  auto height = config_int(values, "window_height",
+  auto height = awj::studio_json::config_int(values, "window_height",
                            awj::studio_defaults::min_window_height,
                            awj::studio_defaults::max_window_height);
   if (!height) {
@@ -1114,19 +606,13 @@ std::expected<void, std::string> apply_config_window_size(
   return {};
 }
 
-constexpr std::array<std::string_view, 5> menu_config_prefixes{
-    "avif", "webp", "jxl", "jpgli", "png"};
-
-std::string menu_config_key(std::string_view prefix, std::string_view name) {
-  return std::format("menu_{}_{}", prefix, name);
-}
 
 std::expected<void, std::string> apply_menu_config_values(
-    const std::unordered_map<std::string, JsonConfigValue>& values,
+    const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::array<MenuFormatParams, 5>& params) {
   const auto apply_int = [&](std::string_view key, int minimum, int maximum,
                              int& target) -> std::expected<void, std::string> {
-    auto value = config_int(values, key, minimum, maximum);
+    auto value = awj::studio_json::config_int(values, key, minimum, maximum);
     if (!value) {
       return value.error().empty() ? std::expected<void, std::string>{}
                                    : std::unexpected{value.error()};
@@ -1136,7 +622,7 @@ std::expected<void, std::string> apply_menu_config_values(
   };
   const auto apply_bool = [&](std::string_view key,
                               bool& target) -> std::expected<void, std::string> {
-    auto value = config_bool(values, key);
+    auto value = awj::studio_json::config_bool(values, key);
     if (!value) {
       return value.error().empty() ? std::expected<void, std::string>{}
                                    : std::unexpected{value.error()};
@@ -1146,7 +632,7 @@ std::expected<void, std::string> apply_menu_config_values(
   };
   const auto apply_string = [&](std::string_view key, std::string& target)
       -> std::expected<void, std::string> {
-    auto value = config_string(values, key);
+    auto value = awj::studio_json::config_string(values, key);
     if (!value) {
       return value.error().empty() ? std::expected<void, std::string>{}
                                    : std::unexpected{value.error()};
@@ -1206,7 +692,7 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   }
   std::string source{std::istreambuf_iterator<char>{input},
                      std::istreambuf_iterator<char>{}};
-  auto values = parse_jsonc_config(source);
+  auto values = awj::studio_json::parse_jsonc_config(source);
   if (!values) {
     return std::unexpected{values.error()};
   }
@@ -1262,7 +748,7 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
     const auto load_int64 =
         [&](std::string_view key, std::int64_t minimum, std::int64_t maximum,
             std::int64_t& target) -> std::expected<void, std::string> {
-      auto parsed = config_int64(*values, key, minimum, maximum);
+      auto parsed = awj::studio_json::config_int64(*values, key, minimum, maximum);
       if (parsed) {
         target = *parsed;
         return {};
@@ -1272,7 +758,7 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
     };
     const auto load_bool = [&](std::string_view key,
                                bool& target) -> std::expected<void, std::string> {
-      auto parsed = config_bool(*values, key);
+      auto parsed = awj::studio_json::config_bool(*values, key);
       if (parsed) {
         target = *parsed;
         return {};
@@ -1283,7 +769,7 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
     const auto load_string =
         [&](std::string_view key,
             std::string& target) -> std::expected<void, std::string> {
-      auto parsed = config_string(*values, key);
+      auto parsed = awj::studio_json::config_string(*values, key);
       if (parsed) {
         target = *parsed;
         return {};
@@ -1342,252 +828,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       state.show_update_changelog_after_update);
   load_menu_params_for_index(app, state, app.get_menu_format_index());
   return {};
-}
-
-std::string json_escape(std::string_view value) {
-  std::string out;
-  out.reserve(value.size() + 8);
-  for (const char ch : value) {
-    switch (ch) {
-      case '\\':
-        out += "\\\\";
-        break;
-      case '"':
-        out += "\\\"";
-        break;
-      case '\n':
-        out += "\\n";
-        break;
-      case '\r':
-        out += "\\r";
-        break;
-      case '\t':
-        out += "\\t";
-        break;
-      default:
-        out.push_back(ch);
-        break;
-    }
-  }
-  return out;
-}
-
-void append_json_config_line(std::vector<std::string>& lines,
-                             std::string_view key, std::string value) {
-  lines.push_back(std::format("  \"{}\": {}", key, value));
-}
-
-// ---------------------------------------------------------------------------
-// 原子写文件：同目录临时文件 → 刷新磁盘 → 原子替换。
-//
-// 三步缺一不可：
-//   * 临时文件必须和目标同目录，否则跨卷时替换退化成「复制+删除」，不再原子；
-//   * 替换前必须把数据刷到盘上，否则崩溃后可能得到一个大小正确但内容为零的文件
-//     （元数据先于数据落盘）；
-//   * 替换本身要用平台的原子接口，让读取方要么看到旧内容、要么看到新内容。
-//
-// 失败时清理临时文件，绝不动原文件——写失败的正确结果是「配置没变」，
-// 而不是「配置没了」。
-//
-// 这里是 main.cpp 的 Windows 半区；Linux Studio 有自己的同名实现，见文件后半段。
-// ---------------------------------------------------------------------------
-std::expected<void, std::string> write_file_atomically(
-    const std::filesystem::path& path, std::string_view content) {
-  std::error_code ec;
-  auto temp_path = path;
-  temp_path += L".tmp";
-
-  // 上一次失败可能留下残留，先清掉；这里失败不致命，创建时还会再报一次。
-  std::filesystem::remove(temp_path, ec);
-
-  {
-    const HANDLE file = CreateFileW(
-        temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
-      return std::unexpected{"无法创建配置临时文件。"};
-    }
-    struct HandleCloser {
-      HANDLE handle{};
-      ~HandleCloser() {
-        if (handle != INVALID_HANDLE_VALUE) {
-          CloseHandle(handle);
-        }
-      }
-    } closer{file};
-
-    std::size_t written_total = 0;
-    while (written_total < content.size()) {
-      const auto chunk = static_cast<DWORD>(
-          std::min<std::size_t>(content.size() - written_total, 1u << 20));
-      DWORD written = 0;
-      if (WriteFile(file, content.data() + written_total, chunk, &written,
-                    nullptr) == FALSE ||
-          written == 0) {
-        std::filesystem::remove(temp_path, ec);
-        return std::unexpected{"写入配置临时文件失败。"};
-      }
-      written_total += written;
-    }
-    // 元数据可能先于数据落盘，必须显式 flush 才能保证替换后的文件内容完整。
-    if (FlushFileBuffers(file) == FALSE) {
-      std::filesystem::remove(temp_path, ec);
-      return std::unexpected{"刷新配置临时文件到磁盘失败。"};
-    }
-  }
-
-  // MoveFileEx 的替换在同卷上是原子的；WRITE_THROUGH 让目录项也落盘。
-  if (MoveFileExW(temp_path.c_str(), path.c_str(),
-                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-    std::filesystem::remove(temp_path, ec);
-    return std::unexpected{"替换程序同目录配置文件失败。"};
-  }
-  return {};
-}
-
-std::expected<void, std::string> write_studio_config_file(
-    const StudioConfigSnapshot& current,
-    const StudioConfigSnapshot& defaults) try {
-  const auto path = studio_config_path();
-  if (path.empty()) {
-    return std::unexpected{"无法定位程序同目录配置文件路径。"};
-  }
-  std::vector<std::string> lines;
-  const auto add_int = [&](std::string_view key, int value, int fallback) {
-    if (value != fallback) {
-      append_json_config_line(lines, key, std::format("{}", value));
-    }
-  };
-  const auto add_bool = [&](std::string_view key, bool value, bool fallback) {
-    if (value != fallback) {
-      append_json_config_line(lines, key, value ? "true" : "false");
-    }
-  };
-  const auto add_string = [&](std::string_view key, const std::string& value,
-                              const std::string& fallback) {
-    if (value != fallback) {
-      append_json_config_line(lines, key,
-                              std::format("\"{}\"", json_escape(value)));
-    }
-  };
-  // Unix 时间戳和 manifest 序号都会超出 int，必须单独走 64 位。
-  const auto add_int64 = [&](std::string_view key, std::int64_t value,
-                             std::int64_t fallback) {
-    if (value != fallback) {
-      append_json_config_line(lines, key, std::format("{}", value));
-    }
-  };
-
-  add_int("theme_index", current.theme_index, defaults.theme_index);
-  add_int("language_index", current.language_index, defaults.language_index);
-  add_string("ui_font_family", current.ui_font_family, defaults.ui_font_family);
-
-  add_bool("allow_wic_fallback", current.allow_wic_fallback,
-           defaults.allow_wic_fallback);
-  add_bool("visual_quality_gpu", current.visual_quality_gpu,
-           defaults.visual_quality_gpu);
-  add_bool("visual_quality_fallback", current.visual_quality_fallback,
-           defaults.visual_quality_fallback);
-
-  add_string("update_channel", current.update_channel,
-             defaults.update_channel);
-  add_bool("show_update_changelog", current.show_update_changelog,
-           defaults.show_update_changelog);
-  add_bool("hide_update_changelog_after_exit",
-           current.hide_update_changelog_after_exit,
-           defaults.hide_update_changelog_after_exit);
-  add_bool("show_update_changelog_after_update",
-           current.show_update_changelog_after_update,
-           defaults.show_update_changelog_after_update);
-  add_string("last_changelog_exit_version", current.last_changelog_exit_version,
-             defaults.last_changelog_exit_version);
-  add_int64("last_successful_update_check_at",
-            current.last_successful_update_check_at,
-            defaults.last_successful_update_check_at);
-  add_int64("last_verified_manifest_sequence",
-            current.last_verified_manifest_sequence,
-            defaults.last_verified_manifest_sequence);
-  add_int64("last_verified_manifest_v2_sequence",
-            current.last_verified_manifest_v2_sequence,
-            defaults.last_verified_manifest_v2_sequence);
-  add_string("pending_update_version", current.pending_update_version,
-             defaults.pending_update_version);
-  add_string("pending_update_channel", current.pending_update_channel,
-             defaults.pending_update_channel);
-  add_string("pending_update_release_url", current.pending_update_release_url,
-             defaults.pending_update_release_url);
-  add_string("pending_update_published_at",
-             current.pending_update_published_at,
-             defaults.pending_update_published_at);
-  add_string("pending_update_changelog_zh_cn",
-             current.pending_update_changelog_zh_cn,
-             defaults.pending_update_changelog_zh_cn);
-  add_string("pending_update_changelog_en",
-             current.pending_update_changelog_en,
-             defaults.pending_update_changelog_en);
-  add_string("update_manifest_raw", current.update_manifest_raw,
-             defaults.update_manifest_raw);
-  add_string("update_manifest_signature", current.update_manifest_signature,
-             defaults.update_manifest_signature);
-  add_string("update_manifest_v2_raw", current.update_manifest_v2_raw,
-             defaults.update_manifest_v2_raw);
-  add_string("update_manifest_v2_signature", current.update_manifest_v2_signature,
-             defaults.update_manifest_v2_signature);
-  add_string("update_keyring_raw", current.update_keyring_raw,
-             defaults.update_keyring_raw);
-  add_string("update_keyring_signature", current.update_keyring_signature,
-             defaults.update_keyring_signature);
-
-  for (std::size_t i = 0; i < current.menu_params.size(); ++i) {
-    const auto prefix = menu_config_prefixes[i];
-    const auto& value = current.menu_params[i];
-    const auto& fallback = defaults.menu_params[i];
-    add_string(menu_config_key(prefix, "quality_text"), value.quality_text, fallback.quality_text);
-    add_string(menu_config_key(prefix, "bit_depth_text"), value.bit_depth_text, fallback.bit_depth_text);
-    add_string(menu_config_key(prefix, "speed_text"), value.speed_text, fallback.speed_text);
-    add_int(menu_config_key(prefix, "avif_encoder_index"), value.avif_encoder_index == 1 ? 2 : value.avif_encoder_index,
-            fallback.avif_encoder_index == 1 ? 2 : fallback.avif_encoder_index);
-    add_int(menu_config_key(prefix, "avif_color_representation_index"), value.avif_color_representation_index, fallback.avif_color_representation_index);
-    add_int(menu_config_key(prefix, "chroma_index"), value.chroma_index, fallback.chroma_index);
-    add_int(menu_config_key(prefix, "alpha_policy_index"), value.alpha_policy_index, fallback.alpha_policy_index);
-    add_int(menu_config_key(prefix, "jpegli_progressive_index"), value.jpegli_progressive_index, fallback.jpegli_progressive_index);
-    add_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), value.jpegli_optimize_huffman, fallback.jpegli_optimize_huffman);
-    add_bool(menu_config_key(prefix, "jpegli_xyb"), value.jpegli_xyb, fallback.jpegli_xyb);
-    add_bool(menu_config_key(prefix, "strip_metadata"), value.strip_metadata, fallback.strip_metadata);
-    add_bool(menu_config_key(prefix, "allow_wic_fallback"), value.allow_wic_fallback, fallback.allow_wic_fallback);
-    add_bool(menu_config_key(prefix, "close_on_finish"), value.close_on_finish, fallback.close_on_finish);
-    add_bool(menu_config_key(prefix, "install_avif_png_command"), value.install_avif_png_command, fallback.install_avif_png_command);
-    add_int(menu_config_key(prefix, "size_limit_index"), value.size_limit_index, fallback.size_limit_index);
-    add_string(menu_config_key(prefix, "max_width_text"), value.max_width_text, fallback.max_width_text);
-    add_string(menu_config_key(prefix, "max_height_text"), value.max_height_text, fallback.max_height_text);
-    add_string(menu_config_key(prefix, "max_long_edge_text"), value.max_long_edge_text, fallback.max_long_edge_text);
-    add_string(menu_config_key(prefix, "max_short_edge_text"), value.max_short_edge_text, fallback.max_short_edge_text);
-  }
-
-  // 先在内存里拼出完整内容，再原子落盘。直接 truncate 写目标文件的话，进程在
-  // 写到一半时被杀（或断电）会留下一个被截断的 AWJ.jsonc —— 下次启动解析失败，
-  // 用户的全部设置一起丢。更新流程会往同一份配置里写待更新状态，出错代价更高。
-  std::string content;
-  content += "{\n";
-  content +=
-      "  // AWJ Studio runtime config. Only values that differ from "
-      "built-in defaults are written.\n";
-  for (std::size_t i = 0; i < lines.size(); ++i) {
-    content += lines[i];
-    if (i + 1 < lines.size()) {
-      content += ',';
-    }
-    content += '\n';
-  }
-  content += "}\n";
-
-  return write_file_atomically(path, content);
-} catch (const std::bad_alloc&) {
-  return std::unexpected{"写入 Studio 配置时内存不足。"};
-} catch (const std::length_error&) {
-  return std::unexpected{"写入 Studio 配置时数据超过运行时限制。"};
-} catch (const std::filesystem::filesystem_error&) {
-  return std::unexpected{"写入 Studio 配置时发生文件系统错误。"};
 }
 
 std::expected<void, std::string> synchronize_shell_context_menu(
@@ -1917,10 +1157,7 @@ std::wstring queue_path_key(const std::filesystem::path& path) {
 
 bool queue_contains_path(const UiState& state,
                          const std::filesystem::path& path) {
-  const auto key = queue_path_key(path);
-  return std::ranges::any_of(state.queue_items, [&](const QueueImageItem& item) {
-    return queue_path_key(item.path) == key;
-  });
+  return state.queue_path_keys.contains(queue_path_key(path));
 }
 
 std::filesystem::path queue_relative_dir_for(
@@ -1969,6 +1206,7 @@ std::expected<bool, std::string> append_queue_image_path(
             source_root.empty() ? std::filesystem::path{}
                                 : queue_relative_dir_for(source_root, path),
         .bytes = bytes});
+    state.queue_path_keys.insert(queue_path_key(path));
     return true;
   } catch (const std::bad_alloc&) {
     return std::unexpected{"添加队列项时内存不足。"};
@@ -1991,6 +1229,7 @@ std::expected<bool, std::string> append_prepared_import_file(
                             ? std::filesystem::path{}
                             : queue_relative_dir_for(file.source_root, file.path),
         .bytes = file.bytes});
+    state.queue_path_keys.insert(queue_path_key(file.path));
     return true;
   } catch (const std::bad_alloc&) {
     return std::unexpected{"添加导入结果时内存不足。"};
@@ -2213,8 +1452,8 @@ bool shell_window_dark_mode() {
     std::ifstream input{path, std::ios::binary};
     if (input) {
       std::string source{std::istreambuf_iterator<char>{input}, {}};
-      if (auto values = parse_jsonc_config(source)) {
-        if (auto value = config_int(*values, "theme_index", 0, 2)) {
+      if (auto values = awj::studio_json::parse_jsonc_config(source)) {
+        if (auto value = awj::studio_json::config_int(*values, "theme_index", 0, 2)) {
           theme_index = *value;
         }
       }
@@ -5179,6 +4418,7 @@ void handle_queue_menu_action(AwjStudio& app,
         app.set_status_text(to_shared("运行中不能移除队列项。"));
         return;
       }
+      state->queue_path_keys.erase(queue_path_key(state->queue_items[index].path));
       state->queue_items.erase(state->queue_items.begin() + index);
       app.set_selected_queue_index(-1);
       status = "已从队列移除。";
@@ -5341,6 +4581,7 @@ void handle_queue_pointer_event(AwjStudio& app,
     return;
   }
   std::optional<std::filesystem::path> double_click_folder;
+  bool select_row = false;
   {
     std::scoped_lock lock{state->mutex};
     if (index < 0 ||
@@ -5357,6 +4598,8 @@ void handle_queue_pointer_event(AwjStudio& app,
       const bool was_drag = state->drag_reordered;
       state->drag_reordered = false;
       if (!was_drag) {
+        // 详情面板只在未发生拖动的抬起时打开，避免拖动排序后的释放误开详情。
+        select_row = true;
         if (state->last_click_id == item.id &&
             now - state->last_click_time <=
                 awj::studio_defaults::queue_double_click_delay) {
@@ -5368,6 +4611,9 @@ void handle_queue_pointer_event(AwjStudio& app,
         }
       }
     }
+  }
+  if (select_row) {
+    app.set_selected_queue_index(index);
   }
   if (double_click_folder) {
     if (auto opened = open_path(*double_click_folder, false); !opened) {
@@ -6260,6 +5506,7 @@ int run_studio_ui(const wchar_t* health_event,
           return;
         }
         state->queue_items.clear();
+        state->queue_path_keys.clear();
         refresh_queue_rows(**app, *state);
         state->large_image_rows->set_vector({});
         state->large_image_items.clear();
@@ -6830,6 +6077,26 @@ int run_studio_ui(const wchar_t* health_event,
       });
     });
 
+    app->on_close_confirm_dismissed([weak] {
+      run_ui_callback(weak, "关闭确认取消失败", [&] {
+        if (auto app = weak.lock()) {
+          (*app)->set_close_confirm_open(false);
+        }
+      });
+    });
+
+    app->on_close_confirm_force_quit([weak, state] {
+      run_ui_callback(weak, "强制停止退出失败", [&] {
+        force_stop_current_worker(state);
+        if (auto app = weak.lock()) {
+          (*app)->set_close_confirm_open(false);
+          // 置 false 后再关窗，避免再次进入确认分支。
+          (*app)->set_running(false);
+          (*app)->window().hide();
+        }
+      });
+    });
+
     app->on_large_image_action_requested(
         [weak, state](int index, slint::SharedString action_text) {
           run_ui_callback(weak, "处理大图操作失败", [&] {
@@ -6965,6 +6232,15 @@ int run_studio_ui(const wchar_t* health_event,
     // 这里抛出的异常会穿回 Rust 侧的 winit 栈帧（panic="abort"），必须自己接住；
     // 无论保存成功与否都要放行关窗，否则窗口会关不掉。
     app->window().on_close_requested([weak, state] {
+      // 编码中先弹确认层，不直接关窗：用户可返回继续，或确认强制停止退出。
+      if (worker_active(state)) {
+        run_ui_callback(weak, "显示关闭确认失败", [&] {
+          if (auto app = weak.lock()) {
+            (*app)->set_close_confirm_open(true);
+          }
+        });
+        return slint::CloseRequestResponse::KeepWindowShown;
+      }
       run_ui_callback(weak, "关闭窗口时保存配置失败", [&] {
         // 必须在 Slint/Winit 销毁 HWND 前停止尚未完成的注册重试并撤销 AWJ 的
         // IDropTarget；Timer/Registration 都在 UI/OLE 线程创建和销毁。

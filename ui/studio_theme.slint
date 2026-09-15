@@ -32,4 +32,10 @@ export global StudioTheme {
     out property <color> accent: #0d6efd;
     out property <color> success: #22b84c;
     out property <color> warning: #d97706;
+
+    // 拖放反馈覆盖层：与「开始转换」同一蓝（浅色 #0d6efd / 深色 #5aa2ff），
+    // 用半透明而非不透明，避免遮住底下的路径文本与队列内容。
+    pure public function drop-tint(dark: bool) -> color { return dark ? #5aa2ff4d : #0d6efd40; }
+    pure public function drop-tint-soft(dark: bool) -> color { return dark ? #5aa2ff38 : #0d6efd2b; }
+    pure public function drop-border(dark: bool) -> color { return dark ? #86c5ff : #4d9bf5; }
 }

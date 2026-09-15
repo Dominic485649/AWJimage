@@ -2,6 +2,49 @@ import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-
 import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
 import { StudioTheme } from "studio_theme.slint";
 
+// 列宽拖拽手柄：悬停显示分隔线，按住水平拖动回调增量。
+// 与 Fluent tableview 的做法一致，只改列宽属性，不参与行选中。
+component ColumnResizer inherits Rectangle {
+    in property <color> line-color;
+    in property <length> resize-min: 40px;
+    in property <length> resize-max: 480px;
+    in property <length> target-width;
+    callback resized(length);
+
+    width: 7px;
+    background: transparent;
+
+    property <length> pressed-width: root.target-width;
+    property <length> grab-x: 0px;
+
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        width: 1px;
+        height: parent.height;
+        background: root.line-color;
+        opacity: resizer-touch.has-hover || resizer-touch.pressed ? 1.0 : 0.0;
+        animate opacity { duration: 120ms; }
+    }
+
+    resizer-touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        mouse-cursor: ew-resize;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                root.pressed-width = root.target-width;
+                root.grab-x = resizer-touch.mouse-x;
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.resized(clamp(root.pressed-width + self.mouse-x - root.grab-x,
+                                   root.resize-min, root.resize-max));
+            }
+        }
+    }
+}
+
 export component QueuePage inherits VerticalLayout {
     in property <color> accent-soft;
     in property <color> accent-strong;
@@ -55,7 +98,6 @@ export component QueuePage inherits VerticalLayout {
     callback queue-drag-dropped(DropEvent, int) -> DragAction;
     in-out property <int> queue-failed-count;
     in-out property <bool> queue-failed-only;
-    in property <length> queue-filename-width;
     in-out property <int> queue-format-index;
     in-out property <int> queue-pending-count;
     in property <string> queue-preset-description;
@@ -64,8 +106,11 @@ export component QueuePage inherits VerticalLayout {
     callback queue-preset-selected(int);
     callback queue-row-pointer-event(int, int, int, float);
     in-out property <int> queue-running-count;
-    in property <length> queue-size-width;
-    in property <length> queue-status-width;
+    // 可拖动列宽：由本页在拖拽手柄中改写，表头与数据行共用同一组值。
+    in-out property <length> queue-filename-width: 170px;
+    in-out property <length> queue-size-width: 72px;
+    in-out property <length> queue-status-width: 104px;
+    property <length> queue-index-width: 40px;
     in-out property <int> queue-success-count;
     callback retry-failed();
     in-out property <bool> running;
@@ -125,7 +170,7 @@ export component QueuePage inherits VerticalLayout {
                         can-drop(event) => { return DragAction.copy; }
                         dropped(event) => { root.input-path-dropped(event); return DragAction.copy; }
                         LineEdit { accessible-label: @tr("输入路径"); text <=> root.input-path; placeholder-text: @tr("输入图片文件或文件夹路径，回车加入队列"); enabled: !root.running; width: parent.width; height: parent.height; accepted(text) => { root.input-path-accepted(text); } }
-                        if root.external-drag-target == 1 || input-path-drop.has-drag: Rectangle { width: parent.width; height: parent.height; background: #305aaaff; border-color: #86c5ff; border-width: 2px; border-radius: 4px; }
+                        if root.external-drag-target == 1 || input-path-drop.has-drag: Rectangle { width: parent.width; height: parent.height; background: StudioTheme.drop-tint(root.dark-mode); border-color: StudioTheme.drop-border(root.dark-mode); border-width: 2px; border-radius: 4px; }
                     }
                     Rectangle {
                         width: root.control-button-width * 2 + 10px;
@@ -150,7 +195,7 @@ export component QueuePage inherits VerticalLayout {
                         can-drop(event) => { return DragAction.copy; }
                         dropped(event) => { root.output-path-dropped(event); return DragAction.copy; }
                         LineEdit { accessible-label: @tr("输出目录"); text <=> root.output-dir; placeholder-text: @tr("默认与输入同目录"); enabled: !root.running; width: parent.width; height: parent.height; accepted(text) => { root.output-path-accepted(text); } }
-                        if root.external-drag-target == 2 || output-path-drop.has-drag: Rectangle { width: parent.width; height: parent.height; background: #305aaaff; border-color: #86c5ff; border-width: 2px; border-radius: 4px; }
+                        if root.external-drag-target == 2 || output-path-drop.has-drag: Rectangle { width: parent.width; height: parent.height; background: StudioTheme.drop-tint(root.dark-mode); border-color: StudioTheme.drop-border(root.dark-mode); border-width: 2px; border-radius: 4px; }
                     }
                     Rectangle {
                         width: root.control-button-width * 2 + 10px;
@@ -350,7 +395,10 @@ export component QueuePage inherits VerticalLayout {
                 queue-header := Rectangle {
                     x: 0px;
                     y: 0px;
-                    width: parent.width;
+                    // 表头与数据行共用同一内容宽度：ListView 的竖直滚动条是 14px
+                    // 覆盖层（fluent scrollview.slint 里 flickable.width = parent.width），
+                    // 两侧都减去 14px，固定列才不会错位。
+                    width: parent.width - 14px;
                     height: 34px;
                     background: root.field-bg;
                     border-color: root.field-border;
@@ -360,11 +408,27 @@ export component QueuePage inherits VerticalLayout {
                         padding-left: 10px;
                         padding-right: 10px;
                         spacing: 10px;
-                        Text { text: "#"; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                        Text { text: @tr("文件名"); width: root.queue-filename-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Text { text: "#"; width: root.queue-index-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                        // 可拖列：手柄叠加在列右缘内，不占用布局宽度，列位不随手柄偏移。
+                        Rectangle {
+                            width: root.queue-filename-width;
+                            background: transparent;
+                            Text { text: @tr("文件名"); width: parent.width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                            ColumnResizer { x: parent.width - 3px; resize-min: 60px; resize-max: 480px; target-width: root.queue-filename-width; line-color: root.field-border; resized(w) => { root.queue-filename-width = w; } }
+                        }
                         Text { text: @tr("目录"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text { text: @tr("大小"); width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text { text: @tr("状态"); width: root.queue-status-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                        Rectangle {
+                            width: root.queue-size-width;
+                            background: transparent;
+                            Text { text: @tr("大小"); width: parent.width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                            ColumnResizer { x: parent.width - 3px; resize-min: 48px; resize-max: 200px; target-width: root.queue-size-width; line-color: root.field-border; resized(w) => { root.queue-size-width = w; } }
+                        }
+                        Rectangle {
+                            width: root.queue-status-width;
+                            background: transparent;
+                            Text { text: @tr("状态"); width: parent.width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                            ColumnResizer { x: parent.width - 3px; resize-min: 60px; resize-max: 280px; target-width: root.queue-status-width; line-color: root.field-border; resized(w) => { root.queue-status-width = w; } }
+                        }
                         Text { text: @tr("输出或日志"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
                     }
                 }
@@ -434,9 +498,11 @@ export component QueuePage inherits VerticalLayout {
                              animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                              HorizontalLayout {
                                  padding-left: 10px;
-                                 padding-right: 10px;
+                                 // 表头宽度已扣掉 14px 滚动条；行背景仍铺满整行，但文本
+                                 // 右缘多留 14px，使固定列与表头逐列对齐。
+                                 padding-right: 24px;
                                  spacing: 10px;
-                                 Text { text: row.order; width: 40px; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
+                                 Text { text: row.order; width: root.queue-index-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
                                  Text { text: row.filename; width: root.queue-filename-width; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                  Text { text: row.folder; horizontal-stretch: 1; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
                                  Text { text: row.size; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
@@ -447,9 +513,8 @@ export component QueuePage inherits VerticalLayout {
                                  width: parent.width;
                                  height: parent.height;
                                  pointer-event(event) => {
-                                     if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
-                                         root.selected-queue-index = index;
-                                     }
+                                     // 选中与详情由 C++ 侧在 up 事件处理：那里能读到
+                                     // drag_reordered，避免拖动排序后的释放误开详情。
                                      if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
                                          root.open-queue-menu(index, row-touch.absolute-position.x + row-touch.mouse-x, row-touch.absolute-position.y + row-touch.mouse-y);
                                      }
@@ -499,7 +564,7 @@ export component QueuePage inherits VerticalLayout {
         if root.external-drag-target == 3: Rectangle {
             x: queue-table.x; y: queue-table.y;
             width: queue-table.width; height: queue-table.height;
-            background: #205aaaff; border-color: #86c5ff; border-width: 2px;
+            background: StudioTheme.drop-tint-soft(root.dark-mode); border-color: StudioTheme.drop-border(root.dark-mode); border-width: 2px;
         }
 
         if root.selected-queue-valid: queue-detail := Rectangle {

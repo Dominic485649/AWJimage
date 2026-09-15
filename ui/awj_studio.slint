@@ -30,6 +30,11 @@ export component AwjStudio inherits Window {
     in-out property <bool> preset-editor-open: false;
     in-out property <bool> preset-editor-existing: false;
     in-out property <bool> preset-editor-shell-menu: false;
+    // 编码中关窗的确认层：C++ 侧拦截 close-requested 后置 true，由用户决定返回
+    // 还是强制停止退出。见 main.cpp 的 on_close_requested。
+    in-out property <bool> close-confirm-open: false;
+    callback close-confirm-dismissed();
+    callback close-confirm-force-quit();
     in property <bool> shell-menu-injection-supported: true;
     in-out property <bool> legacy-machine-menu-present: false;
     callback delete-parameter-preset();
@@ -172,9 +177,10 @@ export component AwjStudio inherits Window {
     property <length> template-token-button-width: 68px;
     property <length> page-gap: 10px;
     property <length> nav-width: 196px;
-    property <length> queue-filename-width: 170px;
-    property <length> queue-size-width: 72px;
-    property <length> queue-status-width: 104px;
+    // 队列列宽由 QueuePage 内的拖拽手柄改写，这里用 in-out 双向绑定保留会话内状态。
+    in-out property <length> queue-filename-width: 170px;
+    in-out property <length> queue-size-width: 72px;
+    in-out property <length> queue-status-width: 104px;
     in-out property <int> pending-theme-index: -1;
     in-out property <int> combo-close-generation: 0;
     in-out property <bool> combo-popup-open: false;
@@ -724,7 +730,7 @@ export component AwjStudio inherits Window {
     queue-drag-dropped(a0, a1) => { return root.queue-drag-dropped(a0, a1); }
     queue-failed-count <=> root.queue-failed-count;
     queue-failed-only <=> root.queue-failed-only;
-    queue-filename-width : root.queue-filename-width;
+    queue-filename-width <=> root.queue-filename-width;
     queue-format-index <=> root.queue-format-index;
     queue-pending-count <=> root.queue-pending-count;
     queue-preset-description : root.queue-preset-description;
@@ -733,8 +739,8 @@ export component AwjStudio inherits Window {
     queue-preset-selected(a0) => { root.queue-preset-selected(a0); }
     queue-row-pointer-event(a0, a1, a2, a3) => { root.queue-row-pointer-event(a0, a1, a2, a3); }
     queue-running-count <=> root.queue-running-count;
-    queue-size-width : root.queue-size-width;
-    queue-status-width : root.queue-status-width;
+    queue-size-width <=> root.queue-size-width;
+    queue-status-width <=> root.queue-status-width;
     queue-success-count <=> root.queue-success-count;
     retry-failed() => { root.retry-failed(); }
     running <=> root.running;
@@ -892,6 +898,80 @@ export component AwjStudio inherits Window {
     warning : root.warning;
     window-width : root.width;
 }
+
+        if root.close-confirm-open: close-confirm := Rectangle {
+            z: 110;
+            width: root.width;
+            height: root.height;
+            background: root.dark-mode ? #000000aa : #17203366;
+
+            // 吃掉点击，避免穿透到下层控件。
+            TouchArea { width: parent.width; height: parent.height; }
+
+            Rectangle {
+                width: min(440px, max(300px, parent.width - 48px));
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 10px;
+                background: root.panel-bg;
+                border-color: root.panel-border;
+                border-width: 1px;
+                clip: true;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 12px;
+
+                    Text {
+                        text: @tr("正在编码");
+                        color: root.text-strong;
+                        font-size: 18px;
+                        font-weight: 800;
+                        height: self.preferred-height;
+                    }
+                    Text {
+                        text: @tr("队列仍在编码中，现在退出会中断正在处理的任务。");
+                        color: root.text-body;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        width: 100%;
+                        height: self.preferred-height;
+                    }
+                    Text {
+                        text: @tr("强制停止编码并退出");
+                        color: root.warning;
+                        font-size: 13px;
+                        font-weight: 700;
+                        wrap: word-wrap;
+                        width: 100%;
+                        height: self.preferred-height;
+                    }
+
+                    HorizontalLayout {
+                        height: 42px;
+                        spacing: 10px;
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        SoftButton {
+                            dark-mode: root.dark-mode;
+                            text: @tr("返回");
+                            variant: "action";
+                            width: 96px;
+                            height: 42px;
+                            clicked => { root.close-confirm-dismissed(); }
+                        }
+                        SoftButton {
+                            dark-mode: root.dark-mode;
+                            text: @tr("强制停止并退出");
+                            variant: "danger";
+                            width: 150px;
+                            height: 42px;
+                            clicked => { root.close-confirm-force-quit(); }
+                        }
+                    }
+                }
+            }
+        }
 
         queue-menu-popup := PopupWindow {
             x: root.queue-menu-x;

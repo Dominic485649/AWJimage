@@ -1142,6 +1142,8 @@ if(WIN32)
         src/ui/import_service.cpp
         src/ui/file_drop_win32.cpp
         src/ui/path_picker_win32.cpp
+        src/ui/studio_config.cpp
+        src/ui/studio_json.cpp
         src/ui/main.cpp
         src/ui/AWJ.manifest
         src/ui/AWJ.rc)
@@ -1150,6 +1152,8 @@ else()
         src/app/main.cpp
         src/cli/main.cpp
         src/ui/import_service.cpp
+        src/ui/studio_config.cpp
+        src/ui/studio_json.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
 endif()
