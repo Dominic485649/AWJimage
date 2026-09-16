@@ -17,20 +17,24 @@ AWJimage 1.0.14 在 1.0.12 基础上加入原生 HEIC/HEIF 解码、百分比缩
 
 ## 依赖与构建
 
-待最终冻结源码的 MSVC/GCC Release 构建记录回填。发行构建关闭测试接口，并保留渲染回退和无障碍。
+源码提交 `d176a4f` 已完成 MSVC 19.51.36257.0 / Rust 1.95.0 与 GCC 16.1.0 / Rust 1.96.1 Release 构建；Windows 与 Linux 发行构建均关闭测试接口，并保留渲染回退和无障碍。Windows 为 x64、IPO 开启、`AWJ_ENABLE_X64_V3=OFF`；Linux 为 x86_64 原生文件系统构建。
 
 ## 发行归档
 
-待最终打包校验后回填实测体积和 SHA-256。
+归档已通过 `7z t`、解压成员比对、解压哈希、版本/帮助检查；Linux 解压后的 `AWJ` 保留可执行位。
 
 | 归档 | 精确内容 | 大小 | SHA-256 |
 | --- | --- | ---: | --- |
-| AWJ_Win.7z | AWJ.exe、AWJ.com、LICENSE、NOTICE.txt | 待验证 | 待验证 |
-| AWJ_Linux.7z | AWJ、LICENSE、NOTICE.txt | 待验证 | 待验证 |
+| AWJ_Win.7z | AWJ.exe、AWJ.com、LICENSE、NOTICE.txt | 12,036,407 | `21643adf28bb284a0be890def198c32fdb8068513a5d758d75f89b874b0f501b` |
+| AWJ_Linux.7z | AWJ、LICENSE、NOTICE.txt | 19,453,863 | `7b6e125ecfba24dbbdf102dd70353dc10c59eeb42dac8ff350bfcfaca51951f0` |
 
 ## 二进制哈希
 
-待最终产物实测，不沿用旧版本哈希。
+| 文件 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| Windows `AWJ.exe` | 42,884,096 | `96f7e157103d856fa15ee8e013c662f4afe1c51acd8619aa13ec2b360fefb40c` |
+| Windows `AWJ.com` | 450,048 | `833a7bb11b9b98f1d3ce18a0d4a920e8ec5bd8b71ba97c5bc32c1e44f963c1f7` |
+| Linux `AWJ` | 67,676,624 | `b60da85c01ff3a4dc0a7438343c2080f7a0237396ac67fab7a73984f41c886b9` |
 
 ---
 
