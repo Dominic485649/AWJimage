@@ -932,12 +932,12 @@ std::expected<void, std::string> recover_locked() {
     auto high = read_dword(kTransaction, L"CreatedHigh");
     if (!machine || !*machine || **machine > 1 || !pid || !*pid || !low || !*low || !high || !*high)
       return std::unexpected{"菜单事务进程身份无效。"};
-    auto committed = menu_commit_recorded(**id, **machine != 0);
-    if (!committed) return std::unexpected{committed.error()};
-    if (*committed) return delete_tree(kTransaction);
     if (menu_owner_active(**pid, FILETIME{**low, **high}) &&
         !(defer_commit && **pid == GetCurrentProcessId() && staged_id == **id))
       return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+    auto committed = menu_commit_recorded(**id, **machine != 0);
+    if (!committed) return std::unexpected{committed.error()};
+    if (*committed) return delete_tree(kTransaction);
   }
   auto count = read_dword(kTransaction, L"Count");
   const auto allowed = owned_root_keys();
@@ -1351,6 +1351,10 @@ std::expected<void, std::string> stage_machine_menu(
       if (auto r = copy_tree(source, backup + L"\\Data"); !r) return r;
     }
   }
+  // Validate every copied child before the journal may be used for recovery.
+  auto verified = protected_machine_key(machine_journal, false);
+  if (!verified) return std::unexpected{verified.error()};
+  RegCloseKey(*verified);
   if (auto r = set_dword(machine_journal, L"State", 1); !r) return r;
   if (RegFlushKey(secured.get()) != ERROR_SUCCESS) return std::unexpected{"无法持久化机器菜单快照。"};
   return apply_machine_menu(exe, params, remove_menu);

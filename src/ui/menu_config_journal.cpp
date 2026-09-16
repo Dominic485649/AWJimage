@@ -102,9 +102,6 @@ std::expected<void, std::string> recover_menu_config_journal(
   bytes = sizeof(machine);
   if (RegGetValueW(key.value, nullptr, L"Machine", RRF_RT_REG_DWORD, nullptr, &machine, &bytes) != ERROR_SUCCESS || machine > 1)
     return failure();
-  auto committed = menu_commit_recorded(id, machine != 0);
-  if (!committed) return std::unexpected{committed.error()};
-  if (*committed) return discard_menu_config_journal();
   Header header;
   bytes = sizeof(header);
   if (RegGetValueW(key.value, nullptr, L"Owner", RRF_RT_REG_BINARY, nullptr, &header, &bytes) != ERROR_SUCCESS ||
@@ -117,6 +114,9 @@ std::expected<void, std::string> recover_menu_config_journal(
     CloseHandle(owner);
     if (active) return failure();
   } else if (GetLastError() != ERROR_INVALID_PARAMETER) return failure();
+  auto committed = menu_commit_recorded(id, machine != 0);
+  if (!committed) return std::unexpected{committed.error()};
+  if (*committed) return discard_menu_config_journal();
   wchar_t path[32768]{};
   bytes = sizeof(path);
   if (RegGetValueW(key.value, nullptr, L"Exe", RRF_RT_REG_SZ, nullptr, path, &bytes) != ERROR_SUCCESS ||

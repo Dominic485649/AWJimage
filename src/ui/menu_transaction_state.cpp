@@ -8,6 +8,49 @@ namespace {
 std::unexpected<std::string> error() { return std::unexpected<std::string>{"菜单事务权限或状态校验失败。"}; }
 struct Key { HKEY value{}; ~Key() { if (value) RegCloseKey(value); } };
 constexpr wchar_t receipt_root[] = L"SOFTWARE\\AWJimage.MenuCommit";
+bool protected_tree(HKEY key, bool root, unsigned depth, unsigned& remaining) {
+  if (!remaining-- || depth > 16) return false;
+  PSID owner{};
+  PACL dacl{};
+  PSECURITY_DESCRIPTOR actual{};
+  if (GetSecurityInfo(key, SE_REGISTRY_KEY, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                      &owner, nullptr, &dacl, nullptr, &actual) != ERROR_SUCCESS) return false;
+  SECURITY_DESCRIPTOR_CONTROL control{};
+  DWORD revision{};
+  BYTE admin[SECURITY_MAX_SID_SIZE]{}, system[SECURITY_MAX_SID_SIZE]{};
+  DWORD size = sizeof(admin);
+  bool safe = CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admin, &size);
+  size = sizeof(system);
+  safe = safe && CreateWellKnownSid(WinLocalSystemSid, nullptr, system, &size) &&
+      owner && (EqualSid(owner, admin) || EqualSid(owner, system)) && dacl &&
+      GetSecurityDescriptorControl(actual, &control, &revision) &&
+      (!root || (control & SE_DACL_PROTECTED));
+  for (DWORD i = 0; safe && i < dacl->AceCount; ++i) {
+    void* raw{};
+    if (!GetAce(dacl, i, &raw)) { safe = false; break; }
+    const auto ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
+    if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) { safe = false; break; }
+    if ((ace->Mask & ~KEY_READ) && !EqualSid(&ace->SidStart, admin) &&
+        !EqualSid(&ace->SidStart, system)) safe = false;
+  }
+  LocalFree(actual);
+  if (!safe) return false;
+  // Never follow registry symbolic links while validating a recovery snapshot.
+  DWORD type{};
+  if (RegQueryValueExW(key, L"SymbolicLinkValue", nullptr, &type, nullptr, nullptr) == ERROR_SUCCESS &&
+      type == REG_LINK) return false;
+  for (DWORD i = 0;; ++i) {
+    wchar_t name[256]{};
+    DWORD length = 256;
+    const auto status = RegEnumKeyExW(key, i, name, &length, nullptr, nullptr, nullptr, nullptr);
+    if (status == ERROR_NO_MORE_ITEMS) return true;
+    if (status != ERROR_SUCCESS) return false;
+    Key child;
+    if (RegOpenKeyExW(key, name, REG_OPTION_OPEN_LINK, KEY_READ | KEY_WOW64_64KEY,
+                     &child.value) != ERROR_SUCCESS ||
+        !protected_tree(child.value, false, depth + 1, remaining)) return false;
+  }
+}
 }
 std::expected<std::wstring, std::string> process_user_sid(HANDLE process) {
   HANDLE token{};
@@ -27,40 +70,20 @@ std::expected<std::wstring, std::string> process_user_sid(HANDLE process) {
 
 std::expected<HKEY, std::string> protected_machine_key(const wchar_t* path, bool public_read) {
   PSECURITY_DESCRIPTOR descriptor{};
-  const auto sddl = public_read ? L"D:P(A;;KA;;;SY)(A;;KA;;;BA)(A;;KR;;;BU)"
-                                : L"D:P(A;;KA;;;SY)(A;;KA;;;BA)";
+  const auto sddl = public_read ? L"O:BAG:BAD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)(A;CI;KR;;;BU)"
+                                : L"O:BAG:BAD:P(A;CI;KA;;;SY)(A;CI;KA;;;BA)";
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl, SDDL_REVISION_1, &descriptor, nullptr)) return error();
   SECURITY_ATTRIBUTES attributes{sizeof(attributes), descriptor, FALSE};
   HKEY key{};
-  const auto status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, path, 0, nullptr, 0,
-      KEY_ALL_ACCESS | KEY_WOW64_64KEY, &attributes, &key, nullptr);
+  auto status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, REG_OPTION_OPEN_LINK,
+      KEY_ALL_ACCESS | KEY_WOW64_64KEY, &key);
+  if (status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND)
+    status = RegCreateKeyExW(HKEY_LOCAL_MACHINE, path, 0, nullptr, 0,
+        KEY_ALL_ACCESS | KEY_WOW64_64KEY, &attributes, &key, nullptr);
   LocalFree(descriptor);
   if (status != ERROR_SUCCESS) return error();
-  PACL dacl{};
-  PSECURITY_DESCRIPTOR actual{};
-  if (GetSecurityInfo(key, SE_REGISTRY_KEY, DACL_SECURITY_INFORMATION,
-                       nullptr, nullptr, &dacl, nullptr, &actual) != ERROR_SUCCESS) {
-    RegCloseKey(key);
-    return error();
-  }
-  SECURITY_DESCRIPTOR_CONTROL control{};
-  DWORD revision{};
-  bool safe = dacl && GetSecurityDescriptorControl(actual, &control, &revision) &&
-              (control & SE_DACL_PROTECTED);
-  BYTE admin[SECURITY_MAX_SID_SIZE]{}, system[SECURITY_MAX_SID_SIZE]{};
-  DWORD size = sizeof(admin);
-  safe = safe && CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, admin, &size);
-  size = sizeof(system);
-  safe = safe && CreateWellKnownSid(WinLocalSystemSid, nullptr, system, &size);
-  for (DWORD i = 0; safe && i < dacl->AceCount; ++i) {
-    void* raw{};
-    if (!GetAce(dacl, i, &raw)) { safe = false; break; }
-    const auto ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
-    if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) { safe = false; break; }
-    if ((ace->Mask & (KEY_SET_VALUE | KEY_CREATE_SUB_KEY | DELETE | WRITE_DAC | WRITE_OWNER | GENERIC_WRITE | GENERIC_ALL)) &&
-        !EqualSid(&ace->SidStart, admin) && !EqualSid(&ace->SidStart, system)) safe = false;
-  }
-  LocalFree(actual);
+  unsigned remaining = 512;
+  const bool safe = protected_tree(key, true, 0, remaining);
   if (!safe) { RegCloseKey(key); return error(); }
   return key;
 }
@@ -91,8 +114,12 @@ std::expected<void, std::string> record_menu_commit(std::wstring_view id, bool m
     root.value = *secured;
   }
   Key key;
-  if (RegCreateKeyExW(machine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER, path.c_str(), 0,
-      nullptr, 0, KEY_ALL_ACCESS | (machine ? KEY_WOW64_64KEY : 0), nullptr, &key.value, nullptr) != ERROR_SUCCESS) return error();
+  if (machine) {
+    auto secured = protected_machine_key(path.c_str(), true);
+    if (!secured) return std::unexpected{secured.error()};
+    key.value = *secured;
+  } else if (RegCreateKeyExW(HKEY_CURRENT_USER, path.c_str(), 0,
+      nullptr, 0, KEY_ALL_ACCESS, nullptr, &key.value, nullptr) != ERROR_SUCCESS) return error();
   const std::wstring value{id};
   if (RegSetValueExW(key.value, L"Id", 0, REG_SZ, reinterpret_cast<const BYTE*>(value.c_str()),
       static_cast<DWORD>((value.size() + 1) * sizeof(wchar_t))) != ERROR_SUCCESS || RegFlushKey(key.value) != ERROR_SUCCESS) return error();

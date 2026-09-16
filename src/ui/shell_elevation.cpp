@@ -233,7 +233,10 @@ void elevated_stage(MenuTransaction::Impl& session, const MenuParams& params, bo
 }  // namespace
 
 MenuTransaction::MenuTransaction(std::unique_ptr<Impl> impl) : impl_(std::move(impl)) {}
-MenuTransaction::~MenuTransaction() { if (impl_ && !impl_->committed) (void)rollback(); }
+MenuTransaction::~MenuTransaction() {
+  // A failed cleanup leaves the durable journal for the next operation.
+  try { if (impl_ && !impl_->committed) (void)rollback(); } catch (...) {}
+}
 std::wstring_view MenuTransaction::id() const noexcept { return impl_->id; }
 bool MenuTransaction::machine() const noexcept { return impl_->machine; }
 

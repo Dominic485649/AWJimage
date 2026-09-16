@@ -48,7 +48,8 @@ int wmain(int argc, wchar_t** argv) try {
     check(!menu::begin_menu_config_journal(crashed_id, false, exe, previous), "concurrent journal accepted");
     require(menu::record_menu_commit(committed_id, false));
   }
-  require(menu::recover_menu_config_journal(exe, restore));
+  check(!menu::recover_menu_config_journal(exe, restore), "committed live journal was discarded by another instance");
+  require(menu::discard_menu_config_journal());
   check(!restored, "committed transaction restored stale config");
   auto command = L"\"" + exe.wstring() + L"\" --crash \"" + sandbox.path + L"\"";
   STARTUPINFOW startup{sizeof(startup)};

@@ -1286,26 +1286,6 @@ else()
         src/app/main.cpp
         src/cli/main.cpp
         src/ui/import_service.cpp
-        src/ui/studio_config.cpp
-        src/ui/studio_json.cpp
-        src/ui/studio_worker_events.cpp
-        src/ui/studio_queue_format.cpp
-        src/ui/studio_fonts.cpp
-        src/ui/studio_fields.cpp
-        src/ui/studio_menu_params.cpp
-        src/ui/studio_parameter_page.cpp
-        src/ui/studio_ui_util.cpp
-        src/ui/studio_worker_control.cpp
-        src/ui/studio_shell_cli.cpp
-        src/ui/studio_encode_dispatch.cpp
-        src/ui/studio_queue_rows.cpp
-        src/ui/studio_update_ui.cpp
-        src/ui/studio_config_io.cpp
-        src/ui/studio_import.cpp
-        src/ui/studio_template_theme.cpp
-        src/ui/studio_import_dispatch.cpp
-        src/ui/studio_presets.cpp
-        src/ui/studio_run_windows.cpp
         src/ui/studio_run_linux.cpp
         src/ui/main.cpp)
     set_target_properties(AWJ PROPERTIES SKIP_BUILD_RPATH TRUE)
