@@ -87,7 +87,7 @@ export component MenuParameterPage inherits Rectangle {
             spacing: 10px;
             if root.legacy-machine-menu-present: HorizontalLayout {
                 spacing: 10px;
-                Text { text: @tr("检测到旧版系统级 AWJ 菜单。当前版本不会修改 HKLM，请使用系统级注册表管理工具处理。"); horizontal-stretch: 1; color: root.text-body; wrap: word-wrap; }
+                Text { text: @tr("检测到系统级 AWJ 菜单。移除或切换菜单模式时需要管理员权限。"); horizontal-stretch: 1; color: root.text-body; wrap: word-wrap; }
                 SoftButton { dark-mode: root.dark-mode; text: @tr("查看说明"); enabled: !root.running; clicked => { root.cleanup-legacy-machine-menu(); } }
             }
             HorizontalLayout {

@@ -103,6 +103,15 @@ MenuOperationLock::~MenuOperationLock() {
   if (handle_) CloseHandle(handle_);
 }
 
+std::expected<void, std::string> validate_machine_tree(const wchar_t* path) {
+  Key key;
+  const auto opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, REG_OPTION_OPEN_LINK,
+      KEY_READ | KEY_WOW64_64KEY, &key.value);
+  unsigned remaining = 512;
+  if (opened != ERROR_SUCCESS || !protected_tree(key.value, false, 0, remaining)) return error();
+  return {};
+}
+
 std::expected<bool, std::string> menu_commit_recorded(std::wstring_view id, bool machine,
                                                     std::wstring_view sid) {
   auto caller = sid.empty() ? process_user_sid(GetCurrentProcess()) : std::expected<std::wstring, std::string>{sid};

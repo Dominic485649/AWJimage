@@ -1269,6 +1269,7 @@ std::expected<void, std::string> apply_machine_menu(
     auto exists = key_exists(root);
     if (!exists) return std::unexpected{exists.error()};
     if (!*exists) continue;
+    if (auto trusted = validate_machine_tree(root.c_str()); !trusted) return trusted;
     if (name == L"AWJImage.presets") {
       auto marker = read_string(root, owner_value_name);
       auto icon = read_string(root, L"Icon");

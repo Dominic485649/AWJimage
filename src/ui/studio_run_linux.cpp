@@ -2673,7 +2673,8 @@ int awj::studio::run_studio_ui() {
     app->on_close_confirm_dismissed([weak] {
       if (auto app = weak.lock()) (*app)->set_close_confirm_open(false);
     });
-    app->on_close_confirm_force_quit([weak, state] {
+    app->on_close_confirm_force_quit([weak, state]() noexcept {
+      try {
       if (auto app = weak.lock()) {
         (*app)->set_close_confirm_open(false);
         (*app)->set_status_text(to_shared("正在停止编码，完成清理后退出。"));
@@ -2681,14 +2682,17 @@ int awj::studio::run_studio_ui() {
         state->worker.request_stop();
         state->close_timer.start(slint::TimerMode::Repeated,
             std::chrono::milliseconds{50},
-            [weak, pending = std::weak_ptr<LinuxUiState>{state}] {
+            [weak, pending = std::weak_ptr<LinuxUiState>{state}]() noexcept {
+          try {
           auto state = pending.lock();
           auto app = weak.lock();
           if (!state || !app || (*app)->get_running()) return;
           state->close_timer.stop();
           if (finish_linux_close(**app, *state)) (*app)->window().hide();
+          } catch (...) { /* Keep the window open; cancellation can be retried. */ }
         });
       }
+      } catch (...) { state->close_requested = false; }
     });
     app->on_queue_row_pointer_event([weak, state](int index, int button,
                                                  int kind, float) {
@@ -3012,8 +3016,8 @@ int awj::studio::run_studio_ui() {
           (*app)->set_status_text(to_shared("当前任务正在运行，无法清空状态。"));
           return;
         }
-        state->queue_files.clear();
-        state->queue_path_keys.clear();
+        decltype(state->queue_files){}.swap(state->queue_files);
+        decltype(state->queue_path_keys){}.swap(state->queue_path_keys);
         state->task_rows->set_vector({});
         state->failed_paths.clear();
         refresh_linux_queue_counts(**app, state->task_rows);

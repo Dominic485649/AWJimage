@@ -122,6 +122,8 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
           (*app)->set_status_text(to_shared(result->error()));
         } else {
           state->last_config_snapshot = desired;
+          if (auto machine = shell_context_menu::legacy_machine_commands(); machine)
+            (*app)->set_legacy_machine_menu_present(!machine->empty());
           (*app)->set_context_menu_warning({});
           const auto message = remove ? "右键菜单已移除。" : "右键菜单设置已保存。";
           (*app)->set_context_menu_status(to_shared(message));

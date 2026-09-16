@@ -137,7 +137,9 @@ WireFormat encode(const FormatParams& p) {
     text = first == text.npos ? std::wstring_view{} :
         text.substr(first, text.find_last_not_of(L" \t\r\n") - first + 1);
     if (text.size() >= wire.text[i].size() ||
-        std::ranges::any_of(text, [](wchar_t c) { return c < L'0' || c > L'9'; }))
+        std::ranges::any_of(text, [i](wchar_t c) {
+          return (c < L'0' || c > L'9') && !(i == 0 && (c == L'.' || c == L'q' || c == L'Q'));
+        }))
       throw std::runtime_error("Menu numeric parameters are invalid.");
     std::ranges::copy(text, wire.text[i].begin());
   }
@@ -159,7 +161,9 @@ FormatParams decode(const WireFormat& wire) {
     const auto end = std::ranges::find(wire.text[i], L'\0');
     if (end == wire.text[i].end()) throw std::runtime_error("Unterminated menu parameter.");
     text[i].assign(wire.text[i].begin(), end);
-    if (std::ranges::any_of(text[i], [](wchar_t c) { return c < L'0' || c > L'9'; }))
+    if (std::ranges::any_of(text[i], [i](wchar_t c) {
+          return (c < L'0' || c > L'9') && !(i == 0 && (c == L'.' || c == L'q' || c == L'Q'));
+        }))
       throw std::runtime_error("Menu helper rejected nonnumeric text.");
   }
   return FormatParams{

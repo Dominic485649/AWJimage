@@ -290,8 +290,9 @@ awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams
   const auto text = [](const std::string& value) {
     return awj::wide_from_utf8(trim_copy(value));
   };
+  const auto quality = parse_quality_field(params.quality_text);
   return awj::shell_context_menu::FormatParams{
-      .quality_text = text(params.quality_text),
+      .quality_text = quality ? std::to_wstring(*quality) : text(params.quality_text),
       .bit_depth_text = text(params.bit_depth_text),
       .speed_text = text(params.speed_text),
       .avif_encoder_index = params.avif_encoder_index,

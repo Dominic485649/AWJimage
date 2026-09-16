@@ -615,12 +615,13 @@ int run_studio_ui(const wchar_t* health_event,
                                       "当前任务正在运行，无法清空队列")) {
           return;
         }
+        auto empty_rows = std::make_shared<slint::VectorModel<TaskRow>>();
         std::vector<QueueImageItem>{}.swap(state->queue_items);
-        state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+        state->task_rows = std::move(empty_rows);
         awj::ui::bind_queue_model(**app, state->task_rows);
         decltype(state->queue_id_indices){}.swap(state->queue_id_indices);
         decltype(state->queue_run_indices){}.swap(state->queue_run_indices);
-        state->queue_path_keys.clear();
+        decltype(state->queue_path_keys){}.swap(state->queue_path_keys);
         refresh_queue_rows(**app, *state);
         state->large_image_rows->set_vector({});
         state->large_image_items.clear();
@@ -858,7 +859,7 @@ int run_studio_ui(const wchar_t* health_event,
     });
     app->on_cleanup_legacy_machine_menu([weak] {
       if (auto app = weak.lock(); app && !(*app)->get_running()) {
-        (*app)->set_status_text(to_shared("AWJ 不会修改或删除 HKLM 系统菜单，请使用系统级注册表管理工具处理历史项目。"));
+        (*app)->set_status_text(to_shared("移除或切换系统级 AWJ 菜单需要管理员权限；取消权限请求会保留原菜单。"));
       }
     });
 
