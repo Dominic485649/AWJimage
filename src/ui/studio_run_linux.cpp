@@ -44,6 +44,7 @@
 #include <vector>
 
 #include "awj_studio.h"
+#include "studio_run_linux.h"
 #include "queue_model.h"
 #include "deferred_model.h"
 #include "changelog_history.h"
@@ -2647,7 +2648,7 @@ bool finish_linux_close(AwjStudio& app, LinuxUiState& state) noexcept {
   }
 }
 
-int run_studio_ui() {
+int awj::studio::run_studio_ui() {
   try {
     auto app = AwjStudio::create();
     app->set_shell_menu_injection_supported(false);
