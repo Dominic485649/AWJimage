@@ -90,6 +90,10 @@ int wmain(int argc, wchar_t** argv) try {
   menu::MenuParams params{};
   for (auto& value : params) value.quality_text = L"73";
   params[0].install_avif_png_command = true;
+  const auto absent_mode = menu::compatibility_installed();
+  check(absent_mode && !*absent_mode, "empty registry was treated as an invalid compatibility menu");
+  require(menu::reconcile(exe, params));
+  check(!*menu::is_installed(), "empty-registry synchronization installed a menu");
   const std::wstring rollback_id = L"{62B1DC4C-FAF4-46E9-A5E0-FE7DBD677210}";
   require(menu::stage_user_menu(rollback_id, false, exe, params, {}, false, false));
   check(!menu::reconcile(exe, params), "another operation recovered a live staged menu");

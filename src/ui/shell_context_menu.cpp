@@ -807,6 +807,9 @@ std::expected<bool, std::string> historical_commands(std::wstring_view root,
 }
 
 std::expected<bool, std::string> owned(std::wstring_view root) {
+  auto exists = key_exists(root);
+  if (!exists) return std::unexpected{exists.error()};
+  if (!*exists) return false;
   auto marker = read_string(root, owner_value_name);
   if (!marker) return std::unexpected{marker.error()};
   if (*marker) return **marker == owner_value;
