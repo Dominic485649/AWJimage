@@ -27,47 +27,6 @@ import awj.image;
 
 namespace {
 
-bool process_is_elevated() {
-  HANDLE token = nullptr;
-  if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) return false;
-  TOKEN_ELEVATION elevation{};
-  DWORD bytes = 0;
-  const bool elevated = GetTokenInformation(token, TokenElevation, &elevation,
-                                            sizeof(elevation), &bytes) != FALSE &&
-                        elevation.TokenIsElevated != 0;
-  CloseHandle(token);
-  return elevated;
-}
-
-bool machine_tests_enabled() {
-  wchar_t value[8]{};
-  const DWORD length = GetEnvironmentVariableW(
-      L"AWJ_RUN_MACHINE_REGISTRY_TESTS", value,
-      static_cast<DWORD>(std::size(value)));
-  return length > 0 && length < std::size(value) &&
-         (value[0] == L'1' || value[0] == L'y' || value[0] == L'Y');
-}
-
-bool delete_machine_tree(const std::wstring& path) {
-  const auto slash = path.find_last_of(L'\\');
-  if (slash == std::wstring::npos) return false;
-  const auto parent_path = path.substr(0, slash);
-  const auto leaf = path.substr(slash + 1);
-  HKEY parent = nullptr;
-  if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, parent_path.c_str(), 0,
-                   KEY_READ | KEY_WRITE | KEY_WOW64_64KEY, &parent) != ERROR_SUCCESS) {
-    HKEY probe = nullptr;
-    const auto status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, path.c_str(), 0,
-                                      KEY_READ | KEY_WOW64_64KEY, &probe);
-    if (probe) RegCloseKey(probe);
-    return status == ERROR_FILE_NOT_FOUND || status == ERROR_PATH_NOT_FOUND;
-  }
-  const auto status = RegDeleteTreeW(parent, leaf.c_str());
-  RegCloseKey(parent);
-  return status == ERROR_SUCCESS || status == ERROR_FILE_NOT_FOUND ||
-         status == ERROR_PATH_NOT_FOUND;
-}
-
 // Real Shell activation crosses the process boundary, so HKCU overrides are not
 // sufficient here. Persist exactly the module's AWJ roots before any mutation.
 struct RegistryRestore {
@@ -75,25 +34,18 @@ struct RegistryRestore {
   std::vector<bool> present;
   std::wstring backup = L"Software\\AWJimage.Tests.Backup\\" + std::to_wstring(GetCurrentProcessId());
   HKEY storage{};
-  std::vector<std::wstring> machine_paths =
-      awj::shell_context_menu::owned_machine_root_keys();
-  std::vector<bool> machine_present;
-  HKEY machine_storage{};
   RegistryRestore() {
-    try {
-      HKEY pending{};
-      if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\AWJimage.ContextMenu.v5.Transaction",
-                      0, KEY_READ, &pending) == ERROR_SUCCESS ||
-          RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction",
+    HKEY pending{};
+    if (RegOpenKeyExW(HKEY_CURRENT_USER, L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction",
                       0, KEY_READ, &pending) == ERROR_SUCCESS) {
-        RegCloseKey(pending);
-        throw std::runtime_error("pending AWJ registry transaction; do not start real Shell test");
-      }
-      DWORD disposition{};
-      if (RegCreateKeyExW(HKEY_CURRENT_USER, backup.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
+      RegCloseKey(pending);
+      throw std::runtime_error("pending AWJ registry transaction; do not start real Shell test");
+    }
+    DWORD disposition{};
+    if (RegCreateKeyExW(HKEY_CURRENT_USER, backup.c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
                        nullptr, &storage, &disposition) != ERROR_SUCCESS || disposition != REG_CREATED_NEW_KEY)
-        throw std::runtime_error("could not create unique registry snapshot");
-      for (std::size_t i = 0; i < paths.size(); ++i) {
+      throw std::runtime_error("could not create unique registry snapshot");
+    for (std::size_t i = 0; i < paths.size(); ++i) {
       const auto key = std::to_wstring(i);
       HKEY source{}, destination{};
       const auto status = RegOpenKeyExW(HKEY_CURRENT_USER, paths[i].c_str(), 0, KEY_READ, &source);
@@ -112,105 +64,31 @@ struct RegistryRestore {
           RegSetValueExW(storage, (key + L".Present").c_str(), 0, REG_DWORD,
                         reinterpret_cast<const BYTE*>(&existed), sizeof(existed)) != ERROR_SUCCESS)
         throw std::runtime_error("cannot persist registry snapshot index");
-      }
-      DWORD machine_disposition{};
-      if (RegCreateKeyExW(storage, L"Machine", 0, nullptr, 0, KEY_ALL_ACCESS,
-                       nullptr, &machine_storage, &machine_disposition) != ERROR_SUCCESS ||
-          machine_disposition != REG_CREATED_NEW_KEY) {
-        throw std::runtime_error("could not create machine registry snapshot");
-      }
-      for (std::size_t i = 0; i < machine_paths.size(); ++i) {
-      const auto key = std::to_wstring(i);
-      HKEY source{}, destination{};
-      const auto status = RegOpenKeyExW(HKEY_LOCAL_MACHINE, machine_paths[i].c_str(), 0,
-                                        KEY_READ | KEY_WOW64_64KEY, &source);
-      if (status != ERROR_SUCCESS && status != ERROR_FILE_NOT_FOUND &&
-          status != ERROR_PATH_NOT_FOUND) {
-        throw std::runtime_error("cannot read machine registry root for snapshot");
-      }
-      machine_present.push_back(status == ERROR_SUCCESS);
-      if (RegCreateKeyExW(machine_storage, key.c_str(), 0, nullptr, 0,
-                          KEY_ALL_ACCESS, nullptr, &destination, nullptr) != ERROR_SUCCESS) {
-        throw std::runtime_error("cannot create machine registry snapshot entry");
-      }
-      const auto copied = source ? RegCopyTreeW(source, nullptr, destination) : ERROR_SUCCESS;
-      if (source) RegCloseKey(source);
-      RegCloseKey(destination);
-      if (copied != ERROR_SUCCESS) throw std::runtime_error("cannot copy machine registry snapshot");
-      }
-      for (const auto& path : machine_paths) {
-        if (!delete_machine_tree(path)) {
-          throw std::runtime_error("cannot clear machine registry root");
-        }
-      }
-      RegFlushKey(storage);
-    } catch (...) {
-      const bool restored = restore_machine_roots();
-      close_snapshot(restored);
-      throw;
     }
+    RegFlushKey(storage);
   }
   ~RegistryRestore() {
     bool restored = true;
-    restored &= restore_machine_roots();
     for (std::size_t i = 0; i < paths.size(); ++i) {
       const auto removed = RegDeleteTreeW(HKEY_CURRENT_USER, paths[i].c_str());
-      restored &= removed == ERROR_SUCCESS || removed == ERROR_FILE_NOT_FOUND ||
-                  removed == ERROR_PATH_NOT_FOUND;
+      restored &= removed == ERROR_SUCCESS || removed == ERROR_FILE_NOT_FOUND || removed == ERROR_PATH_NOT_FOUND;
       if (!present[i]) continue;
       HKEY source{}, destination{};
       if (RegOpenKeyExW(storage, std::to_wstring(i).c_str(), 0, KEY_READ, &source) != ERROR_SUCCESS ||
           RegCreateKeyExW(HKEY_CURRENT_USER, paths[i].c_str(), 0, nullptr, 0, KEY_ALL_ACCESS,
-                          nullptr, &destination, nullptr) != ERROR_SUCCESS) {
+                         nullptr, &destination, nullptr) != ERROR_SUCCESS) {
         restored = false;
-      } else {
-        restored &= RegCopyTreeW(source, nullptr, destination) == ERROR_SUCCESS;
-      }
+      } else restored &= RegCopyTreeW(source, nullptr, destination) == ERROR_SUCCESS;
       if (source) RegCloseKey(source);
       if (destination) RegCloseKey(destination);
     }
-    close_snapshot(restored);
+    RegCloseKey(storage);
     SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
     if (!restored) {
       std::fwprintf(stderr, L"Registry restoration failed; snapshot retained at HKCU\\%ls\n", backup.c_str());
       std::abort();
     }
-  }
-
- private:
-  bool restore_machine_roots() noexcept {
-    bool restored = true;
-    for (std::size_t i = 0; i < machine_present.size() && i < machine_paths.size(); ++i) {
-      restored &= delete_machine_tree(machine_paths[i]);
-      if (!machine_present[i]) continue;
-      const auto key = std::to_wstring(i);
-      HKEY source{}, destination{}, parent{};
-      if (RegOpenKeyExW(machine_storage, key.c_str(), 0, KEY_READ, &source) != ERROR_SUCCESS) {
-        restored = false;
-        continue;
-      }
-      const auto slash = machine_paths[i].find_last_of(L'\\');
-      const auto parent_path = machine_paths[i].substr(0, slash);
-      const auto leaf = machine_paths[i].substr(slash + 1);
-      if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, parent_path.c_str(), 0, nullptr, 0,
-                          KEY_ALL_ACCESS | KEY_WOW64_64KEY, nullptr, &parent, nullptr) != ERROR_SUCCESS ||
-          RegCreateKeyExW(parent, leaf.c_str(), 0, nullptr, 0,
-                          KEY_ALL_ACCESS | KEY_WOW64_64KEY, nullptr, &destination, nullptr) != ERROR_SUCCESS) {
-        restored = false;
-      } else {
-        restored &= RegCopyTreeW(source, nullptr, destination) == ERROR_SUCCESS;
-      }
-      if (destination) RegCloseKey(destination);
-      if (parent) RegCloseKey(parent);
-      RegCloseKey(source);
-    }
-    return restored;
-  }
-
-  void close_snapshot(bool remove_backup) noexcept {
-    if (machine_storage) RegCloseKey(machine_storage);
-    if (storage) RegCloseKey(storage);
-    if (remove_backup) RegDeleteTreeW(HKEY_CURRENT_USER, backup.c_str());
+    RegDeleteTreeW(HKEY_CURRENT_USER, backup.c_str());
   }
 };
 
@@ -524,11 +402,6 @@ std::expected<void, std::string> invoke_and_decode(ContextMenu& menu, HMENU subm
 int wmain(int argc, wchar_t** argv) try {
   using namespace awj::shell_context_menu;
   if (argc != 2) return fail("expected AWJ executable path argument");
-  if (!machine_tests_enabled() || !process_is_elevated()) {
-    std::fputs("SKIP: shell_context_menu_explorer requires an elevated process and "
-               "AWJ_RUN_MACHINE_REGISTRY_TESTS=1; HKLM was not touched.\n", stdout);
-    return 0;
-  }
   const std::filesystem::path awj_exe{argv[1]};
   if (!std::filesystem::is_regular_file(awj_exe)) return fail("AWJ executable is missing");
 

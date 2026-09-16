@@ -543,29 +543,63 @@ std::expected<std::string, std::string> get_bytes(
 }  // namespace runtime_detail
 #endif
 
+namespace runtime_detail {
+
+bool endpoint_not_found(std::string_view error) noexcept {
+  return error == "更新服务器返回 HTTP 404。";
+}
+
+std::expected<std::pair<std::string, std::string>, std::string>
+get_document_pair(std::string_view primary_document,
+                  std::string_view primary_signature,
+                  std::string_view legacy_document,
+                  std::string_view legacy_signature,
+                  std::size_t document_limit,
+                  std::size_t signature_limit,
+                  std::stop_token token) {
+  auto raw = get_bytes(std::string{primary_document}, document_limit, token);
+  if (raw) {
+    auto signature = get_bytes(std::string{primary_signature}, signature_limit, token);
+    if (signature) return std::pair{std::move(*raw), std::move(*signature)};
+    if (!endpoint_not_found(signature.error())) {
+      return std::unexpected{signature.error()};
+    }
+  } else if (!endpoint_not_found(raw.error())) {
+    return std::unexpected{raw.error()};
+  }
+
+  auto legacy_raw = get_bytes(std::string{legacy_document}, document_limit, token);
+  if (!legacy_raw) return std::unexpected{legacy_raw.error()};
+  auto legacy_sig = get_bytes(std::string{legacy_signature}, signature_limit, token);
+  if (!legacy_sig) return std::unexpected{legacy_sig.error()};
+  return std::pair{std::move(*legacy_raw), std::move(*legacy_sig)};
+}
+
+}  // namespace runtime_detail
+
 std::expected<VerifiedUpdateKeyring, std::string> fetch_verified_update_keyring(
     std::uint64_t last_verified_sequence = 0, std::stop_token token = {}) {
   if (!update_keyring_roots_configured()) {
     return std::unexpected{
         "此构建未配置至少两把有效更新根公钥，已拒绝联网更新。"};
   }
-  auto raw = runtime_detail::get_bytes(std::string{update_keyring_url},
-                                       maximum_manifest_bytes, token);
-  if (!raw) return std::unexpected{raw.error()};
-  auto signature = runtime_detail::get_bytes(
-      std::string{update_keyring_signature_url}, 16 * 1024, token);
-  if (!signature) return std::unexpected{signature.error()};
-  auto keyring = verify_and_parse_update_keyring(*raw, *signature);
+  auto pair = runtime_detail::get_document_pair(
+      update_keyring_url, update_keyring_signature_url,
+      legacy_update_keyring_url, legacy_update_keyring_signature_url,
+      maximum_manifest_bytes, 16 * 1024, token);
+  if (!pair) return std::unexpected{pair.error()};
+  auto& [raw, signature] = *pair;
+  auto keyring = verify_and_parse_update_keyring(raw, signature);
   if (!keyring) return std::unexpected{keyring.error()};
   if (auto accepted = accept_verified_update_document(
-          UpdateSecurityDocument::keyring, keyring->sequence, *raw,
+          UpdateSecurityDocument::keyring, keyring->sequence, raw,
           last_verified_sequence);
       !accepted) {
     return std::unexpected{accepted.error()};
   }
   return VerifiedUpdateKeyring{.keyring = std::move(*keyring),
-                               .raw_bytes = std::move(*raw),
-                               .signature_envelope = std::move(*signature)};
+                               .raw_bytes = std::move(raw),
+                               .signature_envelope = std::move(signature)};
 }
 
 std::expected<VerifiedManifest, std::string> fetch_verified_manifest(
@@ -600,14 +634,13 @@ fetch_verified_archive_manifest_v2(std::uint64_t last_verified_sequence,
                                    std::stop_token token = {}) {
   auto keyring = fetch_verified_update_keyring(0, token);
   if (!keyring) return std::unexpected{keyring.error()};
-  auto raw = runtime_detail::get_bytes(std::string{archive_manifest_v2_url},
-                                       maximum_manifest_bytes, token);
-  if (!raw) return std::unexpected{raw.error()};
-  auto signature = runtime_detail::get_bytes(
-      std::string{archive_manifest_v2_signature_url}, maximum_signature_bytes,
-      token);
-  if (!signature) return std::unexpected{signature.error()};
-  auto manifest = verify_and_parse_archive_manifest_v2(*raw, *signature,
+  auto pair = runtime_detail::get_document_pair(
+      archive_manifest_v2_url, archive_manifest_v2_signature_url,
+      legacy_archive_manifest_v2_url, legacy_archive_manifest_v2_signature_url,
+      maximum_manifest_bytes, maximum_signature_bytes, token);
+  if (!pair) return std::unexpected{pair.error()};
+  auto& [raw, signature] = *pair;
+  auto manifest = verify_and_parse_archive_manifest_v2(raw, signature,
                                                         keyring->keyring);
   if (!manifest) return std::unexpected{manifest.error()};
   if (!is_archive_manifest_v2_fresh(*manifest, last_verified_sequence)) {
@@ -616,13 +649,13 @@ fetch_verified_archive_manifest_v2(std::uint64_t last_verified_sequence,
   }
   if (auto accepted = accept_verified_update_document(
           UpdateSecurityDocument::archive_manifest_v2, manifest->sequence,
-          *raw, last_verified_sequence);
+          raw, last_verified_sequence);
       !accepted) {
     return std::unexpected{accepted.error()};
   }
   return VerifiedArchiveManifestV2{.manifest = std::move(*manifest),
-                                   .raw_bytes = std::move(*raw),
-                                   .signature_base64 = std::move(*signature),
+                                   .raw_bytes = std::move(raw),
+                                   .signature_base64 = std::move(signature),
                                    .keyring_raw_bytes = std::move(keyring->raw_bytes),
                                    .keyring_signature_envelope =
                                        std::move(keyring->signature_envelope)};

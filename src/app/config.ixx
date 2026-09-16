@@ -20,6 +20,7 @@ module;
 #include <thread>
 #include <type_traits>
 #include <vector>
+#include <utility>
 
 export module awj.config;
 
@@ -45,6 +46,7 @@ struct ImageSizeLimit {
   std::optional<int> max_height{};
   std::optional<int> max_long_edge{};
   std::optional<int> max_short_edge{};
+  std::optional<int> scale_percent{};
 };
 
 constexpr int automatic_thread_budget(unsigned hardware) noexcept {
@@ -134,6 +136,7 @@ struct AppConfig {
   int jpegli_progressive_level{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{
        encoding_defaults::default_memory_limit_bytes};
@@ -165,6 +168,52 @@ struct AppConfig {
   // session-only unlock of 20 GiB input/runtime caps; never persist.
   bool unlock_max_input_file_bytes{false};
 };
+
+std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
+    std::size_t width, std::size_t height, const AppConfig& cfg) {
+  if (width == 0 || height == 0 ||
+      cfg.image_size_limit.mode == ImageSizeLimitMode::none) {
+    return std::nullopt;
+  }
+  double scale = 1.0;
+  const auto apply_edge = [&](std::optional<int> limit, std::size_t value) {
+    if (limit && value > static_cast<std::size_t>(*limit)) {
+      scale = std::min(scale, static_cast<double>(*limit) / static_cast<double>(value));
+    }
+  };
+  if (cfg.image_size_limit.mode == ImageSizeLimitMode::automatic) {
+    switch (cfg.output_format) {
+      case OutputFormat::avif:
+        // AOM/Grid preserves dimensions; only explicit manual limits resize AVIF.
+        break;
+      case OutputFormat::webp:
+        apply_edge(16383, std::max(width, height));
+        break;
+      case OutputFormat::jpgli:
+        apply_edge(65535, std::max(width, height));
+        break;
+      case OutputFormat::png:
+      case OutputFormat::jxl:
+      default:
+        break;
+    }
+  } else {
+    scale = cfg.image_size_limit.scale_percent.value_or(100) / 100.0;
+    apply_edge(cfg.image_size_limit.max_width, width);
+    apply_edge(cfg.image_size_limit.max_height, height);
+    apply_edge(cfg.image_size_limit.max_long_edge, std::max(width, height));
+    apply_edge(cfg.image_size_limit.max_short_edge, std::min(width, height));
+  }
+  if (scale >= 1.0) {
+    return std::nullopt;
+  }
+  const auto target_width = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(width * scale)));
+  const auto target_height = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(height * scale)));
+  if (target_width == width && target_height == height) {
+    return std::nullopt;
+  }
+  return std::pair{target_width, target_height};
+}
 
 AppConfig default_app_config() { return AppConfig{}; }
 
@@ -642,6 +691,10 @@ std::expected<std::uint64_t, std::string> parse_memory_limit(
 }
 
 std::expected<void, std::string> validate_config(const AppConfig& cfg) {
+  if (cfg.image_size_limit.scale_percent &&
+      (*cfg.image_size_limit.scale_percent < 1 || *cfg.image_size_limit.scale_percent > 100)) {
+    return std::unexpected{"scale-percent 必须为 1～100 的整数。"};
+  }
   // 路径存在性在 scan_images 中校验；这里专注于格式自身不能违反的编码约束。
   if (cfg.output_template.size() > config_detail::max_output_template_length) {
     return std::unexpected{
@@ -847,6 +900,10 @@ std::string help_text() {
   --suffix-number            输出名按 name(1)、name(2) 避免重名
   --suffix-time              输出名追加时间后缀
   --suffix-random            输出名追加随机后缀
+  --scale-percent <1-100>     手动尺寸缩小至百分比，留空等同 100%
+  --jxl-jpeg-lossless         JPEG 转 JXL 默认无损转封装
+  --no-jxl-jpeg-lossless      JPEG 转 JXL 使用普通质量编码
+  --version                  显示编译版本
   --help                     显示帮助
 
 模板变量:
@@ -942,6 +999,25 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"-h" || lower == L"--help") {
       print_help();
       return ParseResult{.should_exit = true, .exit_code = 0, .config = cfg};
+    }
+
+    if (lower == L"--version") {
+      std::println("AWJimage {}", AWJ_BUILD_VERSION);
+      return ParseResult{.should_exit = true, .exit_code = 0, .config = cfg};
+    }
+
+    if (lower == L"--jxl-jpeg-lossless" || lower == L"--no-jxl-jpeg-lossless") {
+      cfg.jxl_jpeg_lossless = lower == L"--jxl-jpeg-lossless";
+      continue;
+    }
+
+    if (lower == L"--scale-percent") {
+      const auto value = require_value(i, args[i]);
+      if (!value) return std::unexpected{value.error()};
+      const auto parsed = config_detail::parse_int_range(*value, 1, 100, "scale-percent");
+      if (!parsed) return std::unexpected{parsed.error()};
+      cfg.image_size_limit.scale_percent = *parsed;
+      continue;
     }
 
     if (lower == L"-i" || lower == L"--input") {

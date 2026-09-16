@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.14 - 2026-09-16
+
+- Includes 1.0.13 cumulatively. Native HEIC/HEIF decoding, percentage scaling, lossless JPEG-to-JXL conversion, and updater endpoint fixes retain their separate entry below.
+- Added a default-off Windows setting above WIC fallback: Compatibility context menu (requires administrator privileges). Without an installed menu, the preference applies on the next installation. Existing menus migrate immediately. Default mode retains the per-user shared tree; compatibility mode uses static SubCommands and the 64-bit machine CommandStore while presets remain owned by the original user.
+- Elevation runs only for explicit menu operations. The helper verifies its IPC peer and handles fixed machine entries only, without trusting user-writable machine recovery snapshots. Administrator-protected machine snapshots and separate user journals use durable commit records to coordinate configuration recovery. Failure or cancellation retains the original menu and setting; repeated actions are blocked during the operation.
+- Unified translucent blue drop feedback. Queue details open on normal release and remain closed after drag reordering. Fixed Linux event binding, source-row mapping under failure filtering, and moving column-resizer coordinates while keeping headers aligned with rows.
+- Queue deduplication uses a set and reuses scan results, with exception-safe insertion into the list and set. Linux path keys preserve case. Ordinary work uses a typical estimate for concurrency planning and cumulative memory admission to fill available capacity; oversized inputs are rejected before decoding and identical output paths remain serial.
+- Closing during conversion requires confirmation. Windows keeps the window open if forced termination fails; Linux requests cancellation and waits for cleanup. Split Windows Studio configuration, queue, import, menus, updates, and execution into focused modules.
+
+## 1.0.13 - 2026-09-16
+
+- Added proportional 1–100% scaling to Manual Size. The percentage shares one target-size calculation with maximum width, height, long edge, and short edge; Studio, shell-menu parameters, user presets, and `--scale-percent` all use the same value. Any actual resize disables AVIF lossless passthrough and JPEG-to-JXL bitstream transcode so size limits cannot be bypassed.
+- Added native HEIC/HEIF decoding with pinned libheif 1.23.4 + libde265 1.1.2, built with the HEVC decoder backend only and no encoders or dynamic plugins. Decoding preserves source 4:2:0/4:2:2/4:4:4 identity, bit depth, NCLX/CICP, full/limited range, HDR/ICC, alpha, and container transforms; WIC remains the Windows fallback for other formats.
+- Added a default-on “Lossless for JPG conversion” JXL option. Eligible JPEG inputs use libjxl JPEG bitstream transcode; unsupported inputs or failed transcodes fall back to the existing pixel encoder and quality mapping. The setting is shared by Studio, shell-menu parameters, presets, and CLI.
+- Refined Studio layout: the six queue checkboxes use the smallest equal width required by the active language with fixed spacing, so wider windows no longer stretch the gaps. Parameters now expose Delete Preset next to Save Preset, disabled for the built-in default and while a task is running.
+- Kept Windows classic shell integration HKCU-only and elevation-free while completing extension, directory, preset, and parameter synchronization on the existing shared-tree transaction model. Legacy HKLM entries are detected and reported only; machine-level modification is explicitly refused. Preset atomic writes now retry bounded transient Windows sharing conflicts without changing journal/recovery semantics.
+- Unified product versioning on the root `VERSION` file and added `--version`. The updater now prefers unversioned `update-keyring.json` / `update-archive.json` endpoints and falls back to legacy names only when the new pair is missing; signature, corruption, or replay failures never trigger downgrade fallback.
+- Windows queue status, timing, and log events now update individual rows, with indexed task lookup and incremental counters. Failed tasks use a filtered model while preserving source indices for selection, details, and drag operations. Logs share storage, clearing the queue releases its old model, and fonts and update history load on demand.
+- Fixed brightness errors when storing decoded 10/12-bit HEIC samples in the 16-bit pixel pipeline, PNG output for HEIC images without alpha, and duplicate EXIF rotation after container transforms. Tile scheduling no longer multiplies the codec thread budget, and pixel copying responds to cancellation.
+
 ## 1.0.12 - 2026-09-11
 
 - Fixed a reentrant Slint focus borrow by releasing it before callbacks. Added a window activation/focus regression that reproduces the panic without the patch.

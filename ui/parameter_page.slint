@@ -3,6 +3,7 @@ import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, So
 import { StudioTheme } from "studio_theme.slint";
 
 export component ParameterForm inherits VerticalLayout {
+    in property <length> available-width;
     in-out property <int> alpha-policy-index;
     in-out property <int> avif-color-representation-index;
     in-out property <int> avif-encoder-index;
@@ -30,12 +31,15 @@ export component ParameterForm inherits VerticalLayout {
     in-out property <bool> jpegli-optimize-huffman;
     in-out property <int> jpegli-progressive-index;
     in-out property <bool> jpegli-xyb;
+    in-out property <bool> jxl-jpeg-lossless;
     in-out property <string> max-height-text;
     in-out property <string> max-long-edge-text;
     in-out property <string> max-short-edge-text;
+    in-out property <string> scale-percent-text;
     in-out property <string> max-width-text;
     in-out property <string> memory-limit-text;
     callback open-preset-editor();
+    callback open-preset-delete-confirmation();
     in property <color> panel-bg;
     in property <color> panel-border;
     in property <length> parameter-control-height;
@@ -99,6 +103,15 @@ export component ParameterForm inherits VerticalLayout {
             height: 36px;
             enabled: !root.running;
             clicked => { root.open-preset-editor(); }
+        }
+        SoftButton {
+            dark-mode: root.dark-mode;
+            text: @tr("删除预设");
+            variant: "outline";
+            width: 96px;
+            height: 36px;
+            enabled: !root.running && root.parameter-preset-index > 0;
+            clicked => { root.open-preset-delete-confirmation(); }
         }
     }
     HorizontalLayout {
@@ -231,7 +244,7 @@ export component ParameterForm inherits VerticalLayout {
         }
     }
 
-    if root.size-limit-index == 2: HorizontalLayout {
+    if root.size-limit-index == 2 && root.available-width >= 690px: HorizontalLayout {
         height: 48px;
         spacing: 10px;
         cross-axis-alignment: center;
@@ -240,6 +253,59 @@ export component ParameterForm inherits VerticalLayout {
         LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
         LineEdit { accessible-label: @tr("最大长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
         LineEdit { accessible-label: @tr("最大短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+        HorizontalLayout {
+            width: 100px;
+            height: root.parameter-control-height;
+            spacing: 4px;
+            LineEdit { accessible-label: @tr("缩小至"); text <=> root.scale-percent-text; placeholder-text: @tr("缩小至"); input-type: number; enabled: !root.running; horizontal-stretch: 1; height: root.parameter-control-height; }
+            Text { text: "%"; width: 14px; color: root.text-body; font-size: 14px; vertical-alignment: center; horizontal-alignment: center; }
+        }
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+    }
+
+    if root.size-limit-index == 2 && root.available-width < 690px: VerticalLayout {
+        min-height: 96px;
+        spacing: 8px;
+        HorizontalLayout {
+            height: 44px;
+            spacing: 10px;
+            cross-axis-alignment: center;
+            Text { text: @tr("手动尺寸"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+            LineEdit { accessible-label: @tr("最大宽度"); text <=> root.max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+            LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+        }
+        HorizontalLayout {
+            height: 44px;
+            spacing: 10px;
+            cross-axis-alignment: center;
+            Rectangle { width: 88px; background: transparent; }
+            LineEdit { accessible-label: @tr("最大长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+            LineEdit { accessible-label: @tr("最大短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+            HorizontalLayout {
+                width: 100px;
+                height: root.parameter-control-height;
+                spacing: 4px;
+                LineEdit { accessible-label: @tr("缩小至"); text <=> root.scale-percent-text; placeholder-text: @tr("缩小至"); input-type: number; enabled: !root.running; horizontal-stretch: 1; height: root.parameter-control-height; }
+                Text { text: "%"; width: 14px; color: root.text-body; font-size: 14px; vertical-alignment: center; horizontal-alignment: center; }
+            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+        }
+    }
+
+    if root.format-index == 2: HorizontalLayout {
+        min-height: 56px;
+        spacing: 10px;
+        cross-axis-alignment: center;
+        Text { text: "JXL"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        CheckBox { text: @tr("JPG转换走无损"); checked <=> root.jxl-jpeg-lossless; enabled: !root.running; }
+        ParamHint {
+            horizontal-stretch: 1;
+            lead: @tr("默认开启");
+            lead-color: root.hint-green;
+            detail: @tr("兼容 JPEG 输入优先无损转封装；需要缩放、移除元数据或源不兼容时自动按普通 JXL 质量重编码。非 JPEG 输入始终使用普通质量编码。");
+            detail-color: root.text-muted;
+        }
     }
 
     if root.format-index == 0 || root.format-index == 3: Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
@@ -360,12 +426,15 @@ export component ParameterPage inherits Rectangle {
     in-out property <bool> jpegli-optimize-huffman;
     in-out property <int> jpegli-progressive-index;
     in-out property <bool> jpegli-xyb;
+    in-out property <bool> jxl-jpeg-lossless;
     in-out property <string> max-height-text;
     in-out property <string> max-long-edge-text;
     in-out property <string> max-short-edge-text;
+    in-out property <string> scale-percent-text;
     in-out property <string> max-width-text;
     in-out property <string> memory-limit-text;
     callback open-preset-editor();
+    callback open-preset-delete-confirmation();
     in property <color> panel-bg;
     in property <color> panel-border;
     in property <length> parameter-control-height;
@@ -394,6 +463,7 @@ export component ParameterPage inherits Rectangle {
     ScrollView {
         viewport-width: parent.width;
         ParameterForm {
+            available-width: root.width;
             padding: 22px;
             alpha-policy-index <=> root.alpha-policy-index;
             avif-color-representation-index <=> root.avif-color-representation-index;
@@ -420,9 +490,11 @@ export component ParameterPage inherits Rectangle {
             jpegli-optimize-huffman <=> root.jpegli-optimize-huffman;
             jpegli-progressive-index <=> root.jpegli-progressive-index;
             jpegli-xyb <=> root.jpegli-xyb;
+            jxl-jpeg-lossless <=> root.jxl-jpeg-lossless;
             max-height-text <=> root.max-height-text;
             max-long-edge-text <=> root.max-long-edge-text;
             max-short-edge-text <=> root.max-short-edge-text;
+            scale-percent-text <=> root.scale-percent-text;
             max-width-text <=> root.max-width-text;
             memory-limit-text <=> root.memory-limit-text;
             panel-bg : root.panel-bg;
@@ -445,6 +517,7 @@ export component ParameterPage inherits Rectangle {
             combo-popup-finished() => { root.combo-popup-finished(); }
             combo-popup-requested() => { root.combo-popup-requested(); }
             open-preset-editor() => { root.open-preset-editor(); }
+            open-preset-delete-confirmation() => { root.open-preset-delete-confirmation(); }
             parameter-preset-selected(a0) => { root.parameter-preset-selected(a0); }
         }
     }

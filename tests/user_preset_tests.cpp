@@ -34,6 +34,9 @@ int main() try {
   preset.formats[0].max_jobs = 3;
   preset.formats[0].memory_limit_bytes = 1536ull * 1024 * 1024;
   preset.formats[0].visual_quality = 87;
+  preset.formats[0].image_size_limit.mode = awj::ImageSizeLimitMode::manual;
+  preset.formats[0].image_size_limit.scale_percent = 80;
+  preset.formats[2].jxl_jpeg_lossless = false;
   preset.shell_menu = true;
   preset.source_path = require(awj::save_user_preset(preset, false));
   check(!awj::save_user_preset(preset, false), "duplicate create accepted");
@@ -49,7 +52,9 @@ int main() try {
       shell.config.memory_limit_bytes == 0, "shell preset retained explicit resource/visual quality controls");
   const auto reread = require(awj::load_user_preset_file(original_path));
   check(reread.formats[0].memory_limit_bytes == preset.formats[0].memory_limit_bytes &&
-      reread.formats[0].visual_quality == 87 && reread.formats[0].max_jobs == 3,
+      reread.formats[0].visual_quality == 87 && reread.formats[0].max_jobs == 3 &&
+      reread.formats[0].image_size_limit.scale_percent.value_or(0) == 80 &&
+      reread.formats[2].jxl_jpeg_lossless == false,
       "shell execution rewrote source preset values");
   const auto duplicate = directory / "duplicate.jsonc";
   fs::copy_file(original_path, duplicate);

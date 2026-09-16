@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-The source version is **1.0.12**. See the [local validation record (Chinese)](docs/validation-1.0.12.md). Published versions and downloads are on [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases).
+The source version is **1.0.13**. See the [local validation record (Chinese)](docs/validation-1.0.13.md). Published versions and downloads are on [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases).
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -11,10 +11,11 @@ AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share t
 - WebP: libwebp
 - JXL: libjxl
 - JPGLI: google/jpegli; produces JPEG-compatible bitstreams with the default `.jpg` extension.
+- HEIC/HEIF input: native libheif 1.23.4 + libde265 1.1.2 decoding; only HEVC decode support is built, with HEIC encoders and dynamic plugins disabled.
 
 The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg can only return later as explicit external integrations.
 
-Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
+Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. HEIC/HEIF uses the cross-platform native libheif/libde265 decoder; WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
 ## Release archives
 
@@ -79,7 +80,7 @@ Versioning is controlled by the root `VERSION` file. A real release must use an 
 
 ## Automatic updates
 
-From 1.0.6, clients first use a `update-keyring-v1.json` verified by at least two of three compiled roots to choose a non-revoked release key, then verify v1/v2 manifests carrying `key_id`, monotonic sequence, `issued_at`, and `expires_at`. Each document type persists its last verified sequence and raw SHA-256 beside the executable with an inter-process lock, flush, and atomic replace; damaged state, rollback, and changed bytes at one sequence fail closed. Windows and writable Linux installs still stage on the same volume, atomically replace, health-check, and roll back; unwritable Linux installs open the Release page without silent elevation.
+From 1.0.6, clients use a keyring verified by at least two of three compiled roots to choose a non-revoked release key, then verify v1/v2 manifests carrying `key_id`, monotonic sequence, `issued_at`, and `expires_at`. From 1.0.13 the updater prefers `update-keyring.json` / `update-archive.json` plus their signatures, and falls back to legacy names only when the new pair is missing; signature, corruption, and replay failures never downgrade. Each document type persists its last verified sequence and raw SHA-256 beside the executable with an inter-process lock, flush, and atomic replace. Windows and writable Linux installs still stage on the same volume, atomically replace, health-check, and roll back; unwritable Linux installs open the Release page without silent elevation.
 
 Legacy schema-1 `update-manifest.json` remains only for the local Windows 1.0.3→1.0.5 bridge; 1.0.5 is not a v2 candidate. See [update signing and key rotation](docs/update-security.en.md) for custody, expiry, revocation, and rotation.
 

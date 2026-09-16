@@ -30,7 +30,17 @@ export component AwjStudio inherits Window {
     in-out property <bool> preset-editor-open: false;
     in-out property <bool> preset-editor-existing: false;
     in-out property <bool> preset-editor-shell-menu: false;
+    // 编码中关窗的确认层：C++ 侧拦截 close-requested 后置 true，由用户决定返回
+    // 还是强制停止退出。见 main.cpp 的 on_close_requested。
+    in-out property <bool> close-confirm-open: false;
+    in property <bool> force-close-supported: true;
+    callback close-confirm-dismissed();
+    callback close-confirm-force-quit();
+    in-out property <bool> preset-editor-delete-confirmation: false;
     in property <bool> shell-menu-injection-supported: true;
+    in-out property <bool> shell-menu-compatibility: false;
+    in-out property <bool> menu-operation-active: false;
+    callback shell-menu-compatibility-requested();
     in-out property <bool> legacy-machine-menu-present: false;
     callback delete-parameter-preset();
     callback cleanup-legacy-machine-menu();
@@ -60,6 +70,7 @@ export component AwjStudio inherits Window {
     in-out property <int> jpegli-progressive-index: 2;
     in-out property <bool> jpegli-optimize-huffman: true;
     in-out property <bool> jpegli-xyb: false;
+    in-out property <bool> jxl-jpeg-lossless: true;
     in-out property <int> alpha-policy-index: 1;
     in-out property <string> threads-text: "";
     in-out property <string> memory-limit-text: "";
@@ -69,6 +80,7 @@ export component AwjStudio inherits Window {
     in-out property <string> max-height-text: "";
     in-out property <string> max-long-edge-text: "";
     in-out property <string> max-short-edge-text: "";
+    in-out property <string> scale-percent-text: "";
     in-out property <string> speed-text: "";
     in-out property <string> template-text: "";
     in-out property <bool> template-params-selected: false;
@@ -128,6 +140,7 @@ export component AwjStudio inherits Window {
     in-out property <int> menu-jpegli-progressive-index: 2;
     in-out property <bool> menu-jpegli-optimize-huffman: true;
     in-out property <bool> menu-jpegli-xyb: false;
+    in-out property <bool> menu-jxl-jpeg-lossless: true;
     in-out property <bool> menu-strip-metadata: false;
     in-out property <bool> menu-allow-wic-fallback: true;
     in-out property <bool> menu-close-on-finish: true;
@@ -136,6 +149,7 @@ export component AwjStudio inherits Window {
     in-out property <string> menu-max-height-text: "";
     in-out property <string> menu-max-long-edge-text: "";
     in-out property <string> menu-max-short-edge-text: "";
+    in-out property <string> menu-scale-percent-text: "";
     in-out property <bool> running: false;
     // Windows Explorer 外部拖放由 C++ 原生 IDropTarget 驱动；这里只接收可视状态，
     // 不再从 Slint DropEvent/DataTransfer 解析文件系统路径。
@@ -148,6 +162,8 @@ export component AwjStudio inherits Window {
     in-out property <float> progress: 0.0;
     in-out property <string> status-text: @tr("就绪");
     in property <[TaskRow]> task-rows;
+    in property <[TaskRow]> failed-task-rows;
+    pure callback failed-row-source-index(int) -> int;
     in-out property <int> queue-pending-count: 0;
     in-out property <int> queue-running-count: 0;
     in-out property <int> queue-success-count: 0;
@@ -172,9 +188,10 @@ export component AwjStudio inherits Window {
     property <length> template-token-button-width: 68px;
     property <length> page-gap: 10px;
     property <length> nav-width: 196px;
-    property <length> queue-filename-width: 170px;
-    property <length> queue-size-width: 72px;
-    property <length> queue-status-width: 104px;
+    // 队列列宽由 QueuePage 内的拖拽手柄改写，这里用 in-out 双向绑定保留会话内状态。
+    in-out property <length> queue-filename-width: 170px;
+    in-out property <length> queue-size-width: 72px;
+    in-out property <length> queue-status-width: 104px;
     in-out property <int> pending-theme-index: -1;
     in-out property <int> combo-close-generation: 0;
     in-out property <bool> combo-popup-open: false;
@@ -258,6 +275,7 @@ export component AwjStudio inherits Window {
     callback combo-popup-finished();
     callback theme-selection-requested(int, length, length);
     callback language-selection-requested(int);
+    callback settings-page-opened();
     callback update-channel-selection-requested(int);
     callback show-update-changelog-requested(bool);
     callback hide-update-changelog-after-exit-requested(bool);
@@ -310,6 +328,12 @@ export component AwjStudio inherits Window {
         root.ui-font-family = root.ui-font-index > 0 && root.ui-font-index < root.ui-font-options.length
             ? root.ui-font-options[root.ui-font-index].text
             : "";
+    }
+
+    changed selected-page => {
+        if (root.selected-page == 2) {
+            root.settings-page-opened();
+        }
     }
 
     changed show-update-changelog => {
@@ -583,12 +607,15 @@ export component AwjStudio inherits Window {
     jpegli-optimize-huffman <=> root.jpegli-optimize-huffman;
     jpegli-progressive-index <=> root.jpegli-progressive-index;
     jpegli-xyb <=> root.jpegli-xyb;
+    jxl-jpeg-lossless <=> root.jxl-jpeg-lossless;
     max-height-text <=> root.max-height-text;
     max-long-edge-text <=> root.max-long-edge-text;
     max-short-edge-text <=> root.max-short-edge-text;
+    scale-percent-text <=> root.scale-percent-text;
     max-width-text <=> root.max-width-text;
     memory-limit-text <=> root.memory-limit-text;
-    open-preset-editor() => { root.open-preset-editor(); }
+    open-preset-editor() => { root.preset-editor-delete-confirmation = false; root.open-preset-editor(); }
+    open-preset-delete-confirmation() => { root.preset-editor-delete-confirmation = true; root.open-preset-editor(); }
     panel-bg : root.panel-bg;
     panel-border : root.panel-border;
     parameter-control-height : root.parameter-control-height;
@@ -649,9 +676,11 @@ export component AwjStudio inherits Window {
     menu-jpegli-optimize-huffman <=> root.menu-jpegli-optimize-huffman;
     menu-jpegli-progressive-index <=> root.menu-jpegli-progressive-index;
     menu-jpegli-xyb <=> root.menu-jpegli-xyb;
+    menu-jxl-jpeg-lossless <=> root.menu-jxl-jpeg-lossless;
     menu-max-height-text <=> root.menu-max-height-text;
     menu-max-long-edge-text <=> root.menu-max-long-edge-text;
     menu-max-short-edge-text <=> root.menu-max-short-edge-text;
+    menu-scale-percent-text <=> root.menu-scale-percent-text;
     menu-max-width-text <=> root.menu-max-width-text;
     menu-quality-text <=> root.menu-quality-text;
     menu-size-limit-index <=> root.menu-size-limit-index;
@@ -724,7 +753,7 @@ export component AwjStudio inherits Window {
     queue-drag-dropped(a0, a1) => { return root.queue-drag-dropped(a0, a1); }
     queue-failed-count <=> root.queue-failed-count;
     queue-failed-only <=> root.queue-failed-only;
-    queue-filename-width : root.queue-filename-width;
+    queue-filename-width <=> root.queue-filename-width;
     queue-format-index <=> root.queue-format-index;
     queue-pending-count <=> root.queue-pending-count;
     queue-preset-description : root.queue-preset-description;
@@ -733,8 +762,8 @@ export component AwjStudio inherits Window {
     queue-preset-selected(a0) => { root.queue-preset-selected(a0); }
     queue-row-pointer-event(a0, a1, a2, a3) => { root.queue-row-pointer-event(a0, a1, a2, a3); }
     queue-running-count <=> root.queue-running-count;
-    queue-size-width : root.queue-size-width;
-    queue-status-width : root.queue-status-width;
+    queue-size-width <=> root.queue-size-width;
+    queue-status-width <=> root.queue-status-width;
     queue-success-count <=> root.queue-success-count;
     retry-failed() => { root.retry-failed(); }
     running <=> root.running;
@@ -744,6 +773,8 @@ export component AwjStudio inherits Window {
     status-text <=> root.status-text;
     strip-metadata <=> root.strip-metadata;
     task-rows : root.task-rows;
+    failed-task-rows: root.failed-task-rows;
+    failed-row-source-index(index) => { return root.failed-row-source-index(index); }
     template-date-selected <=> root.template-date-selected;
     template-hash8-selected <=> root.template-hash8-selected;
     template-params-selected <=> root.template-params-selected;
@@ -825,6 +856,10 @@ export component AwjStudio inherits Window {
                 }
 
                 if root.selected-page == 2: SettingsPage {
+    shell-menu-injection-supported: root.shell-menu-injection-supported;
+    shell-menu-compatibility <=> root.shell-menu-compatibility;
+    menu-operation-active: root.menu-operation-active;
+    shell-menu-compatibility-requested => { root.shell-menu-compatibility-requested(); }
     accent-strong : root.accent-strong;
     allow-wic-fallback <=> root.allow-wic-fallback;
     combo-bg : root.combo-bg;
@@ -872,9 +907,32 @@ export component AwjStudio inherits Window {
             }
         }
 
+        if root.menu-operation-active: Rectangle {
+            z: 1000;
+            background: root.panel-bg;
+            opacity: 0.95;
+            TouchArea { width: parent.width; height: parent.height; }
+            FocusScope {
+                init => { self.focus(); }
+                key-pressed(event) => { return accept; }
+                key-released(event) => { return accept; }
+            }
+            Text {
+                text: @tr("正在应用右键菜单设置；修改机器菜单时需要管理员权限。");
+                color: root.text-strong;
+                font-size: 16px;
+                x: 24px; width: max(0px, parent.width - 48px);
+                y: (parent.height - self.height) / 2;
+                height: self.preferred-height;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+        }
+
         if root.preset-editor-open: PresetEditor {
     preset-editor-existing: root.preset-editor-existing;
     preset-editor-shell-menu <=> root.preset-editor-shell-menu;
+    delete-confirmation <=> root.preset-editor-delete-confirmation;
     shell-menu-injection-supported: root.shell-menu-injection-supported;
     delete-parameter-preset => { root.delete-parameter-preset(); }
     cancel-preset-editor() => { root.cancel-preset-editor(); }
@@ -892,6 +950,80 @@ export component AwjStudio inherits Window {
     warning : root.warning;
     window-width : root.width;
 }
+
+        if root.close-confirm-open: close-confirm := Rectangle {
+            z: 110;
+            width: root.width;
+            height: root.height;
+            background: root.dark-mode ? #000000aa : #17203366;
+
+            // 吃掉点击，避免穿透到下层控件。
+            TouchArea { width: parent.width; height: parent.height; }
+
+            Rectangle {
+                width: min(440px, max(300px, parent.width - 48px));
+                height: self.preferred-height;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: 10px;
+                background: root.panel-bg;
+                border-color: root.panel-border;
+                border-width: 1px;
+                clip: true;
+
+                VerticalLayout {
+                    padding: 20px;
+                    spacing: 12px;
+
+                    Text {
+                        text: @tr("正在编码");
+                        color: root.text-strong;
+                        font-size: 18px;
+                        font-weight: 800;
+                        height: self.preferred-height;
+                    }
+                    Text {
+                        text: @tr("队列仍在编码中，现在退出会中断正在处理的任务。");
+                        color: root.text-body;
+                        font-size: 13px;
+                        wrap: word-wrap;
+                        width: 100%;
+                        height: self.preferred-height;
+                    }
+                    Text {
+                        text: root.force-close-supported ? @tr("强制停止编码并退出") : @tr("停止编码后退出");
+                        color: root.warning;
+                        font-size: 13px;
+                        font-weight: 700;
+                        wrap: word-wrap;
+                        width: 100%;
+                        height: self.preferred-height;
+                    }
+
+                    HorizontalLayout {
+                        height: 42px;
+                        spacing: 10px;
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        SoftButton {
+                            dark-mode: root.dark-mode;
+                            text: @tr("返回");
+                            variant: "action";
+                            width: 96px;
+                            height: 42px;
+                            clicked => { root.close-confirm-dismissed(); }
+                        }
+                        SoftButton {
+                            dark-mode: root.dark-mode;
+                            text: root.force-close-supported ? @tr("强制停止并退出") : @tr("停止编码并退出");
+                            variant: "danger";
+                            width: 150px;
+                            height: 42px;
+                            clicked => { root.close-confirm-force-quit(); }
+                        }
+                    }
+                }
+            }
+        }
 
         queue-menu-popup := PopupWindow {
             x: root.queue-menu-x;

@@ -1,4 +1,5 @@
 module;
+#include "../core/work_memory_admission.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -15,6 +16,7 @@ module;
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cstdint>
 #include <exception>
@@ -69,11 +71,14 @@ namespace pipeline_detail {
 
 struct WorkGroup {
   std::uintmax_t weight{};
+  // 组内串行处理，峰值内存取成员估算的最大值，供运行时内存准入使用。
+  std::uint64_t estimated_bytes{1};
   std::vector<ImageFile> files{};
 };
 
 struct LargeWorkGroup {
   std::uintmax_t weight{};
+  std::uint64_t estimated_bytes{1};
   std::vector<BatchLargeImageItem> items{};
 };
 
@@ -288,14 +293,33 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
   }
 }
 
-std::uint64_t estimated_decoded_bytes_per_file(
+// 并发规划用的「每图占用」估计。取中位数而不是最大值：一个队列里只要有一张
+// 大图，用最大值会把 memory_limit / per_file 压到 1，整批退化成串行（实测并发
+// 恒为 1）。中位数代表大多数文件的实际占用，让常规并发能起来；少数确实吃内存的
+// 大图由运行时内存准入（reserve_work_memory）单独限制，不会同时挤进内存。
+std::uint64_t typical_decoded_bytes_per_file(
     const std::vector<ClassifiedImageFile>& files) noexcept {
-  std::uint64_t estimate = 1;
-  for (const auto& image : files) {
-    estimate = std::max(estimate, image.estimated_bytes);
+  if (files.empty()) {
+    return 1;
   }
-  return estimate;
+  std::vector<std::uint64_t> sorted;
+  try {
+    sorted.reserve(files.size());
+    for (const auto& image : files) {
+      sorted.push_back(image.estimated_bytes);
+    }
+    const auto middle = sorted.begin() + static_cast<std::ptrdiff_t>(
+                                             sorted.size() / 2);
+    std::nth_element(sorted.begin(), middle, sorted.end());
+    return std::max<std::uint64_t>(1, *middle);
+  } catch (...) {
+    std::uint64_t largest = 1;
+    for (const auto& file : files) largest = std::max(largest, file.estimated_bytes);
+    return largest;
+  }
 }
+
+std::uint64_t estimated_large_working_set_bytes(const BatchLargeImageItem& item) noexcept;
 
 std::expected<void, std::string> reject_over_memory_budget(
     ClassifiedWork& classified, std::uint64_t memory_limit) {
@@ -333,35 +357,37 @@ std::expected<void, std::string> reject_over_memory_budget(
   if (auto result = reject_from(classified.ordinary); !result) {
     return result;
   }
-  return reject_from(classified.deferred_tail);
-}
-
-std::expected<std::vector<ImageFile>, std::string> classified_files_only(
-    const std::vector<ClassifiedImageFile>& classified) {
-  std::vector<ImageFile> files;
+  if (auto result = reject_from(classified.deferred_tail); !result) return result;
   try {
-    files.reserve(classified.size());
-    for (const auto& image : classified) {
-      files.push_back(image.file);
+    std::vector<BatchLargeImageItem> retained;
+    retained.reserve(classified.large_mode.size());
+    for (auto& image : classified.large_mode) {
+      const auto estimate = estimated_large_working_set_bytes(image);
+      if (estimate > memory_limit)
+        classified.memory_rejected.push_back({.file = std::move(image.file),
+                                               .estimated_bytes = estimate});
+      else retained.push_back(std::move(image));
     }
+    classified.large_mode = std::move(retained);
+    return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"批处理文件列表内存不足。"};
+    return std::unexpected{"大图内存预算预检列表内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"批处理文件列表数量超过运行时限制。"};
+    return std::unexpected{"大图内存预算预检列表数量超过运行时限制。"};
   }
-  return files;
 }
 
 std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
-    const AppConfig& cfg, const std::vector<ImageFile>& files) {
+    const AppConfig& cfg, const std::vector<ClassifiedImageFile>& classified) {
   std::vector<WorkGroup> groups;
   std::unordered_map<std::wstring, std::size_t> index_by_output;
 
   try {
     // 同一输出路径的文件必须串行处理，避免并发覆盖；不同输出路径按总大小分组调度。
-    groups.reserve(files.size());
-    index_by_output.reserve(files.size());
-    for (const auto& image : files) {
+    groups.reserve(classified.size());
+    index_by_output.reserve(classified.size());
+    for (const auto& entry : classified) {
+      const auto& image = entry.file;
       const auto output = output_path_for(cfg, image);
       auto key = normalized_lower_path_key(output);
       const auto [it, inserted] = index_by_output.emplace(key, groups.size());
@@ -371,6 +397,9 @@ std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
 
       auto& group = groups[it->second];
       group.weight = saturated_add_uintmax(group.weight, image.bytes);
+      // 组内串行，峰值取组内最大估算；供运行时内存准入使用。
+      group.estimated_bytes =
+          std::max(group.estimated_bytes, entry.estimated_bytes);
       group.files.push_back(image);
     }
   } catch (const std::bad_alloc&) {
@@ -418,6 +447,8 @@ std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
 
       auto& group = groups[it->second];
       group.weight = saturated_add_uintmax(group.weight, item.file.bytes);
+      group.estimated_bytes =
+          std::max(group.estimated_bytes, estimated_large_working_set_bytes(item));
       group.items.push_back(item);
     }
   } catch (const std::bad_alloc&) {
@@ -976,6 +1007,23 @@ void report_worker_exception_noexcept(FileLogger& logger,
                                  "[WARN] 工作线程异常，已停止该线程。");
 }
 
+
+struct MemoryAdmissionGuard {
+  WorkMemoryAdmission* admission{};
+  std::uint64_t amount{};
+
+  MemoryAdmissionGuard() = default;
+  MemoryAdmissionGuard(WorkMemoryAdmission& owner, std::uint64_t reserved) noexcept
+      : admission(&owner), amount(reserved) {}
+  ~MemoryAdmissionGuard() {
+    if (admission != nullptr) {
+      admission->release(amount);
+    }
+  }
+  MemoryAdmissionGuard(const MemoryAdmissionGuard&) = delete;
+  MemoryAdmissionGuard& operator=(const MemoryAdmissionGuard&) = delete;
+};
+
 WorkExecutionResult encode_work_groups(
     const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
     const std::vector<WorkGroup>& work, std::size_t progress_total,
@@ -990,8 +1038,8 @@ WorkExecutionResult encode_work_groups(
       std::max(1, std::min({resource_plan.file_parallelism,
                             resource_plan.memory_file_parallelism,
                             count_to_int_saturated(work.size())}));
-  std::atomic<std::size_t> next{0};
   std::atomic<int> worker_failures{0};
+  WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
 
   std::vector<std::jthread> workers;
   try {
@@ -1049,11 +1097,13 @@ WorkExecutionResult encode_work_groups(
               break;
             }
 
-            const auto work_index = next.fetch_add(1);
-            if (work_index >= work.size()) {
+            const auto ticket = admission.acquire(stop_token);
+            if (!ticket) break;
+            const auto& group = work[ticket->index];
+            MemoryAdmissionGuard reservation{admission, ticket->bytes};
+            if (stop_token.stop_requested()) {
               break;
             }
-            const auto& group = work[work_index];
             if (group.files.size() > 1 &&
                 cfg.collision_mode == CollisionMode::overwrite) {
               best_effort([&] {
@@ -1223,8 +1273,8 @@ WorkExecutionResult encode_large_work_groups(
       std::max(1, std::min({resource_plan.file_parallelism,
                             resource_plan.memory_file_parallelism,
                             count_to_int_saturated(work.size())}));
-  std::atomic<std::size_t> next{0};
   std::atomic<int> worker_failures{0};
+  WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
 
   std::vector<std::jthread> workers;
   try {
@@ -1283,11 +1333,13 @@ WorkExecutionResult encode_large_work_groups(
               break;
             }
 
-            const auto work_index = next.fetch_add(1);
-            if (work_index >= work.size()) {
+            const auto ticket = admission.acquire(stop_token);
+            if (!ticket) break;
+            const auto& group = work[ticket->index];
+            MemoryAdmissionGuard reservation{admission, ticket->bytes};
+            if (stop_token.stop_requested()) {
               break;
             }
-            const auto& group = work[work_index];
             if (group.items.size() > 1 &&
                 cfg.collision_mode == CollisionMode::overwrite) {
               best_effort([&] {
@@ -1649,23 +1701,13 @@ std::expected<BatchSummary, std::string> run_batch(
         !memory_filter) {
       return std::unexpected{memory_filter.error()};
     }
-    auto ordinary_files =
-        pipeline_detail::classified_files_only(classified->ordinary);
-    if (!ordinary_files) {
-      return std::unexpected{ordinary_files.error()};
-    }
-    auto deferred_files =
-        pipeline_detail::classified_files_only(classified->deferred_tail);
-    if (!deferred_files) {
-      return std::unexpected{deferred_files.error()};
-    }
     auto ordinary_work =
-        pipeline_detail::build_work_groups(cfg, *ordinary_files);
+        pipeline_detail::build_work_groups(cfg, classified->ordinary);
     if (!ordinary_work) {
       return std::unexpected{ordinary_work.error()};
     }
     auto deferred_work =
-        pipeline_detail::build_work_groups(cfg, *deferred_files);
+        pipeline_detail::build_work_groups(cfg, classified->deferred_tail);
     if (!deferred_work) {
       return std::unexpected{deferred_work.error()};
     }
@@ -1674,10 +1716,13 @@ std::expected<BatchSummary, std::string> run_batch(
     if (!large_work) {
       return std::unexpected{large_work.error()};
     }
+    // 并发度按「典型」单图占用规划（中位数），而不是队列最大值：最大值会让
+    // 一张大图把整批压成串行。真正吃内存的组由 encode_work_groups 的运行时
+    // 内存准入单独限制，不会同时进入。
     const auto ordinary_estimated_bytes_per_file =
-        pipeline_detail::estimated_decoded_bytes_per_file(classified->ordinary);
+        pipeline_detail::typical_decoded_bytes_per_file(classified->ordinary);
     const auto deferred_estimated_bytes_per_file =
-        pipeline_detail::estimated_decoded_bytes_per_file(
+        pipeline_detail::typical_decoded_bytes_per_file(
             classified->deferred_tail);
     const auto resource_plan = plan_resources(ResourcePlanRequest{
         .automatic_thread_budget = cfg.max_jobs,

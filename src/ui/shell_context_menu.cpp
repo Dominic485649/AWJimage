@@ -4,6 +4,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include "menu_transaction_state.hpp"
+#include <objbase.h>
 #include <shellapi.h>
 #include <shlobj_core.h>
 #include <shlwapi.h>
@@ -11,13 +13,61 @@
 #include <algorithm>
 #include <format>
 #include <cwctype>
-#include <limits>
 #include <map>
 #include <set>
 #include <utility>
 
 namespace awj::shell_context_menu {
 namespace {
+
+thread_local HKEY native_hive{HKEY_CURRENT_USER};
+thread_local REGSAM native_view{};
+thread_local std::wstring staged_id;
+thread_local bool staged_machine{};
+thread_local bool defer_commit{};
+
+struct StageScope {
+  bool previous{defer_commit};
+  StageScope() { defer_commit = true; }
+  ~StageScope() { defer_commit = previous; staged_id.clear(); staged_machine = false; }
+};
+
+struct NativeRegistryScope {
+  HKEY hive{native_hive};
+  REGSAM view{native_view};
+  explicit NativeRegistryScope(bool machine) {
+    native_hive = machine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER;
+    native_view = machine ? KEY_WOW64_64KEY : 0;
+  }
+  ~NativeRegistryScope() {
+    native_hive = hive;
+    native_view = view;
+  }
+};
+
+LSTATUS open_native_key(const wchar_t* path, REGSAM access, HKEY* key) {
+  return RegOpenKeyExW(native_hive, path, 0, access | native_view, key);
+}
+
+LSTATUS get_native_value(const wchar_t* path, const wchar_t* name, DWORD flags,
+                        DWORD* type, void* data, DWORD* bytes) {
+  HKEY key{};
+  const auto opened = open_native_key(path, KEY_QUERY_VALUE, &key);
+  if (opened != ERROR_SUCCESS) return opened;
+  const auto result = RegGetValueW(key, nullptr, name, flags, type, data, bytes);
+  RegCloseKey(key);
+  return result;
+}
+
+LSTATUS delete_native_tree(const std::wstring& path) {
+  HKEY key{};
+  auto status = open_native_key(path.c_str(), KEY_READ | KEY_WRITE | DELETE, &key);
+  if (status != ERROR_SUCCESS) return status;
+  status = RegDeleteTreeW(key, nullptr);
+  RegCloseKey(key);
+  if (status != ERROR_SUCCESS) return status;
+  return RegDeleteKeyExW(native_hive, path.c_str(), native_view, 0);
+}
 
 constexpr std::wstring_view kImageParent =
     L"Software\\Classes\\SystemFileAssociations\\image\\shell\\AWJimage.Convert";
@@ -30,21 +80,11 @@ constexpr std::wstring_view kIcoParent =
 // Current Microsoft Learn documents the child-key form instead, so this is a
 // Windows compatibility contract, not a claim about documented behavior.
 constexpr std::wstring_view kSharedTree =
-    L"Software\\Classes\\AWJimage.ContextMenu.v5.Presets.A";
-constexpr std::wstring_view kSharedTreeB =
-    L"Software\\Classes\\AWJimage.ContextMenu.v5.Presets.B";
-constexpr std::wstring_view kSharedTreeV3 = L"Software\\Classes\\AWJimage.ContextMenu.v3";
-constexpr std::wstring_view kLegacySharedTreeV4A =
     L"Software\\Classes\\AWJimage.ContextMenu.v4.A";
-constexpr std::wstring_view kLegacySharedTreeV4B =
-    L"Software\\Classes\\AWJimage.ContextMenu.v4.B";
+constexpr std::wstring_view kSharedTreeV3 = L"Software\\Classes\\AWJimage.ContextMenu.v3";
+constexpr std::wstring_view kTransaction = L"Software\\Classes\\AWJimage.ContextMenu.v5.Transaction";
 constexpr std::wstring_view kLegacyTransactionV4 =
     L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction";
-constexpr std::wstring_view kLegacyRegistrationMutexV4 =
-    L"Local\\AWJimage.ContextMenu.v4";
-constexpr std::wstring_view kRegistrationMutexV5 =
-    L"Local\\AWJimage.ContextMenu.v5";
-constexpr std::wstring_view kTransaction = L"Software\\Classes\\AWJimage.ContextMenu.v5.Transaction";
 constexpr std::wstring_view kLegacySharedTreeV2 =
     L"Software\\Classes\\AWJimage.ContextMenu.v2";
 constexpr std::wstring_view kLegacyImageParent =
@@ -58,10 +98,6 @@ constexpr std::wstring_view kLegacySharedTree =
 constexpr std::wstring_view kMenuLabel = L"AWJimage 转换";
 constexpr std::wstring_view kMultiSelectModel = L"Player";
 constexpr std::wstring_view kExtendedSubCommandsKey = L"ExtendedSubCommandsKey";
-constexpr std::wstring_view kSubCommands = L"SubCommands";
-constexpr std::wstring_view kMachineCommandStorePrefix =
-    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell\\";
-constexpr REGSAM kMachineRegistryView = KEY_WOW64_64KEY;
 
 constexpr std::wstring_view kSupportedExtensions[] = {
     L".jpg",    L".jpeg", L".jpe", L".jfif", L".png",  L".webp",
@@ -126,57 +162,33 @@ class RegistryKey {
   HKEY key_{};
 };
 
-std::expected<RegistryKey, std::string> create_key_at(
-    HKEY root, std::wstring_view subkey, REGSAM access, REGSAM view = 0) {
+std::expected<RegistryKey, std::string> create_key(std::wstring_view subkey,
+                                                  REGSAM access = KEY_READ | KEY_WRITE) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = RegCreateKeyExW(root, path.c_str(), 0, nullptr,
-                                      REG_OPTION_NON_VOLATILE, access | view,
-                                      nullptr, &raw, nullptr);
+  const auto status = RegCreateKeyExW(native_hive, path.c_str(), 0, nullptr,
+          REG_OPTION_NON_VOLATILE, access | native_view, nullptr, &raw, nullptr);
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("创建右键菜单注册表项", subkey, status)};
   }
   return RegistryKey{raw};
 }
 
-std::expected<RegistryKey, std::string> create_key(
-    std::wstring_view subkey, REGSAM access = KEY_READ | KEY_WRITE) {
-  return create_key_at(HKEY_CURRENT_USER, subkey, access);
-}
-
-std::expected<RegistryKey, std::string> create_machine_key(
-    std::wstring_view subkey, REGSAM access = KEY_READ | KEY_WRITE) {
-  return create_key_at(HKEY_LOCAL_MACHINE, subkey, access, kMachineRegistryView);
-}
-
-std::expected<RegistryKey, std::string> open_key_at(
-    HKEY root, std::wstring_view subkey, REGSAM access, REGSAM view = 0) {
+std::expected<RegistryKey, std::string> open_key(std::wstring_view subkey,
+                                                 REGSAM access) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = RegOpenKeyExW(root, path.c_str(), 0, access | view, &raw);
+  const auto status = open_native_key(path.c_str(), access, &raw);
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("打开右键菜单注册表项", subkey, status)};
   }
   return RegistryKey{raw};
 }
 
-std::expected<RegistryKey, std::string> open_key(std::wstring_view subkey,
-                                                 REGSAM access) {
-  return open_key_at(HKEY_CURRENT_USER, subkey, access);
-}
-
-std::expected<RegistryKey, std::string> open_machine_key(
-    std::wstring_view subkey, REGSAM access) {
-  return open_key_at(HKEY_LOCAL_MACHINE, subkey, access, kMachineRegistryView);
-}
-
-std::expected<void, std::string> set_string_at(
-    HKEY root, std::wstring_view subkey, std::wstring_view name,
-    std::wstring_view value, REGSAM view = 0) {
-  if (value.size() > (std::numeric_limits<DWORD>::max() / sizeof(wchar_t)) - 1u) {
-    return std::unexpected{"写入右键菜单字符串值失败，字符串过长。"};
-  }
-  auto key = create_key_at(root, subkey, KEY_READ | KEY_WRITE, view);
+std::expected<void, std::string> set_string(std::wstring_view subkey,
+                                            std::wstring_view name,
+                                            std::wstring_view value) {
+  auto key = create_key(subkey);
   if (!key) return std::unexpected{key.error()};
   const std::wstring name_storage{name};
   const std::wstring value_storage{value};
@@ -190,22 +202,10 @@ std::expected<void, std::string> set_string_at(
   return {};
 }
 
-std::expected<void, std::string> set_string(std::wstring_view subkey,
-                                            std::wstring_view name,
-                                            std::wstring_view value) {
-  return set_string_at(HKEY_CURRENT_USER, subkey, name, value);
-}
-
-std::expected<void, std::string> set_machine_string(
-    std::wstring_view subkey, std::wstring_view name, std::wstring_view value) {
-  return set_string_at(HKEY_LOCAL_MACHINE, subkey, name, value,
-                       kMachineRegistryView);
-}
-
-std::expected<void, std::string> set_dword_at(
-    HKEY root, std::wstring_view subkey, std::wstring_view name,
-    std::uint32_t value, REGSAM view = 0) {
-  auto key = create_key_at(root, subkey, KEY_READ | KEY_WRITE, view);
+std::expected<void, std::string> set_dword(std::wstring_view subkey,
+                                           std::wstring_view name,
+                                           std::uint32_t value) {
+  auto key = create_key(subkey);
   if (!key) return std::unexpected{key.error()};
   const std::wstring name_storage{name};
   const DWORD data = value;
@@ -218,24 +218,10 @@ std::expected<void, std::string> set_dword_at(
   return {};
 }
 
-std::expected<void, std::string> set_dword(std::wstring_view subkey,
-                                           std::wstring_view name,
-                                           std::uint32_t value) {
-  return set_dword_at(HKEY_CURRENT_USER, subkey, name, value);
-}
-
-std::expected<void, std::string> set_machine_dword(
-    std::wstring_view subkey, std::wstring_view name, std::uint32_t value) {
-  return set_dword_at(HKEY_LOCAL_MACHINE, subkey, name, value,
-                      kMachineRegistryView);
-}
-
-std::expected<bool, std::string> key_exists_at(HKEY root,
-                                               std::wstring_view subkey,
-                                               REGSAM view = 0) {
+std::expected<bool, std::string> key_exists(std::wstring_view subkey) {
   HKEY raw = nullptr;
   const std::wstring path{subkey};
-  const auto status = RegOpenKeyExW(root, path.c_str(), 0, KEY_READ | view, &raw);
+  const auto status = open_native_key(path.c_str(), KEY_READ, &raw);
   if (status == ERROR_SUCCESS) {
     RegCloseKey(raw);
     return true;
@@ -244,73 +230,30 @@ std::expected<bool, std::string> key_exists_at(HKEY root,
   return std::unexpected{registry_error("检查右键菜单注册表项", subkey, status)};
 }
 
-std::expected<bool, std::string> key_exists(std::wstring_view subkey) {
-  return key_exists_at(HKEY_CURRENT_USER, subkey);
-}
-
-std::expected<bool, std::string> machine_key_exists(
-    std::wstring_view subkey) {
-  return key_exists_at(HKEY_LOCAL_MACHINE, subkey, kMachineRegistryView);
-}
-
-std::expected<void, std::string> delete_tree_at(HKEY root,
-                                                std::wstring_view subkey,
-                                                REGSAM view = 0) {
+std::expected<void, std::string> delete_tree(std::wstring_view subkey) {
   const std::wstring path{subkey};
-  HKEY parent = root;
-  const auto slash = path.find_last_of(L'\\');
-  std::wstring parent_path;
-  std::wstring leaf = path;
-  RegistryKey opened_parent;
-  if (slash != std::wstring::npos) {
-    parent_path = path.substr(0, slash);
-    leaf = path.substr(slash + 1);
-    HKEY raw_parent = nullptr;
-    const auto opened_status = RegOpenKeyExW(
-        root, parent_path.c_str(), 0, KEY_READ | KEY_WRITE | view,
-        &raw_parent);
-    if (missing_registry_status(opened_status)) return {};
-    if (opened_status != ERROR_SUCCESS) {
-      return std::unexpected{registry_error("打开右键菜单注册表项", parent_path,
-                                            opened_status)};
-    }
-    opened_parent = RegistryKey{raw_parent};
-    parent = opened_parent.get();
-  }
-  const auto status = RegDeleteTreeW(parent, leaf.c_str());
+  const auto status = delete_native_tree(path);
   if (status == ERROR_SUCCESS || missing_registry_status(status)) return {};
   return std::unexpected{registry_error("删除右键菜单注册表项", subkey, status)};
 }
 
-std::expected<void, std::string> delete_tree(std::wstring_view subkey) {
-  return delete_tree_at(HKEY_CURRENT_USER, subkey);
-}
-
-std::expected<void, std::string> delete_machine_tree(
-    std::wstring_view subkey) {
-  return delete_tree_at(HKEY_LOCAL_MACHINE, subkey, kMachineRegistryView);
-}
-
-std::expected<std::optional<std::wstring>, std::string> read_string_at(
-    HKEY root, std::wstring_view subkey, std::wstring_view name,
-    REGSAM view = 0) {
+std::expected<std::optional<std::wstring>, std::string> read_string(
+    std::wstring_view subkey, std::wstring_view name) {
   const std::wstring path{subkey};
   const std::wstring name_storage{name};
   DWORD bytes = 0;
   DWORD type = 0;
-  const DWORD query_flags = RRF_RT_REG_SZ |
-      (view == 0 ? 0u : RRF_SUBKEY_WOW6464KEY);
-  const auto first = RegGetValueW(root, path.c_str(),
+  const auto first = get_native_value(path.c_str(),
                                   name.empty() ? nullptr : name_storage.c_str(),
-                                  query_flags, &type, nullptr, &bytes);
+                                  RRF_RT_REG_SZ, &type, nullptr, &bytes);
   if (missing_registry_status(first)) return std::optional<std::wstring>{};
   if (first != ERROR_SUCCESS) {
     return std::unexpected{registry_error("读取右键菜单字符串值", subkey, first)};
   }
   std::wstring value(bytes / sizeof(wchar_t), L'\0');
-  const auto second = RegGetValueW(root, path.c_str(),
+  const auto second = get_native_value(path.c_str(),
                                    name.empty() ? nullptr : name_storage.c_str(),
-                                   query_flags, &type, value.data(), &bytes);
+                                   RRF_RT_REG_SZ, &type, value.data(), &bytes);
   if (second != ERROR_SUCCESS) {
     return std::unexpected{registry_error("读取右键菜单字符串值", subkey, second)};
   }
@@ -318,29 +261,15 @@ std::expected<std::optional<std::wstring>, std::string> read_string_at(
   return std::optional<std::wstring>{std::move(value)};
 }
 
-std::expected<std::optional<std::wstring>, std::string> read_string(
+std::expected<std::optional<std::uint32_t>, std::string> read_dword(
     std::wstring_view subkey, std::wstring_view name) {
-  return read_string_at(HKEY_CURRENT_USER, subkey, name);
-}
-
-std::expected<std::optional<std::wstring>, std::string> read_machine_string(
-    std::wstring_view subkey, std::wstring_view name) {
-  return read_string_at(HKEY_LOCAL_MACHINE, subkey, name,
-                        kMachineRegistryView);
-}
-
-std::expected<std::optional<std::uint32_t>, std::string> read_dword_at(
-    HKEY root, std::wstring_view subkey, std::wstring_view name,
-    REGSAM view = 0) {
   const std::wstring path{subkey};
   const std::wstring name_storage{name};
   DWORD value = 0;
   DWORD bytes = sizeof(value);
   DWORD type = 0;
-  const DWORD query_flags = RRF_RT_REG_DWORD |
-      (view == 0 ? 0u : RRF_SUBKEY_WOW6464KEY);
-  const auto status = RegGetValueW(root, path.c_str(), name_storage.c_str(),
-                                   query_flags, &type, &value, &bytes);
+  const auto status = get_native_value(path.c_str(), name_storage.c_str(),
+                                   RRF_RT_REG_DWORD, &type, &value, &bytes);
   if (missing_registry_status(status)) return std::optional<std::uint32_t>{};
   if (status != ERROR_SUCCESS) {
     return std::unexpected{registry_error("读取右键菜单 DWORD 值", subkey, status)};
@@ -348,20 +277,9 @@ std::expected<std::optional<std::uint32_t>, std::string> read_dword_at(
   return std::optional<std::uint32_t>{value};
 }
 
-std::expected<std::optional<std::uint32_t>, std::string> read_dword(
-    std::wstring_view subkey, std::wstring_view name) {
-  return read_dword_at(HKEY_CURRENT_USER, subkey, name);
-}
-
-std::expected<std::optional<std::uint32_t>, std::string> read_machine_dword(
-    std::wstring_view subkey, std::wstring_view name) {
-  return read_dword_at(HKEY_LOCAL_MACHINE, subkey, name,
-                       kMachineRegistryView);
-}
-
-std::expected<std::vector<std::wstring>, std::string> child_keys_at(
-    HKEY root, std::wstring_view subkey, REGSAM view = 0) {
-  auto key = open_key_at(root, subkey, KEY_READ | KEY_ENUMERATE_SUB_KEYS, view);
+std::expected<std::vector<std::wstring>, std::string> child_keys(
+    std::wstring_view subkey) {
+  auto key = open_key(subkey, KEY_READ | KEY_ENUMERATE_SUB_KEYS);
   if (!key) return std::unexpected{key.error()};
   DWORD max_name = 0;
   DWORD count = 0;
@@ -387,19 +305,9 @@ std::expected<std::vector<std::wstring>, std::string> child_keys_at(
   return names;
 }
 
-std::expected<std::vector<std::wstring>, std::string> child_keys(
+std::expected<std::vector<std::wstring>, std::string> value_names(
     std::wstring_view subkey) {
-  return child_keys_at(HKEY_CURRENT_USER, subkey);
-}
-
-std::expected<std::vector<std::wstring>, std::string> machine_child_keys(
-    std::wstring_view subkey) {
-  return child_keys_at(HKEY_LOCAL_MACHINE, subkey, kMachineRegistryView);
-}
-
-std::expected<std::vector<std::wstring>, std::string> value_names_at(
-    HKEY root, std::wstring_view subkey, REGSAM view = 0) {
-  auto key = open_key_at(root, subkey, KEY_READ | KEY_QUERY_VALUE, view);
+  auto key = open_key(subkey, KEY_READ | KEY_QUERY_VALUE);
   if (!key) return std::unexpected{key.error()};
   DWORD max_name = 0;
   DWORD count = 0;
@@ -425,16 +333,6 @@ std::expected<std::vector<std::wstring>, std::string> value_names_at(
   return names;
 }
 
-std::expected<std::vector<std::wstring>, std::string> value_names(
-    std::wstring_view subkey) {
-  return value_names_at(HKEY_CURRENT_USER, subkey);
-}
-
-std::expected<std::vector<std::wstring>, std::string> machine_value_names(
-    std::wstring_view subkey) {
-  return value_names_at(HKEY_LOCAL_MACHINE, subkey, kMachineRegistryView);
-}
-
 std::wstring parent_key_of(std::wstring_view key) {
   const auto slash = key.find_last_of(L'\\');
   return slash == std::wstring_view::npos ? std::wstring{}
@@ -446,10 +344,10 @@ std::wstring leaf_key_name(std::wstring_view key) {
   return std::wstring{slash == std::wstring_view::npos ? key : key.substr(slash + 1)};
 }
 
-std::vector<std::wstring> expected_children(
-    const std::vector<std::wstring>& keys, std::wstring_view key) {
+std::vector<std::wstring> expected_children(const RegistrySchema& schema,
+                                            std::wstring_view key) {
   std::vector<std::wstring> result;
-  for (const auto& candidate : keys) {
+  for (const auto& candidate : schema.keys) {
     if (parent_key_of(candidate) == key) result.push_back(leaf_key_name(candidate));
   }
   std::ranges::sort(result);
@@ -457,10 +355,10 @@ std::vector<std::wstring> expected_children(
   return result;
 }
 
-std::vector<std::wstring> expected_value_names(
-    const std::vector<RegistryValueSpec>& values, std::wstring_view key) {
+std::vector<std::wstring> expected_value_names(const RegistrySchema& schema,
+                                               std::wstring_view key) {
   std::vector<std::wstring> result;
-  for (const auto& value : values) {
+  for (const auto& value : schema.values) {
     if (value.key == key) result.push_back(value.name);
   }
   std::ranges::sort(result);
@@ -574,27 +472,9 @@ std::vector<std::wstring> current_parent_roots_for_all_extensions() {
     roots.push_back(extension_parent_key(extension));
     roots.push_back(class_extension_parent_key(extension));
   }
+  std::ranges::sort(roots);
+  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
   return roots;
-}
-
-std::vector<std::wstring> expected_children(const RegistrySchema& schema,
-                                            std::wstring_view key) {
-  return expected_children(schema.keys, key);
-}
-
-std::vector<std::wstring> expected_machine_children(
-    const RegistrySchema& schema, std::wstring_view key) {
-  return expected_children(schema.machine_keys, key);
-}
-
-std::vector<std::wstring> expected_value_names(const RegistrySchema& schema,
-                                               std::wstring_view key) {
-  return expected_value_names(schema.values, key);
-}
-
-std::vector<std::wstring> expected_machine_value_names(
-    const RegistrySchema& schema, std::wstring_view key) {
-  return expected_value_names(schema.machine_values, key);
 }
 
 std::expected<void, std::string> apply_schema(const RegistrySchema& schema) {
@@ -613,42 +493,18 @@ std::expected<void, std::string> apply_schema(const RegistrySchema& schema) {
       }
     }
   }
-  for (const auto& key_path : schema.machine_keys) {
-    auto key = create_machine_key(key_path);
-    if (!key) return std::unexpected{key.error()};
-  }
-  for (const auto& value : schema.machine_values) {
-    if (value.kind == RegistryValueKind::string) {
-      if (auto written = set_machine_string(value.key, value.name,
-                                             value.string_value); !written) {
-        return written;
-      }
-    } else {
-      if (auto written = set_machine_dword(value.key, value.name,
-                                            value.dword_value); !written) {
-        return written;
-      }
-    }
-  }
   return {};
 }
 
-std::expected<bool, std::string> verify_spec_at(const RegistryValueSpec& spec,
-                                                bool machine) {
+std::expected<bool, std::string> verify_spec(const RegistryValueSpec& spec) {
   if (spec.kind == RegistryValueKind::string) {
-    auto value = machine ? read_machine_string(spec.key, spec.name)
-                         : read_string(spec.key, spec.name);
+    auto value = read_string(spec.key, spec.name);
     if (!value) return std::unexpected{value.error()};
     return *value && **value == spec.string_value;
   }
-  auto value = machine ? read_machine_dword(spec.key, spec.name)
-                       : read_dword(spec.key, spec.name);
+  auto value = read_dword(spec.key, spec.name);
   if (!value) return std::unexpected{value.error()};
   return *value && **value == spec.dword_value;
-}
-
-std::expected<bool, std::string> verify_spec(const RegistryValueSpec& spec) {
-  return verify_spec_at(spec, false);
 }
 
 }  // namespace
@@ -665,7 +521,9 @@ std::wstring image_parent_key() { return std::wstring{kImageParent}; }
 std::wstring directory_parent_key() { return std::wstring{kDirectoryParent}; }
 std::wstring ico_parent_key() { return std::wstring{kIcoParent}; }
 std::wstring shared_tree_key(int slot) {
-  return slot == 1 ? std::wstring{kSharedTreeB} : std::wstring{kSharedTree};
+  auto key = std::wstring{kSharedTree};
+  if (slot == 1) key.back() = L'B';
+  return key;
 }
 std::wstring legacy_shared_tree_key() { return std::wstring{kLegacySharedTreeV2}; }
 
@@ -679,52 +537,20 @@ std::wstring class_extension_parent_key(std::wstring_view extension) {
                      parent_canonical_verb);
 }
 
-std::wstring machine_command_store_name(std::wstring_view command_key) {
-  return L"AWJImage." + std::wstring{command_key};
-}
-
-std::wstring machine_command_store_key(std::wstring_view command_key) {
-  return std::wstring{kMachineCommandStorePrefix} +
-         machine_command_store_name(command_key);
-}
-
-std::wstring static_subcommands(bool install_avif_png_command) {
-  std::wstring result;
-  bool first = true;
-  for (const auto& command : kCommands) {
-    if (command.append_png_suffix && !install_avif_png_command) continue;
-    const auto suffix = command.append_png_suffix
-                            ? std::wstring_view{L"avif-png"}
-                            : command.format;
-    if (!first) result.push_back(L';');
-    result += machine_command_store_name(suffix);
-    first = false;
-  }
-  return result;
-}
-
 std::vector<std::wstring> legacy_root_keys() {
   std::vector<std::wstring> roots;
-  roots.reserve(std::size(kSupportedExtensions) * 2 + 12);
+  roots.reserve(std::size(kSupportedExtensions) + 4);
   roots.emplace_back(kLegacyImageParent);
   roots.emplace_back(kLegacyIcoFileParent);
   roots.emplace_back(kLegacyDirectoryParent);
   roots.emplace_back(kLegacySharedTree);
   roots.emplace_back(kLegacySharedTreeV2);
   roots.emplace_back(kSharedTreeV3);
-  roots.emplace_back(kLegacySharedTreeV4A);
-  roots.emplace_back(kLegacySharedTreeV4B);
-  roots.emplace_back(kLegacyTransactionV4);
-  roots.emplace_back(kSharedTree);
-  roots.emplace_back(kSharedTreeB);
   roots.emplace_back(kImageParent);
-  roots.emplace_back(kIcoParent);
   for (const auto extension : kSupportedExtensions) {
     roots.push_back(std::format(
         L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\AWJImage",
         extension));
-    roots.push_back(std::format(
-        L"Software\\Classes\\{}\\shell\\AWJImage", extension));
   }
   std::ranges::sort(roots);
   roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
@@ -733,62 +559,14 @@ std::vector<std::wstring> legacy_root_keys() {
 
 std::vector<std::wstring> owned_root_keys() {
   auto roots = legacy_root_keys();
-  // A transaction is journal metadata, not a registration root. It is handled
-  // by recover_locked() and must never be included in a live-root snapshot.
-  std::erase_if(roots, [](const std::wstring& root) {
-    return root == kLegacyTransactionV4 || root == kTransaction;
-  });
   roots.push_back(shared_tree_key(0));
   roots.push_back(shared_tree_key(1));
   auto current = current_parent_roots_for_all_extensions();
   roots.insert(roots.end(), current.begin(), current.end());
   // No current icofile root is installed, but remove this owned name if an interrupted
   // development build ever created it.
-  std::ranges::sort(roots);
-  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
-  return roots;
-}
-
-// The v4 journal predates the v5 schema and therefore contains only HKCU
-// roots. Keep its exact allow-list separate from the current cleanup list:
-// changing the supported extensions or adding the v5 CommandStore roots must
-// not make an old, otherwise recoverable journal look like a malformed one.
-std::vector<std::wstring> legacy_v4_transaction_roots() {
-  std::vector<std::wstring> roots;
-  roots.reserve(std::size(kSupportedExtensions) * 2 + 12);
-  roots.emplace_back(kLegacyImageParent);
-  roots.emplace_back(kLegacyIcoFileParent);
-  roots.emplace_back(kLegacyDirectoryParent);
-  roots.emplace_back(kLegacySharedTree);
-  roots.emplace_back(kLegacySharedTreeV2);
-  roots.emplace_back(kSharedTreeV3);
-  roots.emplace_back(kImageParent);
-  for (const auto extension : kSupportedExtensions) {
-    roots.push_back(std::format(
-        L"Software\\Classes\\SystemFileAssociations\\{}\\shell\\AWJImage",
-        extension));
-  }
-  roots.emplace_back(kLegacySharedTreeV4A);
-  roots.emplace_back(kLegacySharedTreeV4B);
-  roots.emplace_back(kDirectoryParent);
-  for (const auto extension : kSupportedExtensions) {
-    roots.push_back(extension_parent_key(extension));
-  }
-  roots.emplace_back(kIcoParent);
-  std::ranges::sort(roots);
-  roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
-  return roots;
-}
-
-std::vector<std::wstring> owned_machine_root_keys() {
-  std::vector<std::wstring> roots;
-  roots.reserve(std::size(kCommands));
-  for (const auto& command : kCommands) {
-    const auto suffix = command.append_png_suffix
-                            ? std::wstring_view{L"avif-png"}
-                            : command.format;
-    roots.push_back(machine_command_store_key(suffix));
-  }
+  roots.push_back(std::format(L"Software\\Classes\\icofile\\shell\\{}",
+                              parent_canonical_verb));
   std::ranges::sort(roots);
   roots.erase(std::unique(roots.begin(), roots.end()), roots.end());
   return roots;
@@ -836,6 +614,7 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
       if (!params.max_height_text.empty()) append_option(command, L"--max-height", params.max_height_text);
       if (!params.max_long_edge_text.empty()) append_option(command, L"--max-long-edge", params.max_long_edge_text);
       if (!params.max_short_edge_text.empty()) append_option(command, L"--max-short-edge", params.max_short_edge_text);
+      if (!params.scale_percent_text.empty()) append_option(command, L"--scale-percent", params.scale_percent_text);
       break;
     default:
       append_option(command, L"--image-size-limit", L"auto");
@@ -848,6 +627,8 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
     append_option(command, L"--chroma", chroma_arg(params.chroma_index));
     append_option(command, L"--alpha", alpha_arg(params.alpha_policy_index));
     if (append_png_suffix) append_arg(command, L"--append-png-suffix");
+  } else if (is_jxl) {
+    if (!params.jxl_jpeg_lossless) append_arg(command, L"--no-jxl-jpeg-lossless");
   } else if (is_jpgli) {
     append_option(command, L"--chroma", chroma_arg(params.chroma_index));
     append_option(command, L"--jpegli-progressive-level",
@@ -865,80 +646,74 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
                                      std::span<const std::wstring> preset_names,
-                                     int slot) {
+                                     int slot, bool compatibility) {
   RegistrySchema schema{.plan = plan};
-  schema.parent_roots.push_back(image_parent_key());
-  schema.parent_roots.push_back(ico_parent_key());
   schema.parent_roots.push_back(directory_parent_key());
+  if (compatibility) {
+    schema.parent_roots.push_back(image_parent_key());
+    schema.parent_roots.push_back(ico_parent_key());
+    for (const auto& extension : plan.extensions)
+      schema.parent_roots.push_back(class_extension_parent_key(extension));
+  }
   for (const auto& extension : plan.extensions) {
     schema.parent_roots.push_back(extension_parent_key(extension));
-    schema.parent_roots.push_back(class_extension_parent_key(extension));
   }
   std::ranges::sort(schema.parent_roots);
   schema.parent_roots.erase(std::unique(schema.parent_roots.begin(), schema.parent_roots.end()),
                             schema.parent_roots.end());
 
   const auto icon = icon_value(awj_exe);
-  // Built-in verbs live in the documented CommandStore location. Keep their
-  // identifiers stable because third-party file managers cache/resolve them.
+  const auto shared = shared_tree_key(slot);
+  const auto shared_shell = shared + L"\\shell";
+  schema.keys.push_back(shared);
+  schema.keys.push_back(shared_shell);
+  append_owned_markers(schema.values, shared);
+
   for (const auto& command : kCommands) {
+    if (compatibility) break;
     if (command.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
-    const auto suffix = command.append_png_suffix
-                            ? std::wstring_view{L"avif-png"}
-                            : command.format;
-    const auto verb_key = machine_command_store_key(suffix);
+    const auto verb_key = std::format(L"{}\\{}", shared_shell, command.canonical_verb);
     const auto command_key = verb_key + L"\\command";
-    schema.machine_keys.push_back(verb_key);
-    schema.machine_keys.push_back(command_key);
-    append_string_spec(schema.machine_values, verb_key, L"",
-                       std::wstring{command.label});
-    append_string_spec(schema.machine_values, verb_key, L"MUIVerb",
-                       std::wstring{command.label});
-    append_string_spec(schema.machine_values, verb_key, L"Icon", icon);
-    append_string_spec(schema.machine_values, verb_key, L"MultiSelectModel",
+    schema.keys.push_back(verb_key);
+    schema.keys.push_back(command_key);
+    append_string_spec(schema.values, verb_key, L"MUIVerb", std::wstring{command.label});
+    append_string_spec(schema.values, verb_key, L"Icon", icon);
+    append_string_spec(schema.values, verb_key, L"MultiSelectModel",
                        std::wstring{kMultiSelectModel});
-    append_owned_markers(schema.machine_values, verb_key);
     append_string_spec(
-        schema.machine_values, command_key, L"",
+        schema.values, command_key, L"",
         build_convert_command_line(awj_exe, command.format,
                                    menu_params[command.params_index],
                                    command.append_png_suffix));
   }
 
-  const auto shared = shared_tree_key(slot);
-  if (!preset_names.empty()) {
-    const auto shared_shell = shared + L"\\shell";
-    schema.keys.push_back(shared);
-    schema.keys.push_back(shared_shell);
-    append_owned_markers(schema.values, shared);
-    for (std::size_t index = 0; index < preset_names.size(); ++index) {
-      const auto parent = std::format(L"{}\\AWJimage.Preset.{:02}", shared_shell, index);
-      const auto subtree = parent + L"\\shell";
-      schema.keys.push_back(parent);
-      schema.keys.push_back(subtree);
-      append_string_spec(schema.values, parent, L"MUIVerb", preset_names[index]);
-      append_string_spec(schema.values, parent, L"Icon", icon);
-      append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-      append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
-                         parent.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
-      for (const auto& spec : kCommands) {
-        if (spec.append_png_suffix) continue;
-        const auto verb = subtree + L"\\" + std::wstring{spec.canonical_verb};
-        const auto command_key = verb + L"\\command";
-        schema.keys.push_back(verb);
-        schema.keys.push_back(command_key);
-        append_string_spec(schema.values, verb, L"MUIVerb", std::wstring{spec.label});
-        append_string_spec(schema.values, verb, L"Icon", icon);
-        append_string_spec(schema.values, verb, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-        auto command_line = quote_windows_arg(awj_exe.wstring(), true);
-        append_arg(command_line, L"--shell-window");
-        append_arg(command_line, L"--shell-convert");
-        append_option(command_line, L"--preset", preset_names[index]);
-        append_option(command_line, L"--format", spec.format);
-        append_option(command_line, L"--collision", L"number");
-        command_line += L" -i \"%1\" %*";
-        append_string_spec(schema.values, command_key, L"", std::move(command_line));
-      }
+  for (std::size_t index = 0; index < preset_names.size(); ++index) {
+    const auto parent = std::format(L"{}\\AWJimage.Preset.{:02}", shared_shell, index);
+    const auto subtree = parent + L"\\shell";
+    schema.keys.push_back(parent);
+    schema.keys.push_back(subtree);
+    append_string_spec(schema.values, parent, L"MUIVerb", preset_names[index]);
+    append_string_spec(schema.values, parent, L"Icon", icon);
+    append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
+    append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
+                       parent.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
+    for (const auto& spec : kCommands) {
+      if (spec.append_png_suffix) continue;
+      const auto verb = subtree + L"\\" + std::wstring{spec.canonical_verb};
+      const auto command_key = verb + L"\\command";
+      schema.keys.push_back(verb);
+      schema.keys.push_back(command_key);
+      append_string_spec(schema.values, verb, L"MUIVerb", std::wstring{spec.label});
+      append_string_spec(schema.values, verb, L"Icon", icon);
+      append_string_spec(schema.values, verb, L"MultiSelectModel", std::wstring{kMultiSelectModel});
+      auto command = quote_windows_arg(awj_exe.wstring(), true);
+      append_arg(command, L"--shell-window");
+      append_arg(command, L"--shell-convert");
+      append_option(command, L"--preset", preset_names[index]);
+      append_option(command, L"--format", spec.format);
+      append_option(command, L"--collision", L"number");
+      command += L" -i \"%1\" %*";
+      append_string_spec(schema.values, command_key, L"", std::move(command));
     }
   }
 
@@ -947,17 +722,22 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
     append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
     append_string_spec(schema.values, parent, L"Icon", icon);
     append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
-    append_string_spec(schema.values, parent, std::wstring{kSubCommands},
-                       static_subcommands(menu_params[0].install_avif_png_command));
-    if (!preset_names.empty()) {
+    if (compatibility) {
+      std::wstring commands;
+      for (const auto& spec : kCommands) {
+        if (spec.append_png_suffix && !menu_params[0].install_avif_png_command) continue;
+        if (!commands.empty()) commands += L';';
+        commands += L"AWJImage.";
+        commands += spec.append_png_suffix ? L"avif-png" : spec.format;
+      }
+      if (!preset_names.empty()) commands += L";AWJImage.presets";
+      append_string_spec(schema.values, parent, L"SubCommands", std::move(commands));
+    }
+    if (!compatibility)
       append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
                          shared.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
-    }
     append_owned_markers(schema.values, parent);
   }
-  std::ranges::sort(schema.machine_keys);
-  schema.machine_keys.erase(std::unique(schema.machine_keys.begin(), schema.machine_keys.end()),
-                            schema.machine_keys.end());
   return schema;
 }
 
@@ -968,29 +748,17 @@ std::expected<InstallPlan, std::string> detect_install_plan() {
 namespace {
 
 struct RegistrationLock {
-  HANDLE handle{CreateMutexW(nullptr, FALSE,
-                             std::wstring{kRegistrationMutexV5}.c_str())};
-  HANDLE legacy_handle{CreateMutexW(
-      nullptr, FALSE, std::wstring{kLegacyRegistrationMutexV4}.c_str())};
+  MenuOperationLock operation;
+  HANDLE handle{CreateMutexW(nullptr, FALSE, L"Local\\AWJimage.ContextMenu.v4")};
   bool held{};
-  bool legacy_held{};
   RegistrationLock() {
-    if (!handle || !legacy_handle) return;
-    const DWORD result = WaitForSingleObject(handle, 15000);
-    held = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
-    if (!held) return;
-    const DWORD legacy_result = WaitForSingleObject(legacy_handle, 15000);
-    legacy_held = legacy_result == WAIT_OBJECT_0 ||
-                  legacy_result == WAIT_ABANDONED;
-    if (!legacy_held) {
-      ReleaseMutex(handle);
-      held = false;
+    if (operation.held() && handle) {
+      const DWORD result = WaitForSingleObject(handle, 15000);
+      held = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
     }
   }
   ~RegistrationLock() {
-    if (legacy_held) ReleaseMutex(legacy_handle);
     if (held) ReleaseMutex(handle);
-    if (legacy_handle) CloseHandle(legacy_handle);
     if (handle) CloseHandle(handle);
   }
 };
@@ -1039,6 +807,9 @@ std::expected<bool, std::string> historical_commands(std::wstring_view root,
 }
 
 std::expected<bool, std::string> owned(std::wstring_view root) {
+  auto exists = key_exists(root);
+  if (!exists) return std::unexpected{exists.error()};
+  if (!*exists) return false;
   auto marker = read_string(root, owner_value_name);
   if (!marker) return std::unexpected{marker.error()};
   if (*marker) return **marker == owner_value;
@@ -1050,75 +821,34 @@ std::expected<bool, std::string> owned(std::wstring_view root) {
   return *commands && !foreign_command;
 }
 
-// HKLM CommandStore entries created by the current schema carry the same
-// ownership markers as the HKCU tree. Older DOpus-compatible installations did
-// not have markers, so a markerless entry is managed only when its command is
-// an actual AWJ shell command. This keeps an unrelated application which happens
-// to use an AWJImage.* verb untouched.
-std::expected<bool, std::string> machine_owned(std::wstring_view root) {
-  auto marker = read_machine_string(root, owner_value_name);
-  if (!marker) return std::unexpected{marker.error()};
-  if (*marker) return **marker == owner_value;
-  auto command = read_machine_string(std::wstring{root} + L"\\command", L"");
-  if (!command) return std::unexpected{command.error()};
-  return *command && is_awj_command(**command);
-}
-
 std::expected<void, std::string> verify_schema(const RegistrySchema& schema) {
-  const auto verify_group = [&](bool machine,
-                                const std::vector<std::wstring>& keys,
-                                const std::vector<RegistryValueSpec>& values)
-      -> std::expected<void, std::string> {
-    for (const auto& key : keys) {
-      auto actual_values = machine ? machine_value_names(key) : value_names(key);
-      if (!actual_values) return std::unexpected{actual_values.error()};
-      auto actual_children = machine ? machine_child_keys(key) : child_keys(key);
-      if (!actual_children) return std::unexpected{actual_children.error()};
-      const auto expected_values = expected_value_names(values, key);
-      const auto expected_keys = expected_children(keys, key);
-      if (*actual_values != expected_values || *actual_children != expected_keys) {
-        return std::unexpected{"右键菜单 key/value 集合与预期不一致：" +
-                               narrow_ascii(key)};
-      }
+  for (const auto& key : schema.keys) {
+    auto values = value_names(key);
+    if (!values) return std::unexpected{values.error()};
+    auto children = child_keys(key);
+    if (!children) return std::unexpected{children.error()};
+    if (*values != expected_value_names(schema, key) ||
+        *children != expected_children(schema, key)) {
+      return std::unexpected{"右键菜单 key/value 集合与预期不一致：" + narrow_ascii(key)};
     }
-    for (const auto& spec : values) {
-      auto valid = verify_spec_at(spec, machine);
-      if (!valid) return std::unexpected{valid.error()};
-      if (!*valid) {
-        return std::unexpected{"右键菜单值或类型与预期不一致：" +
-                               narrow_ascii(spec.key)};
-      }
-    }
-    return {};
-  };
-  if (auto result = verify_group(false, schema.keys, schema.values); !result) {
-    return result;
   }
-  if (auto result = verify_group(true, schema.machine_keys,
-                                 schema.machine_values);
-      !result) {
-    return result;
+  for (const auto& spec : schema.values) {
+    auto valid = verify_spec(spec);
+    if (!valid) return std::unexpected{valid.error()};
+    if (!*valid) return std::unexpected{"右键菜单值或类型与预期不一致：" + narrow_ascii(spec.key)};
   }
   return {};
 }
 
-std::expected<void, std::string> copy_tree_between(
-    HKEY source_root, std::wstring_view source, REGSAM source_view,
-    HKEY destination_root, std::wstring_view destination, REGSAM destination_view) {
-  auto from = open_key_at(source_root, source, KEY_READ, source_view);
+std::expected<void, std::string> copy_tree(std::wstring_view source,
+                                         std::wstring_view destination) {
+  auto from = open_key(source, KEY_READ);
   if (!from) return std::unexpected{from.error()};
-  auto to = create_key_at(destination_root, destination, KEY_ALL_ACCESS,
-                           destination_view);
+  auto to = create_key(destination, KEY_ALL_ACCESS);
   if (!to) return std::unexpected{to.error()};
   const auto status = RegCopyTreeW(from->get(), nullptr, to->get());
   if (status != ERROR_SUCCESS) return std::unexpected{registry_error("复制注册快照", source, status)};
   return {};
-}
-
-std::expected<void, std::string> copy_user_tree(std::wstring_view source,
-                                                 std::wstring_view destination) {
-  return copy_tree_between(HKEY_CURRENT_USER, source, 0, HKEY_CURRENT_USER,
-                           destination, 0);
 }
 
 std::expected<void, std::string> flush_journal() {
@@ -1130,7 +860,6 @@ std::expected<void, std::string> flush_journal() {
 }
 
 struct SnapshotRoot {
-  bool machine{};
   std::wstring path;
   bool present{};
   bool managed{};
@@ -1139,60 +868,45 @@ struct SnapshotRoot {
 std::expected<std::vector<SnapshotRoot>, std::string> snapshot_roots(
     const RegistrySchema& schema) {
   std::vector<SnapshotRoot> roots;
-  const auto add_roots = [&](bool machine,
-                             const std::vector<std::wstring>& candidates,
-                             const std::vector<std::wstring>& expected)
-      -> std::expected<void, std::string> {
-    for (const auto& path : candidates) {
-      auto exists = machine ? machine_key_exists(path) : key_exists(path);
-      if (!exists) return std::unexpected{exists.error()};
-      bool managed = true;
-      if (*exists) {
-        auto ours = machine ? machine_owned(path) : owned(path);
-        if (!ours) return std::unexpected{ours.error()};
-        managed = *ours;
-      }
-      if (!managed && std::ranges::find(expected, path) != expected.end()) {
-        return std::unexpected{"注册位置被非 AWJ 项占用，未修改：" +
-                               narrow_ascii(path)};
-      }
-      roots.push_back(SnapshotRoot{.machine = machine,
-                                   .path = path,
-                                   .present = *exists,
-                                   .managed = managed});
+  for (const auto& path : owned_root_keys()) {
+    auto exists = key_exists(path);
+    if (!exists) return std::unexpected{exists.error()};
+    bool managed = true;
+    if (*exists) {
+      auto ours = owned(path);
+      if (!ours) return std::unexpected{ours.error()};
+      managed = *ours;
     }
-    return {};
-  };
-  if (auto result = add_roots(false, owned_root_keys(), schema.keys); !result) {
-    return std::unexpected{result.error()};
-  }
-  if (auto result = add_roots(true, owned_machine_root_keys(),
-                              schema.machine_keys);
-      !result) {
-    return std::unexpected{result.error()};
+    if (!managed && std::ranges::find(schema.keys, path) != schema.keys.end()) {
+      return std::unexpected{"注册位置被非 AWJ 项占用，未修改：" + narrow_ascii(path)};
+    }
+    roots.push_back({path, *exists, managed});
   }
   return roots;
 }
 
 std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& roots) {
-  if (auto cleared = delete_tree(kTransaction); !cleared) return cleared;
   if (auto r = set_string(kTransaction, owner_value_name, owner_value); !r) return r;
   if (auto r = set_dword(kTransaction, schema_value_name, schema_version); !r) return r;
   if (auto r = set_dword(kTransaction, L"State", 0); !r) return r;
+  if (!staged_id.empty()) {
+    FILETIME created{}, exited{}, kernel{}, user{};
+    if (!GetProcessTimes(GetCurrentProcess(), &created, &exited, &kernel, &user))
+      return std::unexpected{"无法记录菜单事务进程身份。"};
+    if (auto r = set_string(kTransaction, L"Id", staged_id); !r) return r;
+    if (auto r = set_dword(kTransaction, L"Machine", staged_machine); !r) return r;
+    if (auto r = set_dword(kTransaction, L"Pid", GetCurrentProcessId()); !r) return r;
+    if (auto r = set_dword(kTransaction, L"CreatedLow", created.dwLowDateTime); !r) return r;
+    if (auto r = set_dword(kTransaction, L"CreatedHigh", created.dwHighDateTime); !r) return r;
+  }
   for (std::size_t index = 0; index < roots.size(); ++index) {
     const auto& root = roots[index];
     const auto key = std::format(L"{}\\{:03}", kTransaction, index);
     if (auto r = set_string(key, L"Path", root.path); !r) return r;
     if (auto r = set_dword(key, L"Present", root.present); !r) return r;
     if (auto r = set_dword(key, L"Managed", root.managed); !r) return r;
-    if (auto r = set_dword(key, L"Machine", root.machine); !r) return r;
     if (root.present && root.managed) {
-      auto copied = root.machine
-          ? copy_tree_between(HKEY_LOCAL_MACHINE, root.path,
-                              kMachineRegistryView, HKEY_CURRENT_USER,
-                              key + L"\\Data", 0)
-          : copy_user_tree(root.path, key + L"\\Data");
-      if (!copied) return copied;
+      if (auto r = copy_tree(root.path, key + L"\\Data"); !r) return r;
     }
   }
   if (auto r = set_dword(kTransaction, L"Count", static_cast<DWORD>(roots.size())); !r) return r;
@@ -1200,78 +914,7 @@ std::expected<void, std::string> begin_journal(const std::vector<SnapshotRoot>& 
   return flush_journal();
 }
 
-std::expected<void, std::string> recover_legacy_v4_locked() {
-  auto exists = key_exists(kLegacyTransactionV4);
-  if (!exists) return std::unexpected{exists.error()};
-  if (!*exists) return {};
-
-  auto marker = read_string(kLegacyTransactionV4, owner_value_name);
-  if (!marker || !*marker || **marker != owner_value) {
-    return std::unexpected{"v4 注册事务缺少 AWJ ownership，未修改注册表。"};
-  }
-  auto state = read_dword(kLegacyTransactionV4, L"State");
-  if (!state) return std::unexpected{state.error()};
-  // v4 State 0 never changed live registrations; State 2 had committed them.
-  if (!*state || **state == 0 || **state == 2) {
-    return delete_tree(kLegacyTransactionV4);
-  }
-  if (**state != 1) {
-    return std::unexpected{"v4 注册事务状态无效。"};
-  }
-
-  const auto allowed = legacy_v4_transaction_roots();
-  auto count = read_dword(kLegacyTransactionV4, L"Count");
-  if (!count || !*count || **count != allowed.size()) {
-    return std::unexpected{"v4 注册快照不完整，未继续修改。"};
-  }
-
-  std::vector<SnapshotRoot> roots;
-  roots.reserve(allowed.size());
-  for (std::size_t index = 0; index < allowed.size(); ++index) {
-    const auto key = std::format(L"{}\\{:03}", kLegacyTransactionV4, index);
-    auto path = read_string(key, L"Path");
-    auto present = read_dword(key, L"Present");
-    auto managed = read_dword(key, L"Managed");
-    if (!path || !*path || **path != allowed[index] ||
-        !present || !*present || **present > 1 ||
-        !managed || !*managed || **managed > 1) {
-      return std::unexpected{"v4 注册快照字段无效，未继续修改。"};
-    }
-    if (**present && **managed) {
-      auto data = key_exists(key + L"\\Data");
-      if (!data || !*data) {
-        return std::unexpected{"v4 注册快照数据缺失。"};
-      }
-    }
-    roots.push_back(SnapshotRoot{.machine = false,
-                                 .path = **path,
-                                 .present = **present != 0,
-                                 .managed = **managed != 0});
-  }
-
-  std::string errors;
-  // Validate every record before restoring any root. Keep the old journal if
-  // one restore fails so a later elevated launch can retry it unchanged.
-  for (std::size_t index = 0; index < roots.size(); ++index) {
-    const auto& root = roots[index];
-    if (!root.managed) continue;
-    auto restored = delete_tree(root.path);
-    if (restored && root.present) {
-      const auto data = std::format(L"{}\\{:03}\\Data", kLegacyTransactionV4,
-                                   index);
-      restored = copy_user_tree(data, root.path);
-    }
-    if (!restored) errors += restored.error() + " ";
-  }
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  if (!errors.empty()) return std::unexpected{std::move(errors)};
-  return delete_tree(kLegacyTransactionV4);
-}
-
 std::expected<void, std::string> recover_locked() {
-  if (auto recovered = recover_legacy_v4_locked(); !recovered) {
-    return recovered;
-  }
   auto exists = key_exists(kTransaction);
   if (!exists) return std::unexpected{exists.error()};
   if (!*exists) return {};
@@ -1284,14 +927,24 @@ std::expected<void, std::string> recover_locked() {
   // State 0 never changes live registrations; State 2 has fully committed.
   if (!*state || **state == 0 || **state == 2) return delete_tree(kTransaction);
   if (**state != 1) return std::unexpected{"注册事务状态无效。"};
+  auto id = read_string(kTransaction, L"Id");
+  if (!id) return std::unexpected{id.error()};
+  if (*id) {
+    auto machine = read_dword(kTransaction, L"Machine");
+    auto pid = read_dword(kTransaction, L"Pid");
+    auto low = read_dword(kTransaction, L"CreatedLow");
+    auto high = read_dword(kTransaction, L"CreatedHigh");
+    if (!machine || !*machine || **machine > 1 || !pid || !*pid || !low || !*low || !high || !*high)
+      return std::unexpected{"菜单事务进程身份无效。"};
+    if (menu_owner_active(**pid, FILETIME{**low, **high}) &&
+        !(defer_commit && **pid == GetCurrentProcessId() && staged_id == **id))
+      return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+    auto committed = menu_commit_recorded(**id, **machine != 0);
+    if (!committed) return std::unexpected{committed.error()};
+    if (*committed) return delete_tree(kTransaction);
+  }
   auto count = read_dword(kTransaction, L"Count");
-  std::vector<std::pair<bool, std::wstring>> allowed;
-  for (const auto& path : owned_root_keys()) {
-    allowed.emplace_back(false, path);
-  }
-  for (const auto& path : owned_machine_root_keys()) {
-    allowed.emplace_back(true, path);
-  }
+  const auto allowed = owned_root_keys();
   if (!count || !*count || **count != allowed.size()) {
     return std::unexpected{"注册快照不完整，未继续修改。"};
   }
@@ -1301,21 +954,15 @@ std::expected<void, std::string> recover_locked() {
     auto path = read_string(key, L"Path");
     auto present = read_dword(key, L"Present");
     auto managed = read_dword(key, L"Managed");
-    auto machine = read_dword(key, L"Machine");
-    if (!path || !*path || **path != allowed[i].second || !present || !*present ||
-        **present > 1 || !managed || !*managed || **managed > 1 ||
-        !machine || !*machine || **machine > 1 ||
-        (**machine != 0) != allowed[i].first) {
+    if (!path || !*path || **path != allowed[i] || !present || !*present ||
+        **present > 1 || !managed || !*managed || **managed > 1) {
       return std::unexpected{"注册快照字段无效，未继续修改。"};
     }
     if (**present && **managed) {
       auto data = key_exists(key + L"\\Data");
       if (!data || !*data) return std::unexpected{"注册快照数据缺失。"};
     }
-    roots.push_back(SnapshotRoot{.machine = **machine != 0,
-                                 .path = **path,
-                                 .present = **present != 0,
-                                 .managed = **managed != 0});
+    roots.push_back({**path, **present != 0, **managed != 0});
   }
   std::string errors;
   // Validate every snapshot before restoring any root. Keep the journal if a
@@ -1323,14 +970,9 @@ std::expected<void, std::string> recover_locked() {
   for (std::size_t i = 0; i < roots.size(); ++i) {
     const auto& root = roots[i];
     if (!root.managed) continue;
-    auto restored = root.machine ? delete_machine_tree(root.path)
-                                 : delete_tree(root.path);
+    auto restored = delete_tree(root.path);
     if (restored && root.present) {
-      const auto data = std::format(L"{}\\{:03}\\Data", kTransaction, i);
-      restored = root.machine
-          ? copy_tree_between(HKEY_CURRENT_USER, data, 0, HKEY_LOCAL_MACHINE,
-                              root.path, kMachineRegistryView)
-          : copy_user_tree(data, root.path);
+      restored = copy_tree(std::format(L"{}\\{:03}\\Data", kTransaction, i), root.path);
     }
     if (!restored) errors += restored.error() + " ";
   }
@@ -1342,12 +984,7 @@ std::expected<void, std::string> recover_locked() {
 std::expected<int, std::string> active_slot() {
   auto reference = read_string(directory_parent_key(), kExtendedSubCommandsKey);
   if (!reference) return std::unexpected{reference.error()};
-  return *reference &&
-                 (**reference == L"AWJimage.ContextMenu.v5.Presets.B" ||
-                  **reference ==
-                      L"Software\\Classes\\AWJimage.ContextMenu.v5.Presets.B")
-             ? 1
-             : 0;
+  return *reference && **reference == L"AWJimage.ContextMenu.v4.B" ? 1 : 0;
 }
 
 std::expected<void, std::string> validate_request(const std::filesystem::path& exe,
@@ -1368,20 +1005,13 @@ std::expected<void, std::string> validate_request(const std::filesystem::path& e
       return std::unexpected{"注入预设名称无效或重复。"};
     }
   }
-  const auto valid_string_values = [](const auto& values) {
-    for (const auto& value : values) {
-      if (value.kind != RegistryValueKind::string) continue;
-      if (value.string_value.size() >= 30000 ||
-          value.string_value.find(L'\0') != std::wstring::npos ||
-          value.string_value.find_first_of(L"\r\n") != std::wstring::npos) {
-        return false;
-      }
+  for (const auto& value : schema.values) {
+    if (value.kind != RegistryValueKind::string) continue;
+    if (value.string_value.size() >= 30000 ||
+        value.string_value.find(L'\0') != std::wstring::npos ||
+        value.string_value.find_first_of(L"\r\n") != std::wstring::npos) {
+      return std::unexpected{"菜单参数含控制字符或超过 Windows 命令长度限制。"};
     }
-    return true;
-  };
-  if (!valid_string_values(schema.values) ||
-      !valid_string_values(schema.machine_values)) {
-    return std::unexpected{"菜单参数含控制字符或超过 Windows 命令长度限制。"};
   }
   return {};
 }
@@ -1396,20 +1026,11 @@ std::expected<void, std::string> verify_no_obsolete_roots(const RegistrySchema& 
     if (!ours) return std::unexpected{ours.error()};
     if (*ours) return std::unexpected{"旧菜单或非活动树尚未清除：" + narrow_ascii(root)};
   }
-  for (const auto& root : owned_machine_root_keys()) {
-    if (std::ranges::find(schema.machine_keys, root) != schema.machine_keys.end()) continue;
-    auto exists = machine_key_exists(root);
-    if (!exists) return std::unexpected{exists.error()};
-    if (!*exists) continue;
-    auto ours = machine_owned(root);
-    if (!ours) return std::unexpected{ours.error()};
-    if (*ours) return std::unexpected{"旧系统菜单或停用命令尚未清除：" +
-                                     narrow_ascii(root)};
-  }
   return {};
 }
 
 std::expected<void, std::string> commit_journal() {
+  if (defer_commit) return {};
   if (auto result = set_dword(kTransaction, L"State", 2); !result) return result;
   if (auto result = flush_journal(); !result) return result;
   SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
@@ -1433,21 +1054,13 @@ std::expected<bool, std::string> is_installed() {
     if (!ours) return std::unexpected{ours.error()};
     if (*ours) return true;
   }
-  for (const auto& root : owned_machine_root_keys()) {
-    auto exists = machine_key_exists(root);
-    if (!exists) return std::unexpected{exists.error()};
-    if (!*exists) continue;
-    auto ours = machine_owned(root);
-    if (!ours) return std::unexpected{ours.error()};
-    if (*ours) return true;
-  }
   return false;
 }
 
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names,
-                                         bool force_install) {
+                                         bool force_install, bool compatibility) {
   RegistrationLock lock;
   if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
   if (auto recovered = recover_locked(); !recovered) return recovered;
@@ -1460,11 +1073,11 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
   auto active = active_slot();
   if (!active) return std::unexpected{active.error()};
   const auto plan = build_install_plan();
-  auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active);
+  auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active, compatibility);
   if (auto valid = validate_request(exe, current, preset_names); !valid) return valid;
   if (verify_schema(current) && verify_no_obsolete_roots(current)) return {};
-  const int next = *installed ? 1 - *active : 0;
-  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next);
+  const int next = compatibility ? 0 : (*installed ? 1 - *active : 0);
+  const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next, compatibility);
   auto roots = snapshot_roots(schema);
   if (!roots) return std::unexpected{roots.error()};
   if (auto saved = begin_journal(*roots); !saved) {
@@ -1472,6 +1085,15 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
     return std::unexpected{saved.error() + (recovered ? "" : " " + recovered.error())};
   }
   auto apply = [&]() -> std::expected<void, std::string> {
+    if (compatibility) {
+      auto preview = build_registry_schema(exe, menu_params, plan, preset_names, 1, true);
+      const auto preview_root = shared_tree_key(1);
+      std::erase_if(preview.keys, [&](const auto& key) { return !key.starts_with(preview_root); });
+      std::erase_if(preview.values, [&](const auto& value) { return !value.key.starts_with(preview_root); });
+      if (auto r = delete_tree(preview_root); !r) return r;
+      if (auto r = apply_schema(preview); !r) return r;
+      if (auto r = verify_schema(preview); !r) return r;
+    }
     const auto shared = shared_tree_key(next);
     if (auto r = delete_tree(shared); !r) return r;
     RegistrySchema tree = schema;
@@ -1496,15 +1118,8 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
     }
     if (auto r = verify_schema(schema); !r) return r;
     for (const auto& root : *roots) {
-      if (!root.managed) continue;
-      const bool expected = root.machine
-          ? std::ranges::find(schema.machine_keys, root.path) !=
-                schema.machine_keys.end()
-          : std::ranges::find(schema.keys, root.path) != schema.keys.end();
-      if (expected) continue;
-      auto removed = root.machine ? delete_machine_tree(root.path)
-                                  : delete_tree(root.path);
-      if (!removed) return removed;
+      if (!root.managed || std::ranges::find(schema.keys, root.path) != schema.keys.end()) continue;
+      if (auto r = delete_tree(root.path); !r) return r;
     }
     if (auto r = verify_no_obsolete_roots(schema); !r) return r;
     return verify_schema(schema);
@@ -1532,9 +1147,7 @@ std::expected<void, std::string> remove() {
   if (auto saved = begin_journal(*roots); !saved) return saved;
   for (const auto& root : *roots) {
     if (!root.managed) continue;
-    auto removed = root.machine ? delete_machine_tree(root.path)
-                                : delete_tree(root.path);
-    if (!removed) {
+    if (auto removed = delete_tree(root.path); !removed) {
       auto restored = recover_locked();
       return std::unexpected{removed.error() + (restored ? " 已恢复原注册。" : " " + restored.error())};
     }
@@ -1548,13 +1161,13 @@ std::expected<void, std::string> remove() {
 
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe, const MenuParams& menu_params,
-    std::span<const std::wstring> preset_names) {
+    std::span<const std::wstring> preset_names, bool compatibility) {
   auto installed = is_installed();
   if (!installed) return std::unexpected{installed.error()};
   if (!*installed) return std::optional<std::string>{};
   auto slot = active_slot();
   if (!slot) return std::unexpected{slot.error()};
-  const auto schema = build_registry_schema(awj_exe, menu_params, build_install_plan(), preset_names, *slot);
+  const auto schema = build_registry_schema(awj_exe, menu_params, build_install_plan(), preset_names, *slot, compatibility);
   if (auto valid = verify_schema(schema); !valid) return std::optional<std::string>{valid.error()};
   if (auto valid = verify_no_obsolete_roots(schema); !valid) return std::optional<std::string>{valid.error()};
   return std::optional<std::string>{};
@@ -1566,54 +1179,214 @@ constexpr std::wstring_view kMachineCommandPrefix =
 // PR #3 used exactly these six names. Never accept registry paths from argv.
 constexpr std::wstring_view kMachineCommands[] = {
     L"AWJImage.png", L"AWJImage.webp", L"AWJImage.avif",
-    L"AWJImage.avif-png", L"AWJImage.jxl", L"AWJImage.jpgli"};
+    L"AWJImage.avif-png", L"AWJImage.jxl", L"AWJImage.jpgli", L"AWJImage.presets"};
 }
 
 std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands() {
   std::vector<std::wstring> found;
   for (const auto name : kMachineCommands) {
-    const auto root = std::wstring{kMachineCommandPrefix} + std::wstring{name};
-    auto marker = read_machine_string(root, owner_value_name);
-    if (!marker) return std::unexpected{marker.error()};
-    if (*marker && **marker == owner_value) {
-      auto version = read_machine_dword(root, schema_value_name);
-      if (!version) return std::unexpected{version.error()};
-      if (*version && **version == schema_version) continue;
-    }
-    auto command = read_machine_string(root + L"\\command", L"");
-    if (!command) return std::unexpected{command.error()};
-    if (*command && is_awj_command(**command)) found.emplace_back(name);
+    const auto path = std::wstring{kMachineCommandPrefix} + std::wstring{name} + L"\\command";
+    wchar_t command[32768]{};
+    DWORD bytes = sizeof(command);
+    const auto status = RegGetValueW(HKEY_LOCAL_MACHINE, path.c_str(), nullptr,
+        RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, nullptr, command, &bytes);
+    if (missing_registry_status(status)) continue;
+    if (status != ERROR_SUCCESS) return std::unexpected{registry_error("检查历史系统菜单", path, status)};
+    if (is_awj_command(command)) found.emplace_back(name);
   }
   return found;
 }
 
-std::expected<void, std::string> remove_legacy_machine_commands() {
-  RegistrationLock lock;
-  if (!lock.held) {
-    return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
+std::expected<bool, std::string> compatibility_installed() {
+  for (const auto& root : current_parent_roots_for_all_extensions()) {
+    auto ours = owned(root);
+    if (!ours) return std::unexpected{ours.error()};
+    if (!*ours) continue;
+    auto commands = read_string(root, L"SubCommands");
+    if (!commands) return std::unexpected{commands.error()};
+    if (*commands && (**commands).starts_with(L"AWJImage.")) return true;
   }
-  auto found = legacy_machine_commands();
-  if (!found) return std::unexpected{found.error()};
-  HKEY raw = nullptr;
-  const auto opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE,
-      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell",
-      0, KEY_READ | KEY_WRITE | KEY_WOW64_64KEY, &raw);
-  if (missing_registry_status(opened)) return {};
-  if (opened != ERROR_SUCCESS) return std::unexpected{registry_error("打开历史系统菜单", kMachineCommandPrefix, opened)};
-  RegistryKey parent{raw};
-  std::string errors;
-  for (const auto& name : *found) {
-    const auto status = RegDeleteTreeW(parent.get(), name.c_str());
-    if (status != ERROR_SUCCESS && !missing_registry_status(status)) {
-      errors += registry_error("移除历史系统菜单", name, status) + " ";
+  return false;
+}
+
+namespace {
+RegistrySchema machine_schema(const std::filesystem::path& exe,
+                              const MenuParams& params) {
+  RegistrySchema schema;
+  const auto presets = std::wstring{kMachineCommandPrefix} + L"AWJImage.presets";
+  schema.keys.push_back(presets);
+  append_owned_markers(schema.values, presets);
+  append_string_spec(schema.values, presets, L"MUIVerb", L"用户预设 / User presets");
+  append_string_spec(schema.values, presets, L"Icon", icon_value(exe));
+  append_string_spec(schema.values, presets, std::wstring{kExtendedSubCommandsKey},
+                     std::wstring{shared_tree_reference});
+  for (const auto& command : kCommands) {
+    const auto suffix = command.append_png_suffix ? L"avif-png" : command.format;
+    const auto root = std::wstring{kMachineCommandPrefix} + L"AWJImage." + std::wstring{suffix};
+    schema.keys.push_back(root);
+    schema.keys.push_back(root + L"\\command");
+    append_owned_markers(schema.values, root);
+    append_string_spec(schema.values, root, L"MUIVerb", std::wstring{command.label});
+    append_string_spec(schema.values, root, L"Icon", icon_value(exe));
+    append_string_spec(schema.values, root, L"MultiSelectModel", std::wstring{kMultiSelectModel});
+    append_string_spec(schema.values, root + L"\\command", L"",
+        build_convert_command_line(exe, command.format, params[command.params_index],
+                                   command.append_png_suffix));
+  }
+  return schema;
+}
+}
+
+std::expected<void, std::string> stage_user_menu(
+    std::wstring_view id, bool machine, const std::filesystem::path& exe, const MenuParams& params,
+    std::span<const std::wstring> names, bool compatibility, bool remove_menu) {
+  if (auto restored = recover(); !restored) return restored;
+  StageScope scope;
+  staged_id = id;
+  staged_machine = machine;
+  return remove_menu ? remove() : reconcile(exe, params, names, true, compatibility);
+}
+
+std::expected<void, std::string> finish_user_menu(std::wstring_view id, bool commit) {
+  RegistrationLock lock;
+  if (!lock.held) return std::unexpected{"无法锁定菜单事务。"};
+  auto stored = read_string(kTransaction, L"Id");
+  if (!stored) return std::unexpected{stored.error()};
+  if (!*stored) return {};
+  if (**stored != id) return std::unexpected{"菜单事务身份不匹配。"};
+  if (commit) return commit_journal();
+  StageScope scope;
+  staged_id = id;
+  return recover_locked();
+}
+
+namespace {
+constexpr wchar_t machine_journal[] = L"SOFTWARE\\AWJimage.MenuTransaction";
+std::expected<void, std::string> apply_machine_menu(
+    const std::filesystem::path& exe, const MenuParams& params,
+    bool remove_menu, bool validate_only = false) {
+  const auto schema = machine_schema(exe, params);
+  if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
+  for (const auto name : kMachineCommands) {
+    const auto root = std::wstring{kMachineCommandPrefix} + std::wstring{name};
+    auto exists = key_exists(root);
+    if (!exists) return std::unexpected{exists.error()};
+    if (!*exists) continue;
+    if (auto trusted = validate_machine_tree(root.c_str()); !trusted) return trusted;
+    if (name == L"AWJImage.presets") {
+      auto marker = read_string(root, owner_value_name);
+      auto icon = read_string(root, L"Icon");
+      if (!marker || !icon || !*marker || !*icon || **marker != owner_value || **icon != icon_value(exe))
+        return std::unexpected{"机器预设菜单已被其他程序位置占用，未修改。"};
+      continue;
+    }
+    auto command = read_string(root + L"\\command", L"");
+    if (!command) return std::unexpected{command.error()};
+    const auto prefix = quote_windows_arg(exe.wstring(), true) + L" --shell-window --shell-convert ";
+    if (!*command || !(**command).starts_with(prefix))
+      return std::unexpected{"机器菜单已被其他程序位置占用，未修改。"};
+  }
+  if (validate_only) return {};
+  for (const auto name : kMachineCommands) {
+    const auto root = std::wstring{kMachineCommandPrefix} + std::wstring{name};
+    if (auto removed = delete_tree(root); !removed) return removed;
+  }
+  if (remove_menu) return {};
+  if (auto applied = apply_schema(schema); !applied) return applied;
+  return verify_schema(schema);
+}
+}
+
+std::expected<void, std::string> recover_machine_menu() {
+  NativeRegistryScope scope{true};
+  auto exists = key_exists(machine_journal);
+  if (!exists) return std::unexpected{exists.error()};
+  if (!*exists) return {};
+  auto protected_key = protected_machine_key(machine_journal, false);
+  if (!protected_key) return std::unexpected{protected_key.error()};
+  RegistryKey secured{*protected_key};
+  auto state = read_dword(machine_journal, L"State");
+  if (!state) return std::unexpected{state.error()};
+  if (!*state || **state == 0) return delete_tree(machine_journal);
+  if (**state != 1) return std::unexpected{"机器菜单事务状态无效。"};
+  auto id = read_string(machine_journal, L"Id");
+  auto sid = read_string(machine_journal, L"Sid");
+  if (!id || !*id || !sid || !*sid) return std::unexpected{"机器菜单事务身份缺失。"};
+  auto committed = menu_commit_recorded(**id, true, **sid);
+  if (!committed) return std::unexpected{committed.error()};
+  if (*committed) return delete_tree(machine_journal);
+  std::array<bool, std::size(kMachineCommands)> present{};
+  for (std::size_t i = 0; i < present.size(); ++i) {
+    const auto backup = std::format(L"{}\\{:03}", machine_journal, i);
+    auto value = read_dword(backup, L"Present");
+    if (!value || !*value || **value > 1) return std::unexpected{"受保护的机器菜单快照无效。"};
+    present[i] = **value != 0;
+    if (present[i]) {
+      auto data = key_exists(backup + L"\\Data");
+      if (!data || !*data) return std::unexpected{"受保护的机器菜单快照缺失。"};
     }
   }
-  SHChangeNotify(SHCNE_ASSOCCHANGED, SHCNF_IDLIST, nullptr, nullptr);
-  if (!errors.empty()) return std::unexpected{std::move(errors)};
-  auto remaining = legacy_machine_commands();
-  if (!remaining) return std::unexpected{remaining.error()};
-  if (!remaining->empty()) return std::unexpected{"历史系统菜单尚未完全清除。"};
+  for (std::size_t i = 0; i < present.size(); ++i) {
+    const auto target = std::wstring{kMachineCommandPrefix} + std::wstring{kMachineCommands[i]};
+    if (auto removed = delete_tree(target); !removed) return removed;
+    if (present[i]) {
+      if (auto copied = copy_tree(std::format(L"{}\\{:03}\\Data", machine_journal, i), target); !copied) return copied;
+    }
+  }
+  return delete_tree(machine_journal);
+}
+
+std::expected<void, std::string> stage_machine_menu(
+    const std::filesystem::path& exe, const MenuParams& params, bool remove_menu,
+    std::wstring_view id, std::wstring_view sid) {
+  if (auto restored = recover_machine_menu(); !restored) return restored;
+  NativeRegistryScope scope{true};
+  const auto schema = machine_schema(exe, params);
+  if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
+  if (auto valid = apply_machine_menu(exe, params, remove_menu, true); !valid) return valid;
+  auto protected_key = protected_machine_key(machine_journal, false);
+  if (!protected_key) return std::unexpected{protected_key.error()};
+  RegistryKey secured{*protected_key};
+  if (auto r = set_dword(machine_journal, L"State", 0); !r) return r;
+  if (auto r = set_string(machine_journal, L"Id", id); !r) return r;
+  if (auto r = set_string(machine_journal, L"Sid", sid); !r) return r;
+  for (std::size_t i = 0; i < std::size(kMachineCommands); ++i) {
+    const auto source = std::wstring{kMachineCommandPrefix} + std::wstring{kMachineCommands[i]};
+    const auto backup = std::format(L"{}\\{:03}", machine_journal, i);
+    auto present = key_exists(source);
+    if (!present) return std::unexpected{present.error()};
+    if (auto r = set_dword(backup, L"Present", *present); !r) return r;
+    if (*present) {
+      if (auto r = copy_tree(source, backup + L"\\Data"); !r) return r;
+    }
+  }
+  // Validate every copied child before the journal may be used for recovery.
+  auto verified = protected_machine_key(machine_journal, false);
+  if (!verified) return std::unexpected{verified.error()};
+  RegCloseKey(*verified);
+  if (auto r = set_dword(machine_journal, L"State", 1); !r) return r;
+  if (RegFlushKey(secured.get()) != ERROR_SUCCESS) return std::unexpected{"无法持久化机器菜单快照。"};
+  // Keep the old compatibility menu usable until the replacement HKCU schema
+  // has been verified and the original process requests commit.
+  return remove_menu ? std::expected<void, std::string>{} : apply_machine_menu(exe, params, false);
+}
+
+std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid,
+    const std::filesystem::path& exe, const MenuParams& params, bool remove_menu) {
+  NativeRegistryScope scope{true};
+  if (remove_menu) {
+    if (auto removed = apply_machine_menu(exe, params, true); !removed) return removed;
+  }
+  if (auto recorded = record_menu_commit(id, true, sid); !recorded) return recorded;
+  // The receipt is the durable commit point; leftover backup cleanup is retryable.
+  (void)delete_tree(machine_journal);
   return {};
+}
+
+std::expected<bool, std::string> machine_menu_matches(
+    const std::filesystem::path& exe, const MenuParams& params) {
+  NativeRegistryScope scope{true};
+  return verify_schema(machine_schema(exe, params)).has_value();
 }
 
 }  // namespace awj::shell_context_menu

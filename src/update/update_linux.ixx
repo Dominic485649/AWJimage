@@ -116,6 +116,16 @@ std::expected<std::string, std::string> read_text(const fs::path& path,
   return result;
 }
 
+std::expected<std::string, std::string> read_compatible_stage_text(
+    const fs::path& stage, std::string_view current_name,
+    std::string_view legacy_name, std::uint64_t maximum) {
+  const auto current = stage / current_name;
+  std::error_code ec;
+  const bool current_exists = fs::exists(current, ec);
+  if (ec) return std::unexpected{"检查 Linux 更新暂存文件失败。"};
+  return read_text(current_exists ? current : stage / legacy_name, maximum);
+}
+
 std::expected<void, std::string> copy_with_fsync(const fs::path& source,
                                                   const fs::path& destination,
                                                   mode_t mode) {
@@ -280,10 +290,15 @@ std::expected<void, std::string> verify_stage(const fs::path& stage,
                                               fs::path& target,
                                               ArchiveMemberInfo const*& member) {
   auto version = read_text(stage / "version.txt", 64);
-  auto raw = read_text(stage / "manifest-v2.json", maximum_manifest_bytes);
-  auto signature = read_text(stage / "manifest-v2.sig", maximum_signature_bytes);
-  auto keyring_raw = read_text(stage / "update-keyring-v1.json", maximum_manifest_bytes);
-  auto keyring_signature = read_text(stage / "update-keyring-v1.sig", 16 * 1024);
+  auto raw = read_compatible_stage_text(stage, "update-archive.json",
+                                        "manifest-v2.json", maximum_manifest_bytes);
+  auto signature = read_compatible_stage_text(stage, "update-archive.json.sig",
+                                              "manifest-v2.sig", maximum_signature_bytes);
+  auto keyring_raw = read_compatible_stage_text(stage, "update-keyring.json",
+                                                "update-keyring-v1.json",
+                                                maximum_manifest_bytes);
+  auto keyring_signature = read_compatible_stage_text(stage, "update-keyring.json.sig",
+                                                      "update-keyring-v1.sig", 16 * 1024);
   if (!version || !raw || !signature || !keyring_raw || !keyring_signature) {
     return std::unexpected{"Linux 更新事务缺少签名元数据。"};
   }
@@ -396,11 +411,11 @@ std::expected<void, std::string> stage_and_launch_linux_update(
   fs::remove_all(unpacked, ec);
   ec.clear();
   fs::remove(archive, ec);
-  if (ec || !atomic_write_text(*stage / "manifest-v2.json", fetched->raw_bytes) ||
-      !atomic_write_text(*stage / "manifest-v2.sig", fetched->signature_base64) ||
-      !atomic_write_text(*stage / "update-keyring-v1.json",
+  if (ec || !atomic_write_text(*stage / "update-archive.json", fetched->raw_bytes) ||
+      !atomic_write_text(*stage / "update-archive.json.sig", fetched->signature_base64) ||
+      !atomic_write_text(*stage / "update-keyring.json",
                          fetched->keyring_raw_bytes) ||
-      !atomic_write_text(*stage / "update-keyring-v1.sig",
+      !atomic_write_text(*stage / "update-keyring.json.sig",
                          fetched->keyring_signature_envelope) ||
       !atomic_write_text(*stage / "version.txt", requested_version) ||
       !atomic_write_text(*stage / "state.txt", "staged")) {

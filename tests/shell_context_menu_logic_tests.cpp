@@ -18,24 +18,6 @@ bool contains(std::wstring_view text, std::wstring_view needle) {
   return text.find(needle) != std::wstring_view::npos;
 }
 
-const awj::shell_context_menu::RegistryValueSpec* find_value(
-    const awj::shell_context_menu::RegistrySchema& schema,
-    std::wstring_view key, std::wstring_view name) {
-  for (const auto& value : schema.values) {
-    if (value.key == key && value.name == name) return &value;
-  }
-  return nullptr;
-}
-
-const awj::shell_context_menu::RegistryValueSpec* find_machine_value(
-    const awj::shell_context_menu::RegistrySchema& schema,
-    std::wstring_view key, std::wstring_view name) {
-  for (const auto& value : schema.machine_values) {
-    if (value.key == key && value.name == name) return &value;
-  }
-  return nullptr;
-}
-
 awj::shell_context_menu::MenuParams make_params(bool avif_png) {
   awj::shell_context_menu::MenuParams params{};
   for (auto& item : params) {
@@ -74,11 +56,6 @@ int main() {
   if (parent_canonical_verb != L"AWJimage.Convert") {
     return fail("shell parent verb is not vendor-qualified");
   }
-  if (machine_command_store_name(L"png") != L"AWJImage.png" ||
-      machine_command_store_key(L"png") !=
-          L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell\\AWJImage.png") {
-    return fail("static CommandStore naming/path changed unexpectedly");
-  }
 
   const auto plan = build_install_plan();
   if (plan.extensions.size() != supported_extensions().size()) {
@@ -92,82 +69,45 @@ int main() {
   if (schema_without_png != schema_repeat) {
     return fail("same install inputs did not produce an idempotent schema");
   }
-  std::vector<std::wstring> expected_parents{
-      image_parent_key(), directory_parent_key(), ico_parent_key()};
-  for (const auto extension : supported_extensions()) {
-    expected_parents.push_back(extension_parent_key(extension));
-    expected_parents.push_back(class_extension_parent_key(extension));
-  }
-  std::ranges::sort(expected_parents);
-  expected_parents.erase(std::unique(expected_parents.begin(), expected_parents.end()),
-                         expected_parents.end());
-  auto actual_parents = schema_without_png.parent_roots;
-  std::ranges::sort(actual_parents);
-  if (actual_parents != expected_parents) {
-    return fail("parent roots do not cover image, directory, ico, SFA and class associations");
+  if (schema_without_png.parent_roots.size() != supported_extensions().size() + 1 ||
+      std::ranges::find(schema_without_png.parent_roots, image_parent_key()) != schema_without_png.parent_roots.end()) {
+    return fail("parent roots contain a generic image entry or miss an extension");
   }
   for (const auto extension : supported_extensions()) {
-    if (std::ranges::find(schema_without_png.parent_roots,
-                          extension_parent_key(extension)) ==
-            schema_without_png.parent_roots.end() ||
-        std::ranges::find(schema_without_png.parent_roots,
-                          class_extension_parent_key(extension)) ==
-            schema_without_png.parent_roots.end()) {
+    if (std::ranges::find(schema_without_png.parent_roots, extension_parent_key(extension)) == schema_without_png.parent_roots.end()) {
       return fail("extension parent is missing");
     }
   }
 
-  const auto without_png_subcommands = static_subcommands(false);
-  const auto with_png_subcommands = static_subcommands(true);
-  for (const auto& parent : schema_without_png.parent_roots) {
-    const auto subcommands = find_value(schema_without_png, parent, L"SubCommands");
-    if (subcommands == nullptr || subcommands->kind != RegistryValueKind::string ||
-        subcommands->string_value != without_png_subcommands) {
-      return fail("static SubCommands parent schema is incorrect");
-    }
-    for (const auto& value : schema_without_png.values) {
-      if (value.key == parent && value.name == L"ExtendedSubCommandsKey") {
-        return fail("regular parent still uses ExtendedSubCommandsKey");
+  std::size_t pointer_values = 0;
+  std::size_t avif_png_commands = 0;
+  for (const auto& value : schema_without_png.values) {
+    if (value.name == L"ExtendedSubCommandsKey") {
+      ++pointer_values;
+      if (value.kind != RegistryValueKind::string ||
+          value.string_value != shared_tree_reference ||
+          value.key == shared_tree_key()) {
+        return fail("ExtendedSubCommandsKey pointer schema is incorrect");
       }
     }
+    if (contains(value.key, L"AWJimage.Convert.40.avif-png\\command")) ++avif_png_commands;
   }
-  for (const auto& command : commands) {
-    if (command.append_png_suffix) continue;
-    const auto command_name = command.canonical_verb.substr(
-        command.canonical_verb.rfind(L'.') + 1);
-    const auto key = machine_command_store_key(command_name);
-    if (std::ranges::find(schema_without_png.machine_keys, key) ==
-            schema_without_png.machine_keys.end() ||
-        find_machine_value(schema_without_png, key + L"\\command", L"") == nullptr) {
-      return fail("CommandStore command is missing from static schema");
-    }
-  }
-  const auto avif_png_machine_key = machine_command_store_key(L"avif-png");
-  if (std::ranges::find(schema_without_png.machine_keys, avif_png_machine_key) !=
-          schema_without_png.machine_keys.end() ||
-      find_machine_value(schema_without_png, avif_png_machine_key + L"\\command", L"") !=
-          nullptr) {
-    return fail("disabled AVIF.png command survived static schema");
+  if (pointer_values != schema_without_png.parent_roots.size() || avif_png_commands != 0 ||
+      std::ranges::find(schema_without_png.keys, shared_tree_key()) == schema_without_png.keys.end() ||
+      std::ranges::find(schema_without_png.keys, shared_tree_key() + L"\\shell") == schema_without_png.keys.end()) {
+    return fail("shared-tree pointer or AVIF.png-off schema is incorrect");
   }
 
   const auto params_with_png = make_params(true);
   const auto schema_with_png = build_registry_schema(exe, params_with_png, plan);
   bool found_avif_png = false;
-  const auto avif_png_command_key = machine_command_store_key(L"avif-png") + L"\\command";
-  for (const auto& value : schema_with_png.machine_values) {
-    if (value.key == avif_png_command_key && value.name.empty() &&
-        contains(value.string_value, L"--append-png-suffix")) {
+  for (const auto& value : schema_with_png.values) {
+    if (contains(value.key, L"AWJimage.Convert.40.avif-png\\command") &&
+        value.name.empty() && contains(value.string_value, L"--append-png-suffix")) {
       found_avif_png = true;
     }
   }
   if (!found_avif_png) return fail("AVIF.png-on schema is missing its command");
-
-  for (const auto& parent : schema_with_png.parent_roots) {
-    const auto subcommands = find_value(schema_with_png, parent, L"SubCommands");
-    if (subcommands == nullptr || subcommands->string_value != with_png_subcommands) {
-      return fail("AVIF.png-on SubCommands parent schema is incorrect");
-    }
-  }
 
   const auto avif_command = build_convert_command_line(exe, L"avif", params_with_png[0]);
   if (!avif_command.starts_with(L"\"C:\\Program Files\\AWJimage\\AWJ.exe\"") ||
@@ -219,33 +159,17 @@ int main() {
     std::vector<std::wstring> names;
     for (int i = 0; i < count; ++i) names.push_back(L"预设 空格 " + std::to_wstring(i));
     const auto schema = build_registry_schema(exe, params_without_png, plan, names, 1);
-    int preset_command_count = 0;
+    int commands = 0;
     for (const auto& value : schema.values) {
       if (contains(value.string_value, L"--preset")) {
-        ++preset_command_count;
+        ++commands;
         if (!contains(value.string_value, L"--format") || contains(value.string_value, L"--quality") ||
             contains(value.string_value, L"--append-png-suffix") || contains(value.string_value, L"--jobs")) {
           return fail("preset command embeds format values/resources or AVIF.png");
         }
       }
     }
-    if (preset_command_count != count * 5 ||
-        (count > 0 && schema == schema_without_png)) {
-      return fail("preset subtree/slot schema failed");
-    }
-    std::size_t preset_pointers = 0;
-    for (const auto& value : schema.values) {
-      if (value.name == L"ExtendedSubCommandsKey") {
-        ++preset_pointers;
-        if (!contains(value.string_value, L"AWJimage.ContextMenu")) {
-          return fail("preset ExtendedSubCommandsKey target is invalid");
-        }
-      }
-    }
-    if (preset_pointers !=
-            (count == 0 ? 0u : schema.parent_roots.size() + static_cast<std::size_t>(count))) {
-      return fail("preset pointer schema is duplicated or missing");
-    }
+    if (commands != count * 5 || schema == schema_without_png) return fail("preset subtree/slot schema failed");
   }
 
   const auto legacy = legacy_root_keys();

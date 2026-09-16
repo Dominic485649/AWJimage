@@ -24,8 +24,12 @@ import awj.update_model;
 export namespace awj::update {
 
 inline constexpr std::string_view archive_manifest_v2_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest-v2.json";
+    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-archive.json";
 inline constexpr std::string_view archive_manifest_v2_signature_url =
+    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-archive.json.sig";
+inline constexpr std::string_view legacy_archive_manifest_v2_url =
+    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest-v2.json";
+inline constexpr std::string_view legacy_archive_manifest_v2_signature_url =
     "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest-v2.json.sig";
 inline constexpr std::uint32_t supported_archive_manifest_v2_schema = 2;
 

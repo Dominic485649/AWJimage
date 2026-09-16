@@ -17,10 +17,7 @@ inline constexpr std::wstring_view owner_value_name = L"AWJimage.Owner";
 inline constexpr std::wstring_view schema_value_name = L"AWJimage.SchemaVersion";
 inline constexpr std::wstring_view owner_value = L"AWJimage";
 inline constexpr std::wstring_view parent_canonical_verb = L"AWJimage.Convert";
-// The shared tree is retained only for optional user preset entries. Built-in
-// conversion verbs are exposed through the static CommandStore/SubCommands
-// layout because third-party file managers do not all resolve recursive trees.
-inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v5.Presets.A";
+inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMenu.v4.A";
 
 struct FormatParams {
   std::wstring quality_text{};
@@ -33,6 +30,7 @@ struct FormatParams {
   int jpegli_progressive_index{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   bool strip_metadata{};
   bool allow_wic_fallback{true};
   bool close_on_finish{true};
@@ -42,6 +40,7 @@ struct FormatParams {
   std::wstring max_height_text{};
   std::wstring max_long_edge_text{};
   std::wstring max_short_edge_text{};
+  std::wstring scale_percent_text{};
 
   bool operator==(const FormatParams&) const = default;
 };
@@ -82,8 +81,6 @@ struct RegistrySchema {
   std::vector<std::wstring> parent_roots{};
   std::vector<std::wstring> keys{};
   std::vector<RegistryValueSpec> values{};
-  std::vector<std::wstring> machine_keys{};
-  std::vector<RegistryValueSpec> machine_values{};
 
   bool operator==(const RegistrySchema&) const = default;
 };
@@ -96,14 +93,9 @@ std::wstring extension_parent_key(std::wstring_view extension);
 std::wstring class_extension_parent_key(std::wstring_view extension);
 std::wstring ico_parent_key();
 std::wstring shared_tree_key(int slot = 0);
-std::wstring machine_command_store_key(std::wstring_view command_key);
-std::wstring machine_command_store_name(std::wstring_view command_key);
-std::wstring static_subcommands(bool install_avif_png_command);
 std::wstring legacy_shared_tree_key();
 std::vector<std::wstring> legacy_root_keys();
 std::vector<std::wstring> owned_root_keys();
-std::vector<std::wstring> legacy_v4_transaction_roots();
-std::vector<std::wstring> owned_machine_root_keys();
 InstallPlan build_install_plan();
 std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
                                         std::wstring_view format,
@@ -113,7 +105,7 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
                                      std::span<const std::wstring> preset_names = {},
-                                     int slot = 0);
+                                     int slot = 0, bool compatibility = false);
 
 std::expected<InstallPlan, std::string> detect_install_plan();
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
@@ -122,15 +114,29 @@ std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names = {},
-                                         bool force_install = false);
+                                         bool force_install = false,
+                                         bool compatibility = false);
 std::expected<void, std::string> recover();
 std::expected<bool, std::string> is_installed();
 std::expected<void, std::string> remove();
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe,
     const MenuParams& menu_params,
-    std::span<const std::wstring> preset_names = {});
+    std::span<const std::wstring> preset_names = {}, bool compatibility = false);
 std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands();
-std::expected<void, std::string> remove_legacy_machine_commands();
+
+std::expected<bool, std::string> compatibility_installed();
+std::expected<void, std::string> stage_user_menu(
+    std::wstring_view id, bool machine, const std::filesystem::path& exe, const MenuParams& params,
+    std::span<const std::wstring> names, bool compatibility, bool remove_menu);
+std::expected<void, std::string> finish_user_menu(std::wstring_view id, bool commit);
+std::expected<void, std::string> stage_machine_menu(
+    const std::filesystem::path& exe, const MenuParams& params,
+    bool remove_menu, std::wstring_view id, std::wstring_view sid);
+std::expected<void, std::string> recover_machine_menu();
+std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid,
+    const std::filesystem::path& exe, const MenuParams& params, bool remove_menu);
+std::expected<bool, std::string> machine_menu_matches(
+    const std::filesystem::path& exe, const MenuParams& params);
 
 }  // namespace awj::shell_context_menu

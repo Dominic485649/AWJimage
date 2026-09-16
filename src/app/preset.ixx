@@ -56,6 +56,7 @@ struct PresetFormat {
   int jpegli_progressive_level{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jxl_jpeg_lossless{true};
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{};
   ImageSizeLimit image_size_limit{};
@@ -448,6 +449,7 @@ std::expected<void, std::string> load_size_limit(const Json& object,
   if (auto r = one("max_height", target.max_height); !r) return r;
   if (auto r = one("max_long_edge", target.max_long_edge); !r) return r;
   if (auto r = one("max_short_edge", target.max_short_edge); !r) return r;
+  if (auto r = load_optional_int(value, "scale_percent", 1, 100, target.scale_percent); !r) return r;
   return {};
 }
 
@@ -467,6 +469,7 @@ std::expected<void, std::string> load_format(const Json& object,
   if (auto r = load_bool(object, "jpegli_optimize_huffman",
                           target.jpegli_optimize_huffman); !r) return r;
   if (auto r = load_bool(object, "jpegli_xyb", target.jpegli_xyb); !r) return r;
+  if (auto r = load_bool(object, "jxl_jpeg_lossless", target.jxl_jpeg_lossless); !r) return r;
   if (auto r = load_int(object, "threads", 1, encoding_defaults::max_automatic_thread_budget,
                          target.max_jobs); !r) return r;
   if (auto r = load_u64(object, "memory_limit_bytes", 1ull << 50,
@@ -500,7 +503,8 @@ Json size_limit_json(const ImageSizeLimit& limit) {
               {"max_width", optional_int_json(limit.max_width)},
               {"max_height", optional_int_json(limit.max_height)},
               {"max_long_edge", optional_int_json(limit.max_long_edge)},
-              {"max_short_edge", optional_int_json(limit.max_short_edge)}};
+              {"max_short_edge", optional_int_json(limit.max_short_edge)},
+              {"scale_percent", optional_int_json(limit.scale_percent)}};
 }
 
 Json format_json(const PresetFormat& value) {
@@ -516,6 +520,7 @@ Json format_json(const PresetFormat& value) {
               {"jpegli_progressive_level", value.jpegli_progressive_level},
               {"jpegli_optimize_huffman", value.jpegli_optimize_huffman},
               {"jpegli_xyb", value.jpegli_xyb},
+              {"jxl_jpeg_lossless", value.jxl_jpeg_lossless},
               {"threads", value.max_jobs},
               {"memory_limit_bytes", value.memory_limit_bytes},
               {"size_limit", size_limit_json(value.image_size_limit)}};
@@ -539,9 +544,22 @@ std::expected<void, std::string> atomic_write(const fs::path& path,
     }
   }
 #ifdef _WIN32
-  if (MoveFileExW(temporary.c_str(), path.c_str(),
-                  MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
-    const auto error = GetLastError();
+  DWORD error = ERROR_SUCCESS;
+  bool moved = false;
+  for (int attempt = 0; attempt != 10; ++attempt) {
+    if (MoveFileExW(temporary.c_str(), path.c_str(),
+                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) != FALSE) {
+      moved = true;
+      break;
+    }
+    error = GetLastError();
+    if (error != ERROR_ACCESS_DENIED && error != ERROR_SHARING_VIOLATION &&
+        error != ERROR_LOCK_VIOLATION) {
+      break;
+    }
+    Sleep(10);
+  }
+  if (!moved) {
     fs::remove(temporary, ec);
     return std::unexpected{std::format("原子替换预设文件失败，Windows 错误 {}。", error)};
   }
@@ -753,6 +771,7 @@ PresetFormat preset_format_from_config(const AppConfig& config) {
   preset.jpegli_progressive_level = config.jpegli_progressive_level;
   preset.jpegli_optimize_huffman = config.jpegli_optimize_huffman;
   preset.jpegli_xyb = config.jpegli_xyb;
+  preset.jxl_jpeg_lossless = config.jxl_jpeg_lossless;
   preset.max_jobs = config.max_jobs;
   preset.memory_limit_bytes = config.memory_limit_bytes;
   preset.image_size_limit = config.image_size_limit;
@@ -780,6 +799,7 @@ AppConfig config_from_user_preset(const UserPreset& preset,
   config.jpegli_progressive_level = source.jpegli_progressive_level;
   config.jpegli_optimize_huffman = source.jpegli_optimize_huffman;
   config.jpegli_xyb = source.jpegli_xyb;
+  config.jxl_jpeg_lossless = source.jxl_jpeg_lossless;
   config.max_jobs = source.max_jobs;
   config.memory_limit_bytes = source.memory_limit_bytes;
   config.image_size_limit = source.image_size_limit;

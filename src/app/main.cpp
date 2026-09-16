@@ -2,6 +2,7 @@
 #define NOMINMAX
 #endif
 #ifdef _WIN32
+#include "shell_elevation.hpp"
 #include <windows.h>
 #include "../ui/shell_context_menu.hpp"
 #else
@@ -31,9 +32,6 @@ int run_cli(int argc, char* argv[]);
 int run_studio_ui();
 #endif
 int run_shell_convert_window(int argc, wchar_t* argv[]);
-#ifdef _WIN32
-int run_shell_context_menu_helper(int argc, wchar_t* argv[]);
-#endif
 
 #ifdef _WIN32
 namespace {
@@ -256,9 +254,8 @@ int wmain(int argc, wchar_t* argv[]) {
   // 最先装崩溃留痕：后面任何一步失败都还能留下一行原因。
   install_crash_diagnostics();
   if (argc == 2 && std::wcscmp(argv[1], L"--cleanup-legacy-machine-menu") == 0) {
-    const auto result = awj::shell_context_menu::remove_legacy_machine_commands();
-    if (!result) std::fprintf(stderr, "%s\n", result.error().c_str());
-    return result ? 0 : 1;
+    std::fprintf(stderr, "AWJ 1.0.13 refuses machine-level menu modification. Remove legacy HKLM entries with system administration tools.\n");
+    return 1;
   }
   const auto parse_pid = [](const wchar_t* text) -> DWORD {
     if (text == nullptr || *text == L'\0') return 0;
@@ -285,15 +282,9 @@ int wmain(int argc, wchar_t* argv[]) {
       return run_studio_ui(argv[2], argv[3]);
     });
   }
-#ifdef _WIN32
-  if (argc == 2 &&
-      (std::wcscmp(argv[1], L"--shell-context-menu-helper") == 0 ||
-       std::wcscmp(argv[1], L"--shell-context-menu-remove-helper") == 0)) {
-    return run_guarded("shell-context-menu-helper", [argc, argv] {
-      return run_shell_context_menu_helper(argc, argv);
-    });
+  if (argc >= 2 && std::wcscmp(argv[1], L"--shell-menu-helper") == 0) {
+    return awj::shell_context_menu::run_elevation_helper(argc, argv);
   }
-#endif
   if (awj::update::launch_update_recovery_if_needed()) {
     return 0;
   }

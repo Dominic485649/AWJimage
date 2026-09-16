@@ -58,6 +58,31 @@ function Assert-Directory([string]$Path, [string]$Label) {
     return $Resolved
 }
 
+function Assert-BinaryVersion([string]$Path) {
+    $Info = [Diagnostics.ProcessStartInfo]::new($Path)
+    $Info.UseShellExecute = $false
+    $Info.CreateNoWindow = $true
+    $Info.RedirectStandardOutput = $true
+    $Info.RedirectStandardError = $true
+    $Info.ArgumentList.Add('--version')
+    $Process = [Diagnostics.Process]::new()
+    $Process.StartInfo = $Info
+    try {
+        if (-not $Process.Start()) { throw "无法启动版本检查: $Path" }
+        $Stdout = $Process.StandardOutput.ReadToEndAsync()
+        $Stderr = $Process.StandardError.ReadToEndAsync()
+        if (-not $Process.WaitForExit(15000)) {
+            $Process.Kill($true)
+            $Process.WaitForExit()
+            throw "版本检查超时: $Path"
+        }
+        $Actual = $Stdout.GetAwaiter().GetResult().Trim()
+        if ($Process.ExitCode -ne 0 -or $Actual -cne "AWJimage $Version") {
+            throw "二进制版本不匹配: $Path; expected=AWJimage $Version; actual=$Actual"
+        }
+    } finally { $Process.Dispose() }
+}
+
 function Remove-OnlyInsideRepo([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return }
     $Root = (Get-RepoPath $Repo).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
@@ -72,6 +97,18 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
     $Temporary = "$Path.tmp-$PID"
     [IO.File]::WriteAllText($Temporary, $Text, [Text.UTF8Encoding]::new($false))
     Move-Item -LiteralPath $Temporary -Destination $Path -Force
+}
+
+function Copy-ExactAlias([string]$Source, [string]$Destination) {
+    $Source = Assert-File $Source "alias source"
+    if ((Get-RepoPath $Source) -ne (Get-RepoPath $Destination)) {
+        Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    }
+    $Destination = Assert-File $Destination "alias destination"
+    if ((Get-FileHash -LiteralPath $Source -Algorithm SHA256).Hash -ne
+        (Get-FileHash -LiteralPath $Destination -Algorithm SHA256).Hash) {
+        throw "兼容别名与源文件字节不一致: $Destination"
+    }
 }
 
 function Get-Asset([string]$Path, [string]$Url) {
@@ -158,7 +195,6 @@ function Assert-ManifestSigningKey {
     if ($ManifestKeyId -notmatch '^[a-z0-9-]{1,64}$') {
         throw "-ManifestKeyId 只能包含小写字母、数字和连字符。"
     }
-    if (-not $UpdateKeyringPath) { $UpdateKeyringPath = Join-Path $Repo "update-keyring-v1.json" }
     $KeyringPath = Assert-File $UpdateKeyringPath "update keyring"
     # Authenticate the raw keyring before its contents choose a release key.
     Assert-TrustedUpdateKeyring $KeyringPath
@@ -248,6 +284,10 @@ function Assert-ArchiveRoundTrip([string]$ArchivePath, [string]$PackageDirectory
 
 $WindowsExePath = Assert-File $WindowsExePath "AWJ.exe"
 $WindowsComPath = Assert-File $WindowsComPath "AWJ.com"
+if ($Version -cne (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()) {
+    throw '打包版本与仓库 VERSION 不一致。'
+}
+Assert-BinaryVersion $WindowsExePath
 $LinuxPackagePath = Assert-Directory $LinuxPackagePath "native Linux package"
 $LinuxArchivePath = Assert-File $LinuxArchivePath "native Linux archive"
 if (([IO.Path]::GetFileName($WindowsExePath) -ne "AWJ.exe") -or
@@ -259,6 +299,12 @@ if (-not (Test-Path -LiteralPath (Join-Path $LinuxPackagePath "AWJ") -PathType L
 }
 if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) { throw "未找到 7z.exe。" }
 if (-not $SkipManifests) {
+    if (-not $UpdateKeyringPath) {
+        $UpdateKeyringPath = Join-Path $Repo 'update-keyring.json'
+        if (-not (Test-Path -LiteralPath $UpdateKeyringPath -PathType Leaf)) {
+            $UpdateKeyringPath = Join-Path $Repo 'update-keyring-v1.json'
+        }
+    }
     if (-not $SignerPath) { $SignerPath = Join-Path (Split-Path -Parent $WindowsExePath) "awj_update_manifest_sign.exe" }
     $SignerPath = Assert-File $SignerPath "manifest 签名工具"
     if ($UpdatePublicKeyHex -notmatch '^[0-9a-f]{64}$') { throw "需要 64 位小写 -UpdatePublicKeyHex。" }
@@ -274,6 +320,13 @@ if (-not $SkipManifests) {
         throw "-ExistingManifestPublicKeyHex 必须是 64 位小写十六进制。"
     }
     Assert-ManifestSigningKey
+
+    $CanonicalKeyringPath = Join-Path $Repo "update-keyring.json"
+    $LegacyKeyringPath = Join-Path $Repo "update-keyring-v1.json"
+    Copy-ExactAlias $UpdateKeyringPath $CanonicalKeyringPath
+    Copy-ExactAlias "$UpdateKeyringPath.sig" "$CanonicalKeyringPath.sig"
+    Copy-ExactAlias $CanonicalKeyringPath $LegacyKeyringPath
+    Copy-ExactAlias "$CanonicalKeyringPath.sig" "$LegacyKeyringPath.sig"
 }
 
 $Stage = Join-Path $Repo "build\release\$Version"
@@ -299,6 +352,7 @@ if ($LASTEXITCODE -ne 0) { throw "Linux 7z 完整性检查失败: $LinuxArchive"
 $WinVerify = Join-Path $Stage "verify\AWJ_Win"
 $LinuxVerify = Join-Path $Stage "verify\AWJ_Linux"
 Assert-ArchiveRoundTrip $WindowsArchive $WinPackage $WinVerify
+Assert-BinaryVersion (Join-Path $WinVerify 'AWJ.exe')
 Assert-ArchiveRoundTrip $LinuxArchive $LinuxPackage $LinuxVerify
 $GuiSmoke = Start-Process -FilePath (Join-Path $WinVerify "AWJ.exe") -ArgumentList "--help" -PassThru -Wait -WindowStyle Hidden
 if ($GuiSmoke.ExitCode -ne 0) { throw "Windows AWJ.exe --help smoke 失败。" }
@@ -313,11 +367,15 @@ if (-not $SkipManifests) {
     $Changelog = [ordered]@{ 'zh-CN' = Get-ChangelogBody (Join-Path $Repo "CHANGELOG.md"); en = Get-ChangelogBody (Join-Path $Repo "CHANGELOG.en.md") }
     if (-not $BridgeRelease) {
         if ($ArchiveManifestSequence -eq 0) { throw "1.0.4 归档更新需要 -ArchiveManifestSequence。" }
-        $ManifestPath = Join-Path $Repo "update-manifest-v2.json"
+        $ManifestPath = Join-Path $Repo "update-archive.json"
         $SignaturePath = "$ManifestPath.sig"
-        $Old = if (Test-Path -LiteralPath $ManifestPath) { Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json -AsHashtable } else { $null }
+        $LegacyManifestPath = Join-Path $Repo "update-manifest-v2.json"
+        $LegacySignaturePath = "$LegacyManifestPath.sig"
+        $ExistingManifestPath = if (Test-Path -LiteralPath $ManifestPath) { $ManifestPath } else { $LegacyManifestPath }
+        $ExistingSignaturePath = "$ExistingManifestPath.sig"
+        $Old = if (Test-Path -LiteralPath $ExistingManifestPath) { Get-Content -LiteralPath $ExistingManifestPath -Raw | ConvertFrom-Json -AsHashtable } else { $null }
         if ($Old) {
-            & $SignerPath --verify $ManifestPath $ExistingManifestPublicKeyHex $SignaturePath
+            & $SignerPath --verify $ExistingManifestPath $ExistingManifestPublicKeyHex $ExistingSignaturePath
             if ($LASTEXITCODE -ne 0) { throw "现有 v2 manifest 签名无效。" }
             if ($ArchiveManifestSequence -le [UInt64]$Old.sequence) { throw "v2 sequence 必须递增。" }
         }
@@ -340,6 +398,8 @@ if (-not $SkipManifests) {
         if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v2 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $ManifestPath $Json
         Sign-Manifest $ManifestPath $SignaturePath
+        Copy-ExactAlias $ManifestPath $LegacyManifestPath
+        Copy-ExactAlias $SignaturePath $LegacySignaturePath
     }
     if ($BridgeRelease) {
         if ($LegacyManifestSequence -eq 0) { throw "1.0.5 桥接更新需要 -LegacyManifestSequence。" }

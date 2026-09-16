@@ -14,7 +14,7 @@ That location is outside the repository. `.gitignore` also ignores `**/*update-e
 
 ## Trust chain and replay defense
 
-The client verifies raw UTF-8 bytes before parsing JSON. `update-keyring-v1.json` needs signatures from at least two different compiled roots out of three; its `.sig` envelope contains detached Ed25519 signatures with `key_id`. The keyring has its own increasing `sequence`, `issued_at`, and `expires_at`, and delegates release keys with a `key_id`, public key, validity window, and `revoked` flag.
+The client verifies raw UTF-8 bytes before parsing JSON. From 1.0.13, the public canonical names are `update-keyring.json` / `update-keyring.json.sig`; packaging also keeps byte-identical `update-keyring-v1.json` / `update-keyring-v1.json.sig` compatibility aliases. At least two different compiled roots out of three must sign the keyring, and its signature envelope contains detached Ed25519 signatures with `key_id`. The client falls back to the legacy pair only when the canonical document or signature returns 404; other network failures, signature/parse failures, and replay-defense failures remain fail-closed. The keyring has its own increasing `sequence`, `issued_at`, and `expires_at`, and delegates release keys with a `key_id`, public key, validity window, and `revoked` flag.
 
 Both v1 and v2 manifests carry signed `key_id`, `issued_at`, and `expires_at`. Their lifetime is capped at 180 days; expired or implausibly future-dated documents are rejected to prevent a valid signature being replayed indefinitely. The client persists each of the v1, v2, and keyring last-verified sequence plus raw SHA-256 in executable-adjacent `.awj-update-security-state.json`, using an inter-process exclusive lock, same-directory temporary write, flush, and atomic replace. Lower sequences, different bytes at the same sequence, and a damaged state file fail closed across restart; legacy `AWJ.jsonc` counters are only migration floors.
 
@@ -27,7 +27,7 @@ No app-local mechanism can resist an attacker with equal local write access that
 
    ```powershell
    .\scripts\sign-update-keyring.ps1 `
-     -KeyringPath .\update-keyring-v1.json `
+     -KeyringPath .\update-keyring.json `
      -RootSeedFiles @{
        'root-legacy-2026' = 'C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex'
        'root-recovery-a-2026' = 'C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-root-recovery-a-2026.hex'

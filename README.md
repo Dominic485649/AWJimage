@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-当前源码版本为 **1.0.12**。本地验证见 [验证记录](docs/validation-1.0.12.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
+当前源码版本为 **1.0.13**。本地验证见 [验证记录](docs/validation-1.0.13.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 Release ELF。当前内置转换路径只保留 native codec：
 
@@ -11,10 +11,11 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 - WebP：libwebp
 - JXL：libjxl
 - JPGLI：google/jpegli；Windows 与 Linux Release 均可用，生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
+- HEIC/HEIF 输入：libheif 1.23.4 + libde265 1.1.2 原生解码；仅编译 HEVC 解码能力，不启用 HEIC 编码器或动态插件
 
 内置 ImageMagick/MagickWand 后端已经移除，Release 输出不再携带 ImageMagick XML、许可文件或模块目录。Magick 与 ffmpeg 以后只能作为外部集成重新引入；当前版本不处理该环节。
 
-Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows；Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
+Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。HEIC/HEIF 使用跨平台 native libheif/libde265 解码；WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows。Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
 ## 发行包
 
@@ -79,7 +80,7 @@ Windows 脚本会配置 native 依赖并清理 Release 输出目录。1.0.9 起�
 
 ## 自动更新
 
-1.0.6 起，客户端先用三把编译 root 中至少两把验证的 `update-keyring-v1.json` 选择未撤销 release key，再验签带 `key_id`、递增 sequence、`issued_at` 和 `expires_at` 的 v1/v2 manifest。三类文档各自把最后已验签 sequence 和原始 SHA-256 以跨进程锁、刷盘、原子替换持久化到可执行文件同目录；状态损坏、回退或同 sequence 改写均 fail-closed。Windows 与可写 Linux 安装目录继续在同卷 staging 中原子替换、健康检查和回滚；不可写 Linux 安装目录只打开 Release 页面，不静默提权。
+1.0.6 起，客户端使用三把编译 root 中至少两把验证的 keyring 选择未撤销 release key，再验签带 `key_id`、递增 sequence、`issued_at` 和 `expires_at` 的 v1/v2 manifest。1.0.13 起优先读取 `update-keyring.json` / `update-archive.json` 及其签名，仅在新地址缺失时成对回退旧名称；验签失败、内容损坏或防重放失败不会触发降级。各类文档把最后已验签 sequence 和原始 SHA-256 以跨进程锁、刷盘、原子替换持久化到可执行文件同目录。Windows 与可写 Linux 安装目录继续在同卷 staging 中原子替换、健康检查和回滚；不可写 Linux 安装目录只打开 Release 页面，不静默提权。
 
 旧 `update-manifest.json` schema 1 仍只用于 Windows 1.0.3→1.0.5 本机桥接；1.0.5 不加入 v2 候选。密钥保管、过期、撤销和轮换流程见 [自动更新签名与密钥轮换](docs/update-security.md)。
 
