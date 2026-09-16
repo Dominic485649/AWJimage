@@ -748,10 +748,11 @@ std::expected<InstallPlan, std::string> detect_install_plan() {
 namespace {
 
 struct RegistrationLock {
+  MenuOperationLock operation;
   HANDLE handle{CreateMutexW(nullptr, FALSE, L"Local\\AWJimage.ContextMenu.v4")};
   bool held{};
   RegistrationLock() {
-    if (handle) {
+    if (operation.held() && handle) {
       const DWORD result = WaitForSingleObject(handle, 15000);
       held = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
     }
@@ -1260,7 +1261,7 @@ namespace {
 constexpr wchar_t machine_journal[] = L"SOFTWARE\\AWJimage.MenuTransaction";
 std::expected<void, std::string> apply_machine_menu(
     const std::filesystem::path& exe, const MenuParams& params,
-    bool remove_menu) {
+    bool remove_menu, bool validate_only = false) {
   const auto schema = machine_schema(exe, params);
   if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
   for (const auto name : kMachineCommands) {
@@ -1273,7 +1274,6 @@ std::expected<void, std::string> apply_machine_menu(
       auto icon = read_string(root, L"Icon");
       if (!marker || !icon || !*marker || !*icon || **marker != owner_value || **icon != icon_value(exe))
         return std::unexpected{"机器预设菜单已被其他程序位置占用，未修改。"};
-      if (auto removed = delete_tree(root); !removed) return removed;
       continue;
     }
     auto command = read_string(root + L"\\command", L"");
@@ -1281,6 +1281,10 @@ std::expected<void, std::string> apply_machine_menu(
     const auto prefix = quote_windows_arg(exe.wstring(), true) + L" --shell-window --shell-convert ";
     if (!*command || !(**command).starts_with(prefix))
       return std::unexpected{"机器菜单已被其他程序位置占用，未修改。"};
+  }
+  if (validate_only) return {};
+  for (const auto name : kMachineCommands) {
+    const auto root = std::wstring{kMachineCommandPrefix} + std::wstring{name};
     if (auto removed = delete_tree(root); !removed) return removed;
   }
   if (remove_menu) return {};
@@ -1335,6 +1339,7 @@ std::expected<void, std::string> stage_machine_menu(
   NativeRegistryScope scope{true};
   const auto schema = machine_schema(exe, params);
   if (auto valid = validate_request(exe, schema, {}); !valid) return valid;
+  if (auto valid = apply_machine_menu(exe, params, remove_menu, true); !valid) return valid;
   auto protected_key = protected_machine_key(machine_journal, false);
   if (!protected_key) return std::unexpected{protected_key.error()};
   RegistryKey secured{*protected_key};
@@ -1357,12 +1362,18 @@ std::expected<void, std::string> stage_machine_menu(
   RegCloseKey(*verified);
   if (auto r = set_dword(machine_journal, L"State", 1); !r) return r;
   if (RegFlushKey(secured.get()) != ERROR_SUCCESS) return std::unexpected{"无法持久化机器菜单快照。"};
-  return apply_machine_menu(exe, params, remove_menu);
+  // Keep the old compatibility menu usable until the replacement HKCU schema
+  // has been verified and the original process requests commit.
+  return remove_menu ? std::expected<void, std::string>{} : apply_machine_menu(exe, params, false);
 }
 
-std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid) {
-  if (auto recorded = record_menu_commit(id, true, sid); !recorded) return recorded;
+std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid,
+    const std::filesystem::path& exe, const MenuParams& params, bool remove_menu) {
   NativeRegistryScope scope{true};
+  if (remove_menu) {
+    if (auto removed = apply_machine_menu(exe, params, true); !removed) return removed;
+  }
+  if (auto recorded = record_menu_commit(id, true, sid); !recorded) return recorded;
   // The receipt is the durable commit point; leftover backup cleanup is retryable.
   (void)delete_tree(machine_journal);
   return {};

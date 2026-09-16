@@ -38,6 +38,9 @@ MenuResult restore_config(const std::optional<std::string>& content) {
 
 MenuResult apply_menu_change(const StudioConfigSnapshot& desired,
                              const StudioConfigSnapshot& defaults, bool install, bool remove) {
+  shell_context_menu::MenuOperationLock operation;
+  if (!operation.held()) return std::unexpected{"另一进程正在修改右键菜单。"};
+  if (auto recovered = recover_shell_menu_config(); !recovered) return recovered;
   auto installed = shell_context_menu::is_installed();
   if (!installed) return std::unexpected{installed.error()};
   if (!*installed && !install && !remove) return write_studio_config_file(desired, defaults);

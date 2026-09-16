@@ -1364,6 +1364,11 @@ if(BUILD_TESTING AND WIN32)
     awj_set_runtime_directory(awj_menu_config_journal_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
     add_test(NAME menu_config_journal COMMAND awj_menu_config_journal_tests)
     set_tests_properties(menu_config_journal PROPERTIES TIMEOUT 30)
+    add_executable(awj_shell_machine_menu_tests tests/shell_machine_menu_tests.cpp)
+    avif_enable_common_options(awj_shell_machine_menu_tests)
+    target_link_libraries(awj_shell_machine_menu_tests PRIVATE awj_shell_context_menu)
+    awj_set_runtime_directory(awj_shell_machine_menu_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    add_test(NAME shell_machine_snapshot_rejection COMMAND awj_shell_machine_menu_tests)
 
     add_executable(awj_shell_context_menu_registry_tests
         tests/shell_context_menu_registry_tests.cpp)

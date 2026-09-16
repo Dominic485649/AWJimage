@@ -14,6 +14,7 @@
 #include "studio_parameter_page.h"
 #include "studio_menu_params.h"
 #include "studio_shell_cli.h"
+#include "menu_transaction_state.hpp"
 #include "studio_ui_util.h"
 
 import awj.core;
@@ -398,6 +399,8 @@ std::expected<void, std::string> persist_studio_config_if_changed(
   if (!state.config_defaults || state.menu_operation_active) {
     return {};
   }
+  shell_context_menu::MenuOperationLock operation;
+  if (!operation.held()) return std::unexpected{"另一进程正在修改右键菜单配置。"};
   auto current = capture_studio_config(app, &state);
   // Machine parameters are applied only by an explicit save/repair action.
   if (current.shell_menu_compatibility && state.last_config_snapshot)

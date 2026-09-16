@@ -18,6 +18,7 @@
 
 namespace awj::shell_context_menu {
 struct MenuTransaction::Impl {
+  MenuOperationLock operation;
   HANDLE pipe{}, child{};
   std::wstring id;
   bool machine{}, user_staged{}, committed{};
@@ -131,10 +132,14 @@ WireFormat encode(const FormatParams& p) {
       p.max_width_text, p.max_height_text, p.max_long_edge_text,
       p.max_short_edge_text, p.scale_percent_text};
   for (std::size_t i = 0; i < texts.size(); ++i) {
-    if (texts[i].size() >= wire.text[i].size() ||
-        std::ranges::any_of(texts[i], [](wchar_t c) { return c < L'0' || c > L'9'; }))
+    std::wstring_view text{texts[i]};
+    const auto first = text.find_first_not_of(L" \t\r\n");
+    text = first == text.npos ? std::wstring_view{} :
+        text.substr(first, text.find_last_not_of(L" \t\r\n") - first + 1);
+    if (text.size() >= wire.text[i].size() ||
+        std::ranges::any_of(text, [](wchar_t c) { return c < L'0' || c > L'9'; }))
       throw std::runtime_error("Menu numeric parameters are invalid.");
-    std::ranges::copy(texts[i], wire.text[i].begin());
+    std::ranges::copy(text, wire.text[i].begin());
   }
   wire.number = {p.avif_encoder_index, p.avif_color_representation_index,
       p.chroma_index, p.alpha_policy_index, p.jpegli_progressive_index,
@@ -293,12 +298,13 @@ std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change
   const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   struct ComGuard { HRESULT result; ~ComGuard() { if (SUCCEEDED(result)) CoUninitialize(); } } apartment{com};
   try {
+    auto session = std::make_unique<MenuTransaction::Impl>();
+    if (!session->operation.held()) return std::unexpected{"另一进程正在修改右键菜单。"};
     if (auto restored = recover(); !restored) return std::unexpected{restored.error()};
     const auto previous = compatibility_installed();
     if (!previous) return std::unexpected{previous.error()};
     const auto machine = legacy_machine_commands();
     if (!machine) return std::unexpected{machine.error()};
-    auto session = std::make_unique<MenuTransaction::Impl>();
     GUID guid{};
     if (FAILED(CoCreateGuid(&guid))) system_error("Create menu session");
     wchar_t id[40]{};
@@ -357,10 +363,10 @@ int run_elevation_helper(int argc, wchar_t* argv[]) noexcept {
     transfer(pipe.value, &request, sizeof(request), false);
     if (request.magic != Request{}.magic || request.remove > 1) return 5;
     Reply reply;
+    MenuParams params;
+    const auto exe = process_exe(GetCurrentProcess());
     try {
-      MenuParams params;
       for (std::size_t i = 0; i < params.size(); ++i) params[i] = decode(request.formats[i]);
-      const auto exe = process_exe(GetCurrentProcess());
       if (auto result = stage_machine_menu(exe, params, request.remove != 0, nonce, *sid); !result)
         throw std::runtime_error(result.error());
     } catch (const std::exception& error) {
@@ -372,7 +378,8 @@ int run_elevation_helper(int argc, wchar_t* argv[]) noexcept {
     if (!reply.error) {
       DWORD decision{};
       transfer(pipe.value, &decision, sizeof(decision), false);
-      auto result = decision == 1 ? commit_machine_menu(nonce, *sid) : recover_machine_menu();
+      auto result = decision == 1 ? commit_machine_menu(nonce, *sid, exe, params, request.remove != 0)
+                                  : recover_machine_menu();
       if (!result) {
         reply.error = 1;
         std::copy_n(result.error().begin(), std::min(result.error().size(), reply.message.size() - 1), reply.message.begin());

@@ -134,7 +134,8 @@ std::expected<void, std::string> stage_machine_menu(
     const std::filesystem::path& exe, const MenuParams& params,
     bool remove_menu, std::wstring_view id, std::wstring_view sid);
 std::expected<void, std::string> recover_machine_menu();
-std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid);
+std::expected<void, std::string> commit_machine_menu(std::wstring_view id, std::wstring_view sid,
+    const std::filesystem::path& exe, const MenuParams& params, bool remove_menu);
 std::expected<bool, std::string> machine_menu_matches(
     const std::filesystem::path& exe, const MenuParams& params);
 

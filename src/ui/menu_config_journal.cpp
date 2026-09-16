@@ -84,6 +84,8 @@ std::expected<void, std::string> begin_menu_config_journal(
 
 std::expected<void, std::string> recover_menu_config_journal(
     const std::filesystem::path& exe, const RestoreMenuConfig& restore) {
+  MenuOperationLock operation;
+  if (!operation.held()) return failure();
   JournalLock lock;
   if (!lock.held) return failure();
   Key key;

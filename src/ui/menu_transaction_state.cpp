@@ -88,11 +88,34 @@ std::expected<HKEY, std::string> protected_machine_key(const wchar_t* path, bool
   return key;
 }
 
+MenuOperationLock::MenuOperationLock() {
+  auto sid = process_user_sid(GetCurrentProcess());
+  if (!sid) return;
+  const auto name = L"Global\\AWJimage.MenuOperation." + *sid;
+  handle_ = CreateMutexW(nullptr, FALSE, name.c_str());
+  if (handle_) {
+    const auto result = WaitForSingleObject(handle_, 0);
+    held_ = result == WAIT_OBJECT_0 || result == WAIT_ABANDONED;
+  }
+}
+MenuOperationLock::~MenuOperationLock() {
+  if (held_) ReleaseMutex(handle_);
+  if (handle_) CloseHandle(handle_);
+}
+
 std::expected<bool, std::string> menu_commit_recorded(std::wstring_view id, bool machine,
                                                     std::wstring_view sid) {
   auto caller = sid.empty() ? process_user_sid(GetCurrentProcess()) : std::expected<std::wstring, std::string>{sid};
   if (!caller) return std::unexpected{caller.error()};
   const auto path = std::wstring{receipt_root} + L"\\" + *caller;
+  if (machine) {
+    Key root;
+    const auto opened = RegOpenKeyExW(HKEY_LOCAL_MACHINE, receipt_root, REG_OPTION_OPEN_LINK,
+        KEY_READ | KEY_WOW64_64KEY, &root.value);
+    if (opened == ERROR_FILE_NOT_FOUND || opened == ERROR_PATH_NOT_FOUND) return false;
+    unsigned remaining = 512;
+    if (opened != ERROR_SUCCESS || !protected_tree(root.value, true, 0, remaining)) return error();
+  }
   wchar_t value[40]{};
   DWORD bytes = sizeof(value);
   const auto status = RegGetValueW(machine ? HKEY_LOCAL_MACHINE : HKEY_CURRENT_USER,
