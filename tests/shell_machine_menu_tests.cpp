@@ -2,6 +2,7 @@
 #include <windows.h>
 #include <aclapi.h>
 #include <sddl.h>
+#include <objbase.h>
 #include "shell_context_menu.hpp"
 #include "menu_transaction_state.hpp"
 #include "isolated_registry.hpp"
@@ -59,6 +60,7 @@ int wmain(int argc, wchar_t** argv) try {
   check(argc == 4 && std::wstring_view{argv[1]} == L"--elevated-isolated", "invalid arguments");
   FILE* output{};
   check(_wfreopen_s(&output, argv[3], L"w", stdout) == 0, "open evidence log failed");
+  IsolatedRegistry user;
   MachineSandbox sandbox;
   MachineOverride machine{sandbox.key};
   const std::filesystem::path exe{argv[2]};
@@ -75,10 +77,49 @@ int wmain(int argc, wchar_t** argv) try {
   require(menu::stage_machine_menu(exe, params, false, first, *sid));
   require(menu::commit_machine_menu(first, *sid, exe, params, false));
   check(*menu::menu_commit_recorded(first, true, *sid), "commit receipt missing");
+  // Standard CommandStore ACLs contain inherit-only generic-read and creator
+  // owner entries. They do not grant ordinary users write access to the key.
+  {
+    const wchar_t* path = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell\\AWJImage.png";
+    HKEY key{};
+    check(RegOpenKeyExW(HKEY_LOCAL_MACHINE, path, 0, KEY_ALL_ACCESS | KEY_WOW64_64KEY,
+                       &key) == ERROR_SUCCESS, "open inherited ACL fixture failed");
+    PSECURITY_DESCRIPTOR descriptor{};
+    check(ConvertStringSecurityDescriptorToSecurityDescriptorW(
+        L"O:BAG:BAD:P(A;CI;KA;;;BA)(A;CI;KA;;;SY)(A;;KR;;;BU)(A;CIIO;GR;;;BU)(A;CIIO;GA;;;CO)",
+        SDDL_REVISION_1, &descriptor, nullptr), "build inherited ACL fixture failed");
+    PACL dacl{}; BOOL present{}, defaulted{};
+    GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted);
+    check(SetSecurityInfo(key, SE_REGISTRY_KEY,
+        DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION,
+        nullptr, nullptr, dacl, nullptr) == ERROR_SUCCESS, "apply inherited ACL fixture failed");
+    LocalFree(descriptor);
+    RegCloseKey(key);
+    require(menu::validate_machine_tree(path));
+  }
   require(menu::stage_machine_menu(exe, params, true, second, *sid));
   check(*menu::machine_menu_matches(exe, params), "old menu removed before replacement commit");
   require(menu::recover_machine_menu());
   check(*menu::machine_menu_matches(exe, params), "remove rollback did not restore menu");
+  // Exercise machine-only residue, both modes and repeated transitions without
+  // touching either real registry hive. Each transaction needs a fresh receipt.
+  for (bool compatibility : {false, true, false, true}) {
+    check(*menu::is_installed(true), "machine/user installation was missed");
+    GUID guid{};
+    check(SUCCEEDED(CoCreateGuid(&guid)), "create transaction ID failed");
+    wchar_t id[40]{};
+    StringFromGUID2(guid, id, 40);
+    require(menu::stage_machine_menu(exe, params, !compatibility, id, *sid));
+    require(menu::stage_user_menu(id, true, exe, params, {}, compatibility, false));
+    require(menu::commit_machine_menu(id, *sid, exe, params, !compatibility));
+    require(menu::finish_user_menu(id, true));
+    check(*menu::compatibility_installed() == compatibility, "user mode did not switch");
+    check(menu::legacy_machine_commands()->empty() == !compatibility, "machine registrations survived mode switch");
+    if (!compatibility) {
+      auto warning = menu::warning(exe, params);
+      check(warning && !*warning, "normal menu was not healthy after machine cleanup");
+    }
+  }
   // A compromised snapshot child must fail before any fixed machine entry is changed.
   auto changed = params;
   changed[0].quality_text = L"74";

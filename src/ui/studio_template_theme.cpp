@@ -134,6 +134,10 @@ void apply_title_bar_theme(slint::Window& window, bool dark_mode) noexcept {
     const BOOL use_dark_mode = dark_mode ? TRUE : FALSE;
     DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode,
                           sizeof(use_dark_mode));
+    // Keep the native caption in sync with StudioTheme.nav-bg.
+    const COLORREF caption_color = dark_mode ? RGB(36, 36, 36) : RGB(248, 251, 255);
+    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color,
+                          sizeof(caption_color));
   } catch (...) {
   }
 }

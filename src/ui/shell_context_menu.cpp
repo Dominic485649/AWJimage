@@ -1045,7 +1045,7 @@ std::expected<void, std::string> recover() {
   return recover_locked();
 }
 
-std::expected<bool, std::string> is_installed() {
+std::expected<bool, std::string> is_installed(bool include_machine) {
   for (const auto& root : owned_root_keys()) {
     auto exists = key_exists(root);
     if (!exists) return std::unexpected{exists.error()};
@@ -1054,13 +1054,18 @@ std::expected<bool, std::string> is_installed() {
     if (!ours) return std::unexpected{ours.error()};
     if (*ours) return true;
   }
+  if (include_machine) {
+    auto machine = legacy_machine_commands();
+    if (!machine) return std::unexpected{machine.error()};
+    return !machine->empty();
+  }
   return false;
 }
 
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names,
-                                         bool force_install, bool compatibility) {
+                                         bool force_install, bool compatibility, bool rebuild) {
   RegistrationLock lock;
   if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
   if (auto recovered = recover_locked(); !recovered) return recovered;
@@ -1075,7 +1080,7 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
   const auto plan = build_install_plan();
   auto current = build_registry_schema(exe, menu_params, plan, preset_names, *active, compatibility);
   if (auto valid = validate_request(exe, current, preset_names); !valid) return valid;
-  if (verify_schema(current) && verify_no_obsolete_roots(current)) return {};
+  if (!rebuild && verify_schema(current) && verify_no_obsolete_roots(current)) return {};
   const int next = compatibility ? 0 : (*installed ? 1 - *active : 0);
   const auto schema = build_registry_schema(exe, menu_params, plan, preset_names, next, compatibility);
   auto roots = snapshot_roots(schema);
@@ -1244,7 +1249,9 @@ std::expected<void, std::string> stage_user_menu(
   StageScope scope;
   staged_id = id;
   staged_machine = machine;
-  return remove_menu ? remove() : reconcile(exe, params, names, true, compatibility);
+  // Explicit UI transactions replace the registration even when its values
+  // already match; startup/automatic synchronization remains idempotent.
+  return remove_menu ? remove() : reconcile(exe, params, names, true, compatibility, true);
 }
 
 std::expected<void, std::string> finish_user_menu(std::wstring_view id, bool commit) {

@@ -63,6 +63,10 @@ int wmain(int argc, wchar_t** argv) try {
   CloseHandle(child.hThread);
   CloseHandle(child.hProcess);
   check(waited == WAIT_OBJECT_0 && exit_code == 0, "crash child failed");
+  check(!menu::recover_menu_config_journal(exe,
+      [](const std::optional<std::string>&) -> std::expected<void, std::string> {
+        return std::unexpected{"injected config write failure"};
+      }), "config write failure was reported as recovered");
   require(menu::recover_menu_config_journal(exe, restore));
   check(restored, "crashed transaction did not restore config");
   restored = false;

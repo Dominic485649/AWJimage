@@ -19,6 +19,12 @@ void check(bool ok, const char* message) { if (!ok) throw std::runtime_error(mes
 void require(const std::expected<void, std::string>& result) {
   if (!result) throw std::runtime_error(result.error());
 }
+struct MachineOverride {
+  explicit MachineOverride(HKEY key) {
+    check(RegOverridePredefKey(HKEY_LOCAL_MACHINE, key) == ERROR_SUCCESS, "isolate HKLM failed");
+  }
+  ~MachineOverride() { RegOverridePredefKey(HKEY_LOCAL_MACHINE, nullptr); }
+};
 bool exists(const std::wstring& path) {
   HKEY key = nullptr;
   const auto status = RegOpenKeyExW(HKEY_CURRENT_USER, path.c_str(), 0, KEY_READ, &key);
@@ -86,6 +92,7 @@ struct DenyWrites {
 int wmain(int argc, wchar_t** argv) try {
   check(argc == 2, "expected executable path");
   IsolatedRegistry sandbox;
+  MachineOverride machine{sandbox.key};
   const auto exe = std::filesystem::absolute(argv[1]);
   menu::MenuParams params{};
   for (auto& value : params) value.quality_text = L"73";
@@ -94,6 +101,29 @@ int wmain(int argc, wchar_t** argv) try {
   check(absent_mode && !*absent_mode, "empty registry was treated as an invalid compatibility menu");
   require(menu::reconcile(exe, params));
   check(!*menu::is_installed(), "empty-registry synchronization installed a menu");
+  for (bool compatibility : {true, false, true, false}) {
+    require(menu::reconcile(exe, params, {}, false, compatibility));
+    check(!*menu::is_installed(true), "mode preference installed an absent menu");
+  }
+  const std::wstring machine_command =
+      L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\CommandStore\\shell\\AWJImage.png";
+  write(machine_command + L"\\command", nullptr, menu::build_convert_command_line(exe, L"png", params[4]));
+  check(!*menu::is_installed() && *menu::is_installed(true), "machine-only menu was not detected");
+  require(menu::install(exe, params));
+  check(*menu::is_installed() && *menu::is_installed(true), "mixed menu was not detected");
+  require(menu::remove());
+  check(*menu::is_installed(true), "user cleanup hid the remaining machine menu");
+  check(RegDeleteTreeW(HKEY_CURRENT_USER, machine_command.c_str()) == ERROR_SUCCESS, "clear machine fixture failed");
+  check(!*menu::is_installed(true), "empty machine registry still detected");
+  {
+    bool elevation_requested = false;
+    auto transaction = menu::prepare_menu_change(exe, params, {}, false, false,
+        [&] { elevation_requested = true; });
+    check(transaction.has_value(), "ordinary menu preparation failed");
+    check(!elevation_requested, "ordinary menu installation requested elevation UI");
+    require((*transaction)->rollback());
+    check(!*menu::is_installed(true), "ordinary preparation rollback left registrations");
+  }
   const std::wstring rollback_id = L"{62B1DC4C-FAF4-46E9-A5E0-FE7DBD677210}";
   require(menu::stage_user_menu(rollback_id, false, exe, params, {}, false, false));
   check(!menu::reconcile(exe, params), "another operation recovered a live staged menu");
@@ -104,6 +134,25 @@ int wmain(int argc, wchar_t** argv) try {
   require(menu::record_menu_commit(commit_id, false));
   require(menu::finish_user_menu(commit_id, true));
   healthy(exe, params);
+  // Identical values must still be rebuilt by an explicit UI transaction;
+  // rollback restores the original slot as well as its commands.
+  const auto before_rebuild = active_tree();
+  const std::wstring rebuild_id = L"{62B1DC4C-FAF4-46E9-A5E0-FE7DBD677212}";
+  require(menu::stage_user_menu(rebuild_id, false, exe, params, {}, false, false));
+  check(active_tree() != before_rebuild, "explicit identical registration was not rebuilt");
+  require(menu::finish_user_menu(rebuild_id, false));
+  check(active_tree() == before_rebuild, "rebuild rollback changed the original slot");
+  healthy(exe, params);
+  for (bool compatibility : {true, false, true, false}) {
+    require(menu::stage_user_menu(rebuild_id, false, exe, params, {}, compatibility, false));
+    check(*menu::compatibility_installed() == compatibility, "mode switch was not applied");
+    require(menu::finish_user_menu(rebuild_id, false));
+    check(!*menu::compatibility_installed(), "mode switch rollback did not restore normal menu");
+    require(menu::reconcile(exe, params, {}, false, compatibility, true));
+    check(*menu::compatibility_installed() == compatibility, "repeated mode switch failed");
+    require(menu::reconcile(exe, params, {}, false, false, true));
+    healthy(exe, params);
+  }
   const std::vector<std::wstring> compatibility_presets{L"测试预设"};
   require(menu::reconcile(exe, params, compatibility_presets, false, true));
   check(*menu::compatibility_installed(), "compatibility registration not detected");

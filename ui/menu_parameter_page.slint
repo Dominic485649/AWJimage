@@ -19,8 +19,6 @@ export component MenuParameterPage inherits Rectangle {
     in property <bool> dark-mode;
     in property <length> window-height;
     callback install-context-menu-requested();
-    in property <bool> legacy-machine-menu-present;
-    callback cleanup-legacy-machine-menu();
     in-out property <bool> menu-allow-wic-fallback;
     in-out property <int> menu-alpha-policy-index;
     in-out property <int> menu-avif-color-representation-index;
@@ -85,11 +83,6 @@ export component MenuParameterPage inherits Rectangle {
         VerticalLayout {
             padding: 22px;
             spacing: 10px;
-            if root.legacy-machine-menu-present: HorizontalLayout {
-                spacing: 10px;
-                Text { text: @tr("检测到系统级 AWJ 菜单。移除或切换菜单模式时需要管理员权限。"); horizontal-stretch: 1; color: root.text-body; wrap: word-wrap; }
-                SoftButton { dark-mode: root.dark-mode; text: @tr("查看说明"); enabled: !root.running; clicked => { root.cleanup-legacy-machine-menu(); } }
-            }
             HorizontalLayout {
                 height: 40px;
                 spacing: 10px;

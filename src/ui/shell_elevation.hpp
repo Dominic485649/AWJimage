@@ -2,6 +2,7 @@
 
 #include "shell_context_menu.hpp"
 #include <memory>
+#include <functional>
 
 namespace awj::shell_context_menu {
 
@@ -22,7 +23,8 @@ class MenuTransaction {
 
 std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change(
     const std::filesystem::path& exe, const MenuParams& params,
-    std::span<const std::wstring> names, bool compatibility, bool remove_menu);
+    std::span<const std::wstring> names, bool compatibility, bool remove_menu,
+    const std::function<void()>& elevation_requested = {});
 int run_elevation_helper(int argc, wchar_t* argv[]) noexcept;
 
 }  // namespace awj::shell_context_menu

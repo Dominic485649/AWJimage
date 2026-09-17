@@ -29,8 +29,14 @@ bool protected_tree(HKEY key, bool root, unsigned depth, unsigned& remaining) {
     void* raw{};
     if (!GetAce(dacl, i, &raw)) { safe = false; break; }
     const auto ace = static_cast<ACCESS_ALLOWED_ACE*>(raw);
+    // Inherit-only entries do not grant access to this key. Descendants are
+    // checked recursively, including their effective inherited entries.
+    if (ace->Header.AceFlags & INHERIT_ONLY_ACE) continue;
     if (ace->Header.AceType != ACCESS_ALLOWED_ACE_TYPE) { safe = false; break; }
-    if ((ace->Mask & ~KEY_READ) && !EqualSid(&ace->SidStart, admin) &&
+    auto mask = ace->Mask;
+    GENERIC_MAPPING mapping{KEY_READ, KEY_WRITE, KEY_EXECUTE, KEY_ALL_ACCESS};
+    MapGenericMask(&mask, &mapping);
+    if ((mask & ~KEY_READ) && !EqualSid(&ace->SidStart, admin) &&
         !EqualSid(&ace->SidStart, system)) safe = false;
   }
   LocalFree(actual);

@@ -4,6 +4,7 @@ import { StudioTheme } from "studio_theme.slint";
 
 export component SettingsPage inherits ScrollView {
     in property <color> accent-strong;
+    in property <bool> dark-mode;
     in-out property <bool> allow-wic-fallback;
     in property <bool> shell-menu-injection-supported;
     in property <bool> menu-operation-active;
@@ -234,11 +235,18 @@ export component SettingsPage inherits ScrollView {
                 padding: 24px;
                 spacing: root.page-gap;
                 Text { text: @tr("高级与实验功能"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                if root.shell-menu-injection-supported: CheckBox {
-                    text: @tr("兼容性右键菜单（需要管理员权限）");
-                    checked <=> root.shell-menu-compatibility;
-                    enabled: !root.running && !root.menu-operation-active;
-                    toggled => { root.shell-menu-compatibility-requested(); }
+                if root.shell-menu-injection-supported: VerticalLayout {
+                    spacing: 8px;
+                    width: 100%;
+                    height: self.preferred-height;
+                    CheckBox {
+                        text: @tr("兼容性右键菜单");
+                        checked <=> root.shell-menu-compatibility;
+                        enabled: !root.running && !root.menu-operation-active;
+                        toggled => { root.shell-menu-compatibility-requested(); }
+                    }
+                    Text { text: @tr("用于兼容 Directory Opus（DOpus）等第三方资源管理器；使用 Windows 文件资源管理器时无需勾选。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                    Text { text: @tr("需要管理员权限；AWJ 会自动请求提权，无需以管理员身份启动 AWJ。"); color: root.dark-mode ? #fbbf24 : #947000; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; height: self.preferred-height; }
                 }
                 if root.wic-ui-visible: VerticalLayout {
                     spacing: 8px;

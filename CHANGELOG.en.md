@@ -1,6 +1,9 @@
 # Changelog
 
-## 1.0.14 - 2026-09-16
+## 1.0.14 - 2026-09-17
+
+- Match the active title bar to the navigation background and round queue drop feedback. Rename the JXL option to "Lossless JPG conversion" and remove its adjacent hint. Compatibility menu help now explains automatic elevation without starting AWJ as administrator.
+- Start menu settings with installation, removal, and save actions. Rebuild installed menus when switching either direction, including machine-only remnants. Ordinary user menu operations no longer display the elevation overlay. Fix permission validation of machine menu recovery snapshots.
 
 - Includes 1.0.13 cumulatively. Native HEIC/HEIF decoding, percentage scaling, lossless JPEG-to-JXL conversion, and updater endpoint fixes retain their separate entry below.
 - Added a default-off Windows setting above WIC fallback: Compatibility context menu (requires administrator privileges). Without an installed menu, the preference applies on the next installation. Existing menus migrate immediately. Default mode retains the per-user shared tree; compatibility mode uses static SubCommands and the 64-bit machine CommandStore while presets remain owned by the original user.
