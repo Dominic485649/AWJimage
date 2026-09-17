@@ -298,14 +298,8 @@ export component ParameterForm inherits VerticalLayout {
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: "JXL"; width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        CheckBox { text: @tr("JPG转换走无损"); checked <=> root.jxl-jpeg-lossless; enabled: !root.running; }
-        ParamHint {
-            horizontal-stretch: 1;
-            lead: @tr("默认开启");
-            lead-color: root.hint-green;
-            detail: @tr("兼容 JPEG 输入优先无损转封装；需要缩放、移除元数据或源不兼容时自动按普通 JXL 质量重编码。非 JPEG 输入始终使用普通质量编码。");
-            detail-color: root.text-muted;
-        }
+        CheckBox { text: @tr("JPG无损转换"); checked <=> root.jxl-jpeg-lossless; enabled: !root.running; }
+        Rectangle { horizontal-stretch: 1; background: transparent; }
     }
 
     if root.format-index == 0 || root.format-index == 3: Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }

@@ -298,7 +298,8 @@ std::expected<void, std::string> MenuTransaction::rollback() {
 
 std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change(
     const std::filesystem::path& exe, const MenuParams& params,
-    std::span<const std::wstring> names, bool compatibility, bool remove_menu) {
+    std::span<const std::wstring> names, bool compatibility, bool remove_menu,
+    const std::function<void()>& elevation_requested) {
   const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   struct ComGuard { HRESULT result; ~ComGuard() { if (SUCCEEDED(result)) CoUninitialize(); } } apartment{com};
   try {
@@ -317,14 +318,17 @@ std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change
     session->machine = (!remove_menu && compatibility) || *previous || !machine->empty();
     if (session->machine) {
       const bool remove_machine = remove_menu || !compatibility;
+      if (elevation_requested) elevation_requested();
       elevated_stage(*session, params, remove_machine);
     }
     auto* prepared = session.get();
     auto transaction = std::make_shared<MenuTransaction>(std::move(session));
-    if (auto staged = stage_user_menu(prepared->id, prepared->machine, exe, params, names,
-                                      compatibility, remove_menu); !staged)
-      return std::unexpected{staged.error()};
     prepared->user_staged = true;
+    if (auto staged = stage_user_menu(prepared->id, prepared->machine, exe, params, names,
+                                      compatibility, remove_menu); !staged) {
+      auto rollback = transaction->rollback();
+      return std::unexpected{staged.error() + (rollback ? "" : " " + rollback.error())};
+    }
     return transaction;
   } catch (const std::exception& error) {
     return std::unexpected{error.what()};

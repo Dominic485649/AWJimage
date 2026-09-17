@@ -620,6 +620,7 @@ export component QueuePage inherits VerticalLayout {
         if root.external-drag-target == 3: Rectangle {
             x: queue-table.x; y: queue-table.y;
             width: queue-table.width; height: queue-table.height;
+            border-radius: 4px;
             background: StudioTheme.drop-tint-soft(root.dark-mode); border-color: StudioTheme.drop-border(root.dark-mode); border-width: 2px;
         }
 

@@ -15,6 +15,7 @@ using MenuResult = std::expected<void, std::string>;
 struct Completion {
   std::mutex mutex;
   std::optional<MenuResult> result;
+  bool elevation_required{};
 };
 std::expected<std::optional<std::string>, std::string> read_previous_config() {
   const auto path = studio_config_path();
@@ -37,11 +38,12 @@ MenuResult restore_config(const std::optional<std::string>& content) {
 }
 
 MenuResult apply_menu_change(const StudioConfigSnapshot& desired,
-                             const StudioConfigSnapshot& defaults, bool install, bool remove) {
+                             const StudioConfigSnapshot& defaults, bool install, bool remove,
+                             const std::function<void()>& elevation_requested) {
   shell_context_menu::MenuOperationLock operation;
   if (!operation.held()) return std::unexpected{"另一进程正在修改右键菜单。"};
   if (auto recovered = recover_shell_menu_config(); !recovered) return recovered;
-  auto installed = shell_context_menu::is_installed();
+  auto installed = shell_context_menu::is_installed(true);
   if (!installed) return std::unexpected{installed.error()};
   if (!*installed && !install && !remove) return write_studio_config_file(desired, defaults);
   auto previous = read_previous_config();
@@ -51,12 +53,16 @@ MenuResult apply_menu_change(const StudioConfigSnapshot& desired,
   if (!exe) return std::unexpected{exe.error()};
   if (!names) return std::unexpected{names.error()};
   auto prepared = shell_context_menu::prepare_menu_change(*exe,
-      shell_menu_params(desired.menu_params), *names, desired.shell_menu_compatibility, remove);
+      shell_menu_params(desired.menu_params), *names, desired.shell_menu_compatibility, remove,
+      elevation_requested);
   if (!prepared) return std::unexpected{prepared.error()};
   auto& transaction = **prepared;
   auto journal = shell_context_menu::begin_menu_config_journal(
       transaction.id(), transaction.machine(), *exe, *previous);
-  if (!journal) return journal;
+  if (!journal) {
+    auto rollback = transaction.rollback();
+    return rollback ? journal : std::unexpected{journal.error() + " " + rollback.error()};
+  }
   auto result = write_studio_config_file(desired, defaults);
   if (result) result = transaction.commit();
   if (!result) {
@@ -66,7 +72,7 @@ MenuResult apply_menu_change(const StudioConfigSnapshot& desired,
     if (!*committed) {
       auto restored = restore_config(*previous);
       if (!restored) return std::unexpected{result.error() + " " + restored.error()};
-      if (!rollback) result = std::unexpected{result.error() + " " + rollback.error()};
+      if (!rollback) return std::unexpected{result.error() + " " + rollback.error()};
       (void)shell_context_menu::discard_menu_config_journal();
       return result;
     }
@@ -101,6 +107,7 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
   auto completion = std::make_shared<Completion>();
   std::weak_ptr<UiState> weak_state = state;
   state->menu_operation_active = true;
+  (*app)->set_menu_elevation_required(false);
   (*app)->set_menu_operation_active(true);
   try {
     state->menu_timer.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50},
@@ -109,11 +116,14 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
       auto app = weak.lock();
       if (!state || !app) return;
       std::optional<MenuResult> result;
+      bool elevation_required;
       {
         std::scoped_lock lock{completion->mutex};
-        if (!completion->result) return;
-        result = std::move(completion->result);
+        elevation_required = completion->elevation_required;
+        if (completion->result) result = std::move(completion->result);
       }
+      (*app)->set_menu_elevation_required(elevation_required);
+      if (!result) return;
       state->menu_timer.stop();
       run_ui_callback(weak, "应用右键菜单失败", [&] {
         if (!*result) {
@@ -122,8 +132,6 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
           (*app)->set_status_text(to_shared(result->error()));
         } else {
           state->last_config_snapshot = desired;
-          if (auto machine = shell_context_menu::legacy_machine_commands(); machine)
-            (*app)->set_legacy_machine_menu_present(!machine->empty());
           (*app)->set_context_menu_warning({});
           const auto message = remove ? "右键菜单已移除。" : "右键菜单设置已保存。";
           (*app)->set_context_menu_status(to_shared(message));
@@ -132,10 +140,16 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
       });
       state->menu_operation_active = false;
       (*app)->set_menu_operation_active(false);
+      (*app)->set_menu_elevation_required(false);
     });
     state->menu_worker = std::jthread([completion, desired, defaults = *state->config_defaults, install, remove] {
       MenuResult result;
-      try { result = apply_menu_change(desired, defaults, install, remove); }
+      try {
+        result = apply_menu_change(desired, defaults, install, remove, [&] {
+          std::scoped_lock lock{completion->mutex};
+          completion->elevation_required = true;
+        });
+      }
       catch (const std::exception& error) { result = std::unexpected{error.what()}; }
       catch (...) { result = std::unexpected{"右键菜单操作异常，未提交修改。"}; }
       std::scoped_lock lock{completion->mutex};
@@ -145,6 +159,7 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
     state->menu_timer.stop();
     state->menu_operation_active = false;
     (*app)->set_menu_operation_active(false);
+    (*app)->set_menu_elevation_required(false);
     (*app)->set_shell_menu_compatibility(previous.shell_menu_compatibility);
     throw;
   }

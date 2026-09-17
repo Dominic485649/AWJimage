@@ -463,6 +463,27 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   auto settings =
       find_one(app, "设置", slint::language::AccessibleRole::Tab);
   settings->invoke_accessible_default_action();
+  int menu_toggles = 0;
+  app->on_shell_menu_compatibility_requested([&] { ++menu_toggles; });
+  app->set_shell_menu_compatibility(false);
+  auto compatibility = find_one(app, "兼容性右键菜单", slint::language::AccessibleRole::Checkbox);
+  if (!compatibility) return fail("compatibility checkbox has no standalone label");
+  compatibility->invoke_accessible_default_action();
+  if (!app->get_shell_menu_compatibility() || menu_toggles != 1)
+    return fail("compatibility checkbox could not be enabled");
+  compatibility->invoke_accessible_default_action();
+  if (app->get_shell_menu_compatibility() || menu_toggles != 2)
+    return fail("compatibility checkbox could not be disabled");
+  app->on_shell_menu_compatibility_requested([] {});
+  const auto elevation_notice = "正在应用右键菜单设置；修改机器菜单时需要管理员权限。";
+  app->set_menu_operation_active(true);
+  app->set_menu_elevation_required(false);
+  if (find_one(app, elevation_notice)) return fail("ordinary menu operation showed elevation overlay");
+  app->set_menu_elevation_required(true);
+  if (!find_one(app, elevation_notice)) return fail("elevated menu operation lost its notice");
+  app->set_menu_operation_active(false);
+  app->set_menu_elevation_required(false);
+  if (find_one(app, elevation_notice)) return fail("completed menu operation retained its notice");
   auto font =
       find_one(app, "字体", slint::language::AccessibleRole::Combobox);
   if (!font || font->accessible_role() !=
@@ -561,11 +582,18 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   if (find_one(app, "编辑格式", slint::language::AccessibleRole::Combobox)) {
     return fail("Chinese accessible name survived the switch to English");
   }
+  app->set_selected_page(2);
+  if (!find_one(app, "Compatibility context menu", slint::language::AccessibleRole::Checkbox))
+    return fail("compatibility checkbox English translation is missing");
   // 切回中文：后面的断言仍按中文可访问名查找。
   if (!slint::select_bundled_translation("")) {
     return fail("could not switch back to the Chinese default language");
   }
   app->set_language_index(0);
+  app->set_selected_page(3);
+  if (find_one(app, "查看说明", slint::language::AccessibleRole::Button) ||
+      !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
+    return fail("menu page did not start with its installation controls");
   if (!find_one(app, "编辑格式", slint::language::AccessibleRole::Combobox)) {
     return fail("switching back to Chinese did not restore the msgid text");
   }
@@ -831,7 +859,11 @@ int main(int argc, char** argv) {
     app->hide();
     return 0;
   }
-  if ((argc == 3 || argc == 4) && std::string_view{argv[1]} == "--snapshots") {
+  if ((argc == 3 || argc == 4) && (std::string_view{argv[1]} == "--snapshots" ||
+                                 std::string_view{argv[1]} == "--menu-snapshots" ||
+                                 std::string_view{argv[1]} == "--menu-operation-snapshots")) {
+    const bool menu_operations = std::string_view{argv[1]} == "--menu-operation-snapshots";
+    const bool menu_only = menu_operations || std::string_view{argv[1]} == "--menu-snapshots";
     const std::filesystem::path directory{argv[2]};
     if (!std::filesystem::create_directory(directory)) return fail("snapshot directory must be fresh");
     auto app = AwjStudio::create();
@@ -839,7 +871,7 @@ int main(int argc, char** argv) {
     if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2)
       return fail("snapshot scale must be 1, 1.25, 1.5, or 2");
     app->window().window_handle().set_const_scale_factor(scale);
-    app->set_current_version("1.0.12");
+    app->set_current_version("1.0.14");
     awj::ui::bind_queue_model(*app, task_rows());
     app->set_queue_failed_count(1);
     app->set_queue_success_count(1);
@@ -849,15 +881,18 @@ int main(int argc, char** argv) {
       app->set_language_index(language);
       for (const int theme : {1, 2}) {
         app->set_theme_index(theme);
-        for (const int page : {0, 1, 3}) {
+        for (const int page : (menu_operations ? std::vector{3} : menu_only ? std::vector{2, 3} : std::vector{0, 1, 3})) {
           app->set_selected_page(page);
           app->set_selected_queue_index(page == 1 ? 0 : -1);
-          const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround(1220 * scale)),
+          const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround((menu_only ? 900 : 1220) * scale)),
                                          static_cast<std::uint32_t>(std::lround((page == 1 ? 827 : 2000) * scale))}};
           app->window().set_size(size);
-          for (int format = 0; format < (page == 1 ? 1 : 5); ++format) {
-            app->set_format_index(format);
-            app->set_menu_format_index(format);
+          for (int format = 0; format < (menu_operations ? 3 : page == 1 || menu_only ? 1 : 5); ++format) {
+            app->set_format_index(menu_operations ? 0 : format);
+            app->set_menu_format_index(menu_operations ? 0 : format);
+            // Snapshot 0 is idle, 1 is ordinary registration, 2 requires UAC.
+            app->set_menu_operation_active(menu_operations && format != 0);
+            app->set_menu_elevation_required(menu_operations && format == 2);
             (void)app->window().take_snapshot();
             slint::private_api::testing::mock_elapsed_time(250);
             const auto snapshot = app->window().take_snapshot();

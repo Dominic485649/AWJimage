@@ -397,8 +397,6 @@ int run_studio_ui(const wchar_t* health_event,
       if (auto mode = awj::shell_context_menu::compatibility_installed(); mode)
         app->set_shell_menu_compatibility(*mode);
     }
-    if (auto legacy = awj::shell_context_menu::legacy_machine_commands(); legacy)
-      app->set_legacy_machine_menu_present(!legacy->empty());
     reload_user_preset_options(*app, *state);
     if (!state->user_preset_errors.empty() && !config_warning) {
       config_warning = std::format("有 {} 个用户预设未加载：{}",
@@ -856,11 +854,6 @@ int run_studio_ui(const wchar_t* health_event,
       run_ui_callback(weak, "修复右键菜单失败", [&] {
         awj::studio::request_shell_menu_change(weak, state, false, false);
       });
-    });
-    app->on_cleanup_legacy_machine_menu([weak] {
-      if (auto app = weak.lock(); app && !(*app)->get_running()) {
-        (*app)->set_status_text(to_shared("移除或切换系统级 AWJ 菜单需要管理员权限；取消权限请求会保留原菜单。"));
-      }
     });
 
     app->on_toggle_template_token([weak, state](slint::SharedString token) {

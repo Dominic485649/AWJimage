@@ -115,9 +115,12 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
                                          std::span<const std::wstring> preset_names = {},
                                          bool force_install = false,
-                                         bool compatibility = false);
+                                         bool compatibility = false,
+                                         bool rebuild = false);
 std::expected<void, std::string> recover();
-std::expected<bool, std::string> is_installed();
+// Include recognized machine registrations when deciding whether a UI mode
+// change must reinstall; background synchronization remains user-only.
+std::expected<bool, std::string> is_installed(bool include_machine = false);
 std::expected<void, std::string> remove();
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe,

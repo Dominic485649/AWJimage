@@ -772,19 +772,17 @@ msgstr "Delete preset"
 msgid "缩小至"
 msgstr "Scale to"
 
-msgid "JPG转换走无损"
-msgstr "Lossless for JPG input"
+msgid "JPG无损转换"
+msgstr "Lossless JPG conversion"
 
-msgid "默认开启"
-msgstr "Enabled by default"
+msgid "兼容性右键菜单"
+msgstr "Compatibility context menu"
 
-msgid "兼容 JPEG 输入优先无损转封装；需要缩放、移除元数据或源不兼容时自动按普通 JXL 质量重编码。非 JPEG 输入始终使用普通质量编码。"
-msgstr "Compatible JPEG input is losslessly transcoded when possible. Resizing, metadata stripping, or incompatible JPEG input falls back to normal JXL quality encoding. Non-JPEG input always uses normal quality encoding."
-msgid "兼容性右键菜单（需要管理员权限）"
-msgstr "Compatibility context menu (requires administrator privileges)"
+msgid "需要管理员权限；AWJ 会自动请求提权，无需以管理员身份启动 AWJ。"
+msgstr "Requires administrator privileges. AWJ requests elevation automatically; you do not need to start AWJ as administrator."
 
-msgid "检测到系统级 AWJ 菜单。移除或切换菜单模式时需要管理员权限。"
-msgstr "A system-wide AWJ menu is installed. Removing it or changing menu mode requires administrator privileges."
+msgid "用于兼容 Directory Opus（DOpus）等第三方资源管理器；使用 Windows 文件资源管理器时无需勾选。"
+msgstr "For compatibility with Directory Opus (DOpus) and other third-party file managers. Leave unchecked when using Windows File Explorer."
 
 msgid "正在应用右键菜单设置；修改机器菜单时需要管理员权限。"
 msgstr "Applying context menu settings. Machine menu changes require administrator privileges."

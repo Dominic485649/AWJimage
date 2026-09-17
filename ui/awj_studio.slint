@@ -40,10 +40,9 @@ export component AwjStudio inherits Window {
     in property <bool> shell-menu-injection-supported: true;
     in-out property <bool> shell-menu-compatibility: false;
     in-out property <bool> menu-operation-active: false;
+    in-out property <bool> menu-elevation-required: false;
     callback shell-menu-compatibility-requested();
-    in-out property <bool> legacy-machine-menu-present: false;
     callback delete-parameter-preset();
-    callback cleanup-legacy-machine-menu();
     in-out property <string> preset-editor-name: "";
     in-out property <string> preset-editor-description: "";
     in-out property <string> preset-editor-error: "";
@@ -638,8 +637,6 @@ export component AwjStudio inherits Window {
 
 
                 if root.selected-page == 3: MenuParameterPage {
-    legacy-machine-menu-present: root.legacy-machine-menu-present;
-    cleanup-legacy-machine-menu => { root.cleanup-legacy-machine-menu(); }
     text-strong: root.text-strong;
     parameter-preset-options: root.parameter-preset-options;
     parameter-preset-description: root.parameter-preset-description;
@@ -858,6 +855,7 @@ export component AwjStudio inherits Window {
                 if root.selected-page == 2: SettingsPage {
     shell-menu-injection-supported: root.shell-menu-injection-supported;
     shell-menu-compatibility <=> root.shell-menu-compatibility;
+    dark-mode: root.dark-mode;
     menu-operation-active: root.menu-operation-active;
     shell-menu-compatibility-requested => { root.shell-menu-compatibility-requested(); }
     accent-strong : root.accent-strong;
@@ -909,7 +907,7 @@ export component AwjStudio inherits Window {
 
         if root.menu-operation-active: Rectangle {
             z: 1000;
-            background: root.panel-bg;
+            background: root.menu-elevation-required ? root.panel-bg : transparent;
             opacity: 0.95;
             TouchArea { width: parent.width; height: parent.height; }
             FocusScope {
@@ -918,7 +916,7 @@ export component AwjStudio inherits Window {
                 key-released(event) => { return accept; }
             }
             Text {
-                text: @tr("正在应用右键菜单设置；修改机器菜单时需要管理员权限。");
+                text: root.menu-elevation-required ? @tr("正在应用右键菜单设置；修改机器菜单时需要管理员权限。") : "";
                 color: root.text-strong;
                 font-size: 16px;
                 x: 24px; width: max(0px, parent.width - 48px);
