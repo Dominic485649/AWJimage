@@ -217,7 +217,7 @@ int test_check_scheduling() {
   using namespace std::chrono;
   const auto now = system_clock::time_point{hours{24 * 400}};
 
-  // 手动检查与切换渠道不受七天限制。
+  // 手动检查与切换渠道不受自动检查间隔限制。
   if (!should_check_now({.trigger = CheckTrigger::manual,
                          .last_successful_check = now,
                          .now = now})) {
@@ -234,14 +234,14 @@ int test_check_scheduling() {
     return fail("a missing timestamp must trigger an immediate check.");
   }
 
-  // 未满七天不检查；满七天检查。
+  // 未满 12 小时不检查；满 12 小时检查。
   if (should_check_now({.trigger = CheckTrigger::startup,
-                        .last_successful_check = now - hours{24 * 6},
+                        .last_successful_check = now - hours{11},
                         .now = now})) {
     return fail("a check within the interval must be skipped.");
   }
   if (!should_check_now({.trigger = CheckTrigger::startup,
-                         .last_successful_check = now - hours{24 * 7},
+                         .last_successful_check = now - hours{12},
                          .now = now})) {
     return fail("a check at exactly the interval must run.");
   }

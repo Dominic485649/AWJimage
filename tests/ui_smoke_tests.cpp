@@ -12,6 +12,7 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -19,6 +20,7 @@
 #include "focus_reentrancy.h"
 #include "../src/ui/queue_model.h"
 #include "../src/ui/deferred_model.h"
+#include "../src/ui/slint_string_util.h"
 
 namespace {
 
@@ -26,6 +28,45 @@ int fail(std::string_view message) {
   std::fwrite(message.data(), 1, message.size(), stderr);
   std::fputc('\n', stderr);
   return 1;
+}
+
+// 1.0.14 回归：Studio「开始转换」时队列重置循环崩在 strlen(nullptr)。
+// slint::SharedString 同时有 operator=(const SharedString&) 与
+// operator=(const char*)；`value = {}` 会选中后者并传入空指针。下面的断言锁定
+// 这个前提，真正的清空必须走 awj::studio::clear_shared_string。
+static_assert(std::is_assignable_v<slint::SharedString&, const char*>,
+              "slint::SharedString 不再接受 const char*：请复核 "
+              "clear_shared_string 的注释与本回归测试是否仍然必要");
+
+int verify_shared_string_clearing() {
+  slint::SharedString text{"worker 日志行"};
+  if (text.empty()) {
+    return fail("shared string setup failed");
+  }
+  awj::studio::clear_shared_string(text);
+  if (!text.empty() || text.size() != 0) {
+    return fail("clear_shared_string left content behind");
+  }
+  // 清空后必须能安全地跨 Slint 边界转换与读取：1.0.14 正是死在这条路径上的
+  // std::string_view(nullptr) -> strlen(nullptr)。
+  const std::string_view view{text};
+  if (!view.empty()) {
+    return fail("cleared shared string is not empty across the Slint boundary");
+  }
+  if (const std::string copy = awj::studio::shared_to_string(text);
+      !copy.empty()) {
+    return fail("shared_to_string did not round-trip the cleared string");
+  }
+  // 重新赋值后再清空，保证这不是只对 default-constructed 实例成立的巧合。
+  text = awj::studio::to_shared("第二行日志");
+  if (text.empty()) {
+    return fail("shared string re-assignment failed");
+  }
+  awj::studio::clear_shared_string(text);
+  if (!text.empty() || !awj::studio::shared_to_string(text).empty()) {
+    return fail("clear_shared_string did not reset a populated string");
+  }
+  return 0;
 }
 
 void send_key(const slint::ComponentHandle<AwjStudio>& app,
@@ -810,6 +851,9 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (const int result = verify_shared_string_clearing(); result != 0) {
+    return result;
+  }
   if (argc == 2 && std::string_view{argv[1]} == "--queue-stress") {
     slint::testing::init();
     auto app = AwjStudio::create();
