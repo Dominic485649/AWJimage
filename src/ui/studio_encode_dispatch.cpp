@@ -224,7 +224,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       }
       item.status = QueueItemStatus::pending;
       item.status_text = "等待编码";
-      item.log_text = {};
+      clear_shared_string(item.log_text);
       item.encoder_id.clear();
       item.encoder_threads = 0;
       item.decode_seconds = -1.0;

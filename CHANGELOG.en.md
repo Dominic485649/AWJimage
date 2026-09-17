@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.15 - 2026-09-18
+
+- Fixed the Studio queue crash on **Start conversion**: preparing a run cleared the per-item log with empty braces, which selected `slint::SharedString::operator=(const char*)` and passed a null pointer into `strlen(nullptr)`, so the UI process exited with 0xC0000005 (read at address 0). Clearing now goes through the new `awj::studio::clear_shared_string`, with a regression test. Every release since 1.0.13 is affected, independent of the input format.
+- Automatic update checks now run at most 12 hours apart instead of 7 days. Manual checks and channel switches stay unthrottled, and a future timestamp is still treated as untrusted and triggers an immediate check.
+
 ## 1.0.14 - 2026-09-17
 
 - Match the active title bar to the navigation background and round queue drop feedback. Rename the JXL option to "Lossless JPG conversion" and remove its adjacent hint. Compatibility menu help now explains automatic elevation without starting AWJ as administrator.

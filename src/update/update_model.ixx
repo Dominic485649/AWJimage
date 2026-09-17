@@ -312,7 +312,9 @@ std::expected<void, std::string> validate_manifest_consistency(
 
 // --- 检查调度 ---------------------------------------------------------------
 
-inline constexpr auto automatic_check_interval = std::chrono::hours{24 * 7};
+// 启动时自动检查更新的最短间隔。1.0.15 起由七天缩短为 12 小时：更新发布节奏
+// 比最初设想快，七天会让用户长时间停留在已知有问题的构建上。
+inline constexpr auto automatic_check_interval = std::chrono::hours{12};
 
 enum class CheckTrigger {
   startup,            // 启动时的自动判定
@@ -327,7 +329,8 @@ struct CheckScheduleRequest {
   std::chrono::system_clock::time_point now{};
 };
 
-// 手动检查和切换渠道不受七天限制；启动时没有有效日期就立即检查；否则等满七天。
+// 手动检查和切换渠道不受间隔限制；启动时没有有效日期就立即检查；否则等满
+// automatic_check_interval（12 小时）。
 //
 // 未来时间戳（用户改过系统时钟，或配置被手工编辑）同样触发检查：把它当成
 // 「不可信」比信任它更安全，否则一个被写进 2099 年的时间戳会永久禁用更新。

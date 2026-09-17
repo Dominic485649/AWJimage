@@ -31,6 +31,7 @@
 #include "awj_studio.h"
 #include "file_drop_win32.h"
 #include "import_service.h"
+#include "slint_string_util.h"
 
 import awj.config;
 import awj.core;
@@ -40,14 +41,6 @@ import awj.preset;
 import awj.studio_defaults;
 
 namespace awj::studio {
-
-// Slint 字符串与 std::string 互转。多个拆分模块都要用，放在共享头里内联。
-inline slint::SharedString to_shared(std::string_view text) {
-  return slint::SharedString{std::string{text}.c_str()};
-}
-inline std::string shared_to_string(const slint::SharedString& value) {
-  return std::string{value.data(), value.size()};
-}
 
 // 下拉选项构造与批量赋值。多个页面模块共用。
 inline ComboOption combo_option(std::string_view text, bool enabled = true) {
@@ -107,6 +100,9 @@ struct QueueImageItem {
   std::size_t run_index{std::numeric_limits<std::size_t>::max()};
   std::filesystem::path locked_output_path{};
   std::string status_text{"等待编码"};
+  // 用 slint::SharedString 是为了让每行重建时只增加引用计数，不复制整行日志；
+  // 代价是这个类型带有危险的 operator=(const char*) 重载——清空必须调用
+  // clear_shared_string()，不能写 `log_text = {}`（详见该函数的注释）。
   slint::SharedString log_text{};
   std::string encoder_id{};
   int encoder_threads{};
