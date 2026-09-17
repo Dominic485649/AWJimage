@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "sequence": 9,
+  "sequence": 10,
   "key_id": "release-2026",
-  "issued_at": "2026-09-17T04:02:23Z",
+  "issued_at": "2026-09-17T19:52:30Z",
   "expires_at": "2027-02-18T17:00:00Z",
   "entries": [
     {
@@ -837,6 +837,80 @@
       "changelog": {
         "zh-CN": "- 活动标题栏与左侧导航同色；队列拖入提示补齐圆角。“JPG无损转换”移除右侧提示，兼容性菜单说明明确自动请求提权，无需管理员启动 AWJ。\n- 菜单设置页直接显示安装、移除和保存操作；兼容模式可双向切换，系统级残留也会触发重建。普通用户菜单操作不再显示提权提示遮罩，修复机器菜单恢复快照的权限识别。\n\n- 累计包含 1.0.13，新增的原生 HEIC/HEIF 解码、百分比缩放、JXL JPEG 无损转换及更新入口修复分别记录于下方独立条目。\n- Windows 设置在 WIC 兜底上方增加默认关闭的“兼容性右键菜单（需要管理员权限）”。未安装菜单时只保存选择，下次注入时应用；已安装时立即迁移。默认模式保留当前用户共享树，兼容模式采用静态 SubCommands 与 64 位机器 CommandStore，用户预设仍由原用户管理。\n- 提权仅在明确菜单操作时运行；辅助进程校验 IPC 对端身份，只处理固定机器项，拒绝用户可写的机器恢复快照。菜单迁移使用管理员保护的机器快照和独立用户日志，持久化提交记录协调配置恢复；失败或取消保持原菜单和选项，等待期间阻止重复操作。\n- 统一拖放提示的半透明蓝色；队列详情在正常松开后打开，拖动排序后的释放不误开详情。修复 Linux 队列事件绑定、失败过滤原始行映射及列宽拖动坐标，保持表头与内容同步。\n- 队列路径去重使用集合并复用扫描结果，列表和集合插入保持异常安全；Linux 按大小写敏感路径判重。普通图按典型估算规划并发，并在实际调度时按累计内存准入回填；超预算图片在解码前拒绝，同输出路径保持串行。\n- 编码中关闭窗口先确认。Windows 检查强制终止结果，失败保留窗口；Linux 请求取消并等待任务清理后退出。将 Windows Studio 的配置、队列、导入、菜单、更新及执行代码拆分到对应模块。",
         "en": "- Match the active title bar to the navigation background and round queue drop feedback. Rename the JXL option to \"Lossless JPG conversion\" and remove its adjacent hint. Compatibility menu help now explains automatic elevation without starting AWJ as administrator.\n- Start menu settings with installation, removal, and save actions. Rebuild installed menus when switching either direction, including machine-only remnants. Ordinary user menu operations no longer display the elevation overlay. Fix permission validation of machine menu recovery snapshots.\n\n- Includes 1.0.13 cumulatively. Native HEIC/HEIF decoding, percentage scaling, lossless JPEG-to-JXL conversion, and updater endpoint fixes retain their separate entry below.\n- Added a default-off Windows setting above WIC fallback: Compatibility context menu (requires administrator privileges). Without an installed menu, the preference applies on the next installation. Existing menus migrate immediately. Default mode retains the per-user shared tree; compatibility mode uses static SubCommands and the 64-bit machine CommandStore while presets remain owned by the original user.\n- Elevation runs only for explicit menu operations. The helper verifies its IPC peer and handles fixed machine entries only, without trusting user-writable machine recovery snapshots. Administrator-protected machine snapshots and separate user journals use durable commit records to coordinate configuration recovery. Failure or cancellation retains the original menu and setting; repeated actions are blocked during the operation.\n- Unified translucent blue drop feedback. Queue details open on normal release and remain closed after drag reordering. Fixed Linux event binding, source-row mapping under failure filtering, and moving column-resizer coordinates while keeping headers aligned with rows.\n- Queue deduplication uses a set and reuses scan results, with exception-safe insertion into the list and set. Linux path keys preserve case. Ordinary work uses a typical estimate for concurrency planning and cumulative memory admission to fill available capacity; oversized inputs are rejected before decoding and identical output paths remain serial.\n- Closing during conversion requires confirmation. Windows keeps the window open if forced termination fails; Linux requests cancellation and waits for cleanup. Split Windows Studio configuration, queue, import, menus, updates, and execution into focused modules."
+      }
+    },
+    {
+      "version": "1.0.15",
+      "channel": "stable",
+      "published_at": "2026-09-17T19:52:30Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.15",
+      "minimum_updater_version": "1.0.4",
+      "revoked": false,
+      "assets": {
+        "windows_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Win.7z",
+            "size": 12021474,
+            "sha256": "fe9b2910f1eec40cead3e02d9d25801dde61a6a0b46880bee67821e6ddf6fd0b"
+          },
+          "members": [
+            {
+              "path": "AWJ.com",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Win.7z",
+              "size": 451072,
+              "sha256": "f4f820dfa6865032ba4561eff3bc67c39b9dd15e71cbfd99132a381da4f917a3"
+            },
+            {
+              "path": "AWJ.exe",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Win.7z",
+              "size": 43161600,
+              "sha256": "c8ccb0b22b619f537a2d1ddc58e19cf8f936ec8b18ebf8e88ac5a726f5a7c272"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Win.7z",
+              "size": 35184,
+              "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
+            },
+            {
+              "path": "NOTICE.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Win.7z",
+              "size": 127406,
+              "sha256": "7a21c154299072e019afc758850d6e54239ec1ca6be1224059dcc60459523247"
+            }
+          ]
+        },
+        "linux_x64_archive": {
+          "archive": {
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Linux.7z",
+            "size": 19447807,
+            "sha256": "eb6b44bfede9753cd1b1900a137b3296c50d7aba1a5d95f18b0730af1886ea27"
+          },
+          "members": [
+            {
+              "path": "AWJ",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Linux.7z",
+              "size": 67639760,
+              "sha256": "354408c9396139ecaba43c5af157363ba3a363bba0967e975753592fc3b804d7"
+            },
+            {
+              "path": "LICENSE",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Linux.7z",
+              "size": 34523,
+              "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
+            },
+            {
+              "path": "NOTICE.txt",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.0.15/AWJ_Linux.7z",
+              "size": 125749,
+              "sha256": "7f7071ed04c88c4d18e135f96af42c4f67b7679f820172d682ab9d94b2829c1d"
+            }
+          ]
+        }
+      },
+      "changelog": {
+        "zh-CN": "- 修复 Studio 首页队列「开始转换」必崩的闪退：开始编码前的队列重置用空花括号清空日志，`slint::SharedString` 的 `operator=(const char*)` 重载会把空花括号当成空指针并调用 `strlen(nullptr)`，界面进程随即以 0xC0000005（读地址 0）退出。清空统一改走新增的 `awj::studio::clear_shared_string`，并加入回归测试；1.0.13 起的所有版本都受该问题影响，与输入格式无关。\n- 自动检查更新的最短间隔由 7 天缩短为 12 小时；手动检查与切换渠道仍不受该间隔限制，未来时间戳依旧按不可信处理并立即检查。",
+        "en": "- Fixed the Studio queue crash on **Start conversion**: preparing a run cleared the per-item log with empty braces, which selected `slint::SharedString::operator=(const char*)` and passed a null pointer into `strlen(nullptr)`, so the UI process exited with 0xC0000005 (read at address 0). Clearing now goes through the new `awj::studio::clear_shared_string`, with a regression test. Every release since 1.0.13 is affected, independent of the input format.\n- Automatic update checks now run at most 12 hours apart instead of 7 days. Manual checks and channel switches stay unthrottled, and a future timestamp is still treated as untrusted and triggers an immediate check."
       }
     }
   ]
