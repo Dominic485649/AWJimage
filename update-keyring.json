@@ -1,0 +1,22 @@
+{
+  "schema": 1,
+  "sequence": 1,
+  "issued_at": "2026-08-23T17:47:02Z",
+  "expires_at": "2027-02-18T17:47:02Z",
+  "release_keys": [
+    {
+      "key_id": "release-legacy-2026",
+      "public_key": "ebdb1a49b8686f34a5791f7c0f2a0215e4cdc03ad99281e5bf8606cb62fcf1b1",
+      "not_before": "2026-08-23T17:47:02Z",
+      "expires_at": "2027-08-24T17:47:02Z",
+      "revoked": false
+    },
+    {
+      "key_id": "release-2026",
+      "public_key": "6bc1171e7cd68c363bb46177727c11ce8b9b8f0d6ea8562ec364f0ae61758d05",
+      "not_before": "2026-08-23T17:47:02Z",
+      "expires_at": "2027-08-24T17:47:02Z",
+      "revoked": false
+    }
+  ]
+}
