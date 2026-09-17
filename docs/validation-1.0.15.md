@@ -68,3 +68,16 @@
   类型及其与 `TaskRow` 的所有转换点，超出补丁范围）。
 - 2026-09-15 的 `AWJ-crash.log` 中另有一条 `unhandled-seh stage=cli code=0xe06d7363`
   记录，属 CLI 路径上未复现的独立问题，不在 1.0.15 范围。
+
+## 发布记录（2026-09-18）
+
+- 分支 `codex/1.0.15` 已推送：`bd72977`（修复与版本/日志）→ `292e642`（归档与签名 manifest、本文档）。
+- tag `1.0.15` 指向源码提交 `bd7297706f492392e064d2abf5b0ab3a4330edda`；Windows 与 Linux
+  发行二进制均由该提交的干净工作树构建。
+- `master` 已合入本分支与远端 README 更新并推送。
+- GitHub Release `1.0.15`（stable，非 prerelease）已发布，资产仅
+  `AWJ_Win.7z`（12,021,474 字节）与 `AWJ_Linux.7z`（19,447,807 字节）。
+- 公开下载核验：两个资产返回 HTTP 200 且大小与本地一致、SHA-256 与 manifest 记录一致；
+  `https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-archive.json`
+  已是 sequence 10 且含 1.0.15，detached 签名用 `release-2026` 公钥验证通过。
+- 仍未执行更新器端到端（下载→安装→健康检查→回滚）与实机 UI 复现。
