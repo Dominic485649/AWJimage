@@ -13,13 +13,12 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 - JPGLI：google/jpegli；Windows 与 Linux Release 均可用，生成 JPEG 兼容 bitstream，默认扩展名仍为 `.jpg`
 - HEIC/HEIF 输入：libheif 1.23.4 + libde265 1.1.2 原生解码；仅编译 HEVC 解码能力，不启用 HEIC 编码器或动态插件
 
-内置 ImageMagick/MagickWand 后端已经移除，Release 输出不再携带 ImageMagick XML、许可文件或模块目录。Magick 与 ffmpeg 以后只能作为外部集成重新引入；当前版本不处理该环节。
-
-Linux 首版保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。HEIC/HEIF 使用跨平台 native libheif/libde265 解码；WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows。Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
+Linux 保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。HEIC/HEIF 使用跨平台 native libheif/libde265 解码；WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows。Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
 ## 相关链接
 
 QQ群：1125291553
+
 TG群：https://t.me/+vwTHNCAFLNI5M2Q1
 
 ## 发行包
