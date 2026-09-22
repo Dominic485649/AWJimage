@@ -135,6 +135,20 @@ function Get-SortedEntries($Entries) {
     })
 }
 
+# A normal stable release declares one target. A prerelease also retains the
+# latest stable declaration so stable-only clients still have an upgrade path.
+# Keep its revoked flag: do not revive an older target when the latest is revoked.
+function Get-CurrentArchiveEntries($PreviousEntries, $Entry) {
+    if (@($PreviousEntries | Where-Object { $_.version -eq $Entry.version }).Count) {
+        throw "v2 manifest 版本重复。"
+    }
+    if ($Entry.channel -eq 'prerelease') {
+        $Stable = @(Get-SortedEntries @($PreviousEntries | Where-Object { $_.channel -eq 'stable' }))
+        if ($Stable.Count) { $Stable[-1] }
+    }
+    $Entry
+}
+
 function Sign-Manifest([string]$ManifestPath, [string]$SignaturePath) {
     if (-not $UpdateSigningSeedFile -or -not (Test-Path -LiteralPath $UpdateSigningSeedFile -PathType Leaf)) {
         throw "签名需要仓库外的 -UpdateSigningSeedFile。"
@@ -390,10 +404,9 @@ if (-not $SkipManifests) {
             }
             changelog = $Changelog
         }
-        [object[]]$Entries = if ($Old) { @($Old.entries) } else { @() }
-        $Entries += ,$Entry
-        if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v2 manifest 版本重复。" }
-        $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
+        [object[]]$PreviousEntries = if ($Old) { @($Old.entries) } else { @() }
+        $SortedEntries = [object[]]@(Get-SortedEntries @(
+            Get-CurrentArchiveEntries $PreviousEntries $Entry))
         $Json = ([ordered]@{ schema = 2; sequence = $ArchiveManifestSequence; key_id = $ManifestKeyId; issued_at = $PublishedAtUtc; expires_at = $ManifestExpiresAtUtc; entries = $SortedEntries } | ConvertTo-Json -Depth 32).Replace("`r`n", "`n") + "`n"
         if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v2 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $ManifestPath $Json

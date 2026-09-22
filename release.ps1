@@ -5,7 +5,8 @@
     [switch]$DynamicRuntime,
     [switch]$SharedSlint,
     [switch]$NoVcpkgInstall,
-    [switch]$EnableLto,
+    [switch]$EnableLto = $true,
+    [ValidateRange(1, 64)] [int]$BuildParallelism = 2,
     [switch]$CleanDependencies,
     [string]$DependencyCacheRoot = "",
     [ValidateSet("stable", "prerelease")]
@@ -372,6 +373,7 @@ $ConfigureArgs += "-DBUILD_TESTING=OFF"
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { 'OFF' })"
+$ConfigureArgs += "-DAWJ_ENABLE_X64_V3=ON"
 if ($UpdatePublicKeyHex) {
     $ConfigureArgs += "-DAWJ_UPDATE_PUBLIC_KEY_HEX=$UpdatePublicKeyHex"
 }
@@ -382,7 +384,7 @@ cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) {
     throw "CMake 配置失败，退出码 $LASTEXITCODE。"
 }
-cmake --build $BuildDir --config Release --target AWJ AWJ-com awj_update_manifest_sign --parallel
+cmake --build $BuildDir --config Release --target AWJ AWJ-com awj_update_manifest_sign --parallel $BuildParallelism
 
 if ($LASTEXITCODE -ne 0) {
     throw "Release 构建失败，退出码 $LASTEXITCODE。"
@@ -427,6 +429,8 @@ Build Type: Release
 Git Commit: $GitCommit
 $GitTagLine
 Architecture: x64
+Minimum CPU: AVX2
+Release IPO/LTO: $(if ($EnableLto) { 'ON' } else { 'OFF' })
 Source: https://github.com/Dominic485649/AWJimage
 
 Vcpkg baseline: $VcpkgBaseline

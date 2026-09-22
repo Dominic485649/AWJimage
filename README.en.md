@@ -17,6 +17,8 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. HEIC/HEIF uses the cross-platform native libheif/libde265 decoder; WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
+Starting with 1.1.0, Windows Release requires AVX2 and Linux Release requires x86-64-v3. Official Release configurations enable IPO/LTO and fail configuration if the toolchain cannot support it. Slint is pinned to 1.18.0 with software rendering, FemtoVG, and accessibility retained.
+
 ## Release archives
 
 | Archive | Exact contents |

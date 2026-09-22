@@ -21,4 +21,8 @@ bool queue_item_runnable(const QueueImageItem& item) noexcept;
 bool queue_item_selected_for_run(const QueueImageItem& item,
                                  bool failed_only) noexcept;
 
+std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
+    const awj::AppConfig& cfg, const std::vector<QueueImageItem>& queue,
+    bool failed_only);
+
 }  // namespace awj::studio

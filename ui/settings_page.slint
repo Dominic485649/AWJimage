@@ -44,6 +44,7 @@ export component SettingsPage inherits ScrollView {
     in-out property <bool> unlock-max-input-file-bytes;
     in-out property <int> update-channel-index;
     callback update-channel-selection-requested(int);
+    callback check-update-requested();
     in-out property <bool> update-checking;
     in-out property <string> update-last-successful-check;
     in-out property <string> update-status;
@@ -214,6 +215,15 @@ export component SettingsPage inherits ScrollView {
                 }
                 HorizontalLayout {
                     spacing: root.page-gap;
+                    SoftButton {
+                        text: root.update-checking ? @tr("正在检查…") : @tr("检查更新");
+                        accessible-name: @tr("检查更新");
+                        width: 160px;
+                        height: root.control-button-height;
+                        dark-mode: root.dark-mode;
+                        enabled: !root.update-checking;
+                        clicked => { root.check-update-requested(); }
+                    }
                     Text { text: root.update-status; color: root.text-muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
                 }
                 Text {

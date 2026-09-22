@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.1.0 - 2026-09-22
+
+- Updated to Slint 1.18.0, consolidated version-specific patches, and trimmed unused runtime features while retaining software rendering, FemtoVG, accessibility, and PNG/JPEG/SVG assets.
+- Native drag and drop now uses structured file paths. Linux import, queue deduplication, output naming, collision handling, and CLI preserve native path bytes, including spaces, newlines, and non-UTF-8 names. Pickers, directory opening, and font enumeration use argv-based process calls.
+- Windows starts conversion by constructing encoder inputs directly, avoiding a full UI queue copy. A 100k-item development sample reduced peak private memory by about 50.6 MiB. Failed atomic configuration writes close the file before removing the temporary file.
+- Added a manual update check in Settings and disabled repeated checks while one is active. Removed old v1 UI cache fields while retaining v2 replay protection and keyring state. Preset migration tests cover legacy optional arrays, invalid types, and repeatable saves.
+- Newly generated stable v2 archive manifests retain only the current target; prereleases also retain the latest stable declaration and its revocation status. Legacy client endpoints, signature verification, and archive validation remain unchanged.
+- Windows Release requires AVX2 and Linux requires x86-64-v3. Release configurations enable IPO/LTO and reject unsupported toolchains instead of silently disabling optimization. Color, HDR, chroma, Grid, and lossless-path semantics remain unchanged.
+
 ## 1.0.15 - 2026-09-18
 
 - Fixed the Studio queue crash on **Start conversion**: preparing a run cleared the per-item log with empty braces, which selected `slint::SharedString::operator=(const char*)` and passed a null pointer into `strlen(nullptr)`, so the UI process exited with 0xC0000005 (read at address 0). Clearing now goes through the new `awj::studio::clear_shared_string`, with a regression test. Every release since 1.0.13 is affected, independent of the input format.

@@ -786,3 +786,6 @@ msgstr "For compatibility with Directory Opus (DOpus) and other third-party file
 
 msgid "正在应用右键菜单设置；修改机器菜单时需要管理员权限。"
 msgstr "Applying context menu settings. Machine menu changes require administrator privileges."
+
+msgid "检查更新"
+msgstr "Check for updates"

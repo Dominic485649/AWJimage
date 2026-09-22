@@ -71,8 +71,6 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
     snapshot.last_changelog_exit_version = state->last_changelog_exit_version;
     snapshot.last_successful_update_check_at =
         state->last_successful_update_check_at;
-    snapshot.last_verified_manifest_sequence =
-        state->last_verified_manifest_sequence;
     snapshot.last_verified_manifest_v2_sequence =
         state->last_verified_manifest_v2_sequence;
     snapshot.pending_update_version = state->pending_update_version;
@@ -82,8 +80,6 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
     snapshot.pending_update_changelog_zh_cn =
         state->pending_update_changelog_zh_cn;
     snapshot.pending_update_changelog_en = state->pending_update_changelog_en;
-    snapshot.update_manifest_raw = state->update_manifest_raw;
-    snapshot.update_manifest_signature = state->update_manifest_signature;
     snapshot.update_manifest_v2_raw = state->update_manifest_v2_raw;
     snapshot.update_manifest_v2_signature = state->update_manifest_v2_signature;
     snapshot.update_keyring_raw = state->update_keyring_raw;
@@ -357,9 +353,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
     if (auto r = load_int64("last_successful_update_check_at", 0,
                             max_unix_seconds,
                             state.last_successful_update_check_at); !r) return r;
-    if (auto r = load_int64("last_verified_manifest_sequence", 0,
-                            std::numeric_limits<std::int64_t>::max(),
-                            state.last_verified_manifest_sequence); !r) return r;
     if (auto r = load_int64("last_verified_manifest_v2_sequence", 0,
                             std::numeric_limits<std::int64_t>::max(),
                             state.last_verified_manifest_v2_sequence); !r) return r;
@@ -371,10 +364,6 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
                              state.pending_update_changelog_zh_cn); !r) return r;
     if (auto r = load_string("pending_update_changelog_en",
                              state.pending_update_changelog_en); !r) return r;
-    if (auto r = load_string("update_manifest_raw", state.update_manifest_raw);
-        !r) return r;
-    if (auto r = load_string("update_manifest_signature",
-                             state.update_manifest_signature); !r) return r;
     if (auto r = load_string("update_manifest_v2_raw",
                              state.update_manifest_v2_raw); !r) return r;
     if (auto r = load_string("update_manifest_v2_signature",

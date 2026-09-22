@@ -88,36 +88,31 @@ std::expected<void, std::string> write_file_atomically(
   std::filesystem::remove(temp_path, ec);
 
   {
-    const HANDLE file = CreateFileW(
+    auto file = adopt_win32_handle(CreateFileW(
         temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL, nullptr);
-    if (file == INVALID_HANDLE_VALUE) {
+        FILE_ATTRIBUTE_NORMAL, nullptr));
+    if (!file) {
       return std::unexpected{"无法创建配置临时文件。"};
     }
-    struct HandleCloser {
-      HANDLE handle{};
-      ~HandleCloser() {
-        if (handle != INVALID_HANDLE_VALUE) {
-          CloseHandle(handle);
-        }
-      }
-    } closer{file};
+
 
     std::size_t written_total = 0;
     while (written_total < content.size()) {
       const auto chunk = static_cast<DWORD>(
           std::min<std::size_t>(content.size() - written_total, 1u << 20));
       DWORD written = 0;
-      if (WriteFile(file, content.data() + written_total, chunk, &written,
+      if (WriteFile(file.get(), content.data() + written_total, chunk, &written,
                     nullptr) == FALSE ||
           written == 0) {
+        file.reset();
         std::filesystem::remove(temp_path, ec);
         return std::unexpected{"写入配置临时文件失败。"};
       }
       written_total += written;
     }
     // 元数据可能先于数据落盘，必须显式 flush 才能保证替换后的文件内容完整。
-    if (FlushFileBuffers(file) == FALSE) {
+    if (FlushFileBuffers(file.get()) == FALSE) {
+      file.reset();
       std::filesystem::remove(temp_path, ec);
       return std::unexpected{"刷新配置临时文件到磁盘失败。"};
     }
@@ -193,9 +188,6 @@ std::expected<void, std::string> write_studio_config_file(
   add_int64("last_successful_update_check_at",
             current.last_successful_update_check_at,
             defaults.last_successful_update_check_at);
-  add_int64("last_verified_manifest_sequence",
-            current.last_verified_manifest_sequence,
-            defaults.last_verified_manifest_sequence);
   add_int64("last_verified_manifest_v2_sequence",
             current.last_verified_manifest_v2_sequence,
             defaults.last_verified_manifest_v2_sequence);
@@ -214,10 +206,6 @@ std::expected<void, std::string> write_studio_config_file(
   add_string("pending_update_changelog_en",
              current.pending_update_changelog_en,
              defaults.pending_update_changelog_en);
-  add_string("update_manifest_raw", current.update_manifest_raw,
-             defaults.update_manifest_raw);
-  add_string("update_manifest_signature", current.update_manifest_signature,
-             defaults.update_manifest_signature);
   add_string("update_manifest_v2_raw", current.update_manifest_v2_raw,
              defaults.update_manifest_v2_raw);
   add_string("update_manifest_v2_signature", current.update_manifest_v2_signature,

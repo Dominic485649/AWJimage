@@ -15,6 +15,8 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。HEIC/HEIF 使用跨平台 native libheif/libde265 解码；WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows。Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
+从 1.1.0 起，Windows Release 最低要求 AVX2；Linux Release 最低要求 x86-64-v3。官方 Release 配置启用 IPO/LTO，工具链不支持时配置失败。Slint 固定为 1.18.0，保留 software、FemtoVG 和 accessibility。
+
 ## 相关链接
 
 QQ群：1125291553

@@ -380,7 +380,7 @@ std::expected<void, std::string> reject_over_memory_budget(
 std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
     const AppConfig& cfg, const std::vector<ClassifiedImageFile>& classified) {
   std::vector<WorkGroup> groups;
-  std::unordered_map<std::wstring, std::size_t> index_by_output;
+  std::unordered_map<PathText, std::size_t> index_by_output;
 
   try {
     // 同一输出路径的文件必须串行处理，避免并发覆盖；不同输出路径按总大小分组调度。
@@ -432,7 +432,7 @@ std::uint64_t largest_large_mode_working_set(
 std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
     const AppConfig& cfg, const std::vector<BatchLargeImageItem>& items) {
   std::vector<LargeWorkGroup> groups;
-  std::unordered_map<std::wstring, std::size_t> index_by_output;
+  std::unordered_map<PathText, std::size_t> index_by_output;
 
   try {
     groups.reserve(items.size());
@@ -700,7 +700,7 @@ std::expected<void, std::string> validate_manifest_paths_for_config(
     return std::unexpected{"Studio 队列 manifest 输出目录无效。"};
   }
 
-  std::unordered_set<std::wstring> input_keys;
+  std::unordered_set<PathText> input_keys;
   input_keys.reserve(files.size());
   for (const auto& file : files) {
     const auto input = fs::weakly_canonical(file.path, ec);
@@ -1905,7 +1905,7 @@ std::expected<BatchSummary, std::string> run_batch(
                                             worker_failures > 0);
 
     std::uintmax_t original_total = 0;
-    std::unordered_map<std::wstring, std::uintmax_t> final_output_sizes;
+    std::unordered_map<PathText, std::uintmax_t> final_output_sizes;
     bool original_total_incomplete = false;
     bool output_total_incomplete = false;
     std::size_t ok_count = 0;

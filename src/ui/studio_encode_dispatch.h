@@ -54,8 +54,6 @@ std::expected<void, std::string> open_file_with_default_app(
     const std::filesystem::path& path);
 std::expected<void, std::string> copy_text_to_clipboard(
     std::wstring_view text);
-bool output_template_contains(std::wstring_view text,
-                              std::wstring_view token);
 bool large_image_grid_available(const awj::BatchLargeImageItem& item) noexcept;
 bool large_image_action_available(const awj::BatchLargeImageItem& item,
                                   std::string_view action) noexcept;
@@ -87,9 +85,6 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
 void set_large_image_status(UiState& state, int index,
                             std::string_view status) noexcept;
 
-std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
-    const awj::AppConfig& cfg, const std::vector<QueueImageItem>& queue,
-    bool failed_only);
 std::expected<std::filesystem::path, std::string> create_studio_queue_manifest(
     std::uint64_t run_id, std::span<const awj::ImageFile> files);
 

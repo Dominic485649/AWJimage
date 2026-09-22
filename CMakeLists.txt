@@ -38,7 +38,7 @@ set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING 
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
 set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
 set(AWJ_SLINT_GIT_REPOSITORY "https://github.com/slint-ui/slint.git" CACHE STRING "Slint repository")
-set(AWJ_SLINT_GIT_TAG "cf62c975c311e7036d599ed8ed0b7e6a8386a934" CACHE STRING "Slint git tag or commit")
+set(AWJ_SLINT_GIT_TAG "bd20dab8529add087b5cbc81aec70bf30861ae4c" CACHE STRING "Slint git tag or commit")
 
 set(AVIF_RELEASE_IPO_SUPPORTED OFF)
 if(AVIF_ENABLE_RELEASE_IPO)
@@ -47,7 +47,7 @@ if(AVIF_ENABLE_RELEASE_IPO)
         OUTPUT AVIF_RELEASE_IPO_ERROR
         LANGUAGES CXX)
     if(NOT AVIF_RELEASE_IPO_SUPPORTED)
-        message(WARNING "Release IPO/LTO is not available: ${AVIF_RELEASE_IPO_ERROR}")
+        message(FATAL_ERROR "Requested Release IPO/LTO is not available: ${AVIF_RELEASE_IPO_ERROR}")
     endif()
 endif()
 
@@ -655,14 +655,12 @@ set(SLINT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
 set(SLINT_BUILD_TESTING OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_TESTING ${BUILD_TESTING} CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_INTERPRETER OFF CACHE BOOL "" FORCE)
+set(SLINT_FEATURE_LIVE_PREVIEW OFF CACHE BOOL "" FORCE)
+set(SLINT_FEATURE_SYSTEM_TRAY OFF CACHE BOOL "" FORCE)
+set(SLINT_FEATURE_ACCESSIBILITY ON CACHE BOOL "" FORCE)
+set(SLINT_FEATURE_RENDERER_VELLO OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
-# awj_ui_smoke_tests 依赖 Slint 的 testing API（slint::testing::ElementHandle）
-# 来断言真实控件几何，因此测试构建必须打开它；Slint 默认即为 ON，这里只在
-# BUILD_TESTING 打开时显式确认，避免被外部缓存或 -D 关掉而链接失败。
-if(BUILD_TESTING)
-    set(SLINT_FEATURE_TESTING ON CACHE BOOL "" FORCE)
-endif()
 FetchContent_Declare(Slint
     GIT_REPOSITORY ${AWJ_SLINT_GIT_REPOSITORY}
     GIT_TAG ${AWJ_SLINT_GIT_TAG}
@@ -671,10 +669,13 @@ FetchContent_Declare(Slint
     PATCH_COMMAND ${CMAKE_COMMAND}
         "-DSOURCE_DIR=<SOURCE_DIR>"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake")
+# FetchContent source overrides bypass PATCH_COMMAND; apply the same contract.
+if(FETCHCONTENT_SOURCE_DIR_SLINT)
+    execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${FETCHCONTENT_SOURCE_DIR_SLINT}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake"
+        COMMAND_ERROR_IS_FATAL ANY)
+endif()
 FetchContent_MakeAvailable(Slint)
-execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${slint_SOURCE_DIR}"
-    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_filter_model.cmake"
-    COMMAND_ERROR_IS_FATAL ANY)
 if(AVIF_STATIC_SLINT)
     target_compile_definitions(Slint INTERFACE SLINT_STATIC=1)
 endif()
@@ -1080,10 +1081,11 @@ if(BUILD_TESTING)
         avif_enable_common_options(awj_native_pipeline_tests)
         target_link_libraries(awj_native_pipeline_tests PRIVATE awj_native_backend)
 
-        add_executable(awj_pipeline_security_tests tests/pipeline_security_tests.cpp)
-        avif_enable_common_options(awj_pipeline_security_tests)
-        target_link_libraries(awj_pipeline_security_tests PRIVATE awj_pipeline awj_native_codecs)
     endif()
+
+    add_executable(awj_pipeline_security_tests tests/pipeline_security_tests.cpp)
+    avif_enable_common_options(awj_pipeline_security_tests)
+    target_link_libraries(awj_pipeline_security_tests PRIVATE awj_pipeline awj_native_codecs)
 
     add_executable(awj_memory_cancel_tests tests/memory_cancel_tests.cpp)
     avif_enable_common_options(awj_memory_cancel_tests)
@@ -1126,12 +1128,12 @@ if(BUILD_TESTING)
         awj_decoder_registry_tests
         awj_heif_backend_tests
         awj_memory_cancel_tests
-        awj_raw_wgc_stdin_tests)
+        awj_raw_wgc_stdin_tests
+        awj_pipeline_security_tests)
     if(WIN32)
         list(APPEND AWJ_TEST_TARGETS
             awj_jxr_codec_tests
             awj_native_pipeline_tests
-            awj_pipeline_security_tests
             awj_cli_config_entry
             awj_cli_native_avif_aom_tests)
     endif()
@@ -1139,7 +1141,7 @@ if(BUILD_TESTING)
         list(APPEND AWJ_TEST_TARGETS awj_jpegli_codec_tests)
     endif()
     foreach(test_target IN LISTS AWJ_TEST_TARGETS)
-        awj_set_runtime_directory(${test_target} "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+        awj_set_runtime_directory(${test_target} "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     endforeach()
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
@@ -1179,8 +1181,8 @@ if(BUILD_TESTING)
     add_test(NAME heif_backend_contract COMMAND awj_heif_backend_tests)
     if(WIN32)
         add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
-        add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
     endif()
+    add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
     add_test(NAME memory_cancel_core COMMAND awj_memory_cancel_tests)
     add_test(NAME raw_wgc_stdin_core COMMAND awj_raw_wgc_stdin_tests)
 
@@ -1356,18 +1358,18 @@ if(BUILD_TESTING AND WIN32)
         tests/shell_context_menu_logic_tests.cpp)
     avif_enable_common_options(awj_shell_context_menu_logic_tests)
     target_link_libraries(awj_shell_context_menu_logic_tests PRIVATE awj_shell_context_menu)
-    awj_set_runtime_directory(awj_shell_context_menu_logic_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    awj_set_runtime_directory(awj_shell_context_menu_logic_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME shell_context_menu_logic COMMAND awj_shell_context_menu_logic_tests)
     add_executable(awj_menu_config_journal_tests tests/menu_config_journal_tests.cpp)
     avif_enable_common_options(awj_menu_config_journal_tests)
     target_link_libraries(awj_menu_config_journal_tests PRIVATE awj_shell_context_menu)
-    awj_set_runtime_directory(awj_menu_config_journal_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    awj_set_runtime_directory(awj_menu_config_journal_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME menu_config_journal COMMAND awj_menu_config_journal_tests)
     set_tests_properties(menu_config_journal PROPERTIES TIMEOUT 30)
     add_executable(awj_shell_machine_menu_tests tests/shell_machine_menu_tests.cpp)
     avif_enable_common_options(awj_shell_machine_menu_tests)
     target_link_libraries(awj_shell_machine_menu_tests PRIVATE awj_shell_context_menu)
-    awj_set_runtime_directory(awj_shell_machine_menu_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    awj_set_runtime_directory(awj_shell_machine_menu_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME shell_machine_snapshot_rejection COMMAND awj_shell_machine_menu_tests)
 
     add_executable(awj_shell_context_menu_registry_tests
@@ -1375,7 +1377,7 @@ if(BUILD_TESTING AND WIN32)
     avif_enable_common_options(awj_shell_context_menu_registry_tests)
     target_link_libraries(awj_shell_context_menu_registry_tests PRIVATE awj_shell_context_menu)
     add_dependencies(awj_shell_context_menu_registry_tests AWJ)
-    awj_set_runtime_directory(awj_shell_context_menu_registry_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    awj_set_runtime_directory(awj_shell_context_menu_registry_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME shell_context_menu_registry
         COMMAND awj_shell_context_menu_registry_tests "$<TARGET_FILE:AWJ>")
     set_tests_properties(shell_context_menu_registry PROPERTIES TIMEOUT 45)
@@ -1388,7 +1390,7 @@ if(BUILD_TESTING AND WIN32)
         awj_native_codecs
         ole32)
     add_dependencies(awj_shell_context_menu_explorer_tests AWJ)
-    awj_set_runtime_directory(awj_shell_context_menu_explorer_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    awj_set_runtime_directory(awj_shell_context_menu_explorer_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME shell_context_menu_explorer
         COMMAND awj_shell_context_menu_explorer_tests "$<TARGET_FILE:AWJ>")
     set_tests_properties(shell_context_menu_registry shell_context_menu_explorer
@@ -1397,6 +1399,40 @@ if(BUILD_TESTING AND WIN32)
 endif()
 
 if(BUILD_TESTING)
+    if(WIN32)
+        add_executable(awj_studio_state_tests
+            tests/studio_state_tests.cpp
+            src/ui/studio_config.cpp
+            src/ui/studio_json.cpp
+            src/ui/studio_queue_format.cpp)
+        target_sources(awj_studio_state_tests PRIVATE
+            FILE_SET studio_state_modules TYPE CXX_MODULES FILES src/ui/studio_defaults.ixx)
+        avif_enable_common_options(awj_studio_state_tests)
+        target_include_directories(awj_studio_state_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(awj_studio_state_tests PRIVATE awj_core Slint::Slint psapi)
+        add_dependencies(awj_studio_state_tests AWJ)
+        awj_set_runtime_directory(awj_studio_state_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/studio-state-contract")
+        add_test(NAME studio_state_contract COMMAND awj_studio_state_tests)
+        set_tests_properties(studio_state_contract PROPERTIES TIMEOUT 30)
+        find_program(AWJ_PWSH_EXECUTABLE pwsh)
+        if(AWJ_PWSH_EXECUTABLE)
+            add_test(NAME package_manifest_contract COMMAND "${AWJ_PWSH_EXECUTABLE}"
+                -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_manifest_tests.ps1")
+        endif()
+    endif()
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_executable(awj_native_path_tests tests/native_path_tests.cpp)
+        avif_enable_common_options(awj_native_path_tests)
+        target_link_libraries(awj_native_path_tests PRIVATE awj_base)
+        add_dependencies(awj_native_path_tests AWJ)
+        add_test(NAME native_path_contract COMMAND awj_native_path_tests
+            $<TARGET_FILE:AWJ> "${CMAKE_CURRENT_SOURCE_DIR}/tests/slint_runtime_images/pixel.jpg")
+        add_executable(awj_linux_process_tests tests/linux_process_tests.cpp)
+        avif_enable_common_options(awj_linux_process_tests)
+        target_link_libraries(awj_linux_process_tests PRIVATE Threads::Threads)
+        add_test(NAME linux_process COMMAND awj_linux_process_tests)
+        set_tests_properties(linux_process PROPERTIES TIMEOUT 30)
+    endif()
     add_executable(awj_import_service_tests
         tests/import_service_tests.cpp
         src/ui/import_service.cpp)
@@ -1422,7 +1458,8 @@ if(BUILD_TESTING)
     target_include_directories(awj_ui_smoke_tests PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_definitions(awj_ui_smoke_tests PRIVATE
-        SLINT_FEATURE_EXPERIMENTAL=1)
+        SLINT_FEATURE_EXPERIMENTAL=1
+        AWJ_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(awj_ui_smoke_tests PRIVATE Slint::Slint)
     if(TARGET slint_cpp)
         add_dependencies(awj_ui_smoke_tests slint_cpp)
@@ -1443,7 +1480,11 @@ if(BUILD_TESTING)
             PROPERTIES COMPILE_OPTIONS
                 "/wd4060;/wd4099;/wd4201;/wd4244;/wd4267;/wd4305;/wd4458;/wd4624")
     endif()
-    awj_set_runtime_directory(awj_ui_smoke_tests "${CMAKE_CURRENT_SOURCE_DIR}/bin/x64/tests")
+    awj_set_runtime_directory(awj_ui_smoke_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME slint_patch_contract COMMAND "${CMAKE_COMMAND}"
+        "-DSLINT_SOURCE_DIR=${slint_SOURCE_DIR}"
+        "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/slint-patch-test"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/slint_patch_tests.cmake")
     add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
     add_test(NAME ui_queue_stress COMMAND awj_ui_smoke_tests --queue-stress)
     set_tests_properties(ui_queue_stress PROPERTIES TIMEOUT 120)

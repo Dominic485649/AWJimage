@@ -275,7 +275,6 @@ using awj::studio::large_image_grid_available;
 using awj::studio::make_large_image_row;
 using awj::studio::push_large_image_row;
 using awj::studio::select_first_large_image_from_state;
-using awj::studio::output_template_contains;
 
 
 }  // namespace
@@ -446,6 +445,12 @@ int run_studio_ui(const wchar_t* health_event,
           apply_ui_language(index);
           sync_update_ui(**app, *state);
         }
+      });
+    });
+
+    app->on_check_update_requested([weak, state] {
+      run_ui_callback(weak, "手动检查更新失败", [&] {
+        start_update_check(weak, state);
       });
     });
 

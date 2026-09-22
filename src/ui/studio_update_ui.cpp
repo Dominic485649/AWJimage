@@ -30,7 +30,6 @@ UpdatePersistentState capture_update_state(const UiState& state) {
           .show_changelog_after_update = state.show_update_changelog_after_update,
           .last_changelog_exit_version = state.last_changelog_exit_version,
           .last_successful_check = state.last_successful_update_check_at,
-          .last_verified_sequence = state.last_verified_manifest_sequence,
           .last_verified_v2_sequence = state.last_verified_manifest_v2_sequence,
           .version = state.pending_update_version,
           .pending_channel = state.pending_update_channel,
@@ -38,8 +37,6 @@ UpdatePersistentState capture_update_state(const UiState& state) {
           .published_at = state.pending_update_published_at,
           .changelog_zh_cn = state.pending_update_changelog_zh_cn,
           .changelog_en = state.pending_update_changelog_en,
-          .manifest_raw = state.update_manifest_raw,
-          .manifest_signature = state.update_manifest_signature,
           .manifest_v2_raw = state.update_manifest_v2_raw,
           .manifest_v2_signature = state.update_manifest_v2_signature,
           .keyring_raw = state.update_keyring_raw,
@@ -53,7 +50,6 @@ void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.show_update_changelog_after_update = value.show_changelog_after_update;
   state.last_changelog_exit_version = std::move(value.last_changelog_exit_version);
   state.last_successful_update_check_at = value.last_successful_check;
-  state.last_verified_manifest_sequence = value.last_verified_sequence;
   state.last_verified_manifest_v2_sequence = value.last_verified_v2_sequence;
   state.pending_update_version = std::move(value.version);
   state.pending_update_channel = std::move(value.pending_channel);
@@ -61,8 +57,6 @@ void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.pending_update_published_at = std::move(value.published_at);
   state.pending_update_changelog_zh_cn = std::move(value.changelog_zh_cn);
   state.pending_update_changelog_en = std::move(value.changelog_en);
-  state.update_manifest_raw = std::move(value.manifest_raw);
-  state.update_manifest_signature = std::move(value.manifest_signature);
   state.update_manifest_v2_raw = std::move(value.manifest_v2_raw);
   state.update_manifest_v2_signature = std::move(value.manifest_v2_signature);
   state.update_keyring_raw = std::move(value.keyring_raw);

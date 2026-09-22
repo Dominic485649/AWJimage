@@ -234,7 +234,6 @@ struct StudioConfigSnapshot {
   std::int64_t last_successful_update_check_at{};
   // schema 1 remains cached solely for already-installed 1.0.3 bridge
   // clients; current Studio uses the independent v2 replay counter.
-  std::int64_t last_verified_manifest_sequence{};
   std::int64_t last_verified_manifest_v2_sequence{};
   std::string pending_update_version{};
   std::string pending_update_channel{};
@@ -244,8 +243,6 @@ struct StudioConfigSnapshot {
   std::string pending_update_changelog_en{};
   // 已通过 Ed25519 验证的 manifest 缓存。启动时会重新验签后才用于
   // 展示更新历史，避免把本地可写配置直接当成发布记录。
-  std::string update_manifest_raw{};
-  std::string update_manifest_signature{};
   std::string update_manifest_v2_raw{};
   std::string update_manifest_v2_signature{};
   std::string update_keyring_raw{};
@@ -308,7 +305,6 @@ struct UiState {
   bool show_update_changelog_after_update{true};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
-  std::int64_t last_verified_manifest_sequence{};
   std::int64_t last_verified_manifest_v2_sequence{};
   std::string pending_update_version{};
   std::string pending_update_channel{};
@@ -316,8 +312,6 @@ struct UiState {
   std::string pending_update_published_at{};
   std::string pending_update_changelog_zh_cn{};
   std::string pending_update_changelog_en{};
-  std::string update_manifest_raw{};
-  std::string update_manifest_signature{};
   std::string update_manifest_v2_raw{};
   std::string update_manifest_v2_signature{};
   std::string update_keyring_raw{};

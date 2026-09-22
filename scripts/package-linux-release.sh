@@ -72,6 +72,7 @@ cp -- "$repo/LICENSE" "$package/LICENSE"
     'Build Type: Release' \
     "Git Commit: $(git -C "$repo" rev-parse HEAD)" \
     'Architecture: x64' \
+    'Minimum CPU: x86-64-v3' \
     'Platform: Linux' \
     "Vcpkg baseline: $baseline" \
     "libavif commit: $libavif_commit" \

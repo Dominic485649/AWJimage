@@ -276,6 +276,7 @@ export component AwjStudio inherits Window {
     callback language-selection-requested(int);
     callback settings-page-opened();
     callback update-channel-selection-requested(int);
+    callback check-update-requested();
     callback show-update-changelog-requested(bool);
     callback hide-update-changelog-after-exit-requested(bool);
     callback show-update-changelog-after-update-requested(bool);
@@ -894,6 +895,7 @@ export component AwjStudio inherits Window {
     unlock-max-input-file-bytes <=> root.unlock-max-input-file-bytes;
     update-channel-index <=> root.update-channel-index;
     update-channel-selection-requested(a0) => { root.update-channel-selection-requested(a0); }
+    check-update-requested => { root.check-update-requested(); }
     update-checking <=> root.update-checking;
     update-last-successful-check <=> root.update-last-successful-check;
     update-status <=> root.update-status;

@@ -1,4 +1,6 @@
 #include <cstdio>
+#include <iterator>
+#include <nlohmann/json.hpp>
 #include <expected>
 #include <filesystem>
 #include <fstream>
@@ -98,6 +100,39 @@ int main() try {
   require(awj::delete_user_preset(collision));
   check(!awj::delete_user_preset(awj::default_user_preset()), "built-in deletion accepted");
   require(awj::delete_user_preset(preset));
+  const auto legacy_path = directory / "legacy.jsonc";
+  const auto read = [](const fs::path& path) {
+    std::ifstream input(path, std::ios::binary);
+    return std::string{std::istreambuf_iterator<char>{input}, {}};
+  };
+  {
+    std::ofstream legacy(legacy_path);
+    legacy << R"({"schema":1,"name":"legacy optional","description":"", "unknown":{"future":true},
+      "formats":{"avif":{"speed":[6],"bit_depth":[10],"visual_quality":[null]}}})";
+  }
+  auto migrated = require(awj::load_user_preset_file(legacy_path));
+  check(migrated.formats[0].speed == 6 && migrated.formats[0].bit_depth == 10 &&
+        !migrated.formats[0].visual_quality, "legacy optional fields did not load");
+  require(awj::save_user_preset(migrated, true));
+  const auto normalized = read(legacy_path);
+  const auto document = nlohmann::json::parse(normalized, nullptr, true, true);
+  check(!document.contains("unknown") && document["formats"]["avif"]["speed"] == 6 &&
+        document["formats"]["avif"]["bit_depth"] == 10 &&
+        document["formats"]["avif"]["visual_quality"].is_null(),
+        "legacy save did not normalize optional values or remove extra fields");
+  require(awj::save_user_preset(require(awj::load_user_preset_file(legacy_path)), true));
+  check(read(legacy_path) == normalized, "preset migration is not idempotent");
+  require(awj::delete_user_preset(migrated));
+  for (const auto* invalid : {"[]", "[6,7]", "[true]", "true"}) {
+    std::ofstream bad(legacy_path);
+    bad << "{\"schema\":1,\"name\":\"invalid\",\"description\":\"\",\"formats\":{\"avif\":{\"speed\":"
+        << invalid << "}}}";
+    bad.close();
+    const auto before = read(legacy_path);
+    check(!awj::load_user_preset_file(legacy_path) && read(legacy_path) == before,
+          "invalid migration changed the source file or was accepted");
+    fs::remove(legacy_path);
+  }
   check(require(awj::list_user_presets()).presets.empty(), "deleted preset remains selectable");
   std::puts("Preset uniqueness, self-edit, rename/delete rollback, shell resources and injection limits passed.");
   return 0;

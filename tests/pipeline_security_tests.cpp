@@ -14,8 +14,11 @@
 #include <string_view>
 #include <vector>
 #include <utility>
+#ifdef _WIN32
 #include <windows.h>
+#endif
 
+import awj.codec;
 import awj.config;
 import awj.core;
 import awj.image;
@@ -412,16 +415,25 @@ int main() {
     return fail("invalid AVIF batch input was not recorded as one failed item.");
   }
 
+#ifdef _WIN32
   const auto manifest_input_dir = root / "manifest-input";
   const auto manifest_output_dir = root / "manifest-output";
+#else
+  const auto manifest_input_dir = root / (std::string{"中文 input\n"} + char(0xff));
+  const auto manifest_output_dir = root / (std::string{"中文 output\n"} + char(0xfe));
+#endif
   std::filesystem::create_directories(manifest_input_dir, ec);
   if (ec) {
     return fail("failed to create manifest input dir.");
   }
   std::vector<awj::ImageFile> runnable_manifest_files;
   for (std::size_t index = 0; index < 13; ++index) {
-    const auto input =
-        manifest_input_dir / std::format("manifest-input-{}.webp", index);
+    auto input_name = std::format("manifest-input-{}.webp", index);
+#ifndef _WIN32
+    // Same displayed replacement character, distinct POSIX file names.
+    if (index < 2) input_name = std::string{"image-"} + char(0xff - index) + ".webp";
+#endif
+    const auto input = manifest_input_dir / input_name;
     if (auto ok = write_webp(input, std::byte{static_cast<unsigned char>(index)});
         !ok) {
       return fail(ok.error());
@@ -439,6 +451,14 @@ int main() {
           runnable_manifest_path, runnable_manifest_files);
       !written) {
     return fail(written.error());
+  }
+  const auto native_roundtrip = awj::read_studio_queue_manifest(runnable_manifest_path);
+  if (!native_roundtrip || native_roundtrip->files.size() != runnable_manifest_files.size())
+    return fail("native manifest roundtrip failed");
+  for (std::size_t i = 0; i < runnable_manifest_files.size(); ++i) {
+    if (native_roundtrip->files[i].path != runnable_manifest_files[i].path ||
+        native_roundtrip->files[i].resolved_output_path != runnable_manifest_files[i].resolved_output_path)
+      return fail("native manifest path bytes changed");
   }
   auto runnable_manifest_cfg = awj::default_app_config();
   runnable_manifest_cfg.input_path = manifest_input_dir;
@@ -548,6 +568,7 @@ int main() {
                                : number_summary.error());
   }
 
+#ifdef _WIN32
   const auto short_dir = root / "short-path";
   std::filesystem::create_directories(short_dir, ec);
   if (ec) {
@@ -584,6 +605,8 @@ int main() {
       }
     }
   }
+
+#endif
 
   const auto csv = read_text(output_dir / "summary.csv");
   if (csv.find("same-a.webp") == std::string::npos ||

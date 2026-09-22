@@ -45,6 +45,7 @@
 
 #include "awj_studio.h"
 #include "studio_run_linux.h"
+#include "linux_process.h"
 #include "queue_model.h"
 #include "deferred_model.h"
 #include "changelog_history.h"
@@ -131,7 +132,9 @@ struct LinuxUiState {
   // The visible queue is the source of truth. A manifest is written only
   // immediately before a run so changing UI settings cannot rescan a folder.
   std::vector<awj::ImageFile> queue_files{};
-  std::unordered_set<std::wstring> queue_path_keys{};
+  std::unordered_set<std::string> queue_path_keys{};
+  fs::path selected_input_path{};
+  fs::path selected_output_dir{};
   std::uint64_t next_queue_run_id{1};
   std::array<LinuxParameterParams, 5> builtin_params{};
   std::array<LinuxParameterParams, 5> parameter_preset_params{};
@@ -151,9 +154,6 @@ struct LinuxUiState {
   bool show_update_changelog_after_update{true};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
-  // v1 remains only as cached state for 1.0.3 bridge compatibility. Linux
-  // Studio itself consumes the independent v2 counter and signed cache.
-  std::int64_t last_verified_manifest_sequence{};
   std::int64_t last_verified_manifest_v2_sequence{};
   std::string pending_update_version{};
   std::string pending_update_channel{};
@@ -161,8 +161,6 @@ struct LinuxUiState {
   std::string pending_update_published_at{};
   std::string pending_update_changelog_zh_cn{};
   std::string pending_update_changelog_en{};
-  std::string update_manifest_raw{};
-  std::string update_manifest_signature{};
   std::string update_manifest_v2_raw{};
   std::string update_manifest_v2_signature{};
   std::string update_keyring_raw{};
@@ -285,35 +283,12 @@ std::string shell_quote(std::string_view value) {
   return out;
 }
 
-bool command_exists(std::string_view command) {
-  return std::system(std::format("command -v {} >/dev/null 2>&1", command).c_str()) == 0;
-}
-
-struct PcloseDeleter {
-  void operator()(FILE* file) const noexcept {
-    if (file != nullptr) pclose(file);
-  }
-};
-
 slint::SharedString to_shared(std::string_view text);
 std::string shared_to_string(const slint::SharedString& value);
 
-std::optional<std::string> run_capture(const std::string& command) {
-  std::unique_ptr<FILE, PcloseDeleter> pipe{popen(command.c_str(), "r")};
-  if (!pipe) return std::nullopt;
-  std::string output;
-  std::array<char, 512> buffer{};
-  while (std::fgets(buffer.data(), static_cast<int>(buffer.size()), pipe.get()) != nullptr) {
-    output += buffer.data();
-  }
-  output = trim_copy(std::move(output));
-  if (output.empty()) return std::nullopt;
-  return output;
-}
-
 void load_system_font_options(AwjStudio& app) {
   std::unordered_set<std::string> families;
-  if (auto output = run_capture("fc-list -f '%{family}\\n' 2>/dev/null")) {
+  if (auto output = awj::ui_process::capture({"fc-list", "-f", "%{family}\\n"})) {
     std::size_t line_start = 0;
     while (line_start <= output->size()) {
       const auto line_end = output->find('\n', line_start);
@@ -352,17 +327,20 @@ void load_system_font_options(AwjStudio& app) {
 }
 
 std::expected<fs::path, std::string> choose_path(bool directory) {
-  std::vector<std::string> commands;
-  if (command_exists("zenity")) commands.push_back(directory ? "zenity --file-selection --directory" : "zenity --file-selection");
-  if (command_exists("yad")) commands.push_back(directory ? "yad --file-selection --directory" : "yad --file-selection");
-  if (command_exists("kdialog")) commands.push_back(directory ? "kdialog --getexistingdirectory" : "kdialog --getopenfilename");
-  if (commands.empty()) {
-    return std::unexpected{"未找到 Linux 文件选择器；请安装 zenity/yad/kdialog，或手动输入路径。"};
-  }
+  const std::array<std::vector<std::string>, 3> commands{{
+      directory ? std::vector<std::string>{"zenity", "--file-selection", "--directory"}
+                : std::vector<std::string>{"zenity", "--file-selection"},
+      directory ? std::vector<std::string>{"yad", "--file-selection", "--directory"}
+                : std::vector<std::string>{"yad", "--file-selection"},
+      {"kdialog", directory ? "--getexistingdirectory" : "--getopenfilename"}}};
   for (const auto& command : commands) {
-    if (auto selected = run_capture(command)) return fs::path{*selected};
+    if (auto selected = awj::ui_process::capture(command)) {
+      // Pickers append one newline. Preserve whitespace in the actual path.
+      if (selected->ends_with('\n')) selected->pop_back();
+      if (!selected->empty()) return fs::path{*selected};
+    }
   }
-  return std::unexpected{"未选择路径。"};
+  return std::unexpected{"未选择路径，或未找到可用的 Linux 文件选择器（zenity/yad/kdialog）。"};
 }
 
 std::expected<void, std::string> open_path(fs::path path) {
@@ -371,10 +349,10 @@ std::expected<void, std::string> open_path(fs::path path) {
   if (fs::is_regular_file(path, ec) && !ec) path = path.parent_path();
   if (!fs::exists(path, ec) || ec) path = path.parent_path();
   if (path.empty()) return std::unexpected{"路径不存在，无法打开。"};
-  const auto quoted = shell_quote(awj::path_to_utf8(path));
-  if (command_exists("gio") && std::system(std::format("gio open {} >/dev/null 2>&1 &", quoted).c_str()) == 0) return {};
-  if (command_exists("xdg-open") && std::system(std::format("xdg-open {} >/dev/null 2>&1 &", quoted).c_str()) == 0) return {};
-  if (command_exists("thunar") && std::system(std::format("thunar {} >/dev/null 2>&1 &", quoted).c_str()) == 0) return {};
+  const auto& native = path.native();
+  if (awj::ui_process::launch({"gio", "open", native}) ||
+      awj::ui_process::launch({"xdg-open", native}) ||
+      awj::ui_process::launch({"thunar", native})) return {};
   return std::unexpected{"未找到可用的目录打开工具（gio/xdg-open/thunar）。"};
 }
 
@@ -386,22 +364,6 @@ std::string shared_to_string(const slint::SharedString& value) {
   return std::string{value.data(), value.size()};
 }
 
-std::vector<std::string> native_drop_paths(const slint::SharedString& value) {
-  std::vector<std::string> paths;
-  const auto text = shared_to_string(value);
-  std::size_t begin = 0;
-  while (begin <= text.size()) {
-    const auto end = text.find('\n', begin);
-    auto path = text.substr(begin, end == std::string::npos ? std::string::npos
-                                                              : end - begin);
-    if (!path.empty() && path.back() == '\r') path.pop_back();
-    if (!path.empty()) paths.push_back(std::move(path));
-    if (end == std::string::npos) break;
-    begin = end + 1;
-  }
-  return paths;
-}
-
 struct LinuxUpdatePersistentState {
   std::string channel{};
   bool show_changelog{};
@@ -409,7 +371,6 @@ struct LinuxUpdatePersistentState {
   bool show_changelog_after_update{};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_check{};
-  std::int64_t last_verified_sequence{};
   std::int64_t last_verified_v2_sequence{};
   std::string version{};
   std::string pending_channel{};
@@ -417,8 +378,6 @@ struct LinuxUpdatePersistentState {
   std::string published_at{};
   std::string changelog_zh_cn{};
   std::string changelog_en{};
-  std::string manifest_raw{};
-  std::string manifest_signature{};
   std::string manifest_v2_raw{};
   std::string manifest_v2_signature{};
   std::string keyring_raw{};
@@ -433,7 +392,6 @@ LinuxUpdatePersistentState capture_linux_update_state(
           .show_changelog_after_update = state.show_update_changelog_after_update,
           .last_changelog_exit_version = state.last_changelog_exit_version,
           .last_successful_check = state.last_successful_update_check_at,
-          .last_verified_sequence = state.last_verified_manifest_sequence,
           .last_verified_v2_sequence = state.last_verified_manifest_v2_sequence,
           .version = state.pending_update_version,
           .pending_channel = state.pending_update_channel,
@@ -441,8 +399,6 @@ LinuxUpdatePersistentState capture_linux_update_state(
           .published_at = state.pending_update_published_at,
           .changelog_zh_cn = state.pending_update_changelog_zh_cn,
           .changelog_en = state.pending_update_changelog_en,
-          .manifest_raw = state.update_manifest_raw,
-          .manifest_signature = state.update_manifest_signature,
           .manifest_v2_raw = state.update_manifest_v2_raw,
           .manifest_v2_signature = state.update_manifest_v2_signature,
           .keyring_raw = state.update_keyring_raw,
@@ -457,7 +413,6 @@ void restore_linux_update_state(LinuxUiState& state,
   state.show_update_changelog_after_update = value.show_changelog_after_update;
   state.last_changelog_exit_version = std::move(value.last_changelog_exit_version);
   state.last_successful_update_check_at = value.last_successful_check;
-  state.last_verified_manifest_sequence = value.last_verified_sequence;
   state.last_verified_manifest_v2_sequence = value.last_verified_v2_sequence;
   state.pending_update_version = std::move(value.version);
   state.pending_update_channel = std::move(value.pending_channel);
@@ -465,8 +420,6 @@ void restore_linux_update_state(LinuxUiState& state,
   state.pending_update_published_at = std::move(value.published_at);
   state.pending_update_changelog_zh_cn = std::move(value.changelog_zh_cn);
   state.pending_update_changelog_en = std::move(value.changelog_en);
-  state.update_manifest_raw = std::move(value.manifest_raw);
-  state.update_manifest_signature = std::move(value.manifest_signature);
   state.update_manifest_v2_raw = std::move(value.manifest_v2_raw);
   state.update_manifest_v2_signature = std::move(value.manifest_v2_signature);
   state.update_keyring_raw = std::move(value.keyring_raw);
@@ -810,8 +763,6 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
       linux_config_string(state.config_document, "last_changelog_exit_version");
   state.last_successful_update_check_at =
       linux_config_int64(state.config_document, "last_successful_update_check_at");
-  state.last_verified_manifest_sequence =
-      linux_config_int64(state.config_document, "last_verified_manifest_sequence");
   state.last_verified_manifest_v2_sequence = linux_config_int64(
       state.config_document, "last_verified_manifest_v2_sequence");
   state.pending_update_version =
@@ -826,10 +777,6 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
       linux_config_string(state.config_document, "pending_update_changelog_zh_cn");
   state.pending_update_changelog_en =
       linux_config_string(state.config_document, "pending_update_changelog_en");
-  state.update_manifest_raw =
-      linux_config_string(state.config_document, "update_manifest_raw");
-  state.update_manifest_signature =
-      linux_config_string(state.config_document, "update_manifest_signature");
   state.update_manifest_v2_raw =
       linux_config_string(state.config_document, "update_manifest_v2_raw");
   state.update_manifest_v2_signature = linux_config_string(
@@ -864,8 +811,6 @@ std::expected<void, std::string> persist_linux_update_config(
   document["last_changelog_exit_version"] = state.last_changelog_exit_version;
   document["last_successful_update_check_at"] =
       state.last_successful_update_check_at;
-  document["last_verified_manifest_sequence"] =
-      state.last_verified_manifest_sequence;
   document["last_verified_manifest_v2_sequence"] =
       state.last_verified_manifest_v2_sequence;
   document["pending_update_version"] = state.pending_update_version;
@@ -875,8 +820,6 @@ std::expected<void, std::string> persist_linux_update_config(
   document["pending_update_changelog_zh_cn"] =
       state.pending_update_changelog_zh_cn;
   document["pending_update_changelog_en"] = state.pending_update_changelog_en;
-  document["update_manifest_raw"] = state.update_manifest_raw;
-  document["update_manifest_signature"] = state.update_manifest_signature;
   document["update_manifest_v2_raw"] = state.update_manifest_v2_raw;
   document["update_manifest_v2_signature"] = state.update_manifest_v2_signature;
   document["update_keyring_raw"] = state.update_keyring_raw;
@@ -904,27 +847,8 @@ std::expected<void, std::string> open_linux_url(std::string url) {
   if (!awj::update::parse_allowed_https_url(url)) {
     return std::unexpected{"拒绝打开不受信任的更新 URL。"};
   }
-  const auto spawn = [&](const char* command, std::vector<char*> arguments)
-      -> std::optional<pid_t> {
-    pid_t child = 0;
-    arguments.push_back(nullptr);
-    if (::posix_spawnp(&child, command, nullptr, nullptr, arguments.data(),
-                       environ) != 0) {
-      return std::nullopt;
-    }
-    return child;
-  };
-  std::string xdg{"xdg-open"};
-  if (auto child = spawn(xdg.c_str(), {xdg.data(), url.data()})) {
-    std::thread{[pid = *child] { ::waitpid(pid, nullptr, 0); }}.detach();
-    return {};
-  }
-  std::string gio{"gio"};
-  std::string open{"open"};
-  if (auto child = spawn(gio.c_str(), {gio.data(), open.data(), url.data()})) {
-    std::thread{[pid = *child] { ::waitpid(pid, nullptr, 0); }}.detach();
-    return {};
-  }
+  if (awj::ui_process::launch({"xdg-open", url}) ||
+      awj::ui_process::launch({"gio", "open", url})) return {};
   return std::unexpected{"未找到可用的 URL 打开工具（xdg-open/gio）。"};
 }
 
@@ -1178,19 +1102,15 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
 
 std::optional<std::size_t> linux_task_row_index_for_path(
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-    const fs::path& path, std::optional<std::size_t> hint = {}) {
+    const LinuxUiState& state, const fs::path& path,
+    std::optional<std::size_t> hint = {}) {
   if (!rows) {
     return std::nullopt;
   }
-  const auto expected = awj::path_to_utf8(path);
-  if (hint && *hint < rows->row_count()) {
-    if (auto row = rows->row_data(*hint); row && shared_to_string(row->input_path) == expected) return hint;
-  }
-  for (std::size_t index = 0; index < rows->row_count(); ++index) {
-    if (auto row = rows->row_data(index);
-        row && shared_to_string(row->input_path) == expected) {
-      return index;
-    }
+  const auto count = std::min(rows->row_count(), state.queue_files.size());
+  if (hint && *hint < count && state.queue_files[*hint].path == path) return hint;
+  for (std::size_t index = 0; index < count; ++index) {
+    if (state.queue_files[index].path == path) return index;
   }
   return std::nullopt;
 }
@@ -1247,10 +1167,10 @@ void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
 
 void mark_linux_task_row_running(AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-    const awj::EncodeResult& result) noexcept {
+    const LinuxUiState& state, const awj::EncodeResult& result) noexcept {
   if (!rows) return;
   try {
-    if (const auto index = linux_task_row_index_for_path(rows, result.input_path, result.index)) {
+    if (const auto index = linux_task_row_index_for_path(rows, state, result.input_path, result.index)) {
       auto row = rows->row_data(*index);
       if (row) {
         row->status = to_shared("正在转码");
@@ -1283,9 +1203,9 @@ void mark_linux_task_row_running(AwjStudio& app,
 void set_linux_task_row_result(
     AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-    const awj::EncodeResult& result) {
+    const LinuxUiState& state, const awj::EncodeResult& result) {
   auto row = task_row_from_result(result);
-  if (const auto index = linux_task_row_index_for_path(rows, result.input_path, result.index)) {
+  if (const auto index = linux_task_row_index_for_path(rows, state, result.input_path, result.index)) {
     awj::ui::replace_queue_row(app, rows, *index, row);
   } else {
     const auto previous_count = rows->row_count();
@@ -1358,17 +1278,29 @@ void push_linux_large_image(LinuxUiState& state, awj::BatchLargeImageItem item) 
   } catch (...) {
   }
 }
-void set_input_path_preserving_output(AwjStudio& app, const fs::path& path) {
+// Slint displays UTF-8; keep the original POSIX bytes until the user edits the field.
+std::expected<fs::path, std::string> selected_linux_path(
+    const slint::SharedString& text, const fs::path& selected,
+    std::string_view label) {
+  if (!selected.empty() && text == to_shared(awj::path_to_utf8(selected))) return selected;
+  if (trim_copy(shared_to_string(text)).empty()) return fs::path{};
+  return awj::normalize_path_argument(wide_from_shared(text), label);
+}
+
+void set_input_path_preserving_output(AwjStudio& app, LinuxUiState& state,
+                                      const fs::path& path) {
+  state.selected_input_path = path;
   app.set_input_path(to_shared(awj::path_to_utf8(path)));
   if (shared_to_string(app.get_output_dir()).empty()) {
-    app.set_output_dir(to_shared(awj::path_to_utf8(awj::default_output_dir_for(path))));
+    state.selected_output_dir = awj::default_output_dir_for(path);
+    app.set_output_dir(to_shared(awj::path_to_utf8(state.selected_output_dir)));
   }
 }
 
-std::wstring linux_queue_path_key(const fs::path& path) {
+std::string linux_queue_path_key(const fs::path& path) {
   std::error_code ec;
   const auto absolute = fs::absolute(path, ec);
-  return awj::wide_from_utf8((ec ? path : absolute).lexically_normal().native());
+  return (ec ? path : absolute).lexically_normal().native();
 }
 
 bool linux_queue_contains_path(const LinuxUiState& state, const fs::path& path) {
@@ -1410,7 +1342,9 @@ std::expected<bool, std::string> add_linux_queue_from_path(
     bool update_input_path) {
   auto scan_cfg = awj::default_app_config();
   scan_cfg.input_path = path;
-  scan_cfg.output_dir = fs::path{shared_to_string(app.get_output_dir())};
+  const auto output = selected_linux_path(app.get_output_dir(), state.selected_output_dir, "输出目录");
+  if (!output) return std::unexpected{output.error()};
+  scan_cfg.output_dir = *output;
   scan_cfg.output_policy = awj::OutputPolicy::normal;
   std::vector<awj::ImageFile> scanned;
   if (auto result = awj::scan_images(scan_cfg, scanned); !result) {
@@ -1447,7 +1381,7 @@ std::expected<bool, std::string> add_linux_queue_from_path(
     ++added;
   }
   if (update_input_path) {
-    set_input_path_preserving_output(app, path);
+    set_input_path_preserving_output(app, state, path);
   }
   refresh_linux_pending_queue(app, state);
   app.set_status_text(to_shared(
@@ -1461,7 +1395,7 @@ build_linux_queue_files(const awj::AppConfig& cfg,
                         const std::vector<awj::ImageFile>& queue,
                         const std::vector<fs::path>* only_paths = nullptr) {
   try {
-    std::unordered_set<std::wstring> selected;
+    std::unordered_set<std::string> selected;
     if (only_paths != nullptr) {
       selected.reserve(only_paths->size());
       for (const auto& path : *only_paths) {
@@ -1555,7 +1489,7 @@ std::expected<fs::path, std::string> create_linux_queue_manifest(
 }
 
 struct LinuxQueueDragPayload {
-  std::wstring path_key{};
+  std::string path_key{};
 };
 
 slint::DataTransfer make_linux_queue_drag_data(const LinuxUiState& state,
@@ -1571,7 +1505,7 @@ slint::DataTransfer make_linux_queue_drag_data(const LinuxUiState& state,
 }
 
 std::optional<std::size_t> linux_queue_index_for_key(
-    const LinuxUiState& state, std::wstring_view key) {
+    const LinuxUiState& state, std::string_view key) {
   for (std::size_t index = 0; index < state.queue_files.size(); ++index) {
     if (linux_queue_path_key(state.queue_files[index].path) == key) {
       return index;
@@ -1589,8 +1523,8 @@ slint::language::DragAction linux_queue_drag_can_drop(
   const auto data = event.data.user_data();
   const auto* payload = std::any_cast<LinuxQueueDragPayload>(&data);
   if (payload == nullptr) {
-    const auto text = event.data.plain_text();
-    return text && !native_drop_paths(*text).empty()
+    const auto paths = event.data.file_paths();
+    return paths && !paths->empty()
                ? slint::language::DragAction::Copy
                : slint::language::DragAction::None;
   }
@@ -1616,24 +1550,17 @@ slint::language::DragAction linux_queue_drag_dropped(
   const auto data = event.data.user_data();
   const auto* payload = std::any_cast<LinuxQueueDragPayload>(&data);
   if (payload == nullptr) {
-    const auto text = event.data.plain_text();
-    if (!text) {
+    const auto paths = event.data.file_paths();
+    if (!paths) {
       return slint::language::DragAction::None;
     }
-    const auto paths = native_drop_paths(*text);
-    if (paths.empty()) {
+    if (paths->empty()) {
       app.set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
       return slint::language::DragAction::None;
     }
     std::string first_error;
-    for (const auto& raw : paths) {
-      const auto path = awj::normalize_path_argument(
-          awj::wide_from_utf8(raw), "拖入队列");
-      if (!path) {
-        if (first_error.empty()) first_error = path.error();
-        continue;
-      }
-      if (auto added = add_linux_queue_from_path(app, state, *path, false);
+    for (const auto& path : *paths) {
+      if (auto added = add_linux_queue_from_path(app, state, path, false);
           !added && first_error.empty()) {
         first_error = added.error();
       }
@@ -1961,8 +1888,6 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
     }
   }
   if (app != nullptr) {
-    push_option(args, L"--input", wide_from_shared(app->get_input_path()));
-    push_option(args, L"--output", wide_from_shared(app->get_output_dir()));
     push_option(args, L"--template", wide_from_shared(app->get_template_text()));
     push_option(args, L"--collision", collision_arg(app->get_collision_index()));
     if (!trim_copy(visual_quality).empty()) {
@@ -2168,6 +2093,12 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   }
   auto config = linux_config_from_parameter_params(&app, format_index, params);
   if (config) {
+    const auto input = selected_linux_path(app.get_input_path(), state.selected_input_path, "输入路径");
+    const auto output = selected_linux_path(app.get_output_dir(), state.selected_output_dir, "输出目录");
+    if (!input) return std::unexpected{input.error()};
+    if (!output) return std::unexpected{output.error()};
+    config->input_path = *input;
+    config->output_dir = *output;
     config->append_png_suffix = queue_choice.append_png_suffix;
   }
   return config;
@@ -2753,6 +2684,9 @@ int awj::studio::run_studio_ui() {
         sync_linux_update_ui(**app, *state);
       }
     });
+    app->on_check_update_requested([weak, state] {
+      start_linux_update_check(weak, state);
+    });
     app->on_update_channel_selection_requested([weak, state](int index) {
       if (auto app = weak.lock()) {
         const auto before = capture_linux_update_state(*state);
@@ -3042,8 +2976,7 @@ int awj::studio::run_studio_ui() {
     });
     app->on_input_path_accepted([weak, state](slint::SharedString text) {
       if (auto app = weak.lock()) {
-        const auto path = awj::normalize_path_argument(
-            awj::wide_from_utf8(shared_to_string(text)), "输入路径");
+        const auto path = selected_linux_path(text, state->selected_input_path, "输入路径");
         if (!path) {
           (*app)->set_status_text(to_shared(path.error()));
           return;
@@ -3061,27 +2994,20 @@ int awj::studio::run_studio_ui() {
               (*app)->set_status_text(to_shared("当前任务正在运行，无法添加队列。"));
               return;
             }
-            const auto text = event.data.plain_text();
-            if (!text) {
+            const auto paths = event.data.file_paths();
+            if (!paths) {
               (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
               return;
             }
-            const auto paths = native_drop_paths(*text);
-            if (paths.empty()) {
+            if (paths->empty()) {
               (*app)->set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
               return;
             }
             bool update_input_path = true;
             std::string first_error;
-            for (const auto& raw : paths) {
-              const auto path = awj::normalize_path_argument(
-                  awj::wide_from_utf8(raw), "拖入输入路径");
-              if (!path) {
-                if (first_error.empty()) first_error = path.error();
-                continue;
-              }
+            for (const auto& path : *paths) {
               if (auto added = add_linux_queue_from_path(
-                      **app, *state, *path, update_input_path);
+                      **app, *state, path, update_input_path);
                   added && *added) {
                 update_input_path = false;
               } else if (!added && first_error.empty()) {
@@ -3094,79 +3020,81 @@ int awj::studio::run_studio_ui() {
           }
         });
 
-    app->on_browse_output([weak] {
+    app->on_browse_output([weak, state] {
       if (auto app = weak.lock()) {
         auto selected = choose_path(true);
         if (!selected) {
           (*app)->set_status_text(to_shared(selected.error()));
           return;
         }
+        state->selected_output_dir = *selected;
         (*app)->set_output_dir(to_shared(awj::path_to_utf8(*selected)));
         (*app)->set_status_text(to_shared("已选择输出目录。"));
       }
     });
-    app->on_open_output([weak] {
+    app->on_open_output([weak, state] {
       if (auto app = weak.lock()) {
-        fs::path path{shared_to_string((*app)->get_output_dir())};
-        if (path.empty()) {
-          path = awj::default_output_dir_for(fs::path{shared_to_string((*app)->get_input_path())});
+        auto path = selected_linux_path((*app)->get_output_dir(), state->selected_output_dir, "输出目录");
+        if (path && path->empty()) {
+          path = selected_linux_path((*app)->get_input_path(), state->selected_input_path, "输入路径");
+          if (path) *path = awj::default_output_dir_for(*path);
         }
-        if (auto opened = open_path(path); !opened) {
-          (*app)->set_status_text(to_shared(opened.error()));
-        }
-      }
-    });
-    app->on_output_path_accepted([weak](slint::SharedString text) {
-      if (auto app = weak.lock()) {
-        const auto raw = shared_to_string(text);
-        if (trim_copy(raw).empty()) {
-          (*app)->set_output_dir({});
-          return;
-        }
-        const auto path = awj::normalize_path_argument(
-            awj::wide_from_utf8(raw), "输出目录");
         if (!path) {
           (*app)->set_status_text(to_shared(path.error()));
           return;
         }
+        if (auto opened = open_path(*path); !opened) {
+          (*app)->set_status_text(to_shared(opened.error()));
+        }
+      }
+    });
+    app->on_output_path_accepted([weak, state](slint::SharedString text) {
+      if (auto app = weak.lock()) {
+        const auto raw = shared_to_string(text);
+        if (trim_copy(raw).empty()) {
+          state->selected_output_dir.clear();
+          (*app)->set_output_dir({});
+          return;
+        }
+        const auto path = selected_linux_path(text, state->selected_output_dir, "输出目录");
+        if (!path) {
+          (*app)->set_status_text(to_shared(path.error()));
+          return;
+        }
+        state->selected_output_dir = *path;
         (*app)->set_output_dir(to_shared(awj::path_to_utf8(*path)));
       }
     });
     app->on_output_path_dropped(
-        [weak](slint::language::DropEvent event) {
+        [weak, state](slint::language::DropEvent event) {
           if (auto app = weak.lock()) {
             if ((*app)->get_running()) {
               (*app)->set_status_text(to_shared("当前任务正在运行，无法修改输出目录。"));
               return;
             }
-            const auto text = event.data.plain_text();
-            if (!text) {
+            const auto paths = event.data.file_paths();
+            if (!paths) {
               (*app)->set_status_text(to_shared("拖入内容不是本地文件或文件夹路径。"));
               return;
             }
-            const auto paths = native_drop_paths(*text);
-            if (paths.size() != 1) {
+            if (paths->size() != 1) {
               (*app)->set_status_text(to_shared("输出目录一次只能拖入一个文件或文件夹。"));
               return;
             }
-            const auto path = awj::normalize_path_argument(
-                awj::wide_from_utf8(paths.front()), "拖入输出目录");
-            if (!path) {
-              (*app)->set_status_text(to_shared(path.error()));
-              return;
-            }
+            const auto& path = paths->front();
             std::error_code ec;
-            if (!std::filesystem::exists(*path, ec) || ec) {
+            if (!std::filesystem::exists(path, ec) || ec) {
               (*app)->set_status_text(to_shared("拖入的输出目标不存在或无法访问。"));
               return;
             }
-            const auto output = std::filesystem::is_directory(*path, ec) && !ec
-                                    ? *path
-                                    : path->parent_path();
+            const auto output = std::filesystem::is_directory(path, ec) && !ec
+                                    ? path
+                                    : path.parent_path();
             if (output.empty()) {
               (*app)->set_status_text(to_shared("无法从拖入目标确定输出目录。"));
               return;
             }
+            state->selected_output_dir = output;
             (*app)->set_output_dir(to_shared(awj::path_to_utf8(output)));
             (*app)->set_status_text(to_shared("已更新输出目录。"));
           }
@@ -3305,9 +3233,9 @@ int awj::studio::run_studio_ui() {
               slint::invoke_from_event_loop([weak, state, rows, event] {
                 if (auto app = weak.lock()) {
                   if (event.kind == awj::BatchEventKind::item_started) {
-                    mark_linux_task_row_running(**app, rows, event.result);
+                    mark_linux_task_row_running(**app, rows, *state, event.result);
                   } else if (event.kind == awj::BatchEventKind::item_finished) {
-                    set_linux_task_row_result(**app, rows, event.result);
+                    set_linux_task_row_result(**app, rows, *state, event.result);
                     std::erase(state->failed_paths, event.result.input_path);
                     if (!event.result.ok && !event.result.canceled) {
                       state->failed_paths.push_back(event.result.input_path);
@@ -3341,7 +3269,7 @@ int awj::studio::run_studio_ui() {
                       state->failed_paths = retry_paths;
                       for (const auto& path : retry_paths) {
                         if (const auto index =
-                                linux_task_row_index_for_path(rows, path)) {
+                                linux_task_row_index_for_path(rows, *state, path)) {
                           auto row = rows->row_data(*index);
                           if (row) {
                             row->state = 3;
@@ -3504,9 +3432,9 @@ int awj::studio::run_studio_ui() {
           slint::invoke_from_event_loop([weak, state, rows, event] {
             if (auto app = weak.lock()) {
               if (event.kind == awj::BatchEventKind::item_started) {
-                mark_linux_task_row_running(**app, rows, event.result);
+                mark_linux_task_row_running(**app, rows, *state, event.result);
               } else if (event.kind == awj::BatchEventKind::item_finished) {
-                set_linux_task_row_result(**app, rows, event.result);
+                set_linux_task_row_result(**app, rows, *state, event.result);
                 std::erase(state->failed_paths, event.result.input_path);
                 if (!event.result.ok && !event.result.canceled) {
                   state->failed_paths.push_back(event.result.input_path);

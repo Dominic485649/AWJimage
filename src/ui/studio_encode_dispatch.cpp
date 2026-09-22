@@ -64,63 +64,6 @@ void set_large_image_status(UiState& state, int index,
 }
 
 
-std::expected<std::vector<awj::ImageFile>, std::string> build_run_files(
-    const awj::AppConfig& cfg, const std::vector<QueueImageItem>& queue,
-    bool failed_only) {
-  try {
-    std::vector<awj::ImageFile> files;
-    files.reserve(std::ranges::count_if(
-        queue, [failed_only](const QueueImageItem& item) {
-          return queue_item_selected_for_run(item, failed_only);
-        }));
-    std::random_device random_device;
-    std::mt19937_64 rng{random_device()};
-    const bool needs_hash =
-        output_template_contains(cfg.output_template, L"{hash}") ||
-        output_template_contains(cfg.output_template, L"{hash8}");
-    const bool needs_sha256 =
-        output_template_contains(cfg.output_template, L"{sha256}") ||
-        output_template_contains(cfg.output_template, L"{sha2568}") ||
-        output_template_contains(cfg.output_template, L"{sha256_8}");
-    for (const auto& item : queue) {
-      if (!queue_item_selected_for_run(item, failed_only)) {
-        continue;
-      }
-      std::wstring hash;
-      std::wstring sha256;
-      if (needs_hash) {
-        if (auto ok = awj::file_hash_token(item.path, hash); !ok) {
-          return std::unexpected{ok.error()};
-        }
-      }
-      if (needs_sha256) {
-        if (auto ok = awj::file_sha256_token(item.path, sha256); !ok) {
-          return std::unexpected{ok.error()};
-        }
-      }
-      files.push_back(awj::make_image_file(files.size(), item.path,
-                                           item.relative_dir,
-                                           item.bytes, rng,
-                                           std::move(hash),
-                                           std::move(sha256)));
-    }
-    if (auto disambiguated = awj::apply_source_extension_disambiguation(cfg, files);
-        !disambiguated) {
-      return std::unexpected{disambiguated.error()};
-    }
-    if (auto resolved = awj::resolve_batch_output_paths(cfg, files); !resolved) {
-      return std::unexpected{resolved.error()};
-    }
-    return files;
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"构建队列运行快照时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"构建队列运行快照时数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"构建队列运行快照时文件系统访问失败。"};
-  }
-}
-
 std::expected<std::filesystem::path, std::string>
 create_studio_queue_manifest(std::uint64_t run_id,
                              std::span<const awj::ImageFile> files) {
@@ -166,7 +109,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     return;
   }
 
-  std::vector<QueueImageItem> queue_snapshot;
+  std::expected<std::vector<awj::ImageFile>, std::string> files;
   {
     std::scoped_lock lock{state->mutex};
     if (state->worker_active) {
@@ -177,10 +120,11 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       (*app)->set_status_text(to_shared("队列为空，请先输入或选择图片。"));
       return;
     }
-    queue_snapshot = state->queue_items;
+    // Queue mutations are delivered on the UI thread. Only encoder inputs
+    // survive this scope; logs and presentation state are not duplicated.
+    files = build_run_files(cfg, state->queue_items, failed_only);
   }
 
-  auto files = build_run_files(cfg, queue_snapshot, failed_only);
   if (!files) {
     (*app)->set_status_text(
         to_shared(std::format("队列准备失败：{}", files.error())));
@@ -1337,11 +1281,6 @@ void append_pending_event(UiState& state, std::uint64_t run_id,
 }
 
 
-
-bool output_template_contains(std::wstring_view text,
-                              std::wstring_view token) {
-  return text.find(token) != std::wstring_view::npos;
-}
 
 std::expected<void, std::string> open_path(std::filesystem::path path,
                                            bool create_if_missing) try {

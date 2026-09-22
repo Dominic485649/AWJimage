@@ -379,7 +379,7 @@ int run_cli(int argc, char* argv[]) {
   std::vector<std::wstring> args;
   args.reserve(static_cast<std::size_t>(std::max(argc - 1, 0)));
   for (int i = 1; i < argc; ++i) {
-    args.emplace_back(awj::wide_from_utf8(argv[i] != nullptr ? std::string_view{argv[i]} : std::string_view{}));
+    args.emplace_back(awj::argument_text_from_native(argv[i] != nullptr ? std::string_view{argv[i]} : std::string_view{}));
   }
   return run_cli_args(std::move(args));
 }

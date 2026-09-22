@@ -38,6 +38,42 @@ static_assert(std::is_assignable_v<slint::SharedString&, const char*>,
               "slint::SharedString 不再接受 const char*：请复核 "
               "clear_shared_string 的注释与本回归测试是否仍然必要");
 
+// Slint 1.18 native file payloads must survive without UTF-8/newline serialization.
+int verify_native_file_payload() {
+  namespace fs = std::filesystem;
+  std::vector<fs::path> expected{fs::path{u8"/tmp/中文 space.png"},
+                                 fs::path{"/tmp/line\nbreak.png"}};
+#ifndef _WIN32
+  expected.emplace_back(std::string{"/tmp/native-"} + char(0xff) + ".png");
+#else
+  expected.emplace_back(L"C:\\图片\\image.png");
+#endif
+  slint::DataTransfer data;
+  data.set_file_paths(expected);
+  const auto paths = data.file_paths();
+  if (!paths || *paths != expected || data.plain_text()) {
+    return fail("native file payload lost path bytes or used a text protocol");
+  }
+  data.set_file_paths({});
+  if (data.has_file_paths() || data.file_paths()) {
+    return fail("cleared native file payload retained paths");
+  }
+  return 0;
+}
+
+int verify_runtime_images() {
+  for (const auto* name : {"ui/logo.png", "tests/slint_runtime_images/pixel.jpg",
+                           "tests/slint_runtime_images/pixel.svg"}) {
+    const auto path = (std::filesystem::path{AWJ_UI_SOURCE_DIR} / name).u8string();
+    const auto image = slint::Image::load_from_path(slint::SharedString{
+        std::string_view{reinterpret_cast<const char*>(path.data()), path.size()}});
+    if (!image.size().width || !image.size().height) {
+      return fail(std::format("required Slint runtime image decoder failed: {}", name));
+    }
+  }
+  return 0;
+}
+
 int verify_shared_string_clearing() {
   slint::SharedString text{"worker 日志行"};
   if (text.empty()) {
@@ -278,6 +314,36 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
   app->set_language_index(0);
   app->set_format_index(0);
   app->set_menu_format_index(0);
+  return 0;
+}
+
+int verify_manual_update(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  app->set_selected_page(2);
+  int checks = 0;
+  app->on_check_update_requested([&] { ++checks; });
+  for (const int language : {0, 1}) {
+    slint::select_bundled_translation(language ? "en" : "");
+    app->set_language_index(language);
+    for (const float width : {820.0f, 1220.0f}) {
+      app->window().set_size(slint::LogicalSize({width, 2000.0f}));
+      app->set_update_checking(false);
+      const auto button = find_one(app, language ? "Check for updates" : "检查更新", Role::Button);
+      if (!button || button->size().width < 150 ||
+          button->absolute_position().x + button->size().width > width - 10)
+        return fail("manual update button is missing or clipped");
+      const int previous = checks;
+      button->invoke_accessible_default_action();
+      if (checks != previous + 1) return fail("manual check callback was not dispatched");
+      app->set_update_checking(true);
+      button->invoke_accessible_default_action();
+      if (checks != previous + 1) return fail("checking allowed a duplicate request");
+    }
+  }
+  app->on_check_update_requested([] {});
+  app->set_update_checking(false);
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
   return 0;
 }
 
@@ -844,6 +910,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   if (const int result = verify_parameter_matrix(app)) return result;
+  if (const int result = verify_manual_update(app)) return result;
   if (const int result = verify_queue_option_layout(app)) return result;
   return verify_queue_column_resize(app);
 }
@@ -851,14 +918,56 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (const int result = verify_native_file_payload(); result != 0) return result;
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
+  }
+  if (argc == 2 && (std::string_view{argv[1]} == "--renderer-smoke" ||
+                    std::string_view{argv[1]} == "--font-stress")) {
+    const bool fonts = std::string_view{argv[1]} == "--font-stress";
+    const int total_ticks = fonts ? 205 : 10;
+#ifdef _WIN32
+    const std::array<const char*, 3> families{"Arial", "Microsoft YaHei", "Consolas"};
+#else
+    const std::array<const char*, 3> families{"DejaVu Sans", "DejaVu Serif", "HarmonyOS Sans SC"};
+#endif
+    auto app = AwjStudio::create();
+    if (const int result = verify_runtime_images(); result != 0) return result;
+    awj::ui::bind_queue_model(*app, task_rows());
+    app->show();
+    int tick = 0;
+    slint::Timer timer;
+    timer.start(slint::TimerMode::Repeated, std::chrono::milliseconds{150}, [&] {
+      if (tick == total_ticks) {
+        app->hide();
+        slint::quit_event_loop();
+        return;
+      }
+      if (fonts) {
+        if (tick < 200) app->set_ui_font_family(families[tick % families.size()]);
+        if (tick == 200) {
+          app->set_ui_font_family(slint::SharedString{});
+          awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>());
+        }
+        if (tick % 20 == 0 || tick == 204) {
+          std::printf("font-stress cycle=%d\n", tick);
+          std::fflush(stdout);
+        }
+      }
+      const int language = (tick / 5) % 2;
+      slint::select_bundled_translation(language ? "en" : "");
+      app->set_language_index(language);
+      app->set_selected_page(tick++ % 5);
+    });
+    slint::run_event_loop();
+    timer.stop();
+    return tick == total_ticks ? 0 : fail("renderer smoke exited before all pages were visited");
   }
   if (argc == 2 && std::string_view{argv[1]} == "--queue-stress") {
     slint::testing::init();
     auto app = AwjStudio::create();
     app->show();
-    for (const std::size_t count : {1000u, 10000u}) {
+    for (const std::size_t count : {1000u, 10000u, 100000u}) {
       std::vector<TaskRow> data;
       data.reserve(count);
       for (std::size_t i = 0; i < count; ++i) {
@@ -960,6 +1069,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   slint::testing::init();
+  if (const int result = verify_runtime_images(); result != 0) return result;
   {
     auto focus = awj_focus_test::FocusReentrancy::create();
     focus->show();

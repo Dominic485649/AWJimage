@@ -20,7 +20,6 @@ struct UpdatePersistentState {
   bool show_changelog_after_update{};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_check{};
-  std::int64_t last_verified_sequence{};
   std::int64_t last_verified_v2_sequence{};
   std::string version{};
   std::string pending_channel{};
@@ -28,8 +27,6 @@ struct UpdatePersistentState {
   std::string published_at{};
   std::string changelog_zh_cn{};
   std::string changelog_en{};
-  std::string manifest_raw{};
-  std::string manifest_signature{};
   std::string manifest_v2_raw{};
   std::string manifest_v2_signature{};
   std::string keyring_raw{};

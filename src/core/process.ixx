@@ -94,6 +94,7 @@ extern "C" __declspec(dllimport) NTSTATUS __stdcall BCryptDestroyHash(
 export namespace awj {
 
 namespace fs = std::filesystem;
+using PathText = fs::path::string_type;
 
 inline constexpr std::string_view kAwjVersion = AWJ_BUILD_VERSION;
 
@@ -341,40 +342,6 @@ bool is_windows_reserved_device_name(std::wstring_view value) noexcept {
           is_windows_reserved_device_digit(value[3]));
 }
 
-std::wstring sanitize_output_stem(std::wstring value, std::size_t index) {
-  // 模板变量来自文件名和用户输入，必须清理 Windows 禁用字符和保留设备名。
-  for (auto& ch : value) {
-    const bool invalid = ch < L' ' || ch == L'<' || ch == L'>' || ch == L':' ||
-                         ch == L'"' || ch == L'/' || ch == L'\\' ||
-                         ch == L'|' || ch == L'?' || ch == L'*';
-    if (invalid) {
-      ch = L'_';
-    }
-  }
-
-  while (!value.empty() && (value.back() == L'.' || value.back() == L' ')) {
-    value.pop_back();
-  }
-  if (value.empty()) {
-    value = std::format(L"image-{:04}", index + 1);
-  }
-
-  auto reserved = value;
-  const auto dot = reserved.find(L'.');
-  if (dot != std::wstring::npos) {
-    reserved.resize(dot);
-  }
-  std::ranges::transform(reserved, reserved.begin(),
-                         [](wchar_t ch) { return std::towupper(ch); });
-  if (is_windows_reserved_device_name(reserved)) {
-    if (dot == std::wstring::npos) {
-      value.push_back(L'_');
-    } else {
-      value.insert(dot, 1, L'_');
-    }
-  }
-  return value;
-}
 
 }  // namespace core_detail
 
@@ -490,6 +457,60 @@ std::wstring wide_from_utf8(std::string_view text) {
 #endif
 }
 
+// Convert user-facing Unicode text to the platform path representation.
+// Native POSIX paths themselves never pass through this conversion.
+PathText native_path_text(std::wstring_view text) {
+#ifdef _WIN32
+  return std::wstring{text};
+#else
+  return utf8_from_wide(text);
+#endif
+}
+
+namespace core_detail {
+PathText sanitize_output_stem(PathText value, std::size_t index) {
+  // 模板变量来自文件名和用户输入，必须清理 Windows 禁用字符和保留设备名。
+  for (auto& ch : value) {
+    const bool invalid = static_cast<std::make_unsigned_t<fs::path::value_type>>(ch) < ' ' || ch == L'<' || ch == L'>' || ch == L':' ||
+                         ch == L'"' || ch == L'/' || ch == L'\\' ||
+                         ch == L'|' || ch == L'?' || ch == L'*';
+    if (invalid) {
+      ch = L'_';
+    }
+  }
+
+  while (!value.empty() && (value.back() == L'.' || value.back() == L' ')) {
+    value.pop_back();
+  }
+  if (value.empty()) {
+    value = native_path_text(std::format(L"image-{:04}", index + 1));
+  }
+
+  auto reserved = value;
+  const auto dot = reserved.find(L'.');
+  if (dot != PathText::npos) {
+    reserved.resize(dot);
+  }
+  std::ranges::transform(reserved, reserved.begin(),
+                         [](auto ch) { return ch >= 'a' && ch <= 'z'
+                             ? static_cast<fs::path::value_type>(ch - 'a' + 'A') : ch; });
+#ifdef _WIN32
+  const bool device_name = is_windows_reserved_device_name(reserved);
+#else
+  const bool device_name = is_windows_reserved_device_name(wide_from_utf8(reserved));
+#endif
+  if (device_name) {
+    if (dot == PathText::npos) {
+      value.push_back(L'_');
+    } else {
+      value.insert(dot, 1, L'_');
+    }
+  }
+  return value;
+}
+
+}  // namespace core_detail
+
 std::string path_to_utf8(const fs::path& path) {
 #ifdef _WIN32
   return utf8_from_wide(path.native());
@@ -561,8 +582,8 @@ std::string redact_path_for_user(std::string message, const fs::path& path) {
   return message;
 }
 
-std::wstring normalized_lower_path_key(const fs::path& path) {
-  auto key = path.lexically_normal().wstring();
+PathText normalized_lower_path_key(const fs::path& path) {
+  auto key = path.lexically_normal().native();
 #ifdef _WIN32
   std::ranges::transform(key, key.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
@@ -997,7 +1018,7 @@ constexpr std::string_view kSupportedImageExtensionsText =
     "wdp/hdp";
 
 bool is_supported_image_extension(const fs::path& path) {
-  auto ext = path.extension().wstring();
+  auto ext = wide_from_utf8(path_to_utf8(path.extension()));
   std::ranges::transform(ext, ext.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
   return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe" ||
@@ -1475,11 +1496,11 @@ fs::path relative_output_dir(const fs::path& input_root,
   return relative;
 }
 
-std::wstring output_name_for(const AppConfig& cfg, const ImageFile& image);
+PathText output_name_for(const AppConfig& cfg, const ImageFile& image);
 fs::path output_path_for(const AppConfig& cfg, const ImageFile& image);
 
 std::wstring source_extension_disambiguator(const fs::path& path) {
-  auto ext = path.extension().wstring();
+  auto ext = wide_from_utf8(path_to_utf8(path.extension()));
   if (ext.empty()) {
     return L".source";
   }
@@ -1501,7 +1522,7 @@ std::expected<void, std::string> apply_source_extension_disambiguation(
     const AppConfig& cfg, std::vector<ImageFile>& files) {
   // 例如 1.jpg 和 1.bmp 都套用 {name}<输出扩展名>
   // 时会同名；保留源扩展避免互相覆盖。
-  std::unordered_map<std::wstring, std::vector<std::size_t>> by_output;
+  std::unordered_map<PathText, std::vector<std::size_t>> by_output;
   try {
     by_output.reserve(files.size());
     for (const auto i : std::views::iota(std::size_t{}, files.size())) {
@@ -1518,7 +1539,7 @@ std::expected<void, std::string> apply_source_extension_disambiguation(
       std::unordered_map<std::wstring, int> source_extensions;
       source_extensions.reserve(indices.size());
       for (const auto index : indices) {
-        auto ext = files[index].path.extension().wstring();
+        auto ext = wide_from_utf8(path_to_utf8(files[index].path.extension()));
         std::ranges::transform(ext, ext.begin(),
                                [](wchar_t ch) { return std::towlower(ch); });
         source_extensions.try_emplace(std::move(ext), 0);
@@ -1543,7 +1564,7 @@ std::expected<void, std::string> apply_source_extension_disambiguation(
   return {};
 }
 
-std::optional<std::wstring> scan_output_directory_key(
+std::optional<PathText> scan_output_directory_key(
     const AppConfig& cfg, const fs::path& input_path) noexcept {
   try {
     std::error_code input_ec;
@@ -1567,11 +1588,11 @@ std::optional<std::wstring> scan_output_directory_key(
 std::atomic_uint64_t output_collision_counter{};
 
 struct NumberedCollisionStem {
-  std::wstring base;
+  PathText base;
   std::uint64_t next{1};
 };
 
-NumberedCollisionStem numbered_collision_stem(std::wstring stem) {
+NumberedCollisionStem numbered_collision_stem(PathText stem) {
   if (stem.ends_with(L')')) {
     const auto open = stem.find_last_of(L'(');
     if (open != std::wstring::npos && open + 1 < stem.size() - 1) {
@@ -1623,8 +1644,9 @@ std::wstring collision_suffix(CollisionMode mode) {
 
 std::expected<fs::path, std::string> resolve_collision_output_path(
     const fs::path& planned, CollisionMode mode,
-    std::unordered_map<std::wstring, int>* reserved_outputs = nullptr,
+    std::unordered_map<PathText, int>* reserved_outputs = nullptr,
     std::wstring_view complete_extension = {}) {
+  const auto native_extension = native_path_text(complete_extension);
   try {
     const auto reserve_available =
         [&](const fs::path& path) -> std::expected<bool, std::string> {
@@ -1675,14 +1697,14 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
     }
 
     const auto parent = planned.parent_path();
-    auto stem = planned.stem().wstring();
-    auto extension = planned.extension().wstring();
-    if (!complete_extension.empty()) {
-      const auto filename = planned.filename().wstring();
-      if (filename.size() > complete_extension.size() &&
-          filename.ends_with(complete_extension)) {
-        stem = filename.substr(0, filename.size() - complete_extension.size());
-        extension = std::wstring{complete_extension};
+    auto stem = planned.stem().native();
+    auto extension = planned.extension().native();
+    if (!native_extension.empty()) {
+      const auto filename = planned.filename().native();
+      if (filename.size() > native_extension.size() &&
+          filename.ends_with(native_extension)) {
+        stem = filename.substr(0, filename.size() - native_extension.size());
+        extension = native_extension;
       }
     }
     const auto planned_key = normalized_lower_path_key(planned);
@@ -1692,7 +1714,7 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
       for (const auto offset : std::views::iota(0ULL, 10000ULL)) {
         const auto number = numbered.next + offset;
         auto candidate = parent /
-                         (numbered.base + std::format(L"({})", number) +
+                         (numbered.base + native_path_text(std::format(L"({})", number)) +
                           extension);
         if (normalized_lower_path_key(candidate) == planned_key) {
           continue;
@@ -1705,7 +1727,7 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
       }
       const auto fallback =
           parent / (numbered.base +
-                    std::format(L"({}-{})", numbered.next, current_process_id()) +
+                    native_path_text(std::format(L"({}-{})", numbered.next, current_process_id())) +
                     extension);
       if (auto available = path_available(fallback); !available) {
         return std::unexpected{available.error()};
@@ -1716,11 +1738,11 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
                                          display_path_for_user(planned))};
     }
 
-    const auto suffix = collision_suffix(mode);
+    const auto suffix = native_path_text(collision_suffix(mode));
     for (const auto attempt : std::views::iota(0, 1000)) {
       auto candidate = parent / (stem + suffix +
-                                 (attempt == 0 ? std::wstring{}
-                                               : std::format(L"-{}", attempt)) +
+                                 (attempt == 0 ? PathText{}
+                                               : native_path_text(std::format(L"-{}", attempt))) +
                                  extension);
       if (normalized_lower_path_key(candidate) == planned_key) {
         continue;
@@ -1733,7 +1755,7 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
     }
 
     const auto fallback =
-        parent / (stem + suffix + std::format(L"-{}", current_process_id()) +
+        parent / (stem + suffix + native_path_text(std::format(L"-{}", current_process_id())) +
                   extension);
     if (auto available = path_available(fallback); !available) {
       return std::unexpected{available.error()};
@@ -1759,7 +1781,7 @@ std::expected<void, std::string> resolve_batch_output_paths(
     return {};
   }
 
-  std::unordered_map<std::wstring, int> reserved_outputs;
+  std::unordered_map<PathText, int> reserved_outputs;
   try {
     reserved_outputs.reserve(files.size());
     for (auto& image : files) {
@@ -2004,7 +2026,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
   }
 
   files.clear();
-  std::unordered_set<std::wstring> seen;
+  std::unordered_set<PathText> seen;
   try {
     seen.reserve(input_paths.size());
     for (const auto& raw_input : input_paths) {
@@ -2100,9 +2122,9 @@ std::wstring encode_params_token_for(const AppConfig& cfg) {
   return token;
 }
 
-std::wstring output_name_for(const AppConfig& cfg, const ImageFile& image) {
-  auto stem = image.path.stem().wstring();
-  auto ext = image.path.extension().wstring();
+PathText output_name_for(const AppConfig& cfg, const ImageFile& image) {
+  auto stem = image.path.stem().native();
+  auto ext = image.path.extension().native();
   if (!ext.empty() && ext.front() == L'.') {
     ext.erase(ext.begin());
   }
@@ -2117,20 +2139,25 @@ std::wstring output_name_for(const AppConfig& cfg, const ImageFile& image) {
                                 ? std::wstring{L"sha256-unavailable"}
                                 : image.sha256_token;
   const auto sha2568_token = sha256_token.substr(0, 8);
-  const std::wstring_view template_text{cfg.output_template.data(),
-                                        cfg.output_template.size()};
-  std::wstring name;
+  const auto native_template = native_path_text(cfg.output_template);
+  const std::basic_string_view<fs::path::value_type> template_text{native_template};
+  PathText name;
   name.reserve(template_text.size());
 
   for (std::size_t pos = 0; pos < template_text.size();) {
     const auto rest = template_text.substr(pos);
     const auto append = [&](std::wstring_view token,
-                            const std::wstring& value) {
-      if (!rest.starts_with(token)) {
+                            const auto& value) {
+      const auto native_token = native_path_text(token);
+      if (!rest.starts_with(native_token)) {
         return false;
       }
-      name += value;
-      pos += token.size();
+      if constexpr (std::is_same_v<std::remove_cvref_t<decltype(value)>, PathText>) {
+        name += value;
+      } else {
+        name += native_path_text(value);
+      }
+      pos += native_token.size();
       return true;
     };
 
@@ -2152,8 +2179,8 @@ std::wstring output_name_for(const AppConfig& cfg, const ImageFile& image) {
   }
 
   name = core_detail::sanitize_output_stem(std::move(name), image.index);
-  name += image.source_extension_disambiguator;
-  name += output_extension_for(cfg);
+  name += native_path_text(image.source_extension_disambiguator);
+  name += native_path_text(output_extension_for(cfg));
   return name;
 }
 
@@ -2181,16 +2208,16 @@ fs::path output_path_for(const AppConfig& cfg, const ImageFile& image) {
     return output;
   }
 
-  auto extension = output.extension().wstring();
-  auto stem = output.stem().wstring();
-  const auto complete_extension = output_extension_for(cfg);
-  const auto filename = output.filename().wstring();
+  auto extension = output.extension().native();
+  auto stem = output.stem().native();
+  const auto complete_extension = native_path_text(output_extension_for(cfg));
+  const auto filename = output.filename().native();
   if (filename.size() > complete_extension.size() &&
       filename.ends_with(complete_extension)) {
     stem = filename.substr(0, filename.size() - complete_extension.size());
     extension = complete_extension;
   }
-  output.replace_filename(stem + L"-converted" + extension);
+  output.replace_filename(stem + native_path_text(L"-converted") + extension);
   return output;
 }
 

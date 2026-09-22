@@ -217,6 +217,48 @@ std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
 
 AppConfig default_app_config() { return AppConfig{}; }
 
+#ifndef _WIN32
+// Keep invalid POSIX argument bytes distinct from real Unicode text. Surrogate
+// escapes are internal only; native paths are restored before filesystem use.
+std::wstring argument_text_from_native(std::string_view value) {
+  try {
+    const auto unicode = std::filesystem::path{value}.u32string();
+    if (std::ranges::none_of(unicode, [](char32_t ch) {
+          return ch >= 0xd800 && ch <= 0xdfff;
+        })) return {unicode.begin(), unicode.end()};
+  } catch (const std::filesystem::filesystem_error&) {
+  }
+  std::wstring text;
+  text.reserve(value.size());
+  for (const unsigned char byte : value)
+    text.push_back(byte < 0x80 ? byte : 0xdc00 + byte);
+  return text;
+}
+#endif
+
+std::filesystem::path path_from_argument_text(std::wstring_view value) {
+#ifdef _WIN32
+  return std::filesystem::path{value};
+#else
+  std::string native;
+  std::u32string unicode;
+  const auto flush = [&] {
+    native += std::filesystem::path{unicode}.native();
+    unicode.clear();
+  };
+  for (const auto ch : value) {
+    if (ch >= 0xdc80 && ch <= 0xdcff) {
+      flush();
+      native.push_back(static_cast<char>(ch - 0xdc00));
+    } else {
+      unicode.push_back(static_cast<char32_t>(ch));
+    }
+  }
+  flush();
+  return std::filesystem::path{native};
+#endif
+}
+
 std::expected<std::filesystem::path, std::string> normalize_path_argument(
     std::wstring_view value, std::string_view label) {
   const auto is_space = [](wchar_t ch) {
@@ -249,7 +291,7 @@ std::expected<std::filesystem::path, std::string> normalize_path_argument(
     return std::unexpected{
         std::format("{}中的双引号只能成对包住整个路径。", label)};
   }
-  return std::filesystem::path{value};
+  return path_from_argument_text(value);
 }
 
 void apply_format_defaults(AppConfig& cfg, OutputFormat format) noexcept {
@@ -299,10 +341,10 @@ std::string narrow_ascii_for_diagnostics(std::wstring_view text) {
   }
 }
 
-std::wstring shell_input_key(const std::filesystem::path& path) {
+std::filesystem::path::string_type shell_input_key(const std::filesystem::path& path) {
   std::error_code ec;
   const auto absolute = std::filesystem::absolute(path, ec);
-  auto key = (ec ? path : absolute).lexically_normal().wstring();
+  auto key = (ec ? path : absolute).lexically_normal().native();
 #ifdef _WIN32
   std::ranges::transform(key, key.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
@@ -1160,7 +1202,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       if (!value) {
         return std::unexpected{value.error()};
       }
-      cfg.studio_queue_manifest = *value;
+      cfg.studio_queue_manifest = path_from_argument_text(*value);
       continue;
     }
 
@@ -1718,7 +1760,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
   if (cfg.output_policy == OutputPolicy::shell) {
     for (const auto& arg : positional_args) {
-      shell_inputs.emplace_back(arg);
+      shell_inputs.push_back(path_from_argument_text(arg));
     }
     if (shell_inputs.empty()) {
       shell_inputs.push_back(cfg.input_path);
@@ -1737,7 +1779,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
   std::vector<std::filesystem::path> unique_shell_inputs;
   if (cfg.output_policy == OutputPolicy::shell) {
-    std::vector<std::wstring> seen_keys;
+    std::vector<std::filesystem::path::string_type> seen_keys;
     unique_shell_inputs.reserve(shell_inputs.size());
     seen_keys.reserve(shell_inputs.size());
     for (const auto& input : shell_inputs) {
