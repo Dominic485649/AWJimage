@@ -159,10 +159,10 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
 - Release PowerShell、Linux shell 和 A/B Python 脚本语法检查通过。
 - 已完成同源码 Windows baseline、AVX2、AVX2+IPO 及 Linux v3/no-IPO、v3/IPO 对照，结果见下。
 
-## 当前候选（8107848）
+## 当前候选（1.1.0）
 
-- Windows clean Release 位于独立工作树 `D:/awj11-release`，Linux clean Release 位于 `/home/dominic/awjimage-1.1.0-candidate`；两者均从 `8107848b270ca4f3f8d042e5ae5de2c8e5a57cb2` 构建，版本均为 1.1.0。
-- `scripts/package-release.ps1 -SkipManifests` 与 `scripts/package-linux-release.sh --candidate-head 8107848b270ca4f3f8d042e5ae5de2c8e5a57cb2` 的固定成员、归档完整性和解压哈希检查通过。完整产物和限制见 `build/evidence/1.1.0/candidate-report.md`。
+- Windows clean Release 位于独立工作树 `D:/awj11-release`，Linux clean Release 位于 `/home/dominic/awjimage-1.1.0-candidate`；两者以相同 clean HEAD 构建，版本均为 1.1.0。
+- `scripts/package-release.ps1 -SkipManifests` 与 `scripts/package-linux-release.sh --candidate-head <候选提交完整 SHA>` 的固定成员、归档完整性和解压哈希检查通过。完整产物和限制见 `build/evidence/1.1.0/candidate-report.md`。
 - 当前源码测试构建 CTest 为 54/54；最终发行 cache 按计划关闭测试构建。未执行正式 tag、推送、签名 manifest 或公开发布。
 - 真实跨窗口 Explorer 拖放仍缺人工验收；100k GUI 转换的短暂未响应和取消来源仍作为已知限制保留。
 - 用户审核唯一候选后，才执行正式 tag、推送、签名 manifest 和发布。
