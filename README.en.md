@@ -103,7 +103,7 @@ Windows CLI also offers `--preserve-creation-time`, `--preserve-modification-tim
 
 Windows CLI can consume one piped WGC HDR frame: `capture-tool | AWJ --stdin-wgc-rgba16f 3840x2160 -o D:\output --format avif`. It accepts exactly one `DXGI_FORMAT_R16G16B16A16_FLOAT` frame (little-endian RGBA binary16, linear scRGB), requires explicit dimensions and `-o`, and cannot be combined with `-i`; short data, extra-frame bytes, and unknown bare RAW are rejected rather than guessed.
 
-The Studio queue snapshots output format, user preset, metadata removal, and the three Windows timestamp choices at Start. It defaults to AVIF, retaining metadata, and no timestamps. Queue choices are independent from the Parameters editor and context-menu settings; the editor only switches among five format parameter groups, and a user preset must be selected explicitly in the queue.
+The Studio queue snapshots output format, user preset, metadata removal, and the three Windows timestamp choices at Start. It defaults to AVIF, retaining metadata, and no timestamps. Queue choices are independent from the Parameters editor and context-menu settings. The Parameters navigation item switches between Encode parameters and Menu parameters; their values and saved user presets or context-menu settings remain separate. A user preset must be selected explicitly in the queue.
 
 ## visual_quality GPU metrics
 

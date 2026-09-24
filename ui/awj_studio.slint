@@ -505,7 +505,7 @@ export component AwjStudio inherits Window {
                     params-nav := NavItem {
                         label: @tr("参数设置");
                         tab-index: 1;
-                        selected: root.selected-page == 0;
+                        selected: root.selected-page == 0 || root.selected-page == 3;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
                         selected-background: root.dark-mode ? #188697 : #0f7c8c;
@@ -514,32 +514,15 @@ export component AwjStudio inherits Window {
                         clicked => { root.selected-page = 0; }
                         navigate(action) => {
                             if (action == "up") { queue-nav.focus(); }
-                            if (action == "down") { menu-nav.focus(); }
-                            if (action == "home") { queue-nav.focus(); }
-                            if (action == "end") { settings-nav.focus(); }
-                        }
-                    }
-                    menu-nav := NavItem {
-                        label: @tr("菜单参数");
-                        tab-index: 2;
-                        selected: root.selected-page == 3;
-                        normal-background: transparent;
-                        hover-background: root.dark-mode ? #202b3a : #eef6ff;
-                        selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
-                        selected-text: #ffffff;
-                        clicked => { root.selected-page = 3; }
-                        navigate(action) => {
-                            if (action == "up") { params-nav.focus(); }
                             if (action == "down") { if (root.show-update-changelog) { changelog-nav.focus(); } else { settings-nav.focus(); } }
-                            if (action == "end") { settings-nav.focus(); }
                             if (action == "home") { queue-nav.focus(); }
+                            if (action == "end") { settings-nav.focus(); }
                         }
                     }
                     changelog-nav := NavItem {
                         label: @tr("更新日志");
                         enabled: root.show-update-changelog;
-                        tab-index: 3;
+                        tab-index: 2;
                         selected: root.selected-page == 4;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -548,7 +531,7 @@ export component AwjStudio inherits Window {
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 4; }
                         navigate(action) => {
-                            if (action == "up") { menu-nav.focus(); }
+                            if (action == "up") { params-nav.focus(); }
                             if (action == "down" || action == "end") { settings-nav.focus(); }
                             if (action == "home") { queue-nav.focus(); }
                         }
@@ -557,7 +540,7 @@ export component AwjStudio inherits Window {
 
                     settings-nav := NavItem {
                         label: @tr("设置");
-                        tab-index: 4;
+                        tab-index: 3;
                         selected: root.selected-page == 2;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
@@ -566,7 +549,7 @@ export component AwjStudio inherits Window {
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 2; }
                         navigate(action) => {
-                            if (action == "up") { if (root.show-update-changelog) { changelog-nav.focus(); } else { menu-nav.focus(); } }
+                            if (action == "up") { if (root.show-update-changelog) { changelog-nav.focus(); } else { params-nav.focus(); } }
                             if (action == "home") { queue-nav.focus(); }
                             if (action == "down" || action == "end") { settings-nav.focus(); }
                         }
@@ -578,6 +561,32 @@ export component AwjStudio inherits Window {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
                 background: transparent;
+
+                if root.selected-page == 0 || root.selected-page == 3: VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        height: 36px;
+                        spacing: 4px;
+                        SoftButton {
+                            text: @tr("编码参数");
+                            dark-mode: root.dark-mode;
+                            checkable: true;
+                            checked: root.selected-page == 0;
+                            width: 112px;
+                            height: 36px;
+                            clicked => { root.selected-page = 0; }
+                        }
+                        SoftButton {
+                            text: @tr("菜单参数");
+                            dark-mode: root.dark-mode;
+                            checkable: true;
+                            checked: root.selected-page == 3;
+                            width: 112px;
+                            height: 36px;
+                            clicked => { root.selected-page = 3; }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
 
                 if root.selected-page == 0: ParameterPage {
     alpha-policy-index <=> root.alpha-policy-index;
@@ -697,6 +706,7 @@ export component AwjStudio inherits Window {
     text-soft : root.text-soft;
     wic-ui-visible <=> root.wic-ui-visible;
 }
+                }
 
                 if root.selected-page == 1: QueuePage {
     language-index: root.language-index;

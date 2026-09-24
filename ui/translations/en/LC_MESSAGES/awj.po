@@ -36,6 +36,9 @@ msgstr "Encode queue"
 msgid "参数设置"
 msgstr "Parameters"
 
+msgid "编码参数"
+msgstr "Encode parameters"
+
 msgid "菜单参数"
 msgstr "Menu parameters"
 

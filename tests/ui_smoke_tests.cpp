@@ -574,8 +574,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->on_version_clicked([&version_clicks] { ++version_clicks; });
   const std::array pages{
       std::pair{"编码队列", 1}, std::pair{"参数设置", 0},
-      std::pair{"菜单参数", 3}, std::pair{"更新日志", 4},
-      std::pair{"设置", 2}};
+      std::pair{"更新日志", 4}, std::pair{"设置", 2}};
   for (const auto& [label, page] : pages) {
     auto element =
         find_one(app, label, slint::language::AccessibleRole::Tab);
@@ -630,14 +629,55 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
   send_key(app, slint::platform::key_codes::UpArrow);
   send_text_key(app, " ");
-  if (app->get_selected_page() != 3) {
-    return fail("second Up/Space navigation did not reach menu settings");
+  if (app->get_selected_page() != 0) {
+    return fail("second Up/Space navigation did not reach parameters");
   }
   send_key(app, slint::platform::key_codes::Home);
   send_key(app, slint::platform::key_codes::Return);
   if (app->get_selected_page() != 1) {
     return fail("Home navigation failed");
   }
+
+  app->set_selected_page(0);
+  if (find_one(app, "菜单参数", slint::language::AccessibleRole::Tab))
+    return fail("menu parameters still occupy a separate navigation page");
+  auto encode_mode = find_one(app, "编码参数", slint::language::AccessibleRole::Button);
+  auto menu_mode = find_one(app, "菜单参数", slint::language::AccessibleRole::Button);
+  if (!encode_mode || !menu_mode)
+    return fail("merged parameter modes are missing");
+  const auto original_quality = app->get_quality_text();
+  const auto original_menu_quality = app->get_menu_quality_text();
+  app->set_quality_text("73");
+  app->set_menu_quality_text("61");
+  menu_mode->invoke_accessible_default_action();
+  if (app->get_selected_page() != 3 ||
+      find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
+      !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
+    return fail("menu mode did not show only context-menu controls");
+  int installs = 0;
+  int removals = 0;
+  int saves = 0;
+  app->on_install_context_menu_requested([&] { ++installs; });
+  app->on_remove_context_menu_requested([&] { ++removals; });
+  app->on_save_menu_params_requested([&] { ++saves; });
+  find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  find_one(app, "移除右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  find_one(app, "保存参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  if (installs != 1 || removals != 1 || saves != 1)
+    return fail("menu mode lost an installation or save action");
+  app->set_running(true);
+  find_one(app, "保存参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  app->set_running(false);
+  if (saves != 1) return fail("menu save stayed active during a run");
+  encode_mode = find_one(app, "编码参数", slint::language::AccessibleRole::Button);
+  encode_mode->invoke_accessible_default_action();
+  if (app->get_selected_page() != 0 ||
+      !find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
+      find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button) ||
+      app->get_quality_text() != "73" || app->get_menu_quality_text() != "61")
+    return fail("parameter modes shared controls or overwrote each other's values");
+  app->set_quality_text(original_quality);
+  app->set_menu_quality_text(original_menu_quality);
 
   auto settings =
       find_one(app, "设置", slint::language::AccessibleRole::Tab);
@@ -755,6 +795,9 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   if (!find_one(app, "Edit format", slint::language::AccessibleRole::Combobox)) {
     return fail("switching to English did not retranslate accessible names");
   }
+  if (!find_one(app, "Encode parameters", slint::language::AccessibleRole::Button) ||
+      !find_one(app, "Menu parameters", slint::language::AccessibleRole::Button))
+    return fail("merged parameter modes did not translate");
   if (!find_one(app, "Changelog", slint::language::AccessibleRole::Tab)) {
     return fail("the new changelog navigation item was not translated");
   }
@@ -769,7 +812,8 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("could not switch back to the Chinese default language");
   }
   app->set_language_index(0);
-  app->set_selected_page(3);
+  app->set_selected_page(0);
+  find_one(app, "菜单参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
   if (find_one(app, "查看说明", slint::language::AccessibleRole::Button) ||
       !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
     return fail("menu page did not start with its installation controls");
