@@ -2,6 +2,7 @@
 
 ## 1.1.0 - 2026-09-22
 
+- After a successful Windows update, a healthy launch and committed transaction now clear all contents of `%LOCALAPPDATA%\AWJimage`; ordinary starts, failures, and rollbacks do not. Hovering the font dropdown no longer moves its scroll position. In wide Settings layouts, the smaller Check for updates button sits beside Show changelog after update.
 - Updated to Slint 1.18.0, consolidated version-specific patches, and trimmed unused runtime features while retaining software rendering, FemtoVG, accessibility, and PNG/JPEG/SVG assets.
 - Native drag and drop now uses structured file paths. Linux import, queue deduplication, output naming, collision handling, and CLI preserve native path bytes, including spaces, newlines, and non-UTF-8 names. Pickers, directory opening, and font enumeration use argv-based process calls.
 - Windows starts conversion by constructing encoder inputs directly, avoiding a full UI queue copy. A 100k-item development sample reduced peak private memory by about 50.6 MiB. Failed atomic configuration writes close the file before removing the temporary file.

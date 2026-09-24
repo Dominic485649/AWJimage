@@ -211,15 +211,24 @@ export component SettingsPage inherits ScrollView {
                         checked <=> root.show-update-changelog-after-update;
                         toggled => { root.show-update-changelog-after-update-requested(self.checked); }
                     }
+                    if root.width >= 1040px: SoftButton {
+                        text: root.update-checking ? @tr("正在检查…") : @tr("检查更新");
+                        accessible-name: @tr("检查更新");
+                        width: root.language-index == 1 ? 140px : 108px;
+                        height: 32px;
+                        dark-mode: root.dark-mode;
+                        enabled: !root.update-checking;
+                        clicked => { root.check-update-requested(); }
+                    }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
                 HorizontalLayout {
                     spacing: root.page-gap;
-                    SoftButton {
+                    if root.width < 1040px: SoftButton {
                         text: root.update-checking ? @tr("正在检查…") : @tr("检查更新");
                         accessible-name: @tr("检查更新");
-                        width: 160px;
-                        height: root.control-button-height;
+                        width: root.language-index == 1 ? 140px : 108px;
+                        height: 32px;
                         dark-mode: root.dark-mode;
                         enabled: !root.update-checking;
                         clicked => { root.check-update-requested(); }

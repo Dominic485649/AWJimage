@@ -1,6 +1,7 @@
 #include <slint.h>
 #include <private/slint_tests_helpers.h>
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cmath>
@@ -18,6 +19,7 @@
 
 #include "awj_studio_ui_smoke.h"
 #include "focus_reentrancy.h"
+#include "font_combo_hover.h"
 #include "../src/ui/queue_model.h"
 #include "../src/ui/deferred_model.h"
 #include "../src/ui/slint_string_util.h"
@@ -317,6 +319,70 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
   return 0;
 }
 
+int verify_font_hover_stability() {
+  auto app = awj_font_hover_test::FontComboHover::create();
+  std::vector<awj_font_hover_test::ComboOption> options;
+  for (int i = 0; i < 25; ++i)
+    options.push_back({.text = slint::SharedString{std::format("Long Font {:02}", i)}, .enabled = true});
+  app->set_options(std::make_shared<slint::VectorModel<awj_font_hover_test::ComboOption>>(std::move(options)));
+  app->set_selected_index(8);
+  app->show();
+  slint::cbindgen_private::slint_testing_use_native_popup(&app->window().window_handle(), false);
+  const auto combo = slint::testing::ElementHandle::find_by_element_id(app, "FontComboHover::combo");
+  if (combo.size() != 1) return fail("font hover fixture combobox is missing");
+  combo[0].invoke_accessible_default_action();
+  if (!app->get_popup_open()) return fail("long font popup did not open");
+  slint::private_api::testing::mock_elapsed_time(300);
+  const float initial_scroll = app->get_scroll_y();
+  if (initial_scroll >= -1.0f) return fail("long font list did not initially scroll to selected item");
+  // Enter the list, traverse rows, then return to the selected font repeatedly.
+  // Hover must never change the viewport or the selected value.
+  const auto position = combo[0].absolute_position();
+  std::array<bool, 25> hovered{};
+  for (int repeat = 0; repeat < 10; ++repeat) {
+    for (int row : {0, 3, 7, 2, 5, 1, 8, 3}) {
+      const float x = position.x + 60.0f;
+      const float y = position.y + 40.0f + 8.0f + 4.0f + row * 36.0f + 18.0f;
+      app->window().dispatch_pointer_move_event(slint::LogicalPosition({x, y}));
+      slint::private_api::testing::mock_elapsed_time(20);
+      if (const int index = app->get_hovered_index(); index >= 0 && index < 25) hovered[index] = true;
+      if (!app->get_popup_open() || app->get_selected_index() != 8 ||
+          std::fabs(app->get_scroll_y() - initial_scroll) > 0.5f)
+        return fail("font popup scrolled, closed, or selected during mouse hover");
+    }
+  }
+  if (!hovered[8] || std::count(hovered.begin(), hovered.end(), true) < 4)
+    return fail("font hover test did not traverse the selected font and multiple rows");
+  const float popup_x = position.x + 60.0f;
+  const float popup_y = position.y + 40.0f + 8.0f + 4.0f + 18.0f;
+  app->window().dispatch_pointer_scroll_event(slint::LogicalPosition({popup_x, popup_y}), 0.0f, 36.0f);
+  if (app->get_scroll_y() <= initial_scroll + 1.0f || app->get_selected_index() != 8)
+    return fail("font popup mouse wheel did not scroll independently of selection");
+  const auto key = [&](std::u8string_view value) {
+    const slint::SharedString text{value};
+    app->window().dispatch_key_press_event(text);
+    app->window().dispatch_key_release_event(text);
+  };
+  key(slint::platform::key_codes::Home);
+  if (std::fabs(app->get_scroll_y()) > 0.5f || app->get_hovered_index() != 0)
+    return fail("font Home did not scroll highlighted option into view");
+  key(slint::platform::key_codes::End);
+  if (app->get_hovered_index() != 24 || app->get_scroll_y() >= -500.0f)
+    return fail("font End did not scroll to the last option");
+  key(slint::platform::key_codes::Return);
+  if (app->get_selected_index() != 24 || app->get_popup_open())
+    return fail("font Enter did not commit keyboard selection");
+  combo[0].invoke_accessible_default_action();
+  app->window().dispatch_pointer_move_event(slint::LogicalPosition({popup_x, popup_y}));
+  app->window().dispatch_pointer_press_event(slint::LogicalPosition({popup_x, popup_y}), slint::PointerEventButton::Left);
+  app->window().dispatch_pointer_release_event(slint::LogicalPosition({popup_x, popup_y}), slint::PointerEventButton::Left);
+  if (app->get_selected_index() != 15 || app->get_popup_open())
+    return fail("font popup click did not select the first visible row");
+  combo[0].invoke_accessible_default_action();
+  key(slint::platform::key_codes::Escape);
+  return app->get_popup_open() ? fail("font Escape did not close popup") : 0;
+}
+
 int verify_manual_update(const slint::ComponentHandle<AwjStudio>& app) {
   using Role = slint::language::AccessibleRole;
   app->set_selected_page(2);
@@ -325,13 +391,19 @@ int verify_manual_update(const slint::ComponentHandle<AwjStudio>& app) {
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
-    for (const float width : {820.0f, 1220.0f}) {
+    for (const float width : {820.0f, 1220.0f, 1440.0f, 1834.0f}) {
       app->window().set_size(slint::LogicalSize({width, 2000.0f}));
       app->set_update_checking(false);
       const auto button = find_one(app, language ? "Check for updates" : "检查更新", Role::Button);
-      if (!button || button->size().width < 150 ||
+      if (!button || button->size().width < 100 || button->size().width > 145 ||
           button->absolute_position().x + button->size().width > width - 10)
-        return fail("manual update button is missing or clipped");
+        return fail("manual update button is missing, oversized, or clipped");
+      if (width >= 1440.0f) {
+        const auto checkbox = find_one(app, language ? "Show changelog after update" : "更新后显示更新日志", Role::Checkbox);
+        if (!checkbox || button->absolute_position().x < checkbox->absolute_position().x + checkbox->size().width ||
+            std::fabs(button->absolute_position().y - checkbox->absolute_position().y) > 8.0f)
+          return fail("manual update button is not directly right of the changelog checkbox");
+      }
       const int previous = checks;
       button->invoke_accessible_default_action();
       if (checks != previous + 1) return fail("manual check callback was not dispatched");
@@ -933,6 +1005,7 @@ int main(int argc, char** argv) {
 #endif
     auto app = AwjStudio::create();
     if (const int result = verify_runtime_images(); result != 0) return result;
+    if (const int result = verify_font_hover_stability(); result != 0) return result;
     awj::ui::bind_queue_model(*app, task_rows());
     app->show();
     int tick = 0;

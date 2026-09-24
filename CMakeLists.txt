@@ -1354,6 +1354,12 @@ avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
 
 if(BUILD_TESTING AND WIN32)
+    add_executable(awj_update_windows_cleanup_tests tests/update_windows_cleanup_tests.cpp)
+    avif_enable_common_options(awj_update_windows_cleanup_tests)
+    target_link_libraries(awj_update_windows_cleanup_tests PRIVATE awj_update)
+    awj_set_runtime_directory(awj_update_windows_cleanup_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME update_windows_cleanup COMMAND awj_update_windows_cleanup_tests)
+
     add_executable(awj_shell_context_menu_logic_tests
         tests/shell_context_menu_logic_tests.cpp)
     avif_enable_common_options(awj_shell_context_menu_logic_tests)
@@ -1455,6 +1461,7 @@ if(BUILD_TESTING)
         DEBUG_INFO
         OUTPUT_SUFFIX _ui_smoke)
     avif_add_slint_sources(awj_ui_smoke_tests tests/focus_reentrancy.slint DEBUG_INFO CPP_NAMESPACE awj_focus_test)
+    avif_add_slint_sources(awj_ui_smoke_tests tests/font_combo_hover.slint DEBUG_INFO CPP_NAMESPACE awj_font_hover_test)
     target_include_directories(awj_ui_smoke_tests PRIVATE
         "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_definitions(awj_ui_smoke_tests PRIVATE

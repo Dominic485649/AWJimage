@@ -75,9 +75,9 @@ export component SoftComboBox inherits Rectangle {
         : max(root.model.length, 1);
     property <length> popup-content-height: max(root.model.length, 1) * 36px + 8px;
     property <length> popup-height: root.popup-visible-items * 36px + 8px;
-    property <length> popup-scroll-y: -max(0, min(root.bounded-highlight-index, root.model.length - root.popup-visible-items)) * 36px;
+    out property <length> popup-scroll-y: 0px;
     property <bool> popup-upwards: touch.absolute-position.y + root.height + root.popup-gap + root.popup-height > root.viewport-height && touch.absolute-position.y >= root.popup-height + root.popup-gap;
-    property <bool> popup-open: false;
+    out property <bool> popup-open: false;
     property <bool> popup-opening: false;
     property <bool> popup-animate-open: false;
     property <bool> popup-had-focus: false;
@@ -107,11 +107,20 @@ export component SoftComboBox inherits Rectangle {
             return;
         }
         root.hover-index = root.enabled-index(root.current-index, 1);
+        root.popup-scroll-y = -max(0, min(root.hover-index, root.model.length - root.popup-visible-items)) * 36px;
         root.popup-opening = false;
         root.popup-open = true;
         root.popup-animate-open = false;
         popup.show();
         root.popup-opening = true;
+    }
+
+    function keep-highlight-visible(index: int) {
+        if (index * 36px < -root.popup-scroll-y) {
+            root.popup-scroll-y = -index * 36px;
+        } else if ((index + 1) * 36px > -root.popup-scroll-y + root.popup-visible-items * 36px) {
+            root.popup-scroll-y = -(index + 1 - root.popup-visible-items) * 36px;
+        }
     }
 
     function finish-popup(restore-focus: bool) {
@@ -318,18 +327,22 @@ export component SoftComboBox inherits Rectangle {
             key-pressed(event) => {
                 if (event.text == Key.UpArrow) {
                     root.hover-index = root.enabled-index(root.bounded-highlight-index - 1, -1);
+                    root.keep-highlight-visible(root.hover-index);
                     return accept;
                 }
                 if (event.text == Key.DownArrow) {
                     root.hover-index = root.enabled-index(root.bounded-highlight-index + 1, 1);
+                    root.keep-highlight-visible(root.hover-index);
                     return accept;
                 }
                 if (event.text == Key.Home) {
                     root.hover-index = root.enabled-index(0, 1);
+                    root.keep-highlight-visible(root.hover-index);
                     return accept;
                 }
                 if (event.text == Key.End) {
                     root.hover-index = root.enabled-index(root.model.length - 1, -1);
+                    root.keep-highlight-visible(root.hover-index);
                     return accept;
                 }
                 if (event.text == Key.Return || event.text == " ") {
@@ -360,7 +373,7 @@ export component SoftComboBox inherits Rectangle {
                     height: parent.height;
                     viewport-width: self.width;
                     viewport-height: root.popup-content-height;
-                    viewport-y: root.popup-scroll-y;
+                    viewport-y <=> root.popup-scroll-y;
 
                     Rectangle {
                         width: popup-list.width;
@@ -374,7 +387,7 @@ export component SoftComboBox inherits Rectangle {
                             height: 36px;
                             border-radius: 6px;
                             background: root.model[root.bounded-highlight-index].enabled ? (root.bounded-highlight-index == root.current-index ? root.selected-background : root.hover-background) : transparent;
-                            animate y, background { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
+                            animate background { duration: 180ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                         }
 
                         VerticalLayout {
@@ -401,8 +414,6 @@ export component SoftComboBox inherits Rectangle {
                                     changed has-hover => {
                                         if (item-touch.has-hover && option.enabled) {
                                             root.hover-index = index;
-                                        } else if (root.hover-index == index) {
-                                            root.hover-index = -1;
                                         }
                                     }
                                     clicked => {

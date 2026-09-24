@@ -1,0 +1,22 @@
+import { ComboOption, SoftComboBox } from "../ui/studio_components.slint";
+
+export component FontComboHover inherits Window {
+    in property <[ComboOption]> options;
+    in-out property <int> selected-index: 8;
+    out property <length> scroll-y: combo.popup-scroll-y;
+    out property <int> hovered-index: combo.hover-index;
+    out property <bool> popup-open: combo.popup-open;
+    width: 420px;
+    height: 600px;
+    combo := SoftComboBox {
+        x: 16px;
+        y: 16px;
+        width: 320px;
+        height: 40px;
+        viewport-height: root.height;
+        max-visible-items: 10;
+        accessible-name: "Long font list";
+        model: root.options;
+        current-index <=> root.selected-index;
+    }
+}

@@ -17,6 +17,7 @@
 #include <cstring>
 #include <cwchar>
 #include <exception>
+#include <filesystem>
 #include <limits>
 
 #ifdef _WIN32
@@ -269,6 +270,11 @@ int wmain(int argc, wchar_t* argv[]) {
   if (argc == 3 && std::wcscmp(argv[1], L"--update-helper") == 0) {
     const DWORD parent_pid = parse_pid(argv[2]);
     return parent_pid == 0 ? 19 : awj::update::run_update_helper(parent_pid);
+  }
+  if (argc == 5 && std::wcscmp(argv[1], L"--update-cleanup") == 0) {
+    const DWORD helper_pid = parse_pid(argv[2]);
+    return helper_pid == 0 ? 19 : awj::update::run_update_cleanup_helper(
+        helper_pid, std::filesystem::path{argv[3]}, argv[4]);
   }
   if (argc == 3 && std::wcscmp(argv[1], L"--update-recover") == 0) {
     const DWORD parent_pid = parse_pid(argv[2]);

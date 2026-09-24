@@ -194,7 +194,7 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
   此高频样本 VQ90 未达标，两端均明确报告 closest-fallback；未将其误报为达标。
 - 锁定的 libheif example.heic 和 with-alpha-512x512.heic 均实际转为 PNG。
   alpha 样本解码为 RGBA 512×512，alpha 极值 0..255，透明度未丢失。
-- 以上为 testing ON 的开发构建；clean 候选仍待完成。
+- 以上为 testing ON 的开发构建；第一次 clean 候选已完成，详见 `build/evidence/1.1.0/candidate-report.md`；本次追加修复后的候选仍需重建。
   编译期间的功能验证耗时不作性能结论。
 
 ## Windows IPO 与串行性能 A/B
@@ -228,3 +228,30 @@ Linux 本次 AVIF 中位数降低约 5.8%，其余接近；短样本与桌面调
 `benchmark-variants-sequential.py`（首轮），`benchmark-windows*/results.json`、`benchmark-linux-results.json`。
 A/B 构建输入 SHA-256 保存在 `ab-source-hashes.json`，对照完成前复核无漂移。
 此后仅为候选更新 VERSION/变更记录、vcpkg 项目版本、构建并行度和测试依赖声明。
+
+## 2026-09-23 追加：更新残留、字体弹层和按钮布局
+
+Windows 更新 helper 仅在新 `AWJ.exe` 发出启动健康信号且 3 秒内保持存活后写入
+`committed` 状态并移除安装目录的事务指针。其后由安装目录内的新版本进程等待
+旧 helper 退出，再清空 Known Folder `FOLDERID_LocalAppData` 下 `AWJimage`
+目录的**全部内容**。清理前复核 stage 属于该目录、状态为 `committed`、
+事务指针不存在、版本与当前二进制一致、旧 helper 的映像路径及登录会话匹配。
+失败、回滚、恢复及普通启动均不进入清理入口。
+
+`update_windows_cleanup` 用 Windows 临时目录验证无状态、`prepared`、
+`files-replaced`、`rolled-back`、`failed` 和提交但事务指针未移除的情况均不删除；
+提交并移除指针后，旧 `shader_cache`、嵌套目录、任意文件和整个 `updates`
+目录都被删除，`AWJimage` 根目录保留为空。当前真实 LocalAppData 的
+`shader_cache` 和 `updates` 在普通启动后仍存在；尚未执行真实签名更新安装，
+所以不把临时目录测试当成真实用户目录的成功清理验收。
+
+`SoftComboBox` 将 hover 高亮与 ScrollView 滚动位置分离：打开时定位当前项，
+鼠标移入/跨项不再改变滚动，键盘 Home/End/方向键才按需保持高亮可见。
+长字体列表的 Slint 原生弹层回归实际分发鼠标移动、滚轮和点击事件，
+并检查已选字体、多个项目、滚动位置、Home/End/Enter/Escape。
+设置页 1440/1834 像素窗口下通过 `ui_smoke` 的 Slint accessibility geometry
+核对“检查更新”按钮紧邻“更新后显示更新日志”且同高；窄窗口自动换行。
+
+当前 Windows `build/1.1.0-slint` 使用 x64-v3 与 IPO 完整 Release 构建；
+CTest 全量 54/54 通过（包括更新清理和字体弹层回归，
+`build/evidence/1.1.0/final-dev-ctest.log` 需在本次构建后重新归档）。
