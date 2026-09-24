@@ -1,6 +1,6 @@
 # 1.1.0 开发与验证记录
 
-状态：开发中，尚未形成发行候选。本文不代表发布许可。
+状态：已形成当前唯一未签名候选，等待用户审核；本文不代表发布许可。
 
 ## 基线（2026-09-20）
 
@@ -159,10 +159,12 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
 - Release PowerShell、Linux shell 和 A/B Python 脚本语法检查通过。
 - 已完成同源码 Windows baseline、AVX2、AVX2+IPO 及 Linux v3/no-IPO、v3/IPO 对照，结果见下。
 
-## 后续门槛
+## 当前候选（8107848）
 
-- 最终 clean Git candidate、双平台 clean Release、候选归档和哈希。
-- 真实桌面拖放/picker 的人工验收，以及完整 UI 导入/开始/清空的体验确认。
+- Windows clean Release 位于独立工作树 `D:/awj11-release`，Linux clean Release 位于 `/home/dominic/awjimage-1.1.0-candidate`；两者均从 `8107848b270ca4f3f8d042e5ae5de2c8e5a57cb2` 构建，版本均为 1.1.0。
+- `scripts/package-release.ps1 -SkipManifests` 与 `scripts/package-linux-release.sh --candidate-head 8107848b270ca4f3f8d042e5ae5de2c8e5a57cb2` 的固定成员、归档完整性和解压哈希检查通过。完整产物和限制见 `build/evidence/1.1.0/candidate-report.md`。
+- 当前源码测试构建 CTest 为 54/54；最终发行 cache 按计划关闭测试构建。未执行正式 tag、推送、签名 manifest 或公开发布。
+- 真实跨窗口 Explorer 拖放仍缺人工验收；100k GUI 转换的短暂未响应和取消来源仍作为已知限制保留。
 - 用户审核唯一候选后，才执行正式 tag、推送、签名 manifest 和发布。
 
 ## 补充静态分析
@@ -194,7 +196,7 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
   此高频样本 VQ90 未达标，两端均明确报告 closest-fallback；未将其误报为达标。
 - 锁定的 libheif example.heic 和 with-alpha-512x512.heic 均实际转为 PNG。
   alpha 样本解码为 RGBA 512×512，alpha 极值 0..255，透明度未丢失。
-- 以上为 testing ON 的开发构建；第一次 clean 候选已完成，详见 `build/evidence/1.1.0/candidate-report.md`；本次追加修复后的候选仍需重建。
+- 以上为 testing ON 的测试构建；当前追加修复后的 clean 候选已完成，详见 `build/evidence/1.1.0/candidate-report.md`。
   编译期间的功能验证耗时不作性能结论。
 
 ## Windows IPO 与串行性能 A/B
