@@ -276,6 +276,11 @@ int wmain(int argc, wchar_t* argv[]) {
     return helper_pid == 0 ? 19 : awj::update::run_update_cleanup_helper(
         helper_pid, std::filesystem::path{argv[3]}, argv[4]);
   }
+  if (argc == 4 && std::wcscmp(argv[1], L"--update-legacy-cleanup") == 0) {
+    const DWORD helper_pid = parse_pid(argv[2]);
+    return helper_pid == 0 ? 19 : awj::update::run_legacy_update_cleanup_helper(
+        helper_pid, std::filesystem::path{argv[3]});
+  }
   if (argc == 3 && std::wcscmp(argv[1], L"--update-recover") == 0) {
     const DWORD parent_pid = parse_pid(argv[2]);
     return parent_pid == 0 ? 19

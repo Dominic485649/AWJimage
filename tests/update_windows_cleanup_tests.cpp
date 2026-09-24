@@ -66,5 +66,42 @@ int main() {
   if (!result) return fail(result.error());
   if (!fs::exists(fixture.root) || !fs::is_empty(fixture.root))
     return fail("committed update did not empty all LocalAppData/AWJimage contents");
+
+  Fixture legacy;
+  write(legacy.stage / L"state.txt", "files-replaced");
+  write(legacy.stage / L"version.txt", AWJ_BUILD_VERSION);
+  const auto stage_utf8 = legacy.stage.u8string();
+  write(legacy.install / L".awj-update-transaction",
+        {reinterpret_cast<const char*>(stage_utf8.data()), stage_utf8.size()});
+  if (!awj::update::windows_detail::legacy_cleanup_preflight(
+          legacy.root, legacy.stage, legacy.install)) {
+    return fail("legacy health-check preflight rejected a valid pending update");
+  }
+  write(legacy.stage / L"cleanup-managed-by-helper", "1");
+  if (awj::update::windows_detail::legacy_cleanup_preflight(
+          legacy.root, legacy.stage, legacy.install)) {
+    return fail("new helper must own its own cleanup");
+  }
+  fs::remove(legacy.stage / L"cleanup-managed-by-helper");
+  if (awj::update::windows_detail::cleanup_legacy_committed_update(
+          legacy.root, legacy.stage, legacy.install, 0) || !legacy.intact()) {
+    return fail("legacy pending transaction deleted LocalAppData contents");
+  }
+  fs::remove(legacy.install / L".awj-update-transaction");
+  write(legacy.stage / L"state.txt", "rolled-back");
+  if (awj::update::windows_detail::cleanup_legacy_committed_update(
+          legacy.root, legacy.stage, legacy.install, 0) || !legacy.intact()) {
+    return fail("legacy rollback deleted LocalAppData contents");
+  }
+  fs::remove(legacy.stage / L"state.txt");
+  if (awj::update::windows_detail::cleanup_legacy_committed_update(
+          legacy.root, legacy.stage, legacy.install, 36) || !legacy.intact()) {
+    return fail("failed legacy helper deleted LocalAppData contents");
+  }
+  if (!awj::update::windows_detail::cleanup_legacy_committed_update(
+          legacy.root, legacy.stage, legacy.install, 0) ||
+      !fs::exists(legacy.root) || !fs::is_empty(legacy.root)) {
+    return fail("successful legacy update did not empty LocalAppData contents");
+  }
   return 0;
 }

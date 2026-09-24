@@ -238,12 +238,22 @@ Windows 更新 helper 仅在新 `AWJ.exe` 发出启动健康信号且 3 秒内�
 事务指针不存在、版本与当前二进制一致、旧 helper 的映像路径及登录会话匹配。
 失败、回滚、恢复及普通启动均不进入清理入口。
 
+从已发布 1.0.15 升级时，运行的仍是旧版 helper，它会在成功后删除
+`state.txt`，因此新版本的健康启动进程还会为旧协议启动独立清理进程。
+该进程先验证 `files-replaced` 状态、版本、事务指针及旧 helper 的路径和会话，
+再等待旧 helper 以 0 退出、事务指针消失，随后清空目录；非零退出或回滚不清理。
+新版 helper 在 stage 写入清理归属标记，避免新旧两条路径同时执行。
+
 `update_windows_cleanup` 用 Windows 临时目录验证无状态、`prepared`、
 `files-replaced`、`rolled-back`、`failed` 和提交但事务指针未移除的情况均不删除；
 提交并移除指针后，旧 `shader_cache`、嵌套目录、任意文件和整个 `updates`
-目录都被删除，`AWJimage` 根目录保留为空。当前真实 LocalAppData 的
-`shader_cache` 和 `updates` 在普通启动后仍存在；尚未执行真实签名更新安装，
-所以不把临时目录测试当成真实用户目录的成功清理验收。
+目录都被删除，`AWJimage` 根目录保留为空。旧协议回归还覆盖新 helper 标记、
+helper 非零退出、回滚状态、事务指针仍存在与旧版成功删除状态文件的路径。
+本机等价旧协议提交测试启动了新版 1.1.0 GUI，健康信号和 3 秒存活检查通过，
+模拟旧 helper 以 0 退出后，真实 LocalAppData `AWJimage` 从 162 个文件、
+2,230,940,168 bytes 变成空目录，事务指针消失。随后普通 `--version`
+启动时，临时哨兵文件保留；移除哨兵后根目录仍为空。该测试覆盖实际新版本
+启动与提交后清理，但不包含远端下载、正式签名验证或真实旧版 helper 换装。
 
 `SoftComboBox` 将 hover 高亮与 ScrollView 滚动位置分离：打开时定位当前项，
 鼠标移入/跨项不再改变滚动，键盘 Home/End/方向键才按需保持高亮可见。
@@ -252,6 +262,9 @@ Windows 更新 helper 仅在新 `AWJ.exe` 发出启动健康信号且 3 秒内�
 设置页 1440/1834 像素窗口下通过 `ui_smoke` 的 Slint accessibility geometry
 核对“检查更新”按钮紧邻“更新后显示更新日志”且同高；窄窗口自动换行。
 
-当前 Windows `build/1.1.0-slint` 使用 x64-v3 与 IPO 完整 Release 构建；
-CTest 全量 54/54 通过（包括更新清理和字体弹层回归，
-`build/evidence/1.1.0/final-dev-ctest.log` 需在本次构建后重新归档）。
+Windows `build/1.1.0-slint` 使用 x64-v3 与 IPO 完整 Release 构建；
+本次 CTest 51/51 通过（包括更新清理和字体弹层回归），按计划未运行
+raw-WGC 输入与两个真实 Explorer 菜单测试。原始记录在
+`build/evidence/1.1.0/post-legacy-dev-ctest.log`。真实 Windows GUI 的字体列表
+鼠标进入、跨项、返回当前项、滚轮和 Escape 已复现，未观察到悬停引发的
+列表跳动或自行滚动。

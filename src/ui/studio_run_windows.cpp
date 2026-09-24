@@ -1284,7 +1284,9 @@ int run_studio_ui(const wchar_t* health_event,
       auto event = adopt_win32_handle(
           OpenEventW(EVENT_MODIFY_STATE, FALSE, health_event));
       if (event != nullptr) {
-        SetEvent(event.get());
+        if (SetEvent(event.get())) {
+          awj::update::launch_legacy_cleanup_after_health();
+        }
       }
     }
     apply_title_bar_theme(app->window(), effective_studio_dark_mode(*app));

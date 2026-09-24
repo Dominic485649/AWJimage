@@ -1357,6 +1357,7 @@ if(BUILD_TESTING AND WIN32)
     add_executable(awj_update_windows_cleanup_tests tests/update_windows_cleanup_tests.cpp)
     avif_enable_common_options(awj_update_windows_cleanup_tests)
     target_link_libraries(awj_update_windows_cleanup_tests PRIVATE awj_update)
+    target_compile_definitions(awj_update_windows_cleanup_tests PRIVATE AWJ_BUILD_VERSION="${PROJECT_VERSION}")
     awj_set_runtime_directory(awj_update_windows_cleanup_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME update_windows_cleanup COMMAND awj_update_windows_cleanup_tests)
 

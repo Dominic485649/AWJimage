@@ -5,6 +5,7 @@ module;
 #endif
 
 #include <shlobj_core.h>
+#include <tlhelp32.h>
 #include <windows.h>
 
 #include <algorithm>
@@ -333,12 +334,17 @@ bool real_directory(const std::filesystem::path& path) noexcept {
          (attributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
 }
 
+bool trusted_cleanup_stage(const std::filesystem::path& root,
+                           const std::filesystem::path& stage) {
+  return _wcsicmp(root.filename().c_str(), L"AWJimage") == 0 &&
+         real_directory(root) && real_directory(root / L"updates") &&
+         real_directory(stage) && stage.parent_path() == root / L"updates";
+}
+
 std::expected<void, std::string> committed_cleanup_ready(
     const std::filesystem::path& root, const std::filesystem::path& stage,
     const std::filesystem::path& install) {
-  if (_wcsicmp(root.filename().c_str(), L"AWJimage") != 0 ||
-      !real_directory(root) || !real_directory(root / L"updates") ||
-      !real_directory(stage) || stage.parent_path() != root / L"updates") {
+  if (!trusted_cleanup_stage(root, stage)) {
     return std::unexpected{"更新清理目录不属于 LocalAppData 事务。"};
   }
   auto state = read_file(stage / L"state.txt", 64);
@@ -352,12 +358,8 @@ std::expected<void, std::string> committed_cleanup_ready(
   return {};
 }
 
-std::expected<void, std::string> cleanup_committed_update(
-    const std::filesystem::path& root, const std::filesystem::path& stage,
-    const std::filesystem::path& install) {
-  if (auto ready = committed_cleanup_ready(root, stage, install); !ready) {
-    return ready;
-  }
+std::expected<void, std::string> clear_local_awj_contents(
+    const std::filesystem::path& root) {
   std::error_code ec;
   bool failed = false;
   for (std::filesystem::directory_iterator it{root, ec}, end; !ec && it != end;
@@ -382,6 +384,90 @@ std::expected<void, std::string> cleanup_committed_update(
     return std::unexpected{"更新已成功，但无法清空 LocalAppData\\AWJimage。"};
   }
   return {};
+}
+
+std::expected<void, std::string> cleanup_committed_update(
+    const std::filesystem::path& root, const std::filesystem::path& stage,
+    const std::filesystem::path& install) {
+  if (auto ready = committed_cleanup_ready(root, stage, install); !ready) {
+    return ready;
+  }
+  return clear_local_awj_contents(root);
+}
+
+std::expected<void, std::string> cleanup_legacy_committed_update(
+    const std::filesystem::path& root, const std::filesystem::path& stage,
+    const std::filesystem::path& install, DWORD helper_exit_code) {
+  if (helper_exit_code != 0 || !trusted_cleanup_stage(root, stage)) {
+    return std::unexpected{"旧版更新 helper 未成功完成事务。"};
+  }
+  std::error_code ec;
+  if (std::filesystem::exists(transaction_pointer(install), ec) || ec) {
+    return std::unexpected{"更新事务指针仍存在。"};
+  }
+  ec.clear();
+  if (std::filesystem::exists(stage / L"state.txt", ec)) {
+    auto state = read_file(stage / L"state.txt", 64);
+    if (!state || *state != "committed") {
+      return std::unexpected{"旧版更新事务未确认完成。"};
+    }
+  } else if (ec) {
+    return std::unexpected{"无法检查旧版更新事务状态。"};
+  }
+  return clear_local_awj_contents(root);
+}
+
+DWORD parent_process_id() noexcept {
+  auto snapshot = handle(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+  if (!snapshot) return 0;
+  PROCESSENTRY32W entry{};
+  entry.dwSize = sizeof(entry);
+  if (!Process32FirstW(snapshot.get(), &entry)) return 0;
+  do {
+    if (entry.th32ProcessID == GetCurrentProcessId()) {
+      return entry.th32ParentProcessID;
+    }
+  } while (Process32NextW(snapshot.get(), &entry));
+  return 0;
+}
+
+UniqueHandle open_stage_helper(DWORD pid,
+                               const std::filesystem::path& stage) {
+  auto process = handle(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+                                    FALSE, pid));
+  if (!process) return {};
+  std::wstring image(32768, L'\0');
+  DWORD length = static_cast<DWORD>(image.size());
+  DWORD helper_session = 0, current_session = 0;
+  if (!QueryFullProcessImageNameW(process.get(), 0, image.data(), &length) ||
+      !ProcessIdToSessionId(pid, &helper_session) ||
+      !ProcessIdToSessionId(GetCurrentProcessId(), &current_session) ||
+      helper_session != current_session) {
+    return {};
+  }
+  image.resize(length);
+  if (_wcsicmp(image.c_str(), (stage / L"AWJ-update-helper.exe").c_str()) != 0) {
+    return {};
+  }
+  return process;
+}
+
+bool legacy_cleanup_preflight(const std::filesystem::path& root,
+                              const std::filesystem::path& stage,
+                              const std::filesystem::path& install) {
+  if (!trusted_cleanup_stage(root, stage)) return false;
+  auto state = read_file(stage / L"state.txt", 64);
+  auto version = read_file(stage / L"version.txt", 64);
+  auto pointer = read_file(transaction_pointer(install), 32768);
+  const auto stage_utf8 = stage.u8string();
+  const std::string expected_stage{
+      reinterpret_cast<const char*>(stage_utf8.data()), stage_utf8.size()};
+  std::error_code ec;
+  return state && *state == "files-replaced" && version &&
+         *version == AWJ_BUILD_VERSION && pointer &&
+         *pointer == expected_stage &&
+         !std::filesystem::exists(stage / L"cleanup-managed-by-helper", ec) &&
+         !ec;
 }
 
 }  // namespace windows_detail
@@ -605,6 +691,10 @@ int run_update_helper(DWORD parent_pid) noexcept {
       return 33;
     }
     (void)atomic_text_replace(stage / L"state.txt", "files-replaced");
+    if (!atomic_text_replace(stage / L"cleanup-managed-by-helper", "1")) {
+      (void)restore_backups(install, stage);
+      return 34;
+    }
 
     const auto event_name = std::format(
         L"Local\\AWJUpdateHealth-{}-{}", GetCurrentProcessId(),
@@ -701,6 +791,57 @@ int run_update_cleanup_helper(
     return cleanup_committed_update(*root, stage, self->parent_path()) ? 0 : 58;
   } catch (...) {
     return 59;
+  }
+}
+
+void launch_legacy_cleanup_after_health() noexcept {
+  try {
+    using namespace windows_detail;
+    auto self = module_path();
+    auto root = local_awj_root();
+    if (!self || !root || _wcsicmp(self->filename().c_str(), L"AWJ.exe") != 0) {
+      return;
+    }
+    auto pointer = read_file(transaction_pointer(self->parent_path()), 32768);
+    if (!pointer) return;
+    const std::u8string stage_utf8{
+        reinterpret_cast<const char8_t*>(pointer->data()), pointer->size()};
+    const std::filesystem::path stage{stage_utf8};
+    const DWORD helper_pid = parent_process_id();
+    if (helper_pid == 0 || !open_stage_helper(helper_pid, stage) ||
+        !legacy_cleanup_preflight(*root, stage, self->parent_path())) {
+      return;
+    }
+    auto launched = launch_process(
+        std::format(L"\"{}\" --update-legacy-cleanup {} \"{}\"",
+                    self->wstring(), helper_pid, stage.wstring()),
+        self->parent_path());
+    if (!launched) return;
+    CloseHandle(launched->hThread);
+    CloseHandle(launched->hProcess);
+  } catch (...) {
+  }
+}
+
+int run_legacy_update_cleanup_helper(
+    DWORD helper_pid, const std::filesystem::path& stage) noexcept {
+  try {
+    using namespace windows_detail;
+    auto self = module_path();
+    auto root = local_awj_root();
+    if (!self || !root || _wcsicmp(self->filename().c_str(), L"AWJ.exe") != 0 ||
+        !legacy_cleanup_preflight(*root, stage, self->parent_path())) {
+      return 60;
+    }
+    auto helper = open_stage_helper(helper_pid, stage);
+    if (!helper) return 61;
+    if (WaitForSingleObject(helper.get(), 60000) != WAIT_OBJECT_0) return 62;
+    DWORD exit_code = 0;
+    if (!GetExitCodeProcess(helper.get(), &exit_code)) return 63;
+    return cleanup_legacy_committed_update(*root, stage, self->parent_path(),
+                                           exit_code) ? 0 : 64;
+  } catch (...) {
+    return 65;
   }
 }
 
