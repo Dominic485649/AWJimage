@@ -2,7 +2,7 @@
 
 ## 1.1.0 - 2026-09-22
 
-- Studio now groups encode and context-menu parameters under one Parameters navigation item, with Encode parameters and Menu parameters modes. Each retains its own values; user presets and context-menu settings remain separate.
+- Studio Parameters now uses one preset selector ordered Built-in default, Context menu, then user presets. The protected Context menu entry has a fixed name and editable description; saving it updates menu settings and synchronizes installed menus. Queue presets remain user presets only.
 - After a successful Windows update, a healthy launch and committed transaction now clear all contents of `%LOCALAPPDATA%\AWJimage`; ordinary starts, failures, and rollbacks do not. Hovering the font dropdown no longer moves its scroll position. In wide Settings layouts, the smaller Check for updates button sits beside Show changelog after update.
 - Updated to Slint 1.18.0, consolidated version-specific patches, and trimmed unused runtime features while retaining software rendering, FemtoVG, accessibility, and PNG/JPEG/SVG assets.
 - Native drag and drop now uses structured file paths. Linux import, queue deduplication, output naming, collision handling, and CLI preserve native path bytes, including spaces, newlines, and non-UTF-8 names. Pickers, directory opening, and font enumeration use argv-based process calls.
