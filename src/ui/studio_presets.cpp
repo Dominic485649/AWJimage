@@ -117,12 +117,19 @@ void reload_user_preset_options(AwjStudio& app, UiState& state) {
   if (!catalog) {
     state.user_presets.clear();
     state.user_preset_errors = {catalog.error()};
+    const auto builtin_label = app.get_language_index() == 1
+                                   ? "Built-in default" : "内置默认";
+    const auto menu_label = app.get_language_index() == 1
+                                ? "Context menu" : "右键菜单";
     const std::vector<ComboOption> builtin_only{
-        {.text = to_shared("内置默认"), .enabled = true}};
+        {.text = to_shared(builtin_label), .enabled = true}};
+    const std::vector<ComboOption> parameter_only{
+        {.text = to_shared(builtin_label), .enabled = true},
+        {.text = to_shared(menu_label), .enabled = true}};
     app.set_queue_preset_options(
         std::make_shared<slint::VectorModel<ComboOption>>(builtin_only));
     app.set_parameter_preset_options(
-        std::make_shared<slint::VectorModel<ComboOption>>(builtin_only));
+        std::make_shared<slint::VectorModel<ComboOption>>(parameter_only));
     app.set_queue_preset_index(0);
     app.set_queue_preset_description({});
     state.parameter_preset_index = 0;
@@ -133,30 +140,38 @@ void reload_user_preset_options(AwjStudio& app, UiState& state) {
   state.user_presets = std::move(catalog->presets);
   state.user_preset_errors = std::move(catalog->errors);
   std::vector<ComboOption> options;
-  options.reserve(state.user_presets.size() + 1);
-  options.push_back(ComboOption{.text = to_shared("内置默认"), .enabled = true});
+  options.reserve(state.user_presets.size() + 2);
+  options.push_back(ComboOption{.text = to_shared(app.get_language_index() == 1
+                                                    ? "Built-in default" : "内置默认"), .enabled = true});
+  options.push_back(ComboOption{.text = to_shared(app.get_language_index() == 1
+                                                    ? "Context menu" : "右键菜单"), .enabled = true});
   for (const auto& preset : state.user_presets) {
     options.push_back(ComboOption{.text = to_shared(preset.name), .enabled = true});
   }
+  auto queue_options = options;
+  queue_options.erase(queue_options.begin() + 1);
   app.set_queue_preset_options(
-      std::make_shared<slint::VectorModel<ComboOption>>(options));
+      std::make_shared<slint::VectorModel<ComboOption>>(std::move(queue_options)));
   app.set_parameter_preset_options(
-      std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
+      std::make_shared<slint::VectorModel<ComboOption>>(options));
   if (app.get_queue_preset_index() >
       static_cast<int>(state.user_presets.size())) {
     app.set_queue_preset_index(0);
   }
-  if (state.parameter_preset_index >
-      static_cast<int>(state.user_presets.size())) {
+  if (state.parameter_preset_index < 0 ||
+      state.parameter_preset_index >
+          static_cast<int>(state.user_presets.size()) + 1) {
     state.parameter_preset_index = 0;
   }
   app.set_parameter_preset_index(state.parameter_preset_index);
   app.set_parameter_preset_description(
-      state.parameter_preset_index == 0
-          ? slint::SharedString{}
-          : to_shared(state.user_presets[static_cast<std::size_t>(
-                                         state.parameter_preset_index - 1)]
-                          .description));
+      state.parameter_preset_index == 1
+          ? to_shared(state.menu_preset_description)
+          : state.parameter_preset_index == 0
+                ? slint::SharedString{}
+                : to_shared(state.user_presets[static_cast<std::size_t>(
+                                               state.parameter_preset_index - 2)]
+                                .description));
   const auto queue_index = std::clamp(
       app.get_queue_preset_index(), 0,
       static_cast<int>(state.user_presets.size()));
@@ -341,18 +356,24 @@ std::expected<awj::UserPreset, std::string> user_preset_from_parameter_params(
 
 void select_parameter_preset(AwjStudio& app, UiState& state, int index) {
   store_current_parameter_params(app, state);
-  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()));
+  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()) + 1);
   state.parameter_preset_index = index;
-  if (index > 0) {
+  if (index > 1) {
     state.parameter_preset_params = parameter_params_from_user_preset(
-        state.user_presets[static_cast<std::size_t>(index - 1)]);
+        state.user_presets[static_cast<std::size_t>(index - 2)]);
   }
   app.set_parameter_preset_index(index);
   app.set_parameter_preset_description(
-      index == 0
-          ? slint::SharedString{}
-          : to_shared(state.user_presets[static_cast<std::size_t>(index - 1)]
-                          .description));
+      index == 1
+          ? to_shared(state.menu_preset_description)
+          : index == 0
+                ? slint::SharedString{}
+                : to_shared(state.user_presets[static_cast<std::size_t>(index - 2)]
+                                .description));
+  if (index == 1) {
+    load_menu_params_for_index(app, state, app.get_menu_format_index());
+    return;
+  }
   const auto format_index = parameter_editor_format_index(app.get_format_index());
   state.last_format_index = format_index;
   apply_parameter_params_to_ui(

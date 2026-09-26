@@ -110,7 +110,7 @@ export component ParameterForm inherits VerticalLayout {
             variant: "outline";
             width: 96px;
             height: 36px;
-            enabled: !root.running && root.parameter-preset-index > 0;
+            enabled: !root.running && root.parameter-preset-index > 1;
             clicked => { root.open-preset-delete-confirmation(); }
         }
     }

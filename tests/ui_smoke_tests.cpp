@@ -272,8 +272,9 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
     app->set_language_index(language);
     for (const int theme : {1, 2}) {
       app->set_theme_index(theme);
-      for (const int page : {0, 3}) {
-        app->set_selected_page(page);
+      for (const int page : {0, 1}) {
+        app->set_selected_page(0);
+        app->set_parameter_preset_index(page);
         for (int format = 0; format < 5; ++format) {
           if (page == 0) app->set_format_index(format);
           else app->set_menu_format_index(format);
@@ -316,6 +317,7 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
   app->set_language_index(0);
   app->set_format_index(0);
   app->set_menu_format_index(0);
+  app->set_parameter_preset_index(0);
   return 0;
 }
 
@@ -641,19 +643,55 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->set_selected_page(0);
   if (find_one(app, "菜单参数", slint::language::AccessibleRole::Tab))
     return fail("menu parameters still occupy a separate navigation page");
-  auto encode_mode = find_one(app, "编码参数", slint::language::AccessibleRole::Button);
-  auto menu_mode = find_one(app, "菜单参数", slint::language::AccessibleRole::Button);
-  if (!encode_mode || !menu_mode)
-    return fail("merged parameter modes are missing");
+  if (find_one(app, "编码参数", slint::language::AccessibleRole::Button) ||
+      find_one(app, "菜单参数", slint::language::AccessibleRole::Button))
+    return fail("legacy parameter mode buttons are still present");
+  auto parameter_options = std::make_shared<slint::VectorModel<ComboOption>>(
+      std::vector<ComboOption>{{.text = "内置默认", .enabled = true},
+                               {.text = "右键菜单", .enabled = true},
+                               {.text = "测试用户预设", .enabled = true}});
+  app->set_parameter_preset_options(parameter_options);
+  auto queue_options = std::make_shared<slint::VectorModel<ComboOption>>(
+      std::vector<ComboOption>{{.text = "内置默认", .enabled = true},
+                               {.text = "测试用户预设", .enabled = true}});
+  app->set_queue_preset_options(queue_options);
+  if (app->get_parameter_preset_options()->row_count() != 3 ||
+      std::string_view{app->get_parameter_preset_options()->row_data(0)->text} != "内置默认" ||
+      std::string_view{app->get_parameter_preset_options()->row_data(1)->text} != "右键菜单" ||
+      std::string_view{app->get_parameter_preset_options()->row_data(2)->text} != "测试用户预设" ||
+      app->get_queue_preset_options()->row_count() != 2)
+    return fail("parameter and queue preset option order is wrong");
+  app->on_parameter_preset_selected([&](int index) { app->set_parameter_preset_index(index); });
+  if (!find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
+      !find_one(app, "保存预设", slint::language::AccessibleRole::Button) ||
+      find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
+    return fail("built-in preset page is wrong");
+  app->set_preset_editor_open(true);
+  app->set_preset_editor_existing(false);
+  app->set_preset_editor_special_menu(false);
+  if (!find_one(app, "预设名称", slint::language::AccessibleRole::TextInput) ||
+      find_one(app, "删除", slint::language::AccessibleRole::Button))
+    return fail("built-in save-as editor is wrong");
+  app->set_preset_editor_open(false);
   const auto original_quality = app->get_quality_text();
   const auto original_menu_quality = app->get_menu_quality_text();
   app->set_quality_text("73");
   app->set_menu_quality_text("61");
-  menu_mode->invoke_accessible_default_action();
-  if (app->get_selected_page() != 3 ||
-      find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
+  app->invoke_parameter_preset_selected(1);
+  if (app->get_selected_page() != 0 ||
+      !find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
       !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
-    return fail("menu mode did not show only context-menu controls");
+    return fail("context menu preset did not show menu controls");
+  app->set_preset_editor_open(true);
+  app->set_preset_editor_existing(true);
+  app->set_preset_editor_special_menu(true);
+  app->set_preset_editor_name("右键菜单");
+  app->set_preset_editor_description("测试简介");
+  if (!find_one(app, "预设名称", slint::language::AccessibleRole::TextInput) ||
+      !find_one(app, "预设简介", slint::language::AccessibleRole::TextInput) ||
+      find_one(app, "删除", slint::language::AccessibleRole::Button))
+    return fail("context menu preset editor is wrong");
+  app->set_preset_editor_open(false);
   int installs = 0;
   int removals = 0;
   int saves = 0;
@@ -669,13 +707,13 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   find_one(app, "保存参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
   app->set_running(false);
   if (saves != 1) return fail("menu save stayed active during a run");
-  encode_mode = find_one(app, "编码参数", slint::language::AccessibleRole::Button);
-  encode_mode->invoke_accessible_default_action();
+  app->invoke_parameter_preset_selected(2);
   if (app->get_selected_page() != 0 ||
       !find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
       find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button) ||
       app->get_quality_text() != "73" || app->get_menu_quality_text() != "61")
-    return fail("parameter modes shared controls or overwrote each other's values");
+    return fail("switching presets mixed normal and menu parameter controls");
+  app->invoke_parameter_preset_selected(0);
   app->set_quality_text(original_quality);
   app->set_menu_quality_text(original_menu_quality);
 
@@ -795,9 +833,10 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   if (!find_one(app, "Edit format", slint::language::AccessibleRole::Combobox)) {
     return fail("switching to English did not retranslate accessible names");
   }
-  if (!find_one(app, "Encode parameters", slint::language::AccessibleRole::Button) ||
-      !find_one(app, "Menu parameters", slint::language::AccessibleRole::Button))
-    return fail("merged parameter modes did not translate");
+  app->set_parameter_preset_index(1);
+  if (!find_one(app, "Parameter preset", slint::language::AccessibleRole::Combobox) ||
+      !find_one(app, "Install context menu", slint::language::AccessibleRole::Button))
+    return fail("context menu preset did not translate");
   if (!find_one(app, "Changelog", slint::language::AccessibleRole::Tab)) {
     return fail("the new changelog navigation item was not translated");
   }
@@ -813,13 +852,14 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   }
   app->set_language_index(0);
   app->set_selected_page(0);
-  find_one(app, "菜单参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  app->set_parameter_preset_index(1);
   if (find_one(app, "查看说明", slint::language::AccessibleRole::Button) ||
       !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
     return fail("menu page did not start with its installation controls");
   if (!find_one(app, "编辑格式", slint::language::AccessibleRole::Combobox)) {
     return fail("switching back to Chinese did not restore the msgid text");
   }
+  app->set_parameter_preset_index(0);
 
   app->set_selected_page(1);
   app->window().set_size(slint::LogicalSize({1220.0f, 827.0f}));

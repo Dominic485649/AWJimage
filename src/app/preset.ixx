@@ -228,8 +228,10 @@ std::expected<void, std::string> validate_display_name(std::string_view name) {
       })) {
     return std::unexpected{"预设名称不能包含控制字符。"};
   }
-  if (name == "内置默认" || upper_ascii(std::string{name}) == "BUILT-IN DEFAULT") {
-    return std::unexpected{"内置默认名称保留给程序，不能用于用户预设。"};
+  if (name == "内置默认" || name == "右键菜单" ||
+      upper_ascii(std::string{name}) == "BUILT-IN DEFAULT" ||
+      upper_ascii(std::string{name}) == "CONTEXT MENU") {
+    return std::unexpected{"内置默认和右键菜单名称保留给程序，不能用于用户预设。"};
   }
   return {};
 }

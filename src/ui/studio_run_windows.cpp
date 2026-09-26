@@ -443,6 +443,7 @@ int run_studio_ui(const wchar_t* health_event,
           // 语言不受 running 限制：它只影响界面文字，不改变任何编码参数。
           (*app)->set_language_index(index);
           apply_ui_language(index);
+          reload_user_preset_options(**app, *state);
           sync_update_ui(**app, *state);
         }
       });
@@ -723,19 +724,18 @@ int run_studio_ui(const wchar_t* health_event,
           store_current_parameter_params(**app, *state);
           const auto index = state->parameter_preset_index;
           (*app)->set_preset_editor_name(
-              index == 0
-                  ? slint::SharedString{}
-                  : to_shared(state->user_presets[static_cast<std::size_t>(
-                                                     index - 1)]
-                                  .name));
+              index == 1 ? to_shared((*app)->get_language_index() == 1
+                                            ? "Context menu" : "右键菜单")
+              : index == 0 ? slint::SharedString{}
+              : to_shared(state->user_presets[static_cast<std::size_t>(index - 2)].name));
           (*app)->set_preset_editor_description(
-              index == 0
-                  ? slint::SharedString{}
-                  : to_shared(state->user_presets[static_cast<std::size_t>(
-                                                     index - 1)]
-                                  .description));
+              index == 1 ? to_shared(state->menu_preset_description)
+              : index == 0 ? slint::SharedString{}
+              : to_shared(state->user_presets[static_cast<std::size_t>(index - 2)].description));
           (*app)->set_preset_editor_existing(index > 0);
-          (*app)->set_preset_editor_shell_menu(index > 0 && state->user_presets[static_cast<std::size_t>(index - 1)].shell_menu);
+          (*app)->set_preset_editor_special_menu(index == 1);
+          (*app)->set_preset_editor_shell_menu(
+              index > 1 && state->user_presets[static_cast<std::size_t>(index - 2)].shell_menu);
           (*app)->set_preset_editor_error({});
           (*app)->set_preset_editor_open(true);
         }
@@ -755,15 +755,16 @@ int run_studio_ui(const wchar_t* health_event,
       auto app = weak.lock();
       if (!app || (*app)->get_running() || state->menu_operation_active) return;
       const auto index = state->parameter_preset_index;
-      if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      if (index <= 1 || index > static_cast<int>(state->user_presets.size()) + 1) return;
       const auto queue_index = (*app)->get_queue_preset_index();
-      auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)], [state] {
+      const auto user_index = index - 2;
+      auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(user_index)], [state] {
         return synchronize_shell_context_menu(state->menu_params);
       });
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
       state->parameter_preset_index = 0;
       (*app)->set_queue_preset_index(
-          queue_index == index ? 0 : queue_index > index ? queue_index - 1 : queue_index);
+          queue_index == user_index + 1 ? 0 : queue_index > user_index + 1 ? queue_index - 1 : queue_index);
       reload_user_preset_options(**app, *state);
       select_parameter_preset(**app, *state, 0);
       (*app)->set_preset_editor_open(false);
@@ -779,6 +780,15 @@ int run_studio_ui(const wchar_t* health_event,
                                       "当前任务正在运行，无法保存参数预设")) {
           return;
         }
+        const auto edit_index = state->parameter_preset_index;
+        if (edit_index == 1) {
+          state->menu_preset_description = shared_to_string(description);
+          (*app)->set_parameter_preset_description(to_shared(state->menu_preset_description));
+          awj::studio::request_shell_menu_change(weak, state, false, false);
+          (*app)->set_preset_editor_open(false);
+          (*app)->set_preset_editor_error({});
+          return;
+        }
         store_current_parameter_params(**app, *state);
         auto preset = user_preset_from_parameter_params(
             shared_to_string(name), shared_to_string(description),
@@ -788,9 +798,8 @@ int run_studio_ui(const wchar_t* health_event,
           return;
         }
         preset->shell_menu = (*app)->get_preset_editor_shell_menu();
-          const auto edit_index = state->parameter_preset_index;
-          if (edit_index > 0 && edit_index <= static_cast<int>(state->user_presets.size())) {
-            const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 1)];
+          if (edit_index > 1 && edit_index <= static_cast<int>(state->user_presets.size()) + 1) {
+            const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 2)];
             preset->source_path = original.source_path;
             const auto original_ui = parameter_params_from_user_preset(original);
             for (std::size_t i = 0; i < preset->formats.size(); ++i) {
@@ -800,7 +809,7 @@ int run_studio_ui(const wchar_t* health_event,
                 preset->formats[i].speed = original.formats[i].speed;
             }
           }
-          auto saved = awj::save_user_preset(*preset, edit_index > 0, [state] {
+          auto saved = awj::save_user_preset(*preset, edit_index > 1, [state] {
             return synchronize_shell_context_menu(state->menu_params);
           });
         if (!saved) {
@@ -814,7 +823,7 @@ int run_studio_ui(const wchar_t* health_event,
           select_parameter_preset(
               **app, *state,
               static_cast<int>(std::distance(state->user_presets.begin(), found)) +
-                  1);
+                  2);
         }
         (*app)->set_preset_editor_open(false);
         (*app)->set_preset_editor_error({});

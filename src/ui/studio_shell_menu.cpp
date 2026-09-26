@@ -100,6 +100,9 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
   auto validated = validate_menu_params(desired.menu_params);
   if (!validated && !remove) {
     (*app)->set_shell_menu_compatibility(previous.shell_menu_compatibility);
+    state->menu_preset_description = previous.menu_preset_description;
+    if (state->parameter_preset_index == 1)
+      (*app)->set_parameter_preset_description(to_shared(state->menu_preset_description));
     (*app)->set_context_menu_status(to_shared(validated.error()));
     (*app)->set_status_text(to_shared(validated.error()));
     return;
@@ -128,6 +131,9 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
       run_ui_callback(weak, "应用右键菜单失败", [&] {
         if (!*result) {
           (*app)->set_shell_menu_compatibility(previous.shell_menu_compatibility);
+          state->menu_preset_description = previous.menu_preset_description;
+          if (state->parameter_preset_index == 1)
+            (*app)->set_parameter_preset_description(to_shared(state->menu_preset_description));
           (*app)->set_context_menu_status(to_shared(result->error()));
           (*app)->set_status_text(to_shared(result->error()));
         } else {

@@ -172,6 +172,8 @@ std::expected<void, std::string> write_studio_config_file(
            defaults.visual_quality_gpu);
   add_bool("visual_quality_fallback", current.visual_quality_fallback,
            defaults.visual_quality_fallback);
+  add_string("menu_preset_description", current.menu_preset_description,
+             defaults.menu_preset_description);
 
   add_string("update_channel", current.update_channel,
              defaults.update_channel);

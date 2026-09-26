@@ -143,6 +143,7 @@ struct LinuxUiState {
   int parameter_preset_index{};
   int last_format_index{};
   std::array<LinuxMenuParams, 5> menu_params{};
+  std::string menu_preset_description{"用于右键菜单转换的参数。"};
   int menu_format_index{};
   fs::path config_path{};
   nlohmann::ordered_json config_document{nlohmann::ordered_json::object()};
@@ -786,6 +787,12 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   state.update_keyring_signature =
       linux_config_string(state.config_document, "update_keyring_signature");
   load_linux_menu_params(state.config_document, state.menu_params);
+  if (const auto it = state.config_document.find("menu_preset_description");
+      it != state.config_document.end() && it->is_string()) {
+    state.menu_preset_description = it->get<std::string>();
+  }
+  if (state.parameter_preset_index == 1)
+    app.set_parameter_preset_description(to_shared(state.menu_preset_description));
 }
 
 std::expected<void, std::string> persist_linux_update_config(
@@ -802,6 +809,7 @@ std::expected<void, std::string> persist_linux_update_config(
   document["allow_wic_fallback"] = app.get_allow_wic_fallback();
   document["visual_quality_gpu"] = app.get_visual_quality_gpu();
   document["visual_quality_fallback"] = app.get_visual_quality_fallback();
+  document["menu_preset_description"] = state.menu_preset_description;
   document["update_channel"] = state.update_channel;
   document["show_update_changelog"] = state.show_update_changelog;
   document["hide_update_changelog_after_exit"] =
@@ -2009,27 +2017,35 @@ void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
     state.user_preset_errors = std::move(catalog->errors);
   }
   std::vector<ComboOption> options;
-  options.push_back({.text = to_shared("内置默认"), .enabled = true});
+  options.push_back({.text = to_shared(app.get_language_index() == 1
+                                         ? "Built-in default" : "内置默认"), .enabled = true});
+  options.push_back({.text = to_shared(app.get_language_index() == 1
+                                         ? "Context menu" : "右键菜单"), .enabled = true});
   for (const auto& preset : state.user_presets) {
     options.push_back({.text = to_shared(preset.name), .enabled = true});
   }
+  auto queue_options = options;
+  queue_options.erase(queue_options.begin() + 1);
   app.set_queue_preset_options(
-      std::make_shared<slint::VectorModel<ComboOption>>(options));
+      std::make_shared<slint::VectorModel<ComboOption>>(std::move(queue_options)));
   app.set_parameter_preset_options(
       std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
   if (app.get_queue_preset_index() > static_cast<int>(state.user_presets.size())) {
     app.set_queue_preset_index(0);
   }
-  if (state.parameter_preset_index > static_cast<int>(state.user_presets.size())) {
+  if (state.parameter_preset_index < 0 ||
+      state.parameter_preset_index > static_cast<int>(state.user_presets.size()) + 1) {
     state.parameter_preset_index = 0;
   }
   app.set_parameter_preset_index(state.parameter_preset_index);
   app.set_parameter_preset_description(
-      state.parameter_preset_index == 0
-          ? slint::SharedString{}
-          : to_shared(state.user_presets[static_cast<std::size_t>(
-                          state.parameter_preset_index - 1)]
-                          .description));
+      state.parameter_preset_index == 1
+          ? to_shared(state.menu_preset_description)
+          : state.parameter_preset_index == 0
+                ? slint::SharedString{}
+                : to_shared(state.user_presets[static_cast<std::size_t>(
+                                state.parameter_preset_index - 2)]
+                                .description));
   const auto queue_index = std::clamp(
       app.get_queue_preset_index(), 0,
       static_cast<int>(state.user_presets.size()));
@@ -2047,17 +2063,23 @@ void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
 
 void select_linux_parameter_preset(AwjStudio& app, LinuxUiState& state, int index) {
   store_current_linux_parameter_params(app, state);
-  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()));
+  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()) + 1);
   state.parameter_preset_index = index;
-  if (index > 0) {
+  if (index > 1) {
     state.parameter_preset_params = linux_parameter_params_from_user_preset(
-        state.user_presets[static_cast<std::size_t>(index - 1)]);
+        state.user_presets[static_cast<std::size_t>(index - 2)]);
   }
   app.set_parameter_preset_index(index);
   app.set_parameter_preset_description(
-      index == 0 ? slint::SharedString{}
-                 : to_shared(state.user_presets[static_cast<std::size_t>(index - 1)]
-                                 .description));
+      index == 1 ? to_shared(state.menu_preset_description)
+      : index == 0 ? slint::SharedString{}
+                   : to_shared(state.user_presets[static_cast<std::size_t>(index - 2)]
+                                   .description));
+  if (index == 1) {
+    apply_linux_menu_params(
+        app, state.menu_params[static_cast<std::size_t>(state.menu_format_index)]);
+    return;
+  }
   apply_linux_format_parameters(app, state, app.get_format_index());
 }
 
@@ -2517,6 +2539,59 @@ std::optional<std::string> linux_context_menu_warning(
   }
   return std::nullopt;
 }
+
+bool linux_menu_installed() {
+  const char* home = std::getenv("HOME");
+  if (home == nullptr || std::string_view{home}.empty()) return false;
+  const auto base = fs::path{home};
+  std::error_code ec;
+  if (fs::exists(base / ".local/share/nautilus/scripts/AWJ 转换为 AVIF", ec) && !ec)
+    return true;
+  std::ifstream thunar{base / ".config/Thunar/uca.xml", std::ios::binary};
+  if (!thunar) return false;
+  const std::string xml{std::istreambuf_iterator<char>{thunar}, {}};
+  return xml.find("<unique-id>awjimage-") != std::string::npos;
+}
+
+std::expected<void, std::string> save_linux_menu_settings(
+    AwjStudio& app, LinuxUiState& state) {
+  store_linux_menu_params(app, state);
+  if (auto valid = validate_linux_menu_params(state.menu_params); !valid)
+    return valid;
+  const bool installed = linux_menu_installed();
+  const auto previous_document = state.config_document;
+  std::optional<std::string> previous_file;
+  if (installed) {
+    std::error_code ec;
+    if (fs::exists(state.config_path, ec) && !ec) {
+      std::ifstream input{state.config_path, std::ios::binary};
+      if (!input) return std::unexpected{"无法备份菜单配置。"};
+      previous_file.emplace(std::istreambuf_iterator<char>{input},
+                            std::istreambuf_iterator<char>{});
+      if (input.bad()) return std::unexpected{"读取菜单配置备份失败。"};
+    } else if (ec) {
+      return std::unexpected{"无法检查菜单配置文件。"};
+    }
+  }
+  if (auto saved = persist_linux_update_config(app, state); !saved)
+    return saved;
+  if (!installed) return {};
+  if (auto synced = write_linux_file_manager_actions(state.menu_params); !synced) {
+    std::expected<void, std::string> restored{};
+    if (previous_file) {
+      restored = atomic_write_linux_file(state.config_path, *previous_file);
+    } else {
+      std::error_code ec;
+      fs::remove(state.config_path, ec);
+      if (ec) restored = std::unexpected{ec.message()};
+    }
+    if (restored) state.config_document = previous_document;
+    return std::unexpected{synced.error() +
+                           (restored ? "" : " 配置恢复失败：" + restored.error())};
+  }
+  return {};
+}
+
 void set_format_quality(AwjStudio& app, int index) {
   const auto quality = [index] {
     switch (index) {
@@ -2681,6 +2756,7 @@ int awj::studio::run_studio_ui() {
               slint::select_bundled_translation(index == 1 ? "en" : ""));
         } catch (...) {
         }
+        reload_linux_user_preset_options(**app, *state);
         sync_linux_update_ui(**app, *state);
       }
     });
@@ -2865,15 +2941,18 @@ int awj::studio::run_studio_ui() {
         store_current_linux_parameter_params(**app, *state);
         const auto index = state->parameter_preset_index;
         (*app)->set_preset_editor_name(
-            index == 0 ? slint::SharedString{}
-                       : to_shared(state->user_presets[static_cast<std::size_t>(index - 1)]
-                                       .name));
+            index == 1 ? to_shared((*app)->get_language_index() == 1
+                                          ? "Context menu" : "右键菜单")
+            : index == 0 ? slint::SharedString{}
+                         : to_shared(state->user_presets[static_cast<std::size_t>(index - 2)].name));
         (*app)->set_preset_editor_description(
-            index == 0 ? slint::SharedString{}
-                       : to_shared(state->user_presets[static_cast<std::size_t>(index - 1)]
-                                       .description));
+            index == 1 ? to_shared(state->menu_preset_description)
+            : index == 0 ? slint::SharedString{}
+                         : to_shared(state->user_presets[static_cast<std::size_t>(index - 2)].description));
         (*app)->set_preset_editor_existing(index > 0);
-        (*app)->set_preset_editor_shell_menu(index > 0 && state->user_presets[static_cast<std::size_t>(index - 1)].shell_menu);
+        (*app)->set_preset_editor_special_menu(index == 1);
+        (*app)->set_preset_editor_shell_menu(
+            index > 1 && state->user_presets[static_cast<std::size_t>(index - 2)].shell_menu);
         (*app)->set_preset_editor_error({});
         (*app)->set_preset_editor_open(true);
       }
@@ -2888,13 +2967,14 @@ int awj::studio::run_studio_ui() {
       auto app = weak.lock();
       if (!app || (*app)->get_running()) return;
       const auto index = state->parameter_preset_index;
-      if (index <= 0 || index > static_cast<int>(state->user_presets.size())) return;
+      if (index <= 1 || index > static_cast<int>(state->user_presets.size()) + 1) return;
       const auto queue_index = (*app)->get_queue_preset_index();
-      auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(index - 1)]);
+      const auto user_index = index - 2;
+      auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(user_index)]);
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
       state->parameter_preset_index = 0;
       (*app)->set_queue_preset_index(
-          queue_index == index ? 0 : queue_index > index ? queue_index - 1 : queue_index);
+          queue_index == user_index + 1 ? 0 : queue_index > user_index + 1 ? queue_index - 1 : queue_index);
       reload_linux_user_preset_options(**app, *state);
       select_linux_parameter_preset(**app, *state, 0);
       (*app)->set_preset_editor_open(false);
@@ -2905,6 +2985,21 @@ int awj::studio::run_studio_ui() {
         [weak, state](slint::SharedString name, slint::SharedString description) {
           auto app = weak.lock();
           if (!app || (*app)->get_running()) return;
+          const auto edit_index = state->parameter_preset_index;
+          if (edit_index == 1) {
+            const auto previous = state->menu_preset_description;
+            state->menu_preset_description = shared_to_string(description);
+            auto valid = save_linux_menu_settings(**app, *state);
+            if (!valid) {
+              state->menu_preset_description = previous;
+              (*app)->set_preset_editor_error(to_shared(valid.error()));
+              return;
+            }
+            (*app)->set_parameter_preset_description(to_shared(state->menu_preset_description));
+            (*app)->set_preset_editor_open(false);
+            (*app)->set_status_text(to_shared("右键菜单预设已保存。"));
+            return;
+          }
           store_current_linux_parameter_params(**app, *state);
           auto preset = linux_user_preset_from_parameters(
               shared_to_string(name), shared_to_string(description),
@@ -2914,9 +3009,8 @@ int awj::studio::run_studio_ui() {
             return;
           }
           preset->shell_menu = (*app)->get_preset_editor_shell_menu();
-          const auto edit_index = state->parameter_preset_index;
-          if (edit_index > 0 && edit_index <= static_cast<int>(state->user_presets.size())) {
-            const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 1)];
+          if (edit_index > 1 && edit_index <= static_cast<int>(state->user_presets.size()) + 1) {
+            const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 2)];
             preset->source_path = original.source_path;
             const auto original_ui = linux_parameter_params_from_user_preset(original);
             for (std::size_t i = 0; i < preset->formats.size(); ++i) {
@@ -2926,7 +3020,7 @@ int awj::studio::run_studio_ui() {
                 preset->formats[i].speed = original.formats[i].speed;
             }
           }
-          auto saved = awj::save_user_preset(*preset, edit_index > 0);
+          auto saved = awj::save_user_preset(*preset, edit_index > 1);
           if (!saved) {
             (*app)->set_preset_editor_error(to_shared(saved.error()));
             return;
@@ -2938,7 +3032,7 @@ int awj::studio::run_studio_ui() {
             select_linux_parameter_preset(
                 **app, *state,
                 static_cast<int>(std::distance(state->user_presets.begin(), found)) +
-                    1);
+                    2);
           }
           (*app)->set_preset_editor_open(false);
           (*app)->set_preset_editor_error({});
@@ -3109,9 +3203,7 @@ int awj::studio::run_studio_ui() {
     });
     app->on_save_menu_params_requested([weak, state] {
       if (auto app = weak.lock()) {
-        store_linux_menu_params(**app, *state);
-        auto valid = validate_linux_menu_params(state->menu_params);
-        if (valid) valid = persist_linux_update_config(**app, *state);
+        auto valid = save_linux_menu_settings(**app, *state);
         if (valid) {
           if (auto warning = linux_context_menu_warning(state->menu_params)) {
             (*app)->set_context_menu_warning(to_shared(*warning));
@@ -3120,7 +3212,7 @@ int awj::studio::run_studio_ui() {
           }
         }
         (*app)->set_context_menu_status(to_shared(
-            valid ? "菜单参数已保存；重新安装菜单后生效。" : valid.error()));
+            valid ? "菜单参数已保存；若菜单已安装也已同步。" : valid.error()));
         (*app)->set_status_text((*app)->get_context_menu_status());
       }
     });

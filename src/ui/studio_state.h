@@ -224,6 +224,7 @@ struct StudioConfigSnapshot {
   bool shell_menu_compatibility{};
   bool visual_quality_gpu{true};
   bool visual_quality_fallback{true};
+  std::string menu_preset_description{"用于右键菜单转换的参数。"};
   std::array<MenuFormatParams, 5> menu_params{};
 
   std::string update_channel{"stable"};
@@ -293,6 +294,7 @@ struct UiState {
   // 因此它不会意外改变“内置默认”队列的会话参数。
   std::array<ParameterFormatParams, 5> parameter_preset_params{};
   std::array<MenuFormatParams, 5> menu_params{};
+  std::string menu_preset_description{"用于右键菜单转换的参数。"};
   std::vector<awj::UserPreset> user_presets{};
   std::vector<std::string> user_preset_errors{};
   int parameter_preset_index{};

@@ -691,6 +691,15 @@ msgstr "The name and description are written to executable-adjacent preset/*.jso
 msgid "内置默认"
 msgstr "Built-in default"
 
+msgid "右键菜单"
+msgstr "Context menu"
+
+msgid "保存右键菜单"
+msgstr "Save context menu"
+
+msgid "右键菜单名称固定；简介和五种格式的菜单参数会写入 Studio 配置，并在保存菜单时同步。"
+msgstr "The context menu name is fixed. Its description and five format settings are saved in Studio config and synchronized when saved."
+
 msgid "取消"
 msgstr "Cancel"
 

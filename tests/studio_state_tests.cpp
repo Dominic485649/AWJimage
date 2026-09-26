@@ -78,6 +78,7 @@ void config_check() {
   current.update_manifest_v2_signature = "signature";
   current.update_keyring_raw = "signed keyring bytes";
   current.update_keyring_signature = "keyring signature";
+  current.menu_preset_description = "menu preset regression description";
   {
     std::ofstream old(path);
     old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature"})";
@@ -88,7 +89,8 @@ void config_check() {
   check(parsed.has_value() && parsed->at("language_index").integer == 1 &&
         parsed->at("last_verified_manifest_v2_sequence").integer == 42 &&
         parsed->at("update_manifest_v2_raw").string == current.update_manifest_v2_raw &&
-        parsed->at("update_keyring_raw").string == current.update_keyring_raw,
+        parsed->at("update_keyring_raw").string == current.update_keyring_raw &&
+        parsed->at("menu_preset_description").string == current.menu_preset_description,
         "whitelist lost current config or v2 state");
   for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature"})
     check(!parsed->contains(key), "legacy UI cache was persisted");

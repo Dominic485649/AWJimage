@@ -6,6 +6,7 @@ export component PresetEditor inherits Rectangle {
     callback cancel-preset-editor();
     callback delete-parameter-preset();
     in property <bool> preset-editor-existing;
+    in property <bool> preset-editor-special-menu: false;
     in property <bool> shell-menu-injection-supported;
     in-out property <bool> preset-editor-shell-menu;
     in-out property <bool> delete-confirmation: false;
@@ -51,14 +52,16 @@ export component PresetEditor inherits Rectangle {
                 spacing: 12px;
                 width: parent.width;
                 Text {
-                    text: @tr("保存用户预设");
+                    text: root.preset-editor-special-menu ? @tr("保存右键菜单") : @tr("保存用户预设");
                     color: root.text-strong;
                     font-size: 20px;
                     font-weight: 800;
                     height: self.preferred-height;
                 }
                 Text {
-                    text: @tr("名称和简介会写入程序同目录 preset/*.jsonc；保存的是五种格式的完整参数，不包含队列、路径或元数据设置。");
+                    text: root.preset-editor-special-menu
+                        ? @tr("右键菜单名称固定；简介和五种格式的菜单参数会写入 Studio 配置，并在保存菜单时同步。")
+                        : @tr("名称和简介会写入程序同目录 preset/*.jsonc；保存的是五种格式的完整参数，不包含队列、路径或元数据设置。");
                     color: root.text-muted;
                     font-size: 13px;
                     wrap: word-wrap;
@@ -70,6 +73,7 @@ export component PresetEditor inherits Rectangle {
                     accessible-label: @tr("预设名称");
                     text <=> root.preset-editor-name;
                     placeholder-text: @tr("例如：高质量存档");
+                    enabled: !root.preset-editor-special-menu;
                     height: 40px;
                     width: 100%;
                 }
@@ -99,7 +103,7 @@ export component PresetEditor inherits Rectangle {
                     width: 100%;
                     height: self.preferred-height;
                 }
-                if root.shell-menu-injection-supported: CheckBox {
+                if root.shell-menu-injection-supported && !root.preset-editor-special-menu: CheckBox {
                     text: @tr("注入右键菜单（最多 10 个预设）");
                     checked <=> root.preset-editor-shell-menu;
                 }
@@ -112,7 +116,7 @@ export component PresetEditor inherits Rectangle {
                 HorizontalLayout {
                     height: 42px;
                     spacing: 10px;
-                    if root.preset-editor-existing: SoftButton {
+                    if root.preset-editor-existing && !root.preset-editor-special-menu: SoftButton {
                         dark-mode: root.dark-mode;
                         text: @tr("删除");
                         variant: "outline";

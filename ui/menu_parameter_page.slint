@@ -84,6 +84,38 @@ export component MenuParameterPage inherits Rectangle {
             padding: 22px;
             spacing: 10px;
             HorizontalLayout {
+                height: 36px;
+                spacing: 10px;
+                Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; horizontal-stretch: 1; }
+                SoftComboBox {
+                    accessible-name: @tr("参数预设");
+                    viewport-height: root.window-height;
+                    close-generation: root.combo-close-generation;
+                    popup-requested => { root.combo-popup-requested(); }
+                    popup-finished => { root.combo-popup-finished(); }
+                    model: root.parameter-preset-options;
+                    current-index <=> root.parameter-preset-index;
+                    enabled: !root.running;
+                    width: root.parameter-control-width;
+                    height: 36px;
+                    normal-background: root.combo-bg;
+                    hover-background: root.combo-bg-hover;
+                    disabled-background: root.combo-bg-disabled;
+                    selected-background: root.combo-selected-bg;
+                    normal-border: root.combo-border;
+                    hover-border: root.combo-border-hover;
+                    normal-text: root.text-body;
+                    disabled-text: root.text-soft;
+                    muted-text: root.text-muted;
+                    selected-text: root.text-body;
+                    hover-help-text: root.parameter-preset-description;
+                    hover-help-always: true;
+                    selection-accepted(index, click-x, click-y) => { root.parameter-preset-selected(index); }
+                }
+                SoftButton { dark-mode: root.dark-mode; text: @tr("保存预设"); variant: "outline"; width: 96px; height: 36px; enabled: !root.running; clicked => { root.open-preset-editor(); } }
+                SoftButton { dark-mode: root.dark-mode; text: @tr("删除预设"); variant: "outline"; width: 96px; height: 36px; enabled: false; }
+            }
+            HorizontalLayout {
                 height: 40px;
                 spacing: 10px;
                 Rectangle {

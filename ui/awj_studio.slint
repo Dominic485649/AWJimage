@@ -25,10 +25,11 @@ export component AwjStudio inherits Window {
     in-out property <int> format-index: 0;
     // 参数页选择的是正在编辑的对象；队列的预设选择独立保留在 queue-* 属性。
     in-out property <int> parameter-preset-index: 0;
-    in property <[ComboOption]> parameter-preset-options: [{ text: @tr("内置默认"), enabled: true }];
+    in property <[ComboOption]> parameter-preset-options: [{ text: @tr("内置默认"), enabled: true }, { text: @tr("右键菜单"), enabled: true }];
     in property <string> parameter-preset-description: "";
     in-out property <bool> preset-editor-open: false;
     in-out property <bool> preset-editor-existing: false;
+    in-out property <bool> preset-editor-special-menu: false;
     in-out property <bool> preset-editor-shell-menu: false;
     // 编码中关窗的确认层：C++ 侧拦截 close-requested 后置 true，由用户决定返回
     // 还是强制停止退出。见 main.cpp 的 on_close_requested。
@@ -505,7 +506,7 @@ export component AwjStudio inherits Window {
                     params-nav := NavItem {
                         label: @tr("参数设置");
                         tab-index: 1;
-                        selected: root.selected-page == 0 || root.selected-page == 3;
+                        selected: root.selected-page == 0;
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
                         selected-background: root.dark-mode ? #188697 : #0f7c8c;
@@ -562,33 +563,7 @@ export component AwjStudio inherits Window {
                 vertical-stretch: 1;
                 background: transparent;
 
-                if root.selected-page == 0 || root.selected-page == 3: VerticalLayout {
-                    spacing: 8px;
-                    HorizontalLayout {
-                        height: 36px;
-                        spacing: 4px;
-                        SoftButton {
-                            text: @tr("编码参数");
-                            dark-mode: root.dark-mode;
-                            checkable: true;
-                            checked: root.selected-page == 0;
-                            width: 112px;
-                            height: 36px;
-                            clicked => { root.selected-page = 0; }
-                        }
-                        SoftButton {
-                            text: @tr("菜单参数");
-                            dark-mode: root.dark-mode;
-                            checkable: true;
-                            checked: root.selected-page == 3;
-                            width: 112px;
-                            height: 36px;
-                            clicked => { root.selected-page = 3; }
-                        }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                    }
-
-                if root.selected-page == 0: ParameterPage {
+                if root.selected-page == 0 && root.parameter-preset-index != 1: ParameterPage {
     alpha-policy-index <=> root.alpha-policy-index;
     avif-color-representation-index <=> root.avif-color-representation-index;
     avif-encoder-index <=> root.avif-encoder-index;
@@ -646,10 +621,13 @@ export component AwjStudio inherits Window {
 }
 
 
-                if root.selected-page == 3: MenuParameterPage {
+                if root.selected-page == 0 && root.parameter-preset-index == 1: MenuParameterPage {
     text-strong: root.text-strong;
+    parameter-preset-index <=> root.parameter-preset-index;
     parameter-preset-options: root.parameter-preset-options;
     parameter-preset-description: root.parameter-preset-description;
+    parameter-preset-selected(index) => { root.parameter-preset-selected(index); }
+    open-preset-editor() => { root.preset-editor-delete-confirmation = false; root.open-preset-editor(); }
     hint-violet: root.hint-violet;
     hint-red: root.hint-red;
     hint-orange: root.hint-orange;
@@ -706,8 +684,6 @@ export component AwjStudio inherits Window {
     text-soft : root.text-soft;
     wic-ui-visible <=> root.wic-ui-visible;
 }
-                }
-
                 if root.selected-page == 1: QueuePage {
     language-index: root.language-index;
     init => { root.drop-regions = self.drop-regions; }
@@ -941,6 +917,7 @@ export component AwjStudio inherits Window {
 
         if root.preset-editor-open: PresetEditor {
     preset-editor-existing: root.preset-editor-existing;
+    preset-editor-special-menu: root.preset-editor-special-menu;
     preset-editor-shell-menu <=> root.preset-editor-shell-menu;
     delete-confirmation <=> root.preset-editor-delete-confirmation;
     shell-menu-injection-supported: root.shell-menu-injection-supported;

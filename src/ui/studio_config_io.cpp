@@ -59,6 +59,9 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .shell_menu_compatibility = app.get_shell_menu_compatibility(),
       .visual_quality_gpu = app.get_visual_quality_gpu(),
       .visual_quality_fallback = app.get_visual_quality_fallback(),
+      .menu_preset_description = state != nullptr
+          ? state->menu_preset_description
+          : std::string{"用于右键菜单转换的参数。"},
       .menu_params = menu_params_snapshot(app, state)};
   // 后台状态只在 UiState 中维护；所有写入仍由 UI 线程走统一的原子提交。
   if (state != nullptr) {
@@ -298,6 +301,16 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       !result) {
     return result;
   }
+  if (auto description = awj::studio_json::config_string(
+          *values, "menu_preset_description"); description) {
+    state.menu_preset_description = std::move(*description);
+  } else if (!description.error().empty()) {
+    return std::unexpected{description.error()};
+  }
+  app.set_parameter_preset_description(
+      state.parameter_preset_index == 1
+          ? to_shared(state.menu_preset_description)
+          : app.get_parameter_preset_description());
   if (auto result = apply_menu_config_values(*values, state.menu_params); !result) {
     return result;
   }
