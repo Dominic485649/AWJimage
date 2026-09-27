@@ -280,9 +280,11 @@ export component QueuePage inherits VerticalLayout {
                     }
                 }
 
-                if root.window-width >= 1000px: HorizontalLayout {
+                HorizontalLayout {
                     spacing: 8px;
-                    Rectangle { width: root.path-label-width + 2px; background: transparent; }
+                    // The 92px indent is the wider localized path label plus 2px.
+                    // Six 68px buttons and six 8px gaps then end at the collision selector's right edge at 796px.
+                    Rectangle { width: 92px; background: transparent; }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
@@ -290,25 +292,6 @@ export component QueuePage inherits VerticalLayout {
                     SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                }
-                if root.window-width < 1000px: VerticalLayout {
-                    spacing: 6px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Rectangle { width: root.path-label-width + 2px; background: transparent; }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                    }
-                    HorizontalLayout {
-                        spacing: 8px;
-                        Rectangle { width: root.path-label-width + 2px; background: transparent; }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
-                        SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                    }
                 }
             }
 

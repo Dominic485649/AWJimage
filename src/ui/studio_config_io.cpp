@@ -146,7 +146,7 @@ std::expected<void, std::string> apply_config_window_size(
     return std::unexpected{"window_width 与 window_height 必须同时设置。"};
   }
   auto width = awj::studio_json::config_int(values, "window_width",
-                          awj::studio_defaults::min_window_width,
+                          1,
                           awj::studio_defaults::max_window_width);
   if (!width) {
     return std::unexpected{width.error()};
@@ -158,7 +158,8 @@ std::expected<void, std::string> apply_config_window_size(
     return std::unexpected{height.error()};
   }
   app.window().set_size(slint::LogicalSize{
-      {static_cast<float>(*width), static_cast<float>(*height)}});
+      {static_cast<float>(std::max(*width, awj::studio_defaults::min_window_width)),
+       static_cast<float>(*height)}});
   return {};
 }
 
