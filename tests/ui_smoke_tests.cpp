@@ -140,13 +140,15 @@ std::optional<slint::testing::ElementHandle> find_one(
 }
 
 int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
-                                 float window_width, bool expect_two_rows) {
+                                 float window_width, bool english) {
   app->window().set_size(slint::LogicalSize({window_width, 560.0f}));
-  const auto collision = find_one(app, "重复处理", slint::language::AccessibleRole::Combobox);
+  const auto collision = find_one(app, english ? "On conflict" : "重复处理",
+                                  slint::language::AccessibleRole::Combobox);
   if (!collision || collision->absolute_position().x + collision->size().width > window_width - 10)
     return fail("collision dropdown overflows the queue header");
-  const std::array<std::string_view, 6> labels{"参数", "日期", "时间",
-                                                "随机", "哈希", "SHA"};
+  const std::array<std::string_view, 6> zh{"参数", "日期", "时间", "随机", "哈希", "SHA"};
+  const std::array<std::string_view, 6> en{"Params", "Date", "Time", "Rand", "Hash", "SHA"};
+  const auto& labels = english ? en : zh;
   std::vector<slint::testing::ElementHandle> buttons;
   buttons.reserve(labels.size());
   for (const auto label : labels) {
@@ -158,8 +160,8 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   const float expected_width = buttons.front().size().width;
-  if (expected_width < 67.5f) {
-    return fail(std::format("template token button width is too small: {:.1f}px",
+  if (std::fabs(expected_width - 68.0f) > 0.5f) {
+    return fail(std::format("template token button width changed: {:.1f}px",
                             expected_width));
   }
   for (const auto& button : buttons) {
@@ -174,23 +176,67 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   const auto x = [&buttons](std::size_t index) {
     return buttons[index].absolute_position().x;
   };
-  if (expect_two_rows) {
-    if (std::fabs(y(0) - y(1)) > 0.5f || std::fabs(y(1) - y(2)) > 0.5f ||
-        std::fabs(y(3) - y(4)) > 0.5f || std::fabs(y(4) - y(5)) > 0.5f ||
-        y(3) <= y(0) + 1.0f) {
-      return fail("template token buttons did not form two aligned rows");
-    }
-    if (std::fabs(x(0) - x(3)) > 0.5f || std::fabs(x(1) - x(4)) > 0.5f ||
-        std::fabs(x(2) - x(5)) > 0.5f) {
-      return fail("template token two-row columns are not aligned");
-    }
-  } else {
-    for (std::size_t index = 1; index < buttons.size(); ++index) {
-      if (std::fabs(y(index) - y(0)) > 0.5f || x(index) <= x(index - 1)) {
-        return fail("template token buttons did not form one aligned row");
-      }
+  for (std::size_t index = 1; index < buttons.size(); ++index) {
+    if (std::fabs(y(index) - y(0)) > 0.5f || x(index) <= x(index - 1)) {
+      return fail("template token buttons did not form one aligned row");
     }
   }
+  const float sha_right = x(5) + buttons[5].size().width;
+  const float collision_right = collision->absolute_position().x + collision->size().width;
+  if (window_width == 796.0f && std::fabs(sha_right - collision_right) > 1.0f)
+    return fail(std::format("SHA/collision right edges differ: {:.1f}px", sha_right - collision_right));
+  if (sha_right > window_width - 10.0f)
+    return fail("SHA button overflows the queue header");
+  return 0;
+}
+
+int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  app->set_selected_page(0);
+  app->set_parameter_preset_index(1);
+  for (const int language : {0, 1}) {
+    slint::select_bundled_translation(language ? "en" : "");
+    app->set_language_index(language);
+    std::array<float, 3> narrow_widths{};
+    for (const float width : {796.0f, 1220.0f}) {
+      app->window().set_size(slint::LogicalSize({width, 560.0f}));
+      const auto install = find_one(app, language ? "Install context menu" : "安装右键菜单", Role::Button);
+      const auto remove = find_one(app, language ? "Remove context menu" : "移除右键菜单", Role::Button);
+      const auto save = find_one(app, language ? "Save parameters" : "保存参数", Role::Button);
+      const auto preset = find_one(app, language ? "Parameter preset" : "参数预设", Role::Combobox);
+      const auto save_preset = find_one(app, language ? "Save preset" : "保存预设", Role::Button);
+      const auto delete_preset = find_one(app, language ? "Delete preset" : "删除预设", Role::Button);
+      const auto heading = find_one(app, language ? "Common parameters" : "常用参数", Role::Text);
+      if (!install || !remove || !save || !preset || !save_preset || !delete_preset || !heading)
+        return fail("context menu toolbar control is missing");
+      const std::array buttons{*install, *remove, *save};
+      for (std::size_t i = 0; i < buttons.size(); ++i) {
+        if (width == 796.0f) narrow_widths[i] = buttons[i].size().width;
+        else if (std::fabs(buttons[i].size().width - narrow_widths[i]) > 0.5f)
+          return fail("context menu action button stretched with the window");
+        if (buttons[i].size().width < 60.0f || buttons[i].size().width > 190.0f)
+          return fail("context menu action button is not text-sized");
+        if (i && (std::fabs(buttons[i].absolute_position().y - buttons[0].absolute_position().y) > 0.5f ||
+                  buttons[i].absolute_position().x < buttons[i - 1].absolute_position().x + buttons[i - 1].size().width))
+          return fail("context menu action buttons overlap or wrap");
+      }
+      const float action_right = save->absolute_position().x + save->size().width;
+      const float preset_left = preset->absolute_position().x;
+      const float preset_y = preset->absolute_position().y;
+      const float action_y = install->absolute_position().y;
+      if (width == 796.0f ? preset_y <= action_y + 40.0f :
+          (std::fabs(preset_y - action_y) > 2.5f || preset_left <= action_right))
+        return fail("context menu toolbar did not use the expected one/two-row layout");
+      if (save_preset->absolute_position().x < preset_left + preset->size().width ||
+          delete_preset->absolute_position().x < save_preset->absolute_position().x + save_preset->size().width ||
+          std::fabs(delete_preset->absolute_position().y - preset_y) > 0.5f ||
+          delete_preset->absolute_position().x + delete_preset->size().width > width - 10.0f ||
+          heading->absolute_position().y < preset_y + preset->size().height)
+        return fail("context menu preset controls overlap or precede common parameters");
+    }
+  }
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
   return 0;
 }
 
@@ -682,6 +728,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
       !find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
       !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
     return fail("context menu preset did not show menu controls");
+  if (const int result = verify_menu_toolbar_layout(app); result != 0) return result;
   app->set_preset_editor_open(true);
   app->set_preset_editor_existing(true);
   app->set_preset_editor_special_menu(true);
@@ -947,14 +994,16 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   if (first_visible() != anchor) return fail("closing details lost the scrolled queue anchor");
   awj::ui::bind_queue_model(*app, task_rows());
   app->set_selected_queue_index(0);
-  if (const int result = verify_template_token_layout(app, 820.0f, true);
-      result != 0) {
-    return result;
+  for (const int language : {0, 1}) {
+    slint::select_bundled_translation(language ? "en" : "");
+    app->set_language_index(language);
+    for (const float width : {796.0f, 1220.0f}) {
+      if (const int result = verify_template_token_layout(app, width, language == 1);
+          result != 0) return result;
+    }
   }
-  if (const int result = verify_template_token_layout(app, 1220.0f, false);
-      result != 0) {
-    return result;
-  }
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
   app->window().set_size(slint::LogicalSize({820.0f, 560.0f}));
   if (!find_one(app, "输入路径",
                 slint::language::AccessibleRole::TextInput) ||

@@ -70,12 +70,27 @@ export component MenuParameterPage inherits Rectangle {
     in-out property <string> threads-text;
     in-out property <string> visual-quality-text;
 
+    property <length> install-button-width: install-label.preferred-width + 24px;
+    property <length> remove-button-width: remove-label.preferred-width + 24px;
+    property <length> save-button-width: save-label.preferred-width + 24px;
+    property <length> menu-toolbar-width: root.install-button-width + root.remove-button-width + root.save-button-width + 20px;
+    property <length> preset-toolbar-width: root.parameter-control-width + 212px;
+    property <bool> toolbar-single-row: root.width - 44px >= root.menu-toolbar-width + root.preset-toolbar-width + 10px;
+
     horizontal-stretch: 1;
     vertical-stretch: 1;
     border-radius: 8px;
     background: root.panel-bg;
     border-color: root.panel-border;
     border-width: 1px;
+    Rectangle {
+        width: 0px;
+        height: 0px;
+        visible: false;
+        install-label := Text { text: @tr("安装右键菜单"); font-size: 13px; font-weight: 500; }
+        remove-label := Text { text: @tr("移除右键菜单"); font-size: 13px; font-weight: 500; }
+        save-label := Text { text: @tr("保存参数"); font-size: 13px; font-weight: 700; }
+    }
     ScrollView {
         horizontal-stretch: 1;
         vertical-stretch: 1;
@@ -83,11 +98,26 @@ export component MenuParameterPage inherits Rectangle {
         VerticalLayout {
             padding: 22px;
             spacing: 10px;
-            HorizontalLayout {
-                height: 36px;
-                spacing: 10px;
-                Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; horizontal-stretch: 1; }
-                SoftComboBox {
+            Rectangle {
+                height: root.toolbar-single-row ? 40px : 86px;
+                background: transparent;
+                HorizontalLayout {
+                    x: 0px;
+                    y: 0px;
+                    width: root.menu-toolbar-width;
+                    height: 40px;
+                    spacing: 10px;
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running; width: root.install-button-width; height: 40px; clicked => { root.install-context-menu-requested(); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "outline"; enabled: !root.running; width: root.remove-button-width; height: 40px; clicked => { root.remove-context-menu-requested(); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("保存参数"); variant: "action"; enabled: !root.running; width: root.save-button-width; height: 40px; clicked => { root.save-menu-params-requested(); } }
+                }
+                HorizontalLayout {
+                    x: parent.width - root.preset-toolbar-width;
+                    y: root.toolbar-single-row ? 2px : 50px;
+                    width: root.preset-toolbar-width;
+                    height: 36px;
+                    spacing: 10px;
+                    SoftComboBox {
                     accessible-name: @tr("参数预设");
                     viewport-height: root.window-height;
                     close-generation: root.combo-close-generation;
@@ -111,31 +141,17 @@ export component MenuParameterPage inherits Rectangle {
                     hover-help-text: root.parameter-preset-description;
                     hover-help-always: true;
                     selection-accepted(index, click-x, click-y) => { root.parameter-preset-selected(index); }
-                }
-                SoftButton { dark-mode: root.dark-mode; text: @tr("保存预设"); variant: "outline"; width: 96px; height: 36px; enabled: !root.running; clicked => { root.open-preset-editor(); } }
-                SoftButton { dark-mode: root.dark-mode; text: @tr("删除预设"); variant: "outline"; width: 96px; height: 36px; enabled: false; }
-            }
-            HorizontalLayout {
-                height: 40px;
-                spacing: 10px;
-                Rectangle {
-                    horizontal-stretch: 3;
-                    height: 40px;
-                    background: transparent;
-                    HorizontalLayout {
-                        spacing: 10px;
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.install-context-menu-requested(); } }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "outline"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.remove-context-menu-requested(); } }
-                        SoftButton { dark-mode: root.dark-mode; text: @tr("保存参数"); variant: "action"; enabled: !root.running; horizontal-stretch: 1; height: 40px; clicked => { root.save-menu-params-requested(); } }
                     }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("保存预设"); variant: "outline"; width: 96px; height: 36px; enabled: !root.running; clicked => { root.open-preset-editor(); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("删除预设"); variant: "outline"; width: 96px; height: 36px; enabled: false; }
                 }
-                if !root.context-menu-warning.is-empty: Rectangle {
-                    horizontal-stretch: 1;
-                    height: 40px;
-                    background: transparent;
-                    Text { text: root.context-menu-warning; color: #dc2626; font-size: 13px; vertical-alignment: center; overflow: elide; }
-                    TouchArea { clicked => { root.context-menu-warning-clicked(); } }
-                }
+            }
+            Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; height: 36px; vertical-alignment: center; }
+            if !root.context-menu-warning.is-empty: Rectangle {
+                height: 40px;
+                background: transparent;
+                Text { text: root.context-menu-warning; color: #dc2626; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                TouchArea { clicked => { root.context-menu-warning-clicked(); } }
             }
 
             ParameterForm {
