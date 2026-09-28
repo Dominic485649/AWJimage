@@ -98,7 +98,7 @@ export component ParameterForm inherits VerticalLayout {
         SoftButton {
             dark-mode: root.dark-mode;
             text: @tr("保存预设");
-            variant: "outline";
+            variant: "action";
             width: 96px;
             height: 36px;
             enabled: !root.running;
@@ -107,7 +107,7 @@ export component ParameterForm inherits VerticalLayout {
         SoftButton {
             dark-mode: root.dark-mode;
             text: @tr("删除预设");
-            variant: "outline";
+            variant: "danger";
             width: 96px;
             height: 36px;
             enabled: !root.running && root.parameter-preset-index > 1;

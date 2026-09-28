@@ -108,7 +108,7 @@ export component MenuParameterPage inherits Rectangle {
                     height: 40px;
                     spacing: 10px;
                     SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running; width: root.install-button-width; height: 40px; clicked => { root.install-context-menu-requested(); } }
-                    SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "outline"; enabled: !root.running; width: root.remove-button-width; height: 40px; clicked => { root.remove-context-menu-requested(); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "danger"; enabled: !root.running; width: root.remove-button-width; height: 40px; clicked => { root.remove-context-menu-requested(); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("保存参数"); variant: "action"; enabled: !root.running; width: root.save-button-width; height: 40px; clicked => { root.save-menu-params-requested(); } }
                 }
                 HorizontalLayout {
@@ -142,8 +142,8 @@ export component MenuParameterPage inherits Rectangle {
                     hover-help-always: true;
                     selection-accepted(index, click-x, click-y) => { root.parameter-preset-selected(index); }
                     }
-                    SoftButton { dark-mode: root.dark-mode; text: @tr("保存预设"); variant: "outline"; width: 96px; height: 36px; enabled: !root.running; clicked => { root.open-preset-editor(); } }
-                    SoftButton { dark-mode: root.dark-mode; text: @tr("删除预设"); variant: "outline"; width: 96px; height: 36px; enabled: false; }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("保存预设"); variant: "action"; width: 96px; height: 36px; enabled: !root.running; clicked => { root.open-preset-editor(); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("删除预设"); variant: "danger"; width: 96px; height: 36px; enabled: false; }
                 }
             }
             Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; height: 36px; vertical-alignment: center; }

@@ -705,8 +705,7 @@ export component QueueMenuItem inherits Rectangle {
 // 关键词单独上色，只能把它拆成独立的 Text。这个结构在保留自动换行的同时做到了
 // 这一点，而且不需要自己实现流式排版。位置沿用 0.9 的做法，仍在控件右侧。
 //
-// 高度由内容决定，调用方给所在行设 min-height 而不是固定 height，
-// 否则细节文字换行后会被裁掉。
+// 灰色细节最多四行，超出时在末行显示省略号。
 export component ParamHint inherits VerticalLayout {
     // 结论行的第一段，通常是"建议怎么选"。
     in property <string> lead;
@@ -756,6 +755,8 @@ export component ParamHint inherits VerticalLayout {
         color: root.detail-color;
         font-size: 12px;
         wrap: word-wrap;
+        max-lines: 4;
+        overflow: elide;
         min-width: 0px;
         width: 100%;
         horizontal-stretch: 1;
