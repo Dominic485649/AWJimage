@@ -187,6 +187,13 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
     return fail(std::format("SHA/collision right edges differ: {:.1f}px", sha_right - collision_right));
   if (sha_right > window_width - 10.0f)
     return fail("SHA button overflows the queue header");
+  const auto format = find_one(app, english ? "Queue output format" : "队列输出格式",
+                               slint::language::AccessibleRole::Combobox);
+  const auto preset = find_one(app, english ? "Queue preset" : "队列预设",
+                               slint::language::AccessibleRole::Combobox);
+  if (!format || !preset || std::fabs(format->size().width - preset->size().width) > 0.5f ||
+      std::fabs(preset->absolute_position().x + preset->size().width - sha_right) > 1.0f)
+    return fail("fixed queue selectors do not share the SHA right edge");
   return 0;
 }
 
@@ -197,8 +204,8 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
-    std::array<float, 3> narrow_widths{};
-    for (const float width : {796.0f, 1220.0f}) {
+    std::array<float, 2> narrow_widths{};
+    for (const float width : {796.0f, 1220.0f, 1800.0f}) {
       app->window().set_size(slint::LogicalSize({width, 560.0f}));
       const auto install = find_one(app, language ? "Install context menu" : "安装右键菜单", Role::Button);
       const auto remove = find_one(app, language ? "Remove context menu" : "移除右键菜单", Role::Button);
@@ -207,9 +214,9 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
       const auto save_preset = find_one(app, language ? "Save preset" : "保存预设", Role::Button);
       const auto delete_preset = find_one(app, language ? "Delete preset" : "删除预设", Role::Button);
       const auto heading = find_one(app, language ? "Common parameters" : "常用参数", Role::Text);
-      if (!install || !remove || !save || !preset || !save_preset || !delete_preset || !heading)
+      if (!install || !remove || save || !preset || !save_preset || !delete_preset || !heading)
         return fail("context menu toolbar control is missing");
-      const std::array buttons{*install, *remove, *save};
+      const std::array buttons{*install, *remove};
       for (std::size_t i = 0; i < buttons.size(); ++i) {
         if (width == 796.0f) narrow_widths[i] = buttons[i].size().width;
         else if (std::fabs(buttons[i].size().width - narrow_widths[i]) > 0.5f)
@@ -220,7 +227,7 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
                   buttons[i].absolute_position().x < buttons[i - 1].absolute_position().x + buttons[i - 1].size().width))
           return fail("context menu action buttons overlap or wrap");
       }
-      const float action_right = save->absolute_position().x + save->size().width;
+      const float action_right = remove->absolute_position().x + remove->size().width;
       const float preset_left = preset->absolute_position().x;
       const float preset_y = preset->absolute_position().y;
       const float action_y = install->absolute_position().y;
@@ -234,6 +241,15 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
           heading->absolute_position().y < preset_y + preset->size().height)
         return fail("context menu preset controls overlap or precede common parameters");
     }
+    app->set_parameter_preset_index(2);
+    if (!find_one(app, language ? "Install context menu" : "安装右键菜单", Role::Button) ||
+        !find_one(app, language ? "Remove context menu" : "移除右键菜单", Role::Button))
+      return fail("user preset did not show context menu actions");
+    app->set_shell_menu_injection_supported(false);
+    if (find_one(app, language ? "Install context menu" : "安装右键菜单", Role::Button))
+      return fail("Linux user preset showed unsupported injection action");
+    app->set_shell_menu_injection_supported(true);
+    app->set_parameter_preset_index(1);
   }
   slint::select_bundled_translation("");
   app->set_language_index(0);
@@ -734,32 +750,60 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   app->set_preset_editor_special_menu(true);
   app->set_preset_editor_name("右键菜单");
   app->set_preset_editor_description("测试简介");
+  app->window().set_size(slint::LogicalSize({1220.0f, 1000.0f}));
   if (!find_one(app, "预设名称", slint::language::AccessibleRole::TextInput) ||
       !find_one(app, "预设简介", slint::language::AccessibleRole::TextInput) ||
       find_one(app, "删除", slint::language::AccessibleRole::Button))
     return fail("context menu preset editor is wrong");
+  const auto panels = slint::testing::ElementHandle::find_by_element_id(app, "PresetEditor::preset-editor-panel");
+  const auto editor_save = find_one(app, "保存", slint::language::AccessibleRole::Button);
+  if (panels.size() != 1 || !editor_save) return fail("preset editor panel geometry is unavailable");
+  const float bottom_gap = panels[0].absolute_position().y + panels[0].size().height -
+                           editor_save->absolute_position().y - editor_save->size().height;
+  if (bottom_gap < 10.0f || bottom_gap > 32.0f)
+    return fail(std::format("preset editor retained {:.1f}px below its buttons", bottom_gap));
   app->set_preset_editor_open(false);
   int installs = 0;
   int removals = 0;
-  int saves = 0;
+  int preset_saves = 0;
   app->on_install_context_menu_requested([&] { ++installs; });
   app->on_remove_context_menu_requested([&] { ++removals; });
-  app->on_save_menu_params_requested([&] { ++saves; });
+  app->on_open_preset_editor([&] { ++preset_saves; });
   find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
   find_one(app, "移除右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
-  find_one(app, "保存参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
-  if (installs != 1 || removals != 1 || saves != 1)
+  find_one(app, "保存预设", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  if (installs != 1 || removals != 1 || preset_saves != 1)
     return fail("menu mode lost an installation or save action");
+  int repairs = 0;
+  app->on_context_menu_warning_clicked([&] { ++repairs; });
+  app->set_context_menu_warning("右键菜单版本不兼容，请点击修复。");
+  const auto repair = find_one(app, "右键菜单版本不兼容，请点击修复。",
+                               slint::language::AccessibleRole::Button);
+  if (!repair || find_one(app, "保存参数", slint::language::AccessibleRole::Button))
+    return fail("incompatible menu warning did not replace the removed action slot");
+  const auto remove_action = find_one(app, "移除右键菜单", slint::language::AccessibleRole::Button);
+  if (!remove_action ||
+      std::fabs(repair->absolute_position().y - remove_action->absolute_position().y) > 0.5f ||
+      repair->absolute_position().x < remove_action->absolute_position().x + remove_action->size().width)
+    return fail("incompatible menu warning did not occupy the removed action position");
+  repair->invoke_accessible_default_action();
+  if (repairs != 1) return fail("incompatible menu warning lost its repair callback");
   app->set_running(true);
-  find_one(app, "保存参数", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  find_one(app, "保存预设", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  repair->invoke_accessible_default_action();
   app->set_running(false);
-  if (saves != 1) return fail("menu save stayed active during a run");
+  if (preset_saves != 1 || repairs != 1) return fail("menu controls stayed active during a run");
+  app->set_context_menu_warning({});
   app->invoke_parameter_preset_selected(2);
   if (app->get_selected_page() != 0 ||
       !find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
-      find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button) ||
+      !find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button) ||
       app->get_quality_text() != "73" || app->get_menu_quality_text() != "61")
     return fail("switching presets mixed normal and menu parameter controls");
+  find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  find_one(app, "移除右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
+  if (installs != 2 || removals != 2)
+    return fail("user preset context menu actions are not wired");
   app->invoke_parameter_preset_selected(0);
   app->set_quality_text(original_quality);
   app->set_menu_quality_text(original_menu_quality);
@@ -997,9 +1041,17 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
-    for (const float width : {796.0f, 1220.0f}) {
+    float fixed_selector_width = -1.0f;
+    for (const float width : {796.0f, 1220.0f, 1800.0f}) {
       if (const int result = verify_template_token_layout(app, width, language == 1);
           result != 0) return result;
+      const auto selector = find_one(app, language ? "Queue preset" : "队列预设",
+                                     slint::language::AccessibleRole::Combobox);
+      if (!selector) return fail("queue preset selector disappeared after resize");
+      if (fixed_selector_width >= 0.0f &&
+          std::fabs(selector->size().width - fixed_selector_width) > 0.5f)
+        return fail("queue selector width changed with window resize");
+      fixed_selector_width = selector->size().width;
     }
   }
   slint::select_bundled_translation("");

@@ -720,6 +720,7 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
   for (const auto& parent : schema.parent_roots) {
     schema.keys.push_back(parent);
     append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
+    append_string_spec(schema.values, parent, L"Position", L"Bottom");
     append_string_spec(schema.values, parent, L"Icon", icon);
     append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
     if (compatibility) {

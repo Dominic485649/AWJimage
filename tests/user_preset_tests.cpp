@@ -76,6 +76,22 @@ int main() try {
   sync_calls = 0;
   check(!awj::delete_user_preset(preset, sync_failure), "delete synchronization failure accepted");
   check(fs::exists(original_path) && sync_calls == 2, "delete failure did not restore original");
+  auto unmarked = preset;
+  unmarked.shell_menu = false;
+  require(awj::save_user_preset(unmarked, true));
+  auto selected_for_install = unmarked;
+  selected_for_install.shell_menu = true;
+  sync_calls = 0;
+  check(!awj::save_user_preset(selected_for_install, true, sync_failure),
+        "failed install accepted selected preset injection");
+  check(sync_calls == 2 && !require(awj::find_user_preset(preset.name)).shell_menu,
+        "failed install did not roll back selected preset injection");
+  require(awj::save_user_preset(selected_for_install, true));
+  const auto installed_preset = require(awj::find_user_preset(preset.name));
+  check(installed_preset.shell_menu &&
+        installed_preset.formats[0].visual_quality == preset.formats[0].visual_quality &&
+        installed_preset.formats[0].memory_limit_bytes == preset.formats[0].memory_limit_bytes,
+        "install changed saved preset parameters while marking injection");
   std::vector<awj::UserPreset> others;
   for (int i = 1; i <= 10; ++i) {
     auto value = awj::default_user_preset();

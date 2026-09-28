@@ -73,7 +73,8 @@ export component QueuePage inherits VerticalLayout {
     property <length> options-single-row-width: root.timestamp-ui-visible
         ? (root.language-index == 1 ? 1400px : 1100px)
         : 760px;
-    property <length> queue-selector-width: min(root.parameter-control-width, (root.width - 32px - root.path-label-width - 42px - 40px) / 2);
+    // Match the fixed SHA button edge; the selectors never grow with the window.
+    property <length> queue-selector-width: (92px + 6 * root.template-token-button-width + 6 * 8px - root.path-label-width - 42px - 3 * 10px) / 2;
     in property <color> field-bg;
     in property <color> field-border;
     in-out property <bool> force-terminate-supported;

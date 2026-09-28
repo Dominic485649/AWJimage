@@ -600,6 +600,11 @@ export component AwjStudio inherits Window {
     memory-limit-text <=> root.memory-limit-text;
     open-preset-editor() => { root.preset-editor-delete-confirmation = false; root.open-preset-editor(); }
     open-preset-delete-confirmation() => { root.preset-editor-delete-confirmation = true; root.open-preset-editor(); }
+    install-context-menu-requested() => { root.install-context-menu-requested(); }
+    remove-context-menu-requested() => { root.remove-context-menu-requested(); }
+    context-menu-warning-clicked() => { root.context-menu-warning-clicked(); }
+    context-menu-warning: root.context-menu-warning;
+    shell-menu-injection-supported: root.shell-menu-injection-supported;
     panel-bg : root.panel-bg;
     panel-border : root.panel-border;
     parameter-control-height : root.parameter-control-height;

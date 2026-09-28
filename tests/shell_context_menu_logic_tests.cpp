@@ -69,6 +69,16 @@ int main() {
   if (schema_without_png != schema_repeat) {
     return fail("same install inputs did not produce an idempotent schema");
   }
+  for (const bool compatibility : {false, true}) {
+    const auto schema = build_registry_schema(exe, params_without_png, plan, {}, 0, compatibility);
+    for (const auto& parent : schema.parent_roots) {
+      const auto position = std::ranges::find_if(schema.values, [&](const auto& value) {
+        return value.key == parent && value.name == L"Position";
+      });
+      if (position == schema.values.end() || position->string_value != L"Bottom")
+        return fail("top-level context menu is not positioned at the bottom");
+    }
+  }
   if (schema_without_png.parent_roots.size() != supported_extensions().size() + 1 ||
       std::ranges::find(schema_without_png.parent_roots, image_parent_key()) != schema_without_png.parent_roots.end()) {
     return fail("parent roots contain a generic image entry or miss an extension");

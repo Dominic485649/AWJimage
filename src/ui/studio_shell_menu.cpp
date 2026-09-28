@@ -6,8 +6,11 @@
 #include "studio_config_io.h"
 #include "studio_menu_params.h"
 #include "studio_parameter_page.h"
+#include "studio_presets.h"
 #include "studio_ui_util.h"
 #include <fstream>
+
+import awj.preset;
 
 namespace awj::studio {
 namespace {
@@ -97,6 +100,15 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
   store_current_menu_params(**app, *state);
   const auto previous = state->last_config_snapshot.value_or(capture_studio_config(**app, state.get()));
   const auto desired = capture_studio_config(**app, state.get());
+  std::optional<awj::UserPreset> selected_preset;
+  if (install && state->parameter_preset_index > 1 &&
+      state->parameter_preset_index <= static_cast<int>(state->user_presets.size()) + 1) {
+    const auto& preset = state->user_presets[static_cast<std::size_t>(state->parameter_preset_index - 2)];
+    if (!preset.shell_menu) {
+      selected_preset = preset;
+      selected_preset->shell_menu = true;
+    }
+  }
   auto validated = validate_menu_params(desired.menu_params);
   if (!validated && !remove) {
     (*app)->set_shell_menu_compatibility(previous.shell_menu_compatibility);
@@ -114,7 +126,7 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
   (*app)->set_menu_operation_active(true);
   try {
     state->menu_timer.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50},
-        [weak, weak_state, completion, previous, desired, remove] {
+        [weak, weak_state, completion, previous, desired, install, remove] {
       auto state = weak_state.lock();
       auto app = weak.lock();
       if (!state || !app) return;
@@ -138,8 +150,9 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
           (*app)->set_status_text(to_shared(result->error()));
         } else {
           state->last_config_snapshot = desired;
+          if (install) reload_user_preset_options(**app, *state);
           (*app)->set_context_menu_warning({});
-          const auto message = remove ? "右键菜单已移除。" : "右键菜单设置已保存。";
+          const auto message = remove ? "右键菜单已移除。" : install ? "右键菜单已安装。" : "右键菜单设置已保存。";
           (*app)->set_context_menu_status(to_shared(message));
           (*app)->set_status_text(to_shared(message));
         }
@@ -148,13 +161,32 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
       (*app)->set_menu_operation_active(false);
       (*app)->set_menu_elevation_required(false);
     });
-    state->menu_worker = std::jthread([completion, desired, defaults = *state->config_defaults, install, remove] {
+    state->menu_worker = std::jthread([completion, previous, desired, defaults = *state->config_defaults,
+                                       selected_preset = std::move(selected_preset), install, remove] {
       MenuResult result;
       try {
-        result = apply_menu_change(desired, defaults, install, remove, [&] {
+        const auto apply = [&] { return apply_menu_change(desired, defaults, install, remove, [&] {
           std::scoped_lock lock{completion->mutex};
           completion->elevation_required = true;
-        });
+        }); };
+        if (selected_preset) {
+          auto previously_installed = shell_context_menu::is_installed(true);
+          if (!previously_installed) {
+            result = std::unexpected{previously_installed.error()};
+          } else {
+            bool first_sync = true;
+            auto saved = awj::save_user_preset(*selected_preset, true, [&]() -> MenuResult {
+              if (first_sync) {
+                first_sync = false;
+                return apply();
+              }
+              return apply_menu_change(previous, defaults, false, !*previously_installed, [] {});
+            });
+            result = saved ? MenuResult{} : MenuResult{std::unexpected{saved.error()}};
+          }
+        } else {
+          result = apply();
+        }
       }
       catch (const std::exception& error) { result = std::unexpected{error.what()}; }
       catch (...) { result = std::unexpected{"右键菜单操作异常，未提交修改。"}; }

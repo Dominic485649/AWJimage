@@ -698,7 +698,13 @@ std::expected<void, std::string> change_file(const fs::path& path,
   // cleanup cannot undo an already synchronized menu on the next launch.
   auto committed = journal;
   committed["committed"] = true;
-  if (auto result = atomic_write(journal_path, committed.dump()); !result) return result;
+  if (auto result = atomic_write(journal_path, committed.dump()); !result) {
+    auto restored = restore_operation(path.parent_path(), journal);
+    if (restored && synchronize) restored = synchronize();
+    if (!restored) return std::unexpected{result.error() + " 恢复尚未完成：" + restored.error()};
+    fs::remove(journal_path, ec);
+    return result;
+  }
   fs::remove(journal_path, ec);
   if (ec) return std::unexpected{"预设已保存，但清理恢复记录失败：" + ec.message()};
   return {};

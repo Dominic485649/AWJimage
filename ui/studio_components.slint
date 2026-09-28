@@ -434,6 +434,7 @@ export component SoftComboBox inherits Rectangle {
 export component SoftButton inherits Rectangle {
     in property <string> text;
     in property <string> accessible-name: root.text;
+    in property <string> hover-help-text: "";
     in property <bool> enabled: true;
     in property <bool> checked: false;
     in property <bool> checkable: false;
@@ -469,7 +470,7 @@ export component SoftButton inherits Rectangle {
     border-width: root.variant == "outline" ? 1px : 0px;
     border-color: root.enabled ? (root.has-hover ? root.combo-border-hover : root.combo-border) : root.combo-border;
 
-    background: !root.enabled ?
+    background: root.variant == "warning" ? transparent : !root.enabled ?
         root.combo-bg-disabled :
         (root.variant == "primary" ?
             (root.has-hover ? #0b5ed7 : #0d6efd) :
@@ -498,7 +499,7 @@ export component SoftButton inherits Rectangle {
             x: 8px;
             width: parent.width - 16px;
             text: root.text;
-            color: !root.enabled ? root.text-soft : (root.checked ? root.accent-strong : (root.variant == "primary" || root.variant == "danger" || root.variant == "action" ? #ffffff : root.text-body));
+            color: root.variant == "warning" ? #dc2626 : !root.enabled ? root.text-soft : (root.checked ? root.accent-strong : (root.variant == "primary" || root.variant == "danger" || root.variant == "action" ? #ffffff : root.text-body));
             font-size: 13px;
             font-weight: root.variant == "primary" || root.variant == "action" || root.variant == "danger" || root.checked ? 700 : 500;
             horizontal-alignment: center;
@@ -510,6 +511,7 @@ export component SoftButton inherits Rectangle {
 
     touch := TouchArea {
         enabled: root.enabled;
+        if !root.hover-help-text.is-empty: Tooltip { text: @markdown("\{root.hover-help-text}"); }
         clicked => {
             if (root.enabled) {
                 button-focus.focus();

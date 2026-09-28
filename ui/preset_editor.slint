@@ -33,7 +33,7 @@ export component PresetEditor inherits Rectangle {
 
     preset-editor-panel := Rectangle {
         width: min(760px, max(320px, parent.width - 48px));
-        height: min(parent.height * 0.8, max(320px, preset-editor-content.preferred-height + 40px));
+        height: min(parent.height * 0.8, preset-editor-content.preferred-height);
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
         border-radius: 10px;
@@ -46,7 +46,7 @@ export component PresetEditor inherits Rectangle {
             width: parent.width;
             height: parent.height;
             viewport-width: parent.width;
-            viewport-height: max(parent.height, preset-editor-content.preferred-height + 40px);
+            viewport-height: max(parent.height, preset-editor-content.preferred-height);
             preset-editor-content := VerticalLayout {
                 padding: 20px;
                 spacing: 12px;
