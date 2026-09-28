@@ -111,7 +111,7 @@ export component PresetEditor inherits Rectangle {
                     spacing: 10px;
                     Text { text: @tr("确定删除此用户预设？"); color: root.warning; horizontal-stretch: 1; vertical-alignment: center; }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("取消"); clicked => { root.delete-confirmation = false; } }
-                    SoftButton { dark-mode: root.dark-mode; text: @tr("确认删除"); clicked => { root.delete-parameter-preset(); } }
+                    SoftButton { dark-mode: root.dark-mode; text: @tr("确认删除"); variant: "danger"; clicked => { root.delete-parameter-preset(); } }
                 }
                 HorizontalLayout {
                     height: 42px;
@@ -119,7 +119,7 @@ export component PresetEditor inherits Rectangle {
                     if root.preset-editor-existing && !root.preset-editor-special-menu: SoftButton {
                         dark-mode: root.dark-mode;
                         text: @tr("删除");
-                        variant: "outline";
+                        variant: "danger";
                         width: 90px;
                         height: 42px;
                         clicked => { root.delete-confirmation = true; }

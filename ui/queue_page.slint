@@ -347,7 +347,7 @@ export component QueuePage inherits VerticalLayout {
                 spacing: root.page-gap;
                 SoftButton { dark-mode: root.dark-mode; text: root.running ? (root.force-terminate-supported ? @tr("强制终止") : @tr("停止任务")) : @tr("开始转换"); variant: root.running && root.force-terminate-supported ? "danger" : "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }
                 if root.force-terminate-supported: SoftButton { dark-mode: root.dark-mode; text: @tr("停止任务"); variant: "outline"; height: 42px; enabled: root.running; horizontal-stretch: 1; clicked => { root.cancel-conversion(); } }
-                SoftButton { dark-mode: root.dark-mode; text: @tr("清空队列"); height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
+                SoftButton { dark-mode: root.dark-mode; text: @tr("清空队列"); variant: "danger"; height: 42px; enabled: !root.running; horizontal-stretch: 1; clicked => { root.clear-tasks(); } }
             }
 
         }
