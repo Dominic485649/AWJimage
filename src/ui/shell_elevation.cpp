@@ -298,7 +298,7 @@ std::expected<void, std::string> MenuTransaction::rollback() {
 
 std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change(
     const std::filesystem::path& exe, const MenuParams& params,
-    std::span<const std::wstring> names, bool compatibility, bool remove_menu,
+    std::span<const PresetMenuSpec> names, bool compatibility, bool remove_menu,
     const std::function<void()>& elevation_requested) {
   const auto com = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
   struct ComGuard { HRESULT result; ~ComGuard() { if (SUCCEEDED(result)) CoUninitialize(); } } apartment{com};

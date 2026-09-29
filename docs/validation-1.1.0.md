@@ -159,7 +159,7 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
 - Release PowerShell、Linux shell 和 A/B Python 脚本语法检查通过。
 - 已完成同源码 Windows baseline、AVX2、AVX2+IPO 及 Linux v3/no-IPO、v3/IPO 对照，结果见下。
 
-## 当前候选（1.1.0）
+## 早期候选（1.1.0）
 
 - Windows clean Release 位于独立工作树 `D:/awj11-release`，Linux clean Release 位于 `/home/dominic/awjimage-1.1.0-candidate`；两者以相同 clean HEAD 构建，版本均为 1.1.0。
 - `scripts/package-release.ps1 -SkipManifests` 与 `scripts/package-linux-release.sh --candidate-head <候选提交完整 SHA>` 的固定成员、归档完整性和解压哈希检查通过。完整产物和限制见 `build/evidence/1.1.0/candidate-report.md`。
@@ -311,5 +311,19 @@ Windows 从普通预设安装菜单时只把磁盘上已保存的该预设标记
 预设勾选。AWJ 顶层注册项使用系统 `Position=Bottom`；Explorer 中与其他
 第三方菜单的精确相对位置由系统决定。
 
-本轮 Windows/Linux 最终构建、CTest、候选文件哈希和待人工验收事项以
-`build/evidence/1.1.0/candidate-report.md` 的最新记录为准。
+早期 Windows/Linux 构建、CTest、候选文件哈希和待人工验收事项记录在
+`build/evidence/1.1.0/candidate-report.md`；以下本地发布准备记录优先于该旧候选。
+
+## 2026-09-29 本地发布准备
+
+此前 `build/release/1.1.0/assets/` 的归档来自 `9dbe76e` 候选，早于后续参数页、右键菜单和首行间距调整，不能直接作为本次 1.1.0 发布资产。当前 Windows 工作树有未提交源码改动；上述 54/54、33/33 与旧归档哈希只证明当时的候选，不证明新的源码快照。
+
+本次新增的发布说明草稿为 [release-notes-1.1.0.md](release-notes-1.1.0.md)。已重新完成 Windows/Linux 构建、测试、固定归档成员、`7z t`、解压哈希及版本检查；最终签名、tag、公开下载和真实更新端到端验证仍属于正式发布阶段。
+
+### 本轮本地候选结果
+
+- Windows 当前工作树的 Release 由 `release.ps1 -SkipUpdateManifest -NoVcpkgInstall` 重建：`BUILD_TESTING=OFF`、AVX2 与 IPO/LTO 均开启；`NOTICE.txt` 正确标识 `9dbe76e...-dirty`。`bin/1.1.0` 的四个发行文件已先备份到 `build/evidence/1.1.0/deployment-backup-20260929-release-prep/`，再覆盖并逐文件核对哈希，用户配置与预设未改动。
+- 原生 Linux 候选目录 `/home/dominic/awjimage-1.1.0-candidate` 从相同代码内容建立仅限本地的干净快照 `035e07f3f8a49aefb38ec3b6e8fda50ad9ca2707`，Release 使用 x86-64-v3、IPO/LTO、`BUILD_TESTING=OFF`。`readelf -d` 仅列出 Vulkan、m、fontconfig、c 和动态加载器；没有 `libstdc++` 或 `libgcc_s` 动态依赖。该快照与 Windows 的提交标识不同，公开发布仍须从同一干净 tag 重建。
+- Windows 测试构建后的非侵入式 CTest 为 **52/52**，排除 `raw_wgc_stdin_core`、`shell_context_menu_explorer`；包括 UI smoke、队列压力与右键菜单注册测试。原生 Linux 测试构建后 CTest 为 **33/33**，包括 UI smoke 与原生路径测试。日志分别在 `build/evidence/1.1.0/release-prep-windows-ctest.log`、`release-prep-linux-ctest.log`。
+- Linux 原生 `package-linux-release.sh` 和 Windows `package-release.ps1 -SkipManifests` 均通过。Windows 包严格四文件、Linux 包严格三文件；两包通过 `7z t`、全新解压逐成员哈希及 `--version`/`--help`。Linux 包从 WSL 复制到 Windows 后 SHA-256 保持一致。最终本地归档已复制到 `bin/1.1.0/release/`，完整大小与哈希见发布说明草稿。
+- 仍未执行正式签名 manifest、打 tag、推送、GitHub 发布、公开下载复核及真实安装更新端到端验证。Explorer 跨窗口拖放、字体鼠标轨迹和 100k 文件 GUI 全流程仍待人工验收。

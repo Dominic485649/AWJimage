@@ -860,11 +860,13 @@ std::expected<void, std::string> validate_execution_config(const AppConfig& cfg)
 std::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
                                                           bool quality_was_set,
                                                           bool preset_was_set) {
+#ifndef _WIN32
   if (cfg.output_policy == OutputPolicy::shell) {
     cfg.visual_quality.reset();
     cfg.max_jobs = default_max_jobs();
     cfg.memory_limit_bytes = 0;
   }
+#endif
   if (!quality_was_set && !preset_was_set) {
     cfg.quality = default_quality_for(cfg.output_format);
   }

@@ -136,6 +136,15 @@ int main() {
   if (!contains(avif_png_command, L"--append-png-suffix")) {
     return fail("AVIF.png command did not include suffix switch");
   }
+  auto resource_params = params_with_png[0];
+  resource_params.visual_quality_text = L"85";
+  resource_params.threads_text = L"3";
+  resource_params.memory_limit_text = L"4GiB";
+  const auto resource_command = build_convert_command_line(exe, L"avif", resource_params);
+  if (!contains(resource_command, L"--visual-quality 85") ||
+      !contains(resource_command, L"--threads 3") ||
+      !contains(resource_command, L"--memory-limit 4GiB"))
+    return fail("special menu resource options missing");
   const auto png_command = build_convert_command_line(exe, L"png", params_with_png[4]);
   if (!contains(png_command, L"--quality 73") || contains(png_command, L"--speed") ||
       !contains(png_command, L"--bit-depth 10")) {
@@ -166,8 +175,8 @@ int main() {
   }
 
   for (int count : {0, 1, 10}) {
-    std::vector<std::wstring> names;
-    for (int i = 0; i < count; ++i) names.push_back(L"预设 空格 " + std::to_wstring(i));
+    std::vector<PresetMenuSpec> names;
+    for (int i = 0; i < count; ++i) names.push_back({L"预设 空格 " + std::to_wstring(i), false});
     const auto schema = build_registry_schema(exe, params_without_png, plan, names, 1);
     int commands = 0;
     for (const auto& value : schema.values) {
@@ -181,6 +190,16 @@ int main() {
     }
     if (commands != count * 5 || schema == schema_without_png) return fail("preset subtree/slot schema failed");
   }
+
+  const std::array<PresetMenuSpec, 1> png_preset{{{L"PNG 预设", true}}};
+  const auto preset_png_schema = build_registry_schema(exe, params_without_png, plan, png_preset);
+  const auto preset_png_command = std::ranges::find_if(preset_png_schema.values, [](const auto& value) {
+    return contains(value.string_value, L"--preset") &&
+           contains(value.string_value, L"--append-png-suffix");
+  });
+  if (preset_png_command == preset_png_schema.values.end() ||
+      !contains(preset_png_command->string_value, L"--format avif"))
+    return fail("preset AVIF.png command missing");
 
   const auto legacy = legacy_root_keys();
   if (std::ranges::find(legacy, L"Software\\Classes\\AWJImage.ContextMenu") == legacy.end() ||

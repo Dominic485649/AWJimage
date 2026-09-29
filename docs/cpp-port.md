@@ -125,7 +125,7 @@ Debug 使用 `linux-gcc-x64-debug`。Release 验证应确认 `bin/x64/Release/AW
 
 ## GitHub 发行归档（1.0.4+）
 
-所有暂存、归档和旧版样本都位于仓库 `build/`、`bin/`。从 1.0.6 起，`scripts/package-linux-release.sh` 必须在原生 Linux 文件系统中生成、`7z t`、全新解压并启动验证 `AWJ_Linux.7z`，以保留 `AWJ` 可执行位；Windows `scripts/package-release.ps1` 只生成 `AWJ_Win.7z`，并重新解压、逐文件哈希复核原生 Linux 归档。两个包分别包含平台二进制及其校验、`LICENSE`、`THIRD_PARTY_NOTICES.txt`、`BUILD_INFO.txt`，不混装跨平台二进制。
+所有暂存、归档和旧版样本都位于仓库 `build/`、`bin/`。从 1.0.6 起，`scripts/package-linux-release.sh` 必须在原生 Linux 文件系统中生成、`7z t`、全新解压并启动验证 `AWJ_Linux.7z`，以保留 `AWJ` 可执行位；Windows `scripts/package-release.ps1` 只生成 `AWJ_Win.7z`，并重新解压、逐文件哈希复核原生 Linux 归档。从 1.0.9 起，Windows 包严格只含 `AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`，Linux 包严格只含 `AWJ`、`LICENSE`、`NOTICE.txt`；构建信息、第三方通知和完整许可证文本合并于 `NOTICE.txt`，不混装跨平台二进制。
 
 1.0.4 prerelease 只上传这两个归档，并由签名 `update-manifest-v2.json` 记录归档和每个必需成员的 URL、大小和 SHA-256。客户端严格拒绝路径穿越、链接、额外成员和解压炸弹。1.0.5 是功能等价的 1.0.3 自动更新桥接 prerelease：除两个归档外仅额外上传裸 `AWJ.exe`、`AWJ.com`，只写入旧 v1 manifest；普通用户应下载 1.0.4。Windows 更新在本机测试，WSL 仅进行普通构建、CTest、CLI、ELF 和归档验证。
 

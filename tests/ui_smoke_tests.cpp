@@ -240,6 +240,15 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
           delete_preset->absolute_position().x + delete_preset->size().width > width - 10.0f ||
           heading->absolute_position().y < preset_y + preset->size().height)
         return fail("context menu preset controls overlap or precede common parameters");
+      if (width != 796.0f) {
+        const float menu_heading_y = heading->absolute_position().y;
+        app->set_parameter_preset_index(0);
+        const auto builtin_heading = find_one(app, language ? "Common parameters" : "常用参数", Role::Text);
+        if (!builtin_heading ||
+            std::fabs(builtin_heading->absolute_position().y - menu_heading_y) > 1.0f)
+          return fail("built-in and menu presets have different top spacing");
+        app->set_parameter_preset_index(1);
+      }
     }
     app->set_parameter_preset_index(2);
     if (!find_one(app, language ? "Install context menu" : "安装右键菜单", Role::Button) ||
@@ -353,14 +362,47 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
             return 0;
           };
           if (check("质量", "Quality", Role::TextInput, true) ||
-              check("视觉质量", "Visual quality", Role::TextInput, page == 0 && format != 4) ||
+              check("AVIF 编码器", "AVIF encoder", Role::Combobox, false) ||
+              check("视觉质量", "Visual quality", Role::TextInput, format != 4) ||
               check("速度", "Speed", Role::TextInput, format < 3) ||
-              check("线程", "Threads", Role::TextInput, page == 0) ||
-              check("内存限制", "Memory limit", Role::TextInput, page == 0) ||
+              check("线程", "Threads", Role::TextInput, true) ||
+              check("内存限制", "Memory limit", Role::TextInput, true) ||
+              check("右键菜单选项", "Context menu options", Role::Text, page == 1) ||
               check("位深", "Bit depth", Role::TextInput, format == 0) ||
               check("色度采样", "Chroma subsampling", Role::Combobox, format == 0 || format == 3) ||
               check("JPGLI 渐进级别", "JPGLI progressive level", Role::Combobox, format == 3) ||
               check("启用 XYB", "Enable XYB", Role::Checkbox, format == 3)) return 1;
+          if (theme == 1 && format == 0) {
+            for (const float width : {1220.0f, 1800.0f}) {
+              app->window().set_size(slint::LogicalSize({width, 2000.0f}));
+              const auto common = find_one(app, language ? "Common parameters" : "常用参数", Role::Text);
+              const auto format_label = find_one(app, language ? "Edit format" : "编辑格式", Role::Text);
+              const auto format_control = find_one(app, language ? "Edit format" : "编辑格式", Role::Combobox);
+              const auto resource = find_one(app, language ? "Resource limits" : "资源限制", Role::Text);
+              const auto thread_label = find_one(app, language ? "Threads" : "线程", Role::Text);
+              const auto thread_control = find_one(app, language ? "Threads" : "线程", Role::TextInput);
+              const auto advanced = find_one(app, language ? "Advanced format options" : "格式高级选项", Role::Text);
+              const auto depth_label = find_one(app, language ? "Bit depth" : "位深", Role::Text);
+              const auto depth_control = find_one(app, language ? "Bit depth" : "位深", Role::TextInput);
+              if (!common || !format_label || !format_control || !resource || !thread_label ||
+                  !thread_control || !advanced || !depth_label || !depth_control)
+                return fail("section alignment controls missing");
+              const auto center_y = [](const auto& element) {
+                return element->absolute_position().y + element->size().height / 2.0f;
+              };
+              if (std::fabs(center_y(format_label) - center_y(format_control)) > 1.0f ||
+                  std::fabs(center_y(thread_label) - center_y(thread_control)) > 1.0f ||
+                  std::fabs(center_y(depth_label) - center_y(depth_control)) > 1.0f ||
+                  std::fabs(common->size().height - 30.0f) > 1.0f ||
+                  std::fabs(resource->size().height - 30.0f) > 1.0f ||
+                  std::fabs(advanced->size().height - 30.0f) > 1.0f ||
+                  format_control->absolute_position().y < common->absolute_position().y + common->size().height + 9.0f ||
+                  thread_control->absolute_position().y < resource->absolute_position().y + resource->size().height + 9.0f ||
+                  depth_control->absolute_position().y < advanced->absolute_position().y + advanced->size().height + 9.0f)
+                return fail("section first rows are not centered or spaced consistently");
+            }
+            app->window().set_size(slint::LogicalSize({1220.0f, 2000.0f}));
+          }
           if (format == 3) {
             for (const int progressive : {0, 1, 2}) {
               if (page == 0) app->set_jpegli_progressive_index(progressive);
@@ -724,10 +766,20 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
       app->get_queue_preset_options()->row_count() != 2)
     return fail("parameter and queue preset option order is wrong");
   app->on_parameter_preset_selected([&](int index) { app->set_parameter_preset_index(index); });
+  int installs = 0;
+  int removals = 0;
+  app->on_install_context_menu_requested([&] { ++installs; });
+  app->on_remove_context_menu_requested([&] { ++removals; });
+  const auto builtin_install = find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button);
+  const auto builtin_remove = find_one(app, "移除右键菜单", slint::language::AccessibleRole::Button);
   if (!find_one(app, "参数预设", slint::language::AccessibleRole::Combobox) ||
       !find_one(app, "保存预设", slint::language::AccessibleRole::Button) ||
-      find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button))
+      !builtin_install || !builtin_remove)
     return fail("built-in preset page is wrong");
+  builtin_install->invoke_accessible_default_action();
+  builtin_remove->invoke_accessible_default_action();
+  if (installs != 0 || removals != 0)
+    return fail("built-in preset menu actions must be disabled");
   app->set_preset_editor_open(true);
   app->set_preset_editor_existing(false);
   app->set_preset_editor_special_menu(false);
@@ -763,11 +815,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   if (bottom_gap < 10.0f || bottom_gap > 32.0f)
     return fail(std::format("preset editor retained {:.1f}px below its buttons", bottom_gap));
   app->set_preset_editor_open(false);
-  int installs = 0;
-  int removals = 0;
   int preset_saves = 0;
-  app->on_install_context_menu_requested([&] { ++installs; });
-  app->on_remove_context_menu_requested([&] { ++removals; });
   app->on_open_preset_editor([&] { ++preset_saves; });
   find_one(app, "安装右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
   find_one(app, "移除右键菜单", slint::language::AccessibleRole::Button)->invoke_accessible_default_action();
@@ -1340,6 +1388,8 @@ int main(int argc, char** argv) {
     focus->hide();
   }
   auto app = AwjStudio::create();
+  if (app->get_speed_text() != "5" || app->get_menu_speed_text() != "5")
+    return fail("initial AVIF speed is not 5");
   app->show();
   for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
     if (const int result = run_scale(app, scale); result != 0) {

@@ -2,7 +2,7 @@
 
 English: [README.en.md](README.en.md)
 
-当前源码版本为 **1.0.13**。本地验证见 [验证记录](docs/validation-1.0.13.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
+当前源码版本为 **1.1.0**。验证见 [1.1.0 验证记录](docs/validation-1.1.0.md)，发布说明见 [1.1.0 发布说明](docs/release-notes-1.1.0.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 Release ELF。当前内置转换路径只保留 native codec：
 
@@ -16,6 +16,8 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 Linux 保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。HEIC/HEIF 使用跨平台 native libheif/libde265 解码；WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows。Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
 从 1.1.0 起，Windows Release 最低要求 AVX2；Linux Release 最低要求 x86-64-v3。官方 Release 配置启用 IPO/LTO，工具链不支持时配置失败。Slint 固定为 1.18.0，保留 software、FemtoVG 和 accessibility。
+
+Studio 参数页在内置默认、右键菜单和用户预设之间切换；右键菜单预设包含资源限制及独立的“右键菜单选项”，内置默认的菜单安装/移除按钮不可用。AVIF 仅使用 AOM，速度默认显示 5；启用额外 `.png` 后缀时，只同步已安装的右键菜单。
 
 ## 相关链接
 
@@ -80,7 +82,7 @@ Windows 也可使用脚本：
 
 > 1.0.4 起 `release.ps1` 只负责 Windows 构建，拒绝写 manifest。跨平台归档、v2/v1 签名与 GitHub 发布流程见 [docs/release.md](docs/release.md)。
 
-Windows 脚本会配置 native 依赖并清理 Release 输出目录。1.0.9 起公开 `AWJ_Win.7z` 的成员固定且必须严格只有：`AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；不再把 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或许可证子目录放进归档。`NOTICE.txt` 汇总构建信息、第三方 notices 与所需完整许可证文本。签名 v2 manifest 继续绑定归档及逐成员 SHA-256。维护者本地 `bin\x64\Release` 还可保留 `awj_update_manifest_sign.exe` 作为签名工具，但它绝不进入公开发行包。
+Windows 脚本会配置 native 依赖并重建 Release 输出。1.0.9 起公开 `AWJ_Win.7z` 的成员固定且必须严格只有：`AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；不再把 `.sha256`、`BUILD_INFO.txt`、`THIRD_PARTY_NOTICES.txt` 或许可证子目录放进归档。`NOTICE.txt` 汇总构建信息、第三方 notices 与所需完整许可证文本。签名 v2 manifest 继续绑定归档及逐成员 SHA-256。维护者本地 `bin\x64\Release` 还可保留 `awj_update_manifest_sign.exe` 作为签名工具，但它绝不进入公开发行包。
 
 版本号由仓库根目录的 `VERSION` 文件控制，`CMakeLists.txt` 构建时自动读取，`scripts/Update-VcpkgVersion.ps1` 可同步到 `vcpkg.json`。正式发布必须使用仓库外保存的 Ed25519 seed，并将匹配的公钥编入客户端；私钥/seed 不得提交、复制到产物目录或写入日志。1.0.4+ 的实际归档、签名和 GitHub 发布步骤以 [docs/release.md](docs/release.md) 为准。
 

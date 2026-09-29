@@ -166,8 +166,11 @@ struct StudioChildProcess {
 
 struct MenuFormatParams {
   std::string quality_text{};
+  std::string visual_quality_text{};
   std::string bit_depth_text{};
   std::string speed_text{};
+  std::string threads_text{};
+  std::string memory_limit_text{};
   int avif_encoder_index{};
   int avif_color_representation_index{};
   int chroma_index{};
@@ -207,6 +210,10 @@ struct ParameterFormatParams {
   bool jxl_jpeg_lossless{true};
   std::string threads_text{};
   std::string memory_limit_text{};
+  bool menu_strip_metadata{};
+  bool menu_allow_wic_fallback{true};
+  bool menu_close_on_finish{true};
+  bool menu_install_avif_png_command{};
   int size_limit_index{};
   std::string max_width_text{};
   std::string max_height_text{};

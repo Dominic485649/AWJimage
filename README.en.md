@@ -2,7 +2,7 @@
 
 Chinese: [README.md](README.md)
 
-The source version is **1.0.13**. See the [local validation record (Chinese)](docs/validation-1.0.13.md). Published versions and downloads are on [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases).
+The source version is **1.1.0**. See the [1.1.0 validation record (Chinese)](docs/validation-1.1.0.md) and [release notes](docs/release-notes-1.1.0.md). Published versions and downloads are on [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases).
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -18,6 +18,8 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. HEIC/HEIF uses the cross-platform native libheif/libde265 decoder; WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
 Starting with 1.1.0, Windows Release requires AVX2 and Linux Release requires x86-64-v3. Official Release configurations enable IPO/LTO and fail configuration if the toolchain cannot support it. Slint is pinned to 1.18.0 with software rendering, FemtoVG, and accessibility retained.
+
+Studio switches among Built-in default, Context menu, and user presets. The Context menu preset includes resource limits and a separate options section; Install/Remove actions are disabled for Built-in default. AVIF uses AOM only, Speed displays 5 by default, and the extra `.png` suffix refreshes only an already installed context menu.
 
 ## Release archives
 

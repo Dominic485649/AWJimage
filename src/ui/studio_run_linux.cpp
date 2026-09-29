@@ -3014,6 +3014,11 @@ int awj::studio::run_studio_ui() {
             preset->source_path = original.source_path;
             const auto original_ui = linux_parameter_params_from_user_preset(original);
             for (std::size_t i = 0; i < preset->formats.size(); ++i) {
+              preset->formats[i].menu_strip_metadata = original.formats[i].menu_strip_metadata;
+              preset->formats[i].menu_allow_wic_fallback = original.formats[i].menu_allow_wic_fallback;
+              preset->formats[i].menu_close_on_finish = original.formats[i].menu_close_on_finish;
+              preset->formats[i].menu_install_avif_png_command =
+                  original.formats[i].menu_install_avif_png_command;
               if (active_linux_parameter_params(*state)[i].memory_limit_text == original_ui[i].memory_limit_text)
                 preset->formats[i].memory_limit_bytes = original.formats[i].memory_limit_bytes;
               if (active_linux_parameter_params(*state)[i].speed_text == original_ui[i].speed_text)

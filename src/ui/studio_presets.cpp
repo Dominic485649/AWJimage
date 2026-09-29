@@ -329,6 +329,12 @@ std::array<ParameterFormatParams, 5> parameter_params_from_user_preset(
     const auto format = output_format_from_index(index);
     params[static_cast<std::size_t>(index)] = parameter_params_from_config(
         awj::config_from_user_preset(preset, format));
+    const auto& source = preset.formats[static_cast<std::size_t>(index)];
+    auto& target = params[static_cast<std::size_t>(index)];
+    target.menu_strip_metadata = source.menu_strip_metadata;
+    target.menu_allow_wic_fallback = source.menu_allow_wic_fallback;
+    target.menu_close_on_finish = source.menu_close_on_finish;
+    target.menu_install_avif_png_command = source.menu_install_avif_png_command;
   }
   return params;
 }
@@ -350,6 +356,12 @@ std::expected<awj::UserPreset, std::string> user_preset_from_parameter_params(
     }
     preset.formats[static_cast<std::size_t>(index)] =
         awj::preset_format_from_config(*config);
+    auto& target = preset.formats[static_cast<std::size_t>(index)];
+    const auto& source = params[static_cast<std::size_t>(index)];
+    target.menu_strip_metadata = source.menu_strip_metadata;
+    target.menu_allow_wic_fallback = source.menu_allow_wic_fallback;
+    target.menu_close_on_finish = source.menu_close_on_finish;
+    target.menu_install_avif_png_command = source.menu_install_avif_png_command;
   }
   return preset;
 }

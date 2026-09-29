@@ -1,6 +1,10 @@
 # Changelog
 
-## 1.1.0 - 2026-09-22
+## 1.1.0 - 2026-09-29
+
+- The built-in preset now shows disabled Install/Remove context menu actions. The context menu preset shares the Common parameters, Resource limits, and Advanced format options structure with the built-in preset; Context menu options form a peer section shown only for applicable presets. The first controls are vertically centered and section spacing is consistent.
+- AVIF uses AOM only, so the Encoder row is hidden; the Speed field displays its default value of 5. Toggling the extra `.png` suffix saves the choice and refreshes an already installed context menu without installing one that is absent; failures restore the prior choice.
+- Windows context menu and injected user presets retain visual quality, thread, memory, and other parameters, and apply the relevant resource limits to shell commands. User presets persist their menu choices. Linux retains the preset fields without Windows registry integration.
 
 - Studio Parameters now uses one preset selector ordered Built-in default, Context menu, then user presets. The protected Context menu entry has a fixed name and editable description; saving it updates menu settings and synchronizes installed menus. Queue presets remain user presets only.
 - The six filename token buttons stay on one row at the minimum window width without growing. Context menu actions sit on the left, preset controls on the right; the preset controls move to the next row when space is tight, followed by Common parameters.

@@ -207,8 +207,11 @@ std::expected<void, std::string> apply_menu_config_values(
     };
     // menu_*_preset_index 在 1.0.0 随右键预设下拉一并移除；旧配置里的残留键会被忽略。
     if (auto r = one(apply_string(menu_config_key(prefix, "quality_text"), param.quality_text)); !r) return r;
+    if (auto r = one(apply_string(menu_config_key(prefix, "visual_quality_text"), param.visual_quality_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "bit_depth_text"), param.bit_depth_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "speed_text"), param.speed_text)); !r) return r;
+    if (auto r = one(apply_string(menu_config_key(prefix, "threads_text"), param.threads_text)); !r) return r;
+    if (auto r = one(apply_string(menu_config_key(prefix, "memory_limit_text"), param.memory_limit_text)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "avif_encoder_index"), 0, 3, param.avif_encoder_index)); !r) return r;
     if (param.avif_encoder_index == 1 || param.avif_encoder_index == 3) {
       return std::unexpected{std::format("{} 对应的编码器已移除，请将该字段修正为 0（auto）或 2（AOM）。",

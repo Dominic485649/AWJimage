@@ -60,6 +60,10 @@ struct PresetFormat {
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{};
   ImageSizeLimit image_size_limit{};
+  bool menu_strip_metadata{};
+  bool menu_allow_wic_fallback{true};
+  bool menu_close_on_finish{true};
+  bool menu_install_avif_png_command{};
 
 };
 
@@ -476,6 +480,10 @@ std::expected<void, std::string> load_format(const Json& object,
                          target.max_jobs); !r) return r;
   if (auto r = load_u64(object, "memory_limit_bytes", 1ull << 50,
                          target.memory_limit_bytes); !r) return r;
+  if (auto r = load_bool(object, "menu_strip_metadata", target.menu_strip_metadata); !r) return r;
+  if (auto r = load_bool(object, "menu_allow_wic_fallback", target.menu_allow_wic_fallback); !r) return r;
+  if (auto r = load_bool(object, "menu_close_on_finish", target.menu_close_on_finish); !r) return r;
+  if (auto r = load_bool(object, "menu_install_avif_png_command", target.menu_install_avif_png_command); !r) return r;
   if (auto r = load_size_limit(object, target.image_size_limit); !r) return r;
   auto avif = parse_avif_encoder_value(object, "avif_encoder", target.avif_encoder);
   if (!avif) return std::unexpected{avif.error()};
@@ -525,6 +533,10 @@ Json format_json(const PresetFormat& value) {
               {"jxl_jpeg_lossless", value.jxl_jpeg_lossless},
               {"threads", value.max_jobs},
               {"memory_limit_bytes", value.memory_limit_bytes},
+              {"menu_strip_metadata", value.menu_strip_metadata},
+              {"menu_allow_wic_fallback", value.menu_allow_wic_fallback},
+              {"menu_close_on_finish", value.menu_close_on_finish},
+              {"menu_install_avif_png_command", value.menu_install_avif_png_command},
               {"size_limit", size_limit_json(value.image_size_limit)}};
 }
 
@@ -964,6 +976,14 @@ std::expected<ParseResult, std::string> parse_arguments_with_user_preset(
                           preset_detail::utf8_from_wide_for_preset(*parsed->preset_name));
   if (!preset) return std::unexpected{preset.error()};
   auto base = config_from_user_preset(*preset, parsed->config.output_format);
+#ifdef _WIN32
+  if (parsed->config.output_policy == OutputPolicy::shell) {
+    const auto& menu = preset->formats[preset_detail::format_slot(base.output_format)];
+    base.strip_metadata = menu.menu_strip_metadata;
+    base.allow_wic_fallback = menu.menu_allow_wic_fallback;
+    base.shell_close_on_finish = menu.menu_close_on_finish;
+  }
+#endif
   auto resolved = parse_arguments_with_preset_base(args, std::move(base));
   if (!resolved) return std::unexpected{resolved.error()};
   return resolved;

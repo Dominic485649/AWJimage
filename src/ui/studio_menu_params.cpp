@@ -4,14 +4,19 @@
 #include <cstddef>
 #include <string>
 
+#include "studio_parameter_page.h"
+
 import awj.core;
 
 namespace awj::studio {
 
 MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
   return MenuFormatParams{.quality_text = shared_to_string(app.get_menu_quality_text()),
+                          .visual_quality_text = shared_to_string(app.get_menu_visual_quality_text()),
                           .bit_depth_text = shared_to_string(app.get_menu_bit_depth_text()),
                           .speed_text = shared_to_string(app.get_menu_speed_text()),
+                          .threads_text = shared_to_string(app.get_menu_threads_text()),
+                          .memory_limit_text = shared_to_string(app.get_menu_memory_limit_text()),
                           .avif_encoder_index = app.get_menu_avif_encoder_index(),
                           .avif_color_representation_index =
                               app.get_menu_avif_color_representation_index(),
@@ -36,8 +41,11 @@ MenuFormatParams capture_menu_params_from_ui(const AwjStudio& app) {
 
 void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_quality_text(to_shared(params.quality_text));
+  app.set_menu_visual_quality_text(to_shared(params.visual_quality_text));
   app.set_menu_bit_depth_text(to_shared(params.bit_depth_text));
   app.set_menu_speed_text(to_shared(params.speed_text));
+  app.set_menu_threads_text(to_shared(params.threads_text));
+  app.set_menu_memory_limit_text(to_shared(params.memory_limit_text));
   app.set_menu_avif_encoder_index(params.avif_encoder_index);
   app.set_menu_avif_color_representation_index(
       params.avif_color_representation_index);
@@ -67,7 +75,11 @@ void store_current_menu_params(AwjStudio& app, UiState& state) {
 void load_menu_params_for_index(AwjStudio& app, UiState& state, int index) {
   index = std::clamp(index, 0, 4);
   state.last_menu_format_index = index;
-  apply_menu_params_to_ui(app, state.menu_params[static_cast<std::size_t>(index)]);
+  auto& params = state.menu_params[static_cast<std::size_t>(index)];
+  if (params.speed_text.empty()) {
+    params.speed_text = default_menu_params_for_index(index).speed_text;
+  }
+  apply_menu_params_to_ui(app, params);
 }
 
 std::array<MenuFormatParams, 5> menu_params_snapshot(const AwjStudio& app,

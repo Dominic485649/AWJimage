@@ -595,6 +595,9 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
   const bool is_jpgli = format == L"jpgli";
   const bool is_png = format == L"png";
   if (!params.quality_text.empty()) append_option(command, L"--quality", params.quality_text);
+  if (!is_png && !params.visual_quality_text.empty()) append_option(command, L"--visual-quality", params.visual_quality_text);
+  if (!params.threads_text.empty()) append_option(command, L"--threads", params.threads_text);
+  if (!params.memory_limit_text.empty()) append_option(command, L"--memory-limit", params.memory_limit_text);
   if ((is_avif || is_webp || is_jpgli || is_png) && !params.bit_depth_text.empty()) {
     append_option(command, L"--bit-depth", params.bit_depth_text);
   }
@@ -645,7 +648,7 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
 RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
-                                     std::span<const std::wstring> preset_names,
+                                     std::span<const PresetMenuSpec> preset_names,
                                      int slot, bool compatibility) {
   RegistrySchema schema{.plan = plan};
   schema.parent_roots.push_back(directory_parent_key());
@@ -692,13 +695,13 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
     const auto subtree = parent + L"\\shell";
     schema.keys.push_back(parent);
     schema.keys.push_back(subtree);
-    append_string_spec(schema.values, parent, L"MUIVerb", preset_names[index]);
+    append_string_spec(schema.values, parent, L"MUIVerb", preset_names[index].name);
     append_string_spec(schema.values, parent, L"Icon", icon);
     append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
     append_string_spec(schema.values, parent, std::wstring{kExtendedSubCommandsKey},
                        parent.substr(std::wstring_view{L"Software\\Classes\\"}.size()));
     for (const auto& spec : kCommands) {
-      if (spec.append_png_suffix) continue;
+      if (spec.append_png_suffix && !preset_names[index].avif_png_command) continue;
       const auto verb = subtree + L"\\" + std::wstring{spec.canonical_verb};
       const auto command_key = verb + L"\\command";
       schema.keys.push_back(verb);
@@ -709,8 +712,9 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
       auto command = quote_windows_arg(awj_exe.wstring(), true);
       append_arg(command, L"--shell-window");
       append_arg(command, L"--shell-convert");
-      append_option(command, L"--preset", preset_names[index]);
+      append_option(command, L"--preset", preset_names[index].name);
       append_option(command, L"--format", spec.format);
+      if (spec.append_png_suffix) append_arg(command, L"--append-png-suffix");
       append_option(command, L"--collision", L"number");
       command += L" -i \"%1\" %*";
       append_string_spec(schema.values, command_key, L"", std::move(command));
@@ -990,14 +994,15 @@ std::expected<int, std::string> active_slot() {
 
 std::expected<void, std::string> validate_request(const std::filesystem::path& exe,
                                                 const RegistrySchema& schema,
-                                                std::span<const std::wstring> names) {
+                                                std::span<const PresetMenuSpec> names) {
   std::error_code ec;
   if (!exe.is_absolute() || !std::filesystem::is_regular_file(exe, ec) || ec) {
     return std::unexpected{"右键菜单程序必须是存在的绝对路径普通文件。"};
   }
   if (names.size() > 10) return std::unexpected{"最多同时注入 10 个预设。"};
   std::set<std::wstring> unique;
-  for (const auto& name : names) {
+  for (const auto& preset : names) {
+    const auto& name = preset.name;
     auto normalized = name;
     std::ranges::transform(normalized, normalized.begin(), [](wchar_t c) { return std::towlower(c); });
     if (name.empty() || name.size() > 240 ||
@@ -1065,7 +1070,7 @@ std::expected<bool, std::string> is_installed(bool include_machine) {
 
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
-                                         std::span<const std::wstring> preset_names,
+                                         std::span<const PresetMenuSpec> preset_names,
                                          bool force_install, bool compatibility, bool rebuild) {
   RegistrationLock lock;
   if (!lock.held) return std::unexpected{"另一进程正在修改右键菜单，请稍后重试。"};
@@ -1139,7 +1144,7 @@ std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
 
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
                                        const MenuParams& menu_params,
-                                       std::span<const std::wstring> preset_names) {
+                                       std::span<const PresetMenuSpec> preset_names) {
   return reconcile(awj_exe, menu_params, preset_names, true);
 }
 
@@ -1167,7 +1172,7 @@ std::expected<void, std::string> remove() {
 
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe, const MenuParams& menu_params,
-    std::span<const std::wstring> preset_names, bool compatibility) {
+    std::span<const PresetMenuSpec> preset_names, bool compatibility) {
   auto installed = is_installed();
   if (!installed) return std::unexpected{installed.error()};
   if (!*installed) return std::optional<std::string>{};
@@ -1245,7 +1250,7 @@ RegistrySchema machine_schema(const std::filesystem::path& exe,
 
 std::expected<void, std::string> stage_user_menu(
     std::wstring_view id, bool machine, const std::filesystem::path& exe, const MenuParams& params,
-    std::span<const std::wstring> names, bool compatibility, bool remove_menu) {
+    std::span<const PresetMenuSpec> names, bool compatibility, bool remove_menu) {
   if (auto restored = recover(); !restored) return restored;
   StageScope scope;
   staged_id = id;

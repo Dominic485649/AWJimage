@@ -21,8 +21,11 @@ inline constexpr std::wstring_view shared_tree_reference = L"AWJimage.ContextMen
 
 struct FormatParams {
   std::wstring quality_text{};
+  std::wstring visual_quality_text{};
   std::wstring bit_depth_text{};
   std::wstring speed_text{};
+  std::wstring threads_text{};
+  std::wstring memory_limit_text{};
   int avif_encoder_index{};
   int avif_color_representation_index{};
   int chroma_index{};
@@ -46,6 +49,11 @@ struct FormatParams {
 };
 
 using MenuParams = std::array<FormatParams, 5>;
+
+struct PresetMenuSpec {
+  std::wstring name{};
+  bool avif_png_command{};
+};
 
 struct CommandSpec {
   std::wstring_view canonical_verb{};
@@ -104,16 +112,16 @@ std::wstring build_convert_command_line(const std::filesystem::path& awj_exe,
 RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
                                      const MenuParams& menu_params,
                                      const InstallPlan& plan,
-                                     std::span<const std::wstring> preset_names = {},
+                                     std::span<const PresetMenuSpec> preset_names = {},
                                      int slot = 0, bool compatibility = false);
 
 std::expected<InstallPlan, std::string> detect_install_plan();
 std::expected<void, std::string> install(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
-                                         std::span<const std::wstring> preset_names = {});
+                                         std::span<const PresetMenuSpec> preset_names = {});
 std::expected<void, std::string> reconcile(const std::filesystem::path& awj_exe,
                                          const MenuParams& menu_params,
-                                         std::span<const std::wstring> preset_names = {},
+                                         std::span<const PresetMenuSpec> preset_names = {},
                                          bool force_install = false,
                                          bool compatibility = false,
                                          bool rebuild = false);
@@ -125,13 +133,13 @@ std::expected<void, std::string> remove();
 std::expected<std::optional<std::string>, std::string> warning(
     const std::filesystem::path& awj_exe,
     const MenuParams& menu_params,
-    std::span<const std::wstring> preset_names = {}, bool compatibility = false);
+    std::span<const PresetMenuSpec> preset_names = {}, bool compatibility = false);
 std::expected<std::vector<std::wstring>, std::string> legacy_machine_commands();
 
 std::expected<bool, std::string> compatibility_installed();
 std::expected<void, std::string> stage_user_menu(
     std::wstring_view id, bool machine, const std::filesystem::path& exe, const MenuParams& params,
-    std::span<const std::wstring> names, bool compatibility, bool remove_menu);
+    std::span<const PresetMenuSpec> names, bool compatibility, bool remove_menu);
 std::expected<void, std::string> finish_user_menu(std::wstring_view id, bool commit);
 std::expected<void, std::string> stage_machine_menu(
     const std::filesystem::path& exe, const MenuParams& params,

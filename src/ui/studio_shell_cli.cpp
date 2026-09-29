@@ -291,10 +291,14 @@ awj::shell_context_menu::FormatParams shell_format_params(const MenuFormatParams
     return awj::wide_from_utf8(trim_copy(value));
   };
   const auto quality = parse_quality_field(params.quality_text);
+  const auto memory = text(params.memory_limit_text);
   return awj::shell_context_menu::FormatParams{
       .quality_text = quality ? std::to_wstring(*quality) : text(params.quality_text),
+      .visual_quality_text = text(params.visual_quality_text),
       .bit_depth_text = text(params.bit_depth_text),
       .speed_text = text(params.speed_text),
+      .threads_text = text(params.threads_text),
+      .memory_limit_text = memory.empty() ? std::wstring{} : memory + L"GiB",
       .avif_encoder_index = params.avif_encoder_index,
       .avif_color_representation_index = params.avif_color_representation_index,
       .chroma_index = params.chroma_index,
@@ -467,14 +471,33 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   return true;
 }
 
+std::expected<std::vector<awj::shell_context_menu::PresetMenuSpec>, std::string>
+injected_preset_menu_specs() {
+  auto catalog = awj::list_user_presets();
+  if (!catalog) return std::unexpected{catalog.error()};
+  std::vector<awj::shell_context_menu::PresetMenuSpec> specs;
+  for (const auto& preset : catalog->presets) {
+    if (!preset.shell_menu) continue;
+    specs.push_back({awj::wide_from_utf8(preset.name),
+                     preset.formats[0].menu_install_avif_png_command});
+  }
+  if (specs.size() > 10) return std::unexpected{"已注入预设超过 10 个，请修正预设配置。"};
+  return specs;
+}
+
 std::expected<void, std::string> synchronize_shell_context_menu(
     const std::array<MenuFormatParams, 5>& menu_params, bool force_install) {
   auto awj_exe = awj_exe_path_for_shell_menu();
   if (!awj_exe) return std::unexpected{awj_exe.error()};
-  auto names = awj::injected_user_preset_names();
+  auto names = injected_preset_menu_specs();
   if (!names) return std::unexpected{names.error()};
   auto compatibility = awj::shell_context_menu::compatibility_installed();
   if (!compatibility) return std::unexpected{compatibility.error()};
+  if (!force_install) {
+    auto installed = awj::shell_context_menu::is_installed(true);
+    if (!installed) return std::unexpected{installed.error()};
+    force_install = *installed;
+  }
   return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names,
                                            force_install, *compatibility);
 }
@@ -489,7 +512,7 @@ std::optional<std::string> shell_context_menu_warning(
   if (!awj_exe) {
     return "无法检查右键菜单程序路径，请移除后重新安装。";
   }
-  auto names = awj::injected_user_preset_names();
+  auto names = injected_preset_menu_specs();
   if (!names) return names.error();
   auto compatibility = awj::shell_context_menu::compatibility_installed();
   if (!compatibility) return compatibility.error();

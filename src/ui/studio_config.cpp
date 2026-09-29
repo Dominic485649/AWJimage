@@ -222,8 +222,11 @@ std::expected<void, std::string> write_studio_config_file(
     const auto& value = current.menu_params[i];
     const auto& fallback = defaults.menu_params[i];
     add_string(menu_config_key(prefix, "quality_text"), value.quality_text, fallback.quality_text);
+    add_string(menu_config_key(prefix, "visual_quality_text"), value.visual_quality_text, fallback.visual_quality_text);
     add_string(menu_config_key(prefix, "bit_depth_text"), value.bit_depth_text, fallback.bit_depth_text);
     add_string(menu_config_key(prefix, "speed_text"), value.speed_text, fallback.speed_text);
+    add_string(menu_config_key(prefix, "threads_text"), value.threads_text, fallback.threads_text);
+    add_string(menu_config_key(prefix, "memory_limit_text"), value.memory_limit_text, fallback.memory_limit_text);
     add_int(menu_config_key(prefix, "avif_encoder_index"), value.avif_encoder_index == 1 ? 2 : value.avif_encoder_index,
             fallback.avif_encoder_index == 1 ? 2 : fallback.avif_encoder_index);
     add_int(menu_config_key(prefix, "avif_color_representation_index"), value.avif_color_representation_index, fallback.avif_color_representation_index);

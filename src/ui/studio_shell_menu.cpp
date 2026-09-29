@@ -52,7 +52,7 @@ MenuResult apply_menu_change(const StudioConfigSnapshot& desired,
   auto previous = read_previous_config();
   if (!previous) return std::unexpected{previous.error()};
   auto exe = awj_exe_path_for_shell_menu();
-  auto names = awj::injected_user_preset_names();
+  auto names = injected_preset_menu_specs();
   if (!exe) return std::unexpected{exe.error()};
   if (!names) return std::unexpected{names.error()};
   auto prepared = shell_context_menu::prepare_menu_change(*exe,
@@ -93,13 +93,25 @@ MenuResult recover_shell_menu_config() {
 
 void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
                                const std::shared_ptr<UiState>& state,
-                               bool install, bool remove) {
+                               bool install, bool remove,
+                               std::optional<bool> png_suffix_only) {
   auto app = weak.lock();
-  if (!app || state->menu_operation_active) return;
-  if (reject_when_worker_active(**app, state, "当前任务正在运行，无法修改右键菜单。")) return;
+  if (!app) return;
+  const auto restore_png_toggle = [&] {
+    if (!png_suffix_only || !state->last_config_snapshot) return;
+    const bool saved = state->last_config_snapshot->menu_params[0].install_avif_png_command;
+    (*app)->set_menu_install_avif_png_command(saved);
+    state->menu_params[0].install_avif_png_command = saved;
+  };
+  if (state->menu_operation_active) { restore_png_toggle(); return; }
+  if (reject_when_worker_active(**app, state, "当前任务正在运行，无法修改右键菜单。")) {
+    restore_png_toggle();
+    return;
+  }
   store_current_menu_params(**app, *state);
   const auto previous = state->last_config_snapshot.value_or(capture_studio_config(**app, state.get()));
-  const auto desired = capture_studio_config(**app, state.get());
+  auto desired = png_suffix_only ? previous : capture_studio_config(**app, state.get());
+  if (png_suffix_only) desired.menu_params[0].install_avif_png_command = *png_suffix_only;
   std::optional<awj::UserPreset> selected_preset;
   if (install && state->parameter_preset_index > 1 &&
       state->parameter_preset_index <= static_cast<int>(state->user_presets.size()) + 1) {
@@ -111,6 +123,7 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
   }
   auto validated = validate_menu_params(desired.menu_params);
   if (!validated && !remove) {
+    restore_png_toggle();
     (*app)->set_shell_menu_compatibility(previous.shell_menu_compatibility);
     state->menu_preset_description = previous.menu_preset_description;
     if (state->parameter_preset_index == 1)
@@ -126,7 +139,7 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
   (*app)->set_menu_operation_active(true);
   try {
     state->menu_timer.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50},
-        [weak, weak_state, completion, previous, desired, install, remove] {
+        [weak, weak_state, completion, previous, desired, install, remove, png_suffix_only] {
       auto state = weak_state.lock();
       auto app = weak.lock();
       if (!state || !app) return;
@@ -142,6 +155,12 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
       state->menu_timer.stop();
       run_ui_callback(weak, "应用右键菜单失败", [&] {
         if (!*result) {
+          if (png_suffix_only) {
+            (*app)->set_menu_install_avif_png_command(
+                previous.menu_params[0].install_avif_png_command);
+            state->menu_params[0].install_avif_png_command =
+                previous.menu_params[0].install_avif_png_command;
+          }
           (*app)->set_shell_menu_compatibility(previous.shell_menu_compatibility);
           state->menu_preset_description = previous.menu_preset_description;
           if (state->parameter_preset_index == 1)
@@ -194,6 +213,7 @@ void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
       completion->result = std::move(result);
     });
   } catch (...) {
+    restore_png_toggle();
     state->menu_timer.stop();
     state->menu_operation_active = false;
     (*app)->set_menu_operation_active(false);

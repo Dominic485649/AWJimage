@@ -51,7 +51,7 @@ std::wstring active_tree() {
   return L"Software\\Classes\\" + read(menu::directory_parent_key(), L"ExtendedSubCommandsKey");
 }
 void healthy(const std::filesystem::path& exe, const menu::MenuParams& params,
-             std::span<const std::wstring> presets = {}) {
+             std::span<const menu::PresetMenuSpec> presets = {}) {
   auto warning = menu::warning(exe, params, presets);
   if (!warning) throw std::runtime_error(warning.error());
   if (*warning) throw std::runtime_error(**warning);
@@ -153,7 +153,7 @@ int wmain(int argc, wchar_t** argv) try {
     require(menu::reconcile(exe, params, {}, false, false, true));
     healthy(exe, params);
   }
-  const std::vector<std::wstring> compatibility_presets{L"测试预设"};
+  const std::vector<menu::PresetMenuSpec> compatibility_presets{{L"测试预设", false}};
   require(menu::reconcile(exe, params, compatibility_presets, false, true));
   check(*menu::compatibility_installed(), "compatibility registration not detected");
   check(read(menu::directory_parent_key(), L"SubCommands").ends_with(L";AWJImage.presets"),
@@ -209,17 +209,17 @@ int wmain(int argc, wchar_t** argv) try {
   check(!exists(L"Software\\Classes\\AWJimage.ContextMenu.v4.Transaction"), "recovered journal remains");
   check(!menu::install(exe.parent_path() / L"missing-AWJ.exe", params), "missing executable accepted");
   healthy(exe, next);
-  std::vector<std::wstring> names;
+  std::vector<menu::PresetMenuSpec> names;
   for (int count : {0, 1, 10, 11}) {
     names.clear();
-    for (int i = 0; i < count; ++i) names.push_back(L"预设 空格 " + std::to_wstring(i));
+    for (int i = 0; i < count; ++i) names.push_back({L"预设 空格 " + std::to_wstring(i), false});
     const auto result = menu::install(exe, next, names);
     if (count == 11) check(!result, "eleventh injected preset accepted");
     else { require(result); healthy(exe, next, names); }
   }
   names.pop_back();
   healthy(exe, next, names);
-  names.back() = names.front();
+  names.back().name = names.front().name;
   check(!menu::install(exe, next, names), "duplicate injected name accepted");
   require(menu::install(exe, next));
   wchar_t own_exe[32768]{};

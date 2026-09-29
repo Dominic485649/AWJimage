@@ -114,6 +114,9 @@ msgstr "The default sits at the balance point between speed and picture quality,
 msgid "资源限制"
 msgstr "Resource limits"
 
+msgid "右键菜单选项"
+msgstr "Context menu options"
+
 msgid "线程"
 msgstr "Threads"
 

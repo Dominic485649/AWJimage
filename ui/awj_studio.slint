@@ -81,7 +81,7 @@ export component AwjStudio inherits Window {
     in-out property <string> max-long-edge-text: "";
     in-out property <string> max-short-edge-text: "";
     in-out property <string> scale-percent-text: "";
-    in-out property <string> speed-text: "";
+    in-out property <string> speed-text: "5";
     in-out property <string> template-text: "";
     in-out property <bool> template-params-selected: false;
     in-out property <bool> template-date-selected: false;
@@ -130,8 +130,11 @@ export component AwjStudio inherits Window {
     in-out property <string> context-menu-warning: "";
     in-out property <int> menu-format-index: 0;
     in-out property <string> menu-quality-text: "";
+    in-out property <string> menu-visual-quality-text: "";
+    in-out property <string> menu-threads-text: "";
+    in-out property <string> menu-memory-limit-text: "";
     in-out property <string> menu-bit-depth-text: "";
-    in-out property <string> menu-speed-text: "";
+    in-out property <string> menu-speed-text: "5";
     in-out property <int> menu-avif-encoder-index: 0;
     in-out property <int> menu-avif-color-representation-index: 0;
     in-out property <int> menu-chroma-index: 0;
@@ -144,6 +147,11 @@ export component AwjStudio inherits Window {
     in-out property <bool> menu-strip-metadata: false;
     in-out property <bool> menu-allow-wic-fallback: true;
     in-out property <bool> menu-close-on-finish: true;
+    in-out property <bool> parameter-menu-strip-metadata: false;
+    in-out property <bool> parameter-menu-allow-wic-fallback: true;
+    in-out property <bool> parameter-menu-close-on-finish: true;
+    in-out property <bool> parameter-menu-install-avif-png-command: false;
+    callback png-suffix-toggled(bool);
     in-out property <int> menu-size-limit-index: 0;
     in-out property <string> menu-max-width-text: "";
     in-out property <string> menu-max-height-text: "";
@@ -605,6 +613,12 @@ export component AwjStudio inherits Window {
     context-menu-warning-clicked() => { root.context-menu-warning-clicked(); }
     context-menu-warning: root.context-menu-warning;
     shell-menu-injection-supported: root.shell-menu-injection-supported;
+    menu-strip-metadata <=> root.parameter-menu-strip-metadata;
+    menu-allow-wic-fallback <=> root.parameter-menu-allow-wic-fallback;
+    menu-close-on-finish <=> root.parameter-menu-close-on-finish;
+    menu-install-avif-png-command <=> root.parameter-menu-install-avif-png-command;
+    wic-ui-visible: root.wic-ui-visible;
+    png-suffix-toggled(checked) => { root.png-suffix-toggled(checked); }
     panel-bg : root.panel-bg;
     panel-border : root.panel-border;
     parameter-control-height : root.parameter-control-height;
@@ -673,6 +687,9 @@ export component AwjStudio inherits Window {
     menu-scale-percent-text <=> root.menu-scale-percent-text;
     menu-max-width-text <=> root.menu-max-width-text;
     menu-quality-text <=> root.menu-quality-text;
+    menu-visual-quality-text <=> root.menu-visual-quality-text;
+    menu-threads-text <=> root.menu-threads-text;
+    menu-memory-limit-text <=> root.menu-memory-limit-text;
     menu-size-limit-index <=> root.menu-size-limit-index;
     menu-speed-text <=> root.menu-speed-text;
     menu-strip-metadata <=> root.menu-strip-metadata;
@@ -688,6 +705,8 @@ export component AwjStudio inherits Window {
     text-muted : root.text-muted;
     text-soft : root.text-soft;
     wic-ui-visible <=> root.wic-ui-visible;
+    shell-menu-injection-supported: root.shell-menu-injection-supported;
+    png-suffix-toggled(checked) => { root.png-suffix-toggled(checked); }
 }
                 if root.selected-page == 1: QueuePage {
     language-index: root.language-index;

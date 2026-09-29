@@ -34,9 +34,12 @@ std::expected<void, std::string> synchronize_shell_context_menu(
     bool force_install = false);
 awj::shell_context_menu::MenuParams shell_menu_params(
     const std::array<MenuFormatParams, 5>& params);
+std::expected<std::vector<awj::shell_context_menu::PresetMenuSpec>, std::string>
+injected_preset_menu_specs();
 void request_shell_menu_change(slint::ComponentWeakHandle<AwjStudio> weak,
                                const std::shared_ptr<UiState>& state,
-                               bool install, bool remove);
+                               bool install, bool remove,
+                               std::optional<bool> png_suffix_only = std::nullopt);
 std::expected<void, std::string> recover_shell_menu_config();
 std::expected<void, std::string> remove_shell_context_menu();
 std::optional<std::string> shell_context_menu_warning(

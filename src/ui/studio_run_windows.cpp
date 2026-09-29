@@ -849,6 +849,40 @@ int run_studio_ui(const wchar_t* health_event,
       });
     });
 
+    app->on_png_suffix_toggled([weak, state](bool checked) {
+      run_ui_callback(weak, "保存 .png 后缀选项失败", [&] {
+        auto app = weak.lock();
+        if (!app) return;
+        if (state->parameter_preset_index == 1) {
+          awj::studio::request_shell_menu_change(weak, state, false, false, checked);
+          return;
+        }
+        const int index = state->parameter_preset_index - 2;
+        if (index < 0 || index >= static_cast<int>(state->user_presets.size())) return;
+        const auto old_value = state->user_presets[static_cast<std::size_t>(index)]
+                                   .formats[0].menu_install_avif_png_command;
+        if (state->menu_operation_active ||
+            reject_when_worker_active(**app, state, "当前任务正在运行，无法修改右键菜单。")) {
+          (*app)->set_parameter_menu_install_avif_png_command(old_value);
+          return;
+        }
+        auto preset = state->user_presets[static_cast<std::size_t>(index)];
+        preset.formats[0].menu_install_avif_png_command = checked;
+        auto saved = awj::save_user_preset(preset, true, [state] {
+          return synchronize_shell_context_menu(state->menu_params);
+        });
+        if (!saved) {
+          (*app)->set_parameter_menu_install_avif_png_command(old_value);
+          (*app)->set_status_text(to_shared(saved.error()));
+          return;
+        }
+        state->user_presets[static_cast<std::size_t>(index)] = std::move(preset);
+        state->parameter_preset_params[0].menu_install_avif_png_command = checked;
+        (*app)->set_context_menu_warning({});
+        (*app)->set_status_text(to_shared(".png 后缀选项已保存。"));
+      });
+    });
+
     app->on_shell_menu_compatibility_requested([weak, state] {
       run_ui_callback(weak, "切换右键菜单模式失败", [&] {
         awj::studio::request_shell_menu_change(weak, state, false, false);

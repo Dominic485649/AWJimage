@@ -38,6 +38,10 @@ int main() try {
   preset.formats[0].visual_quality = 87;
   preset.formats[0].image_size_limit.mode = awj::ImageSizeLimitMode::manual;
   preset.formats[0].image_size_limit.scale_percent = 80;
+  preset.formats[0].menu_strip_metadata = true;
+  preset.formats[0].menu_allow_wic_fallback = false;
+  preset.formats[0].menu_close_on_finish = false;
+  preset.formats[0].menu_install_avif_png_command = true;
   preset.formats[2].jxl_jpeg_lossless = false;
   preset.shell_menu = true;
   preset.source_path = require(awj::save_user_preset(preset, false));
@@ -50,13 +54,25 @@ int main() try {
   check(!awj::find_user_preset("照片 测试"), "old name survived rename");
   auto shell = require(awj::parse_arguments_with_user_preset({L"--shell-convert", L"--preset",
       L"重命名 测试", L"--format", L"avif", L"-i", L"input.png"}));
+#ifdef _WIN32
+  check(shell.config.visual_quality == 87 && shell.config.max_jobs == 3 &&
+      shell.config.memory_limit_bytes == 1536ull * 1024 * 1024 &&
+      shell.config.strip_metadata && !shell.config.allow_wic_fallback &&
+      !shell.config.shell_close_on_finish,
+      "shell preset lost format resources or menu options");
+#else
   check(!shell.config.visual_quality && shell.config.max_jobs == awj::default_max_jobs() &&
-      shell.config.memory_limit_bytes == 0, "shell preset retained explicit resource/visual quality controls");
+      shell.config.memory_limit_bytes == 0, "Linux shell resource behavior changed");
+#endif
   const auto reread = require(awj::load_user_preset_file(original_path));
   check(reread.formats[0].memory_limit_bytes == preset.formats[0].memory_limit_bytes &&
       reread.formats[0].visual_quality == 87 && reread.formats[0].max_jobs == 3 &&
       reread.formats[0].image_size_limit.scale_percent.value_or(0) == 80 &&
-      reread.formats[2].jxl_jpeg_lossless == false,
+      reread.formats[2].jxl_jpeg_lossless == false &&
+      reread.formats[0].menu_install_avif_png_command &&
+      reread.formats[0].menu_strip_metadata &&
+      !reread.formats[0].menu_allow_wic_fallback &&
+      !reread.formats[0].menu_close_on_finish,
       "shell execution rewrote source preset values");
   const auto duplicate = directory / "duplicate.jsonc";
   fs::copy_file(original_path, duplicate);

@@ -63,9 +63,17 @@ export component ParameterForm inherits VerticalLayout {
     in property <color> text-strong;
     in-out property <string> threads-text;
     in-out property <string> visual-quality-text;
+    in property <bool> full-menu-parameters: false;
+    in property <bool> wic-ui-visible: true;
+    in-out property <bool> menu-strip-metadata;
+    in-out property <bool> menu-allow-wic-fallback;
+    in-out property <bool> menu-close-on-finish;
+    in-out property <bool> menu-install-avif-png-command;
+    callback png-suffix-toggled(bool);
 
     in property <bool> menu-mode: false;
-    property <bool> menu-actions-visible: root.menu-mode || (root.shell-menu-injection-supported && root.parameter-preset-index > 1);
+    property <bool> menu-actions-visible: root.menu-mode || root.shell-menu-injection-supported;
+    property <bool> menu-options-visible: root.menu-mode || (root.shell-menu-injection-supported && root.parameter-preset-index > 1);
     property <length> install-button-width: install-label.preferred-width + 24px;
     property <length> remove-button-width: remove-label.preferred-width + 24px;
     property <length> warning-width: root.context-menu-warning.is-empty ? 0px : 160px;
@@ -82,7 +90,7 @@ export component ParameterForm inherits VerticalLayout {
         install-label := Text { text: @tr("安装右键菜单"); font-size: 13px; font-weight: 500; }
         remove-label := Text { text: @tr("移除右键菜单"); font-size: 13px; font-weight: 500; }
     }
-    if !root.menu-mode: toolbar := Rectangle {
+    toolbar := Rectangle {
         horizontal-stretch: 1;
         property <bool> single-row: !root.menu-actions-visible || self.width >= root.action-toolbar-width + root.preset-toolbar-width + 10px;
         height: self.single-row ? 40px : 86px;
@@ -93,8 +101,8 @@ export component ParameterForm inherits VerticalLayout {
             width: root.action-toolbar-width;
             height: 40px;
             spacing: 10px;
-            SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running; width: root.install-button-width; height: 40px; clicked => { root.install-context-menu-requested(); } }
-            SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "danger"; enabled: !root.running; width: root.remove-button-width; height: 40px; clicked => { root.remove-context-menu-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: @tr("安装右键菜单"); variant: "outline"; enabled: !root.running && root.parameter-preset-index > 0; width: root.install-button-width; height: 40px; clicked => { root.install-context-menu-requested(); } }
+            SoftButton { dark-mode: root.dark-mode; text: @tr("移除右键菜单"); variant: "danger"; enabled: !root.running && root.parameter-preset-index > 0; width: root.remove-button-width; height: 40px; clicked => { root.remove-context-menu-requested(); } }
             if !root.context-menu-warning.is-empty: SoftButton {
                 width: root.warning-width;
                 height: 40px;
@@ -159,9 +167,9 @@ export component ParameterForm inherits VerticalLayout {
             }
         }
     }
-    if !root.menu-mode: Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; height: 36px; vertical-alignment: center; }
+    Text { text: @tr("常用参数"); color: root.text-strong; font-size: 15px; font-weight: 800; height: 30px; vertical-alignment: center; }
     HorizontalLayout {
-        min-height: 72px;
+        min-height: 64px;
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("编辑格式"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
@@ -177,29 +185,12 @@ export component ParameterForm inherits VerticalLayout {
         }
     }
 
-    if root.format-index == 0: HorizontalLayout {
-        min-height: 72px;
-        spacing: 10px;
-        cross-axis-alignment: center;
-        Text { text: @tr("编码器"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        SoftComboBox { accessible-name: @tr("AVIF 编码器"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.avif-encoder-options; current-index <=> root.avif-encoder-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
-        ParamHint {
-            horizontal-stretch: 1;
-            lead: @tr("保持“自动”就是最优解");
-            lead-color: root.hint-orange;
-            accent: @tr("AOM，超限自动使用 Grid");
-            accent-color: root.hint-blue;
-            detail: @tr("AOM 支持高位深与 420/422/444；超出单图能力时自动使用 AOM Grid，保留原尺寸。");
-            detail-color: root.text-muted;
-        }
-    }
-
     HorizontalLayout {
         min-height: 78px;
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("质量"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        LineEdit { accessible-label: @tr("质量"); text <=> root.quality-text; placeholder-text: (root.menu-mode || root.format-index == 4 || root.visual-quality-text.is-empty) ? "1-100/q90/0.9" : @tr("由视觉质量自动控制"); enabled: !root.running && (root.menu-mode || root.format-index == 4 || root.visual-quality-text.is-empty); width: root.parameter-control-width; opacity: !(root.menu-mode || root.format-index == 4 || root.visual-quality-text.is-empty) ? 0.56 : 1.0; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("质量"); text <=> root.quality-text; placeholder-text: ((root.menu-mode && !root.full-menu-parameters) || root.format-index == 4 || root.visual-quality-text.is-empty) ? "1-100/q90/0.9" : @tr("由视觉质量自动控制"); enabled: !root.running && ((root.menu-mode && !root.full-menu-parameters) || root.format-index == 4 || root.visual-quality-text.is-empty); width: root.parameter-control-width; opacity: !((root.menu-mode && !root.full-menu-parameters) || root.format-index == 4 || root.visual-quality-text.is-empty) ? 0.56 : 1.0; height: root.parameter-control-height; }
         ParamHint {
             horizontal-stretch: 1;
             lead: root.format-index == 3 ? @tr("1–100，越大质量越高；JPGLI 始终有损") : @tr("1–100，越大质量越高；100 为无损");
@@ -209,7 +200,7 @@ export component ParameterForm inherits VerticalLayout {
         }
     }
 
-    if !root.menu-mode && root.format-index != 4: HorizontalLayout {
+    if (!root.menu-mode || root.full-menu-parameters) && root.format-index != 4: HorizontalLayout {
         min-height: 64px;
         spacing: 10px;
         cross-axis-alignment: center;
@@ -239,9 +230,9 @@ export component ParameterForm inherits VerticalLayout {
         }
     }
 
-    if !root.menu-mode: Text { text: @tr("资源限制"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+    if !root.menu-mode || root.full-menu-parameters: Text { text: @tr("资源限制"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
 
-    if !root.menu-mode: HorizontalLayout {
+    if !root.menu-mode || root.full-menu-parameters: HorizontalLayout {
         min-height: 64px;
         spacing: 10px;
         cross-axis-alignment: center;
@@ -258,7 +249,7 @@ export component ParameterForm inherits VerticalLayout {
         }
     }
 
-    if !root.menu-mode: HorizontalLayout {
+    if !root.menu-mode || root.full-menu-parameters: HorizontalLayout {
         min-height: 64px;
         spacing: 10px;
         cross-axis-alignment: center;
@@ -351,7 +342,7 @@ export component ParameterForm inherits VerticalLayout {
     if root.format-index == 0 || root.format-index == 3: Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
 
     if root.format-index == 0: HorizontalLayout {
-        min-height: 56px;
+        min-height: 64px;
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("位深"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
@@ -436,6 +427,20 @@ export component ParameterForm inherits VerticalLayout {
         }
     }
 
+    if root.menu-options-visible: Text { text: @tr("右键菜单选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+    if root.menu-options-visible: HorizontalLayout {
+        spacing: 10px;
+        CheckBox { text: @tr("移除元数据"); checked <=> root.menu-strip-metadata; enabled: !root.running; }
+        if root.wic-ui-visible: CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.menu-allow-wic-fallback; enabled: !root.running; }
+        CheckBox { text: @tr("完成后关闭窗口"); checked <=> root.menu-close-on-finish; enabled: !root.running; }
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+    }
+    if root.menu-options-visible && root.format-index == 0: HorizontalLayout {
+        height: 40px;
+        CheckBox { text: @tr("额外添加 .png 后缀"); checked <=> root.menu-install-avif-png-command; enabled: !root.running; toggled => { root.png-suffix-toggled(self.checked); } }
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+    }
+
 }
 
 export component ParameterPage inherits Rectangle {
@@ -498,6 +503,12 @@ export component ParameterPage inherits Rectangle {
     in property <color> text-strong;
     in-out property <string> threads-text;
     in-out property <string> visual-quality-text;
+    in property <bool> wic-ui-visible: true;
+    in-out property <bool> menu-strip-metadata;
+    in-out property <bool> menu-allow-wic-fallback;
+    in-out property <bool> menu-close-on-finish;
+    in-out property <bool> menu-install-avif-png-command;
+    callback png-suffix-toggled(bool);
 
     horizontal-stretch: 1;
     vertical-stretch: 1;
@@ -559,6 +570,12 @@ export component ParameterPage inherits Rectangle {
             text-strong : root.text-strong;
             threads-text <=> root.threads-text;
             visual-quality-text <=> root.visual-quality-text;
+            wic-ui-visible: root.wic-ui-visible;
+            menu-strip-metadata <=> root.menu-strip-metadata;
+            menu-allow-wic-fallback <=> root.menu-allow-wic-fallback;
+            menu-close-on-finish <=> root.menu-close-on-finish;
+            menu-install-avif-png-command <=> root.menu-install-avif-png-command;
+            png-suffix-toggled(checked) => { root.png-suffix-toggled(checked); }
             combo-popup-finished() => { root.combo-popup-finished(); }
             combo-popup-requested() => { root.combo-popup-requested(); }
             open-preset-editor() => { root.open-preset-editor(); }

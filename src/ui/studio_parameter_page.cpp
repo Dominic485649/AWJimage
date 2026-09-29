@@ -119,6 +119,17 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
   const auto quality = parse_quality_field(params.quality_text);
   if (!quality) return std::unexpected{quality.error()};
   cfg.quality = *quality;
+  if (format != awj::OutputFormat::png) {
+    const auto visual_quality = parse_visual_quality_field(params.visual_quality_text);
+    if (!visual_quality) return std::unexpected{visual_quality.error()};
+    cfg.visual_quality = *visual_quality;
+  }
+  const auto jobs = parse_jobs_field(params.threads_text);
+  if (!jobs) return std::unexpected{jobs.error()};
+  cfg.max_jobs = *jobs;
+  const auto memory = parse_memory_limit_field(params.memory_limit_text);
+  if (!memory) return std::unexpected{memory.error()};
+  cfg.memory_limit_bytes = *memory;
 
   if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
       format == awj::OutputFormat::jpgli || format == awj::OutputFormat::png) {
@@ -177,6 +188,10 @@ MenuFormatParams default_menu_params_for_index(int index) {
   const auto format = output_format_from_index(index);
   MenuFormatParams params{};
   params.quality_text = text_from_int(awj::default_quality_for(format));
+  if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
+      format == awj::OutputFormat::jxl) {
+    params.speed_text = text_from_int(awj::default_speed_for(format));
+  }
   if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
     params.bit_depth_text = text_from_int(awj::encoding_defaults::default_webp_bit_depth);
   }
@@ -227,6 +242,10 @@ ParameterFormatParams capture_parameter_params_from_ui(const AwjStudio& app) {
       .jxl_jpeg_lossless = app.get_jxl_jpeg_lossless(),
       .threads_text = shared_to_string(app.get_threads_text()),
       .memory_limit_text = shared_to_string(app.get_memory_limit_text()),
+      .menu_strip_metadata = app.get_parameter_menu_strip_metadata(),
+      .menu_allow_wic_fallback = app.get_parameter_menu_allow_wic_fallback(),
+      .menu_close_on_finish = app.get_parameter_menu_close_on_finish(),
+      .menu_install_avif_png_command = app.get_parameter_menu_install_avif_png_command(),
       .size_limit_index = app.get_size_limit_index(),
       .max_width_text = shared_to_string(app.get_max_width_text()),
       .max_height_text = shared_to_string(app.get_max_height_text()),
@@ -257,6 +276,10 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_jxl_jpeg_lossless(params.jxl_jpeg_lossless);
   app.set_threads_text(to_shared(params.threads_text));
   app.set_memory_limit_text(to_shared(params.memory_limit_text));
+  app.set_parameter_menu_strip_metadata(params.menu_strip_metadata);
+  app.set_parameter_menu_allow_wic_fallback(params.menu_allow_wic_fallback);
+  app.set_parameter_menu_close_on_finish(params.menu_close_on_finish);
+  app.set_parameter_menu_install_avif_png_command(params.menu_install_avif_png_command);
   app.set_size_limit_index(params.size_limit_index);
   app.set_max_width_text(to_shared(params.max_width_text));
   app.set_max_height_text(to_shared(params.max_height_text));
