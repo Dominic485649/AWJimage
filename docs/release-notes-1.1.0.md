@@ -39,8 +39,22 @@ Windows 程序由 MSVC（Visual Studio 18 2026）x64、
 测试接口（`BUILD_TESTING=OFF`）。发行验证中，Windows 非侵入式 CTest
 52/52、Linux CTest 33/33 通过。
 
-源码提交与 tag 以正式发布构建为准。
+源码提交 `26b07c852fe2a51ad7a0bdb796ab7b89b16f8f3d`（tag `1.1.0`）。
 
 ## 发行归档
 
-最终归档大小、SHA-256 与逐成员校验将在同一干净 tag 的双平台构建完成后填入。
+归档已通过 `7z t`、精确成员集合、全新解压逐文件 SHA-256 与 `--version`/`--help`
+检查；Linux 解压后的 `AWJ` 保留可执行位。
+
+| 归档 | 精确内容 | 大小 | SHA-256 |
+| --- | --- | ---: | --- |
+| AWJ_Win.7z | AWJ.exe、AWJ.com、LICENSE、NOTICE.txt | 11,730,825 | `a1bf56e6ac03726cde6aea9d5750076d35f7a80dbeace0260361ad9f6a794524` |
+| AWJ_Linux.7z | AWJ、LICENSE、NOTICE.txt | 19,183,288 | `ef3c128e6c75742c61aeecd72e58a6051841e0dca0d87bb99b4aab94bb159d8c` |
+
+成员校验：
+
+| 成员 | 大小 | SHA-256 |
+| --- | ---: | --- |
+| Windows `AWJ.exe` | 41,695,232 | `86195dcd80311c0ef5b0cfc0770511b5e36c8bd43ac1db10e3127578fb9f4b88` |
+| Windows `AWJ.com` | 450,048 | `897b0a8b5c50b2630356638b58c4a2e0542ba39b2d1b614abe189ac300c64d6d` |
+| Linux `AWJ` | 66,460,272 | `db492a89afcb1b8668f46e4cd2340efbe01e2537f2a64d407caf79495f686df1` |

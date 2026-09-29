@@ -1,6 +1,31 @@
 # 1.1.0 开发与验证记录
 
-状态：已形成当前唯一未签名候选，等待用户审核；本文不代表发布许可。
+状态：1.1.0 正式版已由同一干净 tag 构建、签名并完成本地归档验证。
+以下开发与候选记录按时间保留；最终结论以本节为准。
+
+## 正式版验证（2026-09-29）
+
+- Windows 与原生 Linux 发行构建均来自提交
+  `26b07c852fe2a51ad7a0bdb796ab7b89b16f8f3d`（tag `1.1.0`），版本均为
+  `AWJimage 1.1.0`。Windows Release 为 AVX2/IPO，Linux Release 为
+  x86-64-v3/IPO；发行配置 `BUILD_TESTING=OFF`。
+- 同 tag 的独立测试构建：Windows 非侵入式 CTest **52/52**，Linux CTest
+  **33/33**。Windows 排除真实屏幕捕获和会更改 Explorer 菜单的集成测试。
+  Windows 日志为 `build/evidence/1.1.0/final-windows-tests.log`，Linux 日志已
+  从原生构建目录逐文件核对哈希后复制到同一 evidence 目录。
+- 原生 Linux 打包与 Windows 正式打包通过固定成员、`7z t`、全新解压逐文件
+  SHA-256、程序版本与帮助命令验证；Linux `AWJ` 解压后仍可执行。归档大小和
+  哈希见 [正式发布说明](release-notes-1.1.0.md)。
+- v2 更新清单 sequence **11**，stable 渠道仅包含 1.1.0，使用已授权且未撤销的
+  `release-2026` 密钥签名；清单及兼容别名均通过签名校验，所有归档和成员的
+  大小、SHA-256 与清单一致。清单有效期至 2027-01-27T11:52:22Z。
+- `bin/1.1.0` 的六个发行文件已先备份到
+  `build/evidence/1.1.0/deployment-backup-20260929-final/` 再替换，并逐项核对哈希；
+  用户配置、预设与日志未改动。
+- GitHub 正式版只上传 `AWJ_Win.7z` 与 `AWJ_Linux.7z`。草稿资产回下载及正式版
+  公开 URL 下载均与本地归档 SHA-256 完全一致，`7z t` 均通过。
+- 真实跨窗口 Explorer 拖放、完整人工 UI 验收、100k 文件 GUI 转换和通过公网
+  自动更新安装的端到端流程未在本轮重复执行。
 
 ## 基线（2026-09-20）
 
@@ -151,7 +176,7 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
 相关日志为 `native-cli-full-{build,ctest}.log`、`native-argv-{build,ctest}.log`，
 位于独立 Linux 开发目录；Windows 日志位于本地 evidence 目录。
 
-## CPU / IPO（进行中）
+## CPU / IPO（开发阶段）
 
 - Windows Release preset 和 release.ps1 统一 AVX2 / IPO 默认 ON，
   保留 `-EnableLto:$false` 用于对照；显式请求 IPO 但工具链不支持时配置失败。
@@ -165,7 +190,7 @@ Linux CLI 使用内部 surrogate escape 保留非 UTF-8 参数字节，仅在路
 - `scripts/package-release.ps1 -SkipManifests` 与 `scripts/package-linux-release.sh --candidate-head <候选提交完整 SHA>` 的固定成员、归档完整性和解压哈希检查通过。完整产物和限制见 `build/evidence/1.1.0/candidate-report.md`。
 - 当前源码测试构建 CTest 为 54/54；最终发行 cache 按计划关闭测试构建。未执行正式 tag、推送、签名 manifest 或公开发布。
 - 真实跨窗口 Explorer 拖放仍缺人工验收；100k GUI 转换的短暂未响应和取消来源仍作为已知限制保留。
-- 用户审核唯一候选后，才执行正式 tag、推送、签名 manifest 和发布。
+- 这一阶段仍在等待用户审核；正式 tag 与签名结果见文首。
 
 ## 补充静态分析
 
@@ -326,4 +351,4 @@ Windows 从普通预设安装菜单时只把磁盘上已保存的该预设标记
 - 原生 Linux 候选目录 `/home/dominic/awjimage-1.1.0-candidate` 从相同代码内容建立仅限本地的干净快照 `035e07f3f8a49aefb38ec3b6e8fda50ad9ca2707`，Release 使用 x86-64-v3、IPO/LTO、`BUILD_TESTING=OFF`。`readelf -d` 仅列出 Vulkan、m、fontconfig、c 和动态加载器；没有 `libstdc++` 或 `libgcc_s` 动态依赖。该快照与 Windows 的提交标识不同，公开发布仍须从同一干净 tag 重建。
 - Windows 测试构建后的非侵入式 CTest 为 **52/52**，排除 `raw_wgc_stdin_core`、`shell_context_menu_explorer`；包括 UI smoke、队列压力与右键菜单注册测试。原生 Linux 测试构建后 CTest 为 **33/33**，包括 UI smoke 与原生路径测试。日志分别在 `build/evidence/1.1.0/release-prep-windows-ctest.log`、`release-prep-linux-ctest.log`。
 - Linux 原生 `package-linux-release.sh` 和 Windows `package-release.ps1 -SkipManifests` 均通过。Windows 包严格四文件、Linux 包严格三文件；两包通过 `7z t`、全新解压逐成员哈希及 `--version`/`--help`。Linux 包从 WSL 复制到 Windows 后 SHA-256 保持一致。最终本地归档已复制到 `bin/1.1.0/release/`，完整大小与哈希见发布说明草稿。
-- 仍未执行正式签名 manifest、打 tag、推送、GitHub 发布、公开下载复核及真实安装更新端到端验证。Explorer 跨窗口拖放、字体鼠标轨迹和 100k 文件 GUI 全流程仍待人工验收。
+- 此本地候选阶段尚未执行正式签名 manifest、打 tag、推送、GitHub 发布、公开下载复核及真实安装更新端到端验证；正式版结果见文首。Explorer 跨窗口拖放和 100k 文件 GUI 全流程仍待人工验收。
