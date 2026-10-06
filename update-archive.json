@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 11,
+  "sequence": 12,
   "key_id": "release-2026",
-  "issued_at": "2026-09-29T11:52:22Z",
-  "expires_at": "2027-01-27T11:52:22Z",
+  "issued_at": "2026-10-06T16:49:39Z",
+  "expires_at": "2027-02-03T16:49:39Z",
   "entries": [
     {
-      "version": "1.1.0",
+      "version": "1.2.0",
       "channel": "stable",
-      "published_at": "2026-09-29T11:52:22Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.1.0",
+      "published_at": "2026-10-06T16:49:39Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.0",
       "minimum_updater_version": "1.0.4",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Win.7z",
-            "size": 11730825,
-            "sha256": "a1bf56e6ac03726cde6aea9d5750076d35f7a80dbeace0260361ad9f6a794524"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
+            "size": 11934920,
+            "sha256": "6b97c5699b584d7eb632bb36337f8d359ff3fdd1ae9a93e7635507a9cebffb21"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
               "size": 450048,
-              "sha256": "897b0a8b5c50b2630356638b58c4a2e0542ba39b2d1b614abe189ac300c64d6d"
+              "sha256": "4a71f0c99cf35b79f7084fc3dddc6ec2651b3e5b899793eefe813305c7a3ace3"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Win.7z",
-              "size": 41695232,
-              "sha256": "86195dcd80311c0ef5b0cfc0770511b5e36c8bd43ac1db10e3127578fb9f4b88"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
+              "size": 42322432,
+              "sha256": "ae2bd8cfdd8a63c66112beda58f2426ca05c44091ca22efc09a6eb57fbc729b1"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Win.7z",
-              "size": 128364,
-              "sha256": "661c0da5c43dc08cb6e23d3ee54ebe36e460a55771537fac6639712ed15880ef"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
+              "size": 142168,
+              "sha256": "fe068ded1d9ac895da6b741500d228b0d598bfade14bcf9f7a1f4eb807ca012d"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Linux.7z",
-            "size": 19183288,
-            "sha256": "ef3c128e6c75742c61aeecd72e58a6051841e0dca0d87bb99b4aab94bb159d8c"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
+            "size": 19455350,
+            "sha256": "dde97141f9bf111a7c6bc072f3a212369c6017349eb210d335f89757232c8985"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Linux.7z",
-              "size": 66460272,
-              "sha256": "db492a89afcb1b8668f46e4cd2340efbe01e2537f2a64d407caf79495f686df1"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
+              "size": 67516784,
+              "sha256": "2db767160c05569d168619e9441ef6167b82c07ab2a45299246847c85dce094c"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
               "size": 34523,
               "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.1.0/AWJ_Linux.7z",
-              "size": 125771,
-              "sha256": "238ea043c9e348a4cc5df54b0227327f186505baa018883b906176838a73fe81"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
+              "size": 139580,
+              "sha256": "ae5ede84a8a9f464113986e3353b39b9f7b166a26d2e540d29d6fb69729b58cb"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "- 参数页内置默认也显示禁用的右键菜单安装/移除按钮。右键菜单预设采用与内置默认相同的常用参数、资源限制、格式高级选项结构；右键菜单选项与格式高级选项同级，只在可用预设中显示。调整首行标签与控件垂直居中、分组间距和顶部留白。\n- AVIF 仅保留 AOM，因此隐藏“编码器”行；速度默认值直接显示 5。点击额外添加 `.png` 后缀时保存该选项：已安装的右键菜单自动同步，未安装时不注入；失败恢复原选项。\n- Windows 右键菜单预设及已注入的用户预设保留视觉质量、线程、内存等设置，并在右键命令中应用相应资源限制；用户预设的菜单选项随预设保存。Linux 保留相应预设字段，但不启用 Windows 菜单注册。\n\n- Studio 参数页统一使用预设下拉框：内置默认、右键菜单、普通用户预设依次排列。右键菜单作为不可删除的特殊预设，名称固定、简介可编辑；保存时写入菜单配置并同步已安装菜单。队列仍仅使用普通预设。\n- 队列的六个命名按钮在最窄窗口保持单行和原有宽度；右键菜单操作靠左、预设操作靠右，窄窗口将预设操作移至下一行，常用参数排在其后。\n- 参数设置的灰色说明最多显示四行，过长内容在末行省略；保存按钮使用蓝色，删除、移除菜单和清空队列按钮使用红色。\n- 更新成功且新版本通过启动健康检查、事务提交后，清空 Windows `%LOCALAPPDATA%\\AWJimage` 的全部旧更新内容；普通启动、失败和回滚均不清理。字体下拉列表的鼠标悬停不再牵动滚动位置；设置页宽布局将较小的“检查更新”按钮移至“更新后显示更新日志”右侧。\n- 升级至 Slint 1.18.0，收束版本补丁并精简未使用的运行时功能；保留 software、FemtoVG、accessibility，以及 PNG/JPEG/SVG 资源加载。\n- 原生拖放使用结构化文件路径。Linux 的导入、队列去重、输出命名、冲突处理和 CLI 保留原生路径字节，支持空格、换行和非 UTF-8 文件名；文件选择器、目录打开和字体枚举改为 argv 进程调用。\n- Windows 开始转换直接构建编码输入，避免复制完整界面队列；100k 项开发样本的私有内存峰值减少约 50.6 MiB。配置原子写入失败时先关闭文件句柄再清理临时文件。\n- 设置页补充手动检查更新，检查期间禁用重复操作。清理旧 v1 界面缓存字段，保留 v2 防重放和 keyring 状态；预设迁移覆盖旧 optional 数组格式、非法类型拒绝及重复保存幂等。\n- 新生成的稳定版 v2 archive manifest 仅保留当前目标；预发布还保留最新 stable 声明及其撤销状态。旧客户端兼容入口、签名验证和归档安全校验保持不变。\n- Windows Release 最低 CPU 要求为 AVX2，Linux 为 x86-64-v3；统一启用 IPO/LTO，工具链不支持时拒绝静默降级。编码色彩、HDR、色度、Grid 和无损路径语义不变。",
-        "en": "- The built-in preset now shows disabled Install/Remove context menu actions. The context menu preset shares the Common parameters, Resource limits, and Advanced format options structure with the built-in preset; Context menu options form a peer section shown only for applicable presets. The first controls are vertically centered and section spacing is consistent.\n- AVIF uses AOM only, so the Encoder row is hidden; the Speed field displays its default value of 5. Toggling the extra `.png` suffix saves the choice and refreshes an already installed context menu without installing one that is absent; failures restore the prior choice.\n- Windows context menu and injected user presets retain visual quality, thread, memory, and other parameters, and apply the relevant resource limits to shell commands. User presets persist their menu choices. Linux retains the preset fields without Windows registry integration.\n\n- Studio Parameters now uses one preset selector ordered Built-in default, Context menu, then user presets. The protected Context menu entry has a fixed name and editable description; saving it updates menu settings and synchronizes installed menus. Queue presets remain user presets only.\n- The six filename token buttons stay on one row at the minimum window width without growing. Context menu actions sit on the left, preset controls on the right; the preset controls move to the next row when space is tight, followed by Common parameters.\n- Muted parameter descriptions show at most four lines and end with an ellipsis when longer. Save actions are blue; delete, context menu removal, and clear queue actions are red.\n- After a successful Windows update, a healthy launch and committed transaction now clear all contents of `%LOCALAPPDATA%\\AWJimage`; ordinary starts, failures, and rollbacks do not. Hovering the font dropdown no longer moves its scroll position. In wide Settings layouts, the smaller Check for updates button sits beside Show changelog after update.\n- Updated to Slint 1.18.0, consolidated version-specific patches, and trimmed unused runtime features while retaining software rendering, FemtoVG, accessibility, and PNG/JPEG/SVG assets.\n- Native drag and drop now uses structured file paths. Linux import, queue deduplication, output naming, collision handling, and CLI preserve native path bytes, including spaces, newlines, and non-UTF-8 names. Pickers, directory opening, and font enumeration use argv-based process calls.\n- Windows starts conversion by constructing encoder inputs directly, avoiding a full UI queue copy. A 100k-item development sample reduced peak private memory by about 50.6 MiB. Failed atomic configuration writes close the file before removing the temporary file.\n- Added a manual update check in Settings and disabled repeated checks while one is active. Removed old v1 UI cache fields while retaining v2 replay protection and keyring state. Preset migration tests cover legacy optional arrays, invalid types, and repeatable saves.\n- Newly generated stable v2 archive manifests retain only the current target; prereleases also retain the latest stable declaration and its revocation status. Legacy client endpoints, signature verification, and archive validation remain unchanged.\n- Windows Release requires AVX2 and Linux requires x86-64-v3. Release configurations enable IPO/LTO and reject unsupported toolchains instead of silently disabling optimization. Color, HDR, chroma, Grid, and lossless-path semantics remain unchanged."
+        "zh-CN": "- 自动识别 JPEG、AVIF、HEIC/HEIF 的受支持 Gain Map，在线性光空间重建增强图像；无 Gain Map 时正常转换，损坏或不支持的增益图明确报错。\n- JPEG 自动区分 SDR 与 HDR。SDR 使用普通 JPEGli；HDR 使用线性 FP16 生成 Gain Map，由 JPEGli 分别编码 8-bit SDR 主图和多通道增益图，再封装为 ISO 21496-1 / MPF HDR JPEG。CLI 提供 `--jpeg-hdr auto|sdr|hdr`，界面和右键固定 auto。HDR JPEG 不支持视觉质量搜索，q100 不声明无损。\n- GIF、APNG、WebP 和 AVIF 序列转 AVIF 时自动保留动画，合成完整画布后顺序编码，保留 VFR、循环和透明。UI、预设和右键默认自动；动画 tune（auto/ssim/psnr）及最大关键帧间隔（默认 0 自动）仅在 CLI 提供；多帧不强制静态 IQ 或 Grid。\n- AVIF YUV + auto 对齐 avifenc：保留源 420/422/444，灰度及灰度加 alpha 使用 400，RGB/RGBA 和未知源使用 444；新增 AVIF 400 强制灰度选项，保留 alpha；无损和 444 不会自动改为 Identity。\n- Windows 正常和兼容右键菜单移除强制顶部/底部位置，重新安装时清除旧 Position，采用 Explorer 普通排序。\n- 新增 libultrahdr 2.0.2；升级 libaom 至 3.15.1、libheif 至 1.23.6、libpng 至 1.6.59、Slint 至 1.18.1，并锁定完整 revision、源码及本地补丁哈希。每个 AWJ 新版本重新审核当时最新稳定版，历史构建使用对应锁定记录。\n- 修正空 PNG chunk 的 CRC 计算；依赖归档更新采用新提取时间，避免旧对象混入升级后的编解码器。HDR 色调映射增加逐行取消检查。",
+        "en": "- Reconstruct supported JPEG, AVIF and HEIC/HEIF gain maps into enhanced pixels in linear light. Ordinary images use the normal conversion path; recognized invalid or unsupported gain maps fail explicitly.\n- JPEG automatically preserves HDR: JPEGli encodes the 8-bit SDR base and generated multichannel gain map, with FP16 HDR processing and ISO 21496-1 / MPF packaging. CLI supports `--jpeg-hdr auto|sdr|hdr`; Studio and context menus always use auto. HDR JPEG rejects visual-quality search, and q100 does not imply lossless JPEG.\n- Automatically preserve GIF, APNG, WebP and AVIF sequences when converting to AVIF. Composite full canvases before encoding, retain VFR timing, loops and alpha, with automatic tuning and keyframes in Studio, presets and context menus. Animation tune (auto/ssim/psnr) and maximum keyframe interval (0 by default) are CLI-only. Sequences do not force still-image IQ or Grid.\n- Match avifenc YUV + auto: retain source 420/422/444; use 400 for grayscale with or without alpha; use 444 for RGB/RGBA and unknown sources. Add forced monochrome AVIF 400 output while retaining alpha. Lossless and 444 do not implicitly select Identity.\n- Remove forced top/bottom placement from normal and compatibility Windows context menus; reinstalling clears the old Position value and uses ordinary Explorer ordering.\n- Add libultrahdr 2.0.2 and update libaom to 3.15.1, libheif to 1.23.6, libpng to 1.6.59 and Slint to 1.18.1. Lock dependency revisions, source archives and local patch hashes per AWJ version; review the latest stable dependencies when preparing each new version.\n- Fix CRC calculation for empty PNG chunks, use fresh extraction timestamps to prevent stale codec objects after dependency updates, and check cancellation between HDR tone-mapping rows."
       }
     }
   ]

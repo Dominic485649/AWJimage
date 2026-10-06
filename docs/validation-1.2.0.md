@@ -48,3 +48,22 @@ GIF、APNG、WebP 和 AVIF sequence 均经过真实 AWJ CLI；自动保留动画
 依赖身份和补丁锁定在 [codec-dependencies.json](../cmake/codec-dependencies.json)。Git tag `1.2.0` 固化程序源码；Windows 与原生 Linux 使用同一 tag 构建。发行验收检查归档完整性、精确成员、解压后 SHA-256、版本及帮助命令；发布后再次下载核对资产。结果记录在本地 `bin/1.2.0/release-evidence.json`。
 
 历史 release notes 和历史 changelog 保持原样。正式发行新增 1.2.0 tag、Release 及递增 sequence 的签名归档更新清单，兼容别名保持相同字节；不改历史 Release 资产。真实自动更新安装及实体 HDR 显示器验收未在本轮执行。
+
+## 正式发行资产
+
+发布时间（UTC）：10/06/2026 16:51:40。源码提交：`587c0745d9df31a7f81d8b2dec85d27a31a84b97`。签名归档更新清单 sequence **12**，发布密钥 `release-2026`，有效期 `10/06/2026 16:49:39` 至 `02/03/2027 16:49:39`。公开下载重新计算 SHA-256 并通过 7z 完整性检查。
+
+| 归档 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| AWJ_Linux.7z | 19455350 | `dde97141f9bf111a7c6bc072f3a212369c6017349eb210d335f89757232c8985` |
+| AWJ_Win.7z | 11934920 | `6b97c5699b584d7eb632bb36337f8d359ff3fdd1ae9a93e7635507a9cebffb21` |
+
+| 包 | 成员 | 字节数 | SHA-256 |
+| --- | --- | ---: | --- |
+| Windows | AWJ.com | 450048 | `4a71f0c99cf35b79f7084fc3dddc6ec2651b3e5b899793eefe813305c7a3ace3` |
+| Windows | AWJ.exe | 42322432 | `ae2bd8cfdd8a63c66112beda58f2426ca05c44091ca22efc09a6eb57fbc729b1` |
+| Windows | LICENSE | 35184 | `6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75` |
+| Windows | NOTICE.txt | 142168 | `fe068ded1d9ac895da6b741500d228b0d598bfade14bcf9f7a1f4eb807ca012d` |
+| Linux | AWJ | 67516784 | `2db767160c05569d168619e9441ef6167b82c07ab2a45299246847c85dce094c` |
+| Linux | LICENSE | 34523 | `8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef` |
+| Linux | NOTICE.txt | 139580 | `ae5ede84a8a9f464113986e3353b39b9f7b166a26d2e540d29d6fb69729b58cb` |

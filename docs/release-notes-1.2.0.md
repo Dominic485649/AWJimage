@@ -14,7 +14,7 @@ JPEG、AVIF、HEIC/HEIF 中受支持的 Gain Map 会先与主图合成增强像�
 ## 依赖与构建
 
 - 新增 libultrahdr 2.0.2；libaom 更新为 3.15.1、libheif 为 1.23.6、libpng 为 1.6.59、Slint 为 1.18.1。继续复用 libavif、giflib、libwebp、JPEGli、libjxl 和 lcms，不新增 FFmpeg、Exiv2、spng。
-- 依赖选择遵循“随 AWJ 发版更新、按 AWJ 版本锁定”：本版准确来源和本地补丁身份见 [codec-dependencies.json](../cmake/codec-dependencies.json)。构建不动态解析 latest/main。
+- 依赖选择遵循“随 AWJ 发版更新、按 AWJ 版本锁定”：本版准确来源和本地补丁身份见 [codec-dependencies.json](https://github.com/Dominic485649/AWJimage/blob/1.2.0/cmake/codec-dependencies.json)。构建不动态解析 latest/main。
 - Windows 使用 MSVC 静态运行库、AVX2、IPO/LTO；Linux 使用原生 GCC 16.1、x86-64-v3、IPO/LTO。具体构建与测试结果以验证记录为准。
 
 ## 已知边界
@@ -27,3 +27,12 @@ JPEG、AVIF、HEIC/HEIF 中受支持的 Gain Map 会先与主图合成增强像�
 ## 发行归档
 
 提供 `AWJ_Win.7z`（AWJ.exe、AWJ.com、LICENSE、NOTICE.txt）和 `AWJ_Linux.7z`（AWJ、LICENSE、NOTICE.txt）。归档不含用户配置；精确成员、大小、SHA-256 和签名更新清单以正式发行验收为准。
+
+发布日期：2026-10-07。源码提交：`587c0745d9df31a7f81d8b2dec85d27a31a84b97`。
+
+| 归档 | 字节数 | SHA-256 |
+| --- | ---: | --- |
+| AWJ_Win.7z | 11934920 | `6b97c5699b584d7eb632bb36337f8d359ff3fdd1ae9a93e7635507a9cebffb21` |
+| AWJ_Linux.7z | 19455350 | `dde97141f9bf111a7c6bc072f3a212369c6017349eb210d335f89757232c8985` |
+
+[完整验收记录](https://github.com/Dominic485649/AWJimage/blob/1.2.0/docs/validation-1.2.0.md)。归档更新清单使用 Ed25519 发布密钥 release-2026 签名，sequence 12。
