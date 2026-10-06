@@ -36,7 +36,7 @@ Magick 与 ffmpeg 以后只能作为显式配置的外部 exe/runtime 集成方�
 - 未选择用户预设时使用当前内置默认；用户预设采用可执行文件同目录 `preset/*.jsonc` 的五格式完整参数集，CLI 可用 `--preset <名称>` 或 `--preset-file <路径>` 显式选择。
 - AVIF 默认 q70、WebP 默认 q95、JXL 默认 q85、JPGLI 默认 q90，仍支持 `q90` 风格质量参数。
 - 质量范围为 q1..q100；JXL q100 对 JPEG 输入在未请求剥离元数据或改写色彩/HDR 时使用原始码流级无损转封装，其他 WebP/JXL q100 为编码器无损；JPGLI q100 表示最高质量 JPEG 兼容编码，不声明像素级无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通，其他输入使用 AOM 无损量化并按 `auto` 的 source-aware 色度规则重编码；源图为 420/422 时仍存在色度子采样，需要显式 444 才能避免。
-- AVIF 采样支持 `auto/444/422/420`，`auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量。
+- AVIF 采样支持 `auto/444/422/420`，`auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度（包括灰度加 alpha）使用 400，未知源使用 444，与 avifenc 的 YUV + auto 规则一致。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。位深留空时按源图和编码器能力选择，显式填写时支持 `8/10/12`。非不透明 alpha 在 `auto` 下保留，颜色与 alpha 都跟随请求质量。
 - CICP 优先级为“用户显式值 > 源图值 > 兜底”。BT.2020、PQ、HLG 等 HDR 源的 primaries/transfer/matrix 会原样保留，只有源图和用户都没有提供 CICP 时才回退 BT.709/sRGB；color range 默认保持 PC/full 或 TV/limited，未知时使用 full。
 - JXL 不支持手动 chroma sampling，位深留空保持原片，可通过 native libjxl effort/speed 控制压缩成本。
 - WebP 固定 8-bit；有损 WebP 为 Y'CbCr 4:2:0，无损 WebP 为 ARGB。

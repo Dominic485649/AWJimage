@@ -22,6 +22,7 @@ import awj.codec;
 import awj.config;
 import awj.core;
 import awj.gif_codec;
+import awj.gain_map;
 import awj.heif_codec;
 import awj.image;
 import awj.large_image_plan;
@@ -186,6 +187,9 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
+    auto enhanced = decode_jpeg_gain_map(path, options.stop_token, options.decode_threads);
+    if (!enhanced) return std::unexpected{enhanced.error()};
+    if (*enhanced) return std::move(**enhanced);
     auto selected = select_decoder_for_path(path, options);
     if (!selected) {
       return std::unexpected{selected.error()};
@@ -201,7 +205,8 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
       return std::unexpected{decoded.error()};
     }
 
-    if (decoder_registry_detail::is_unsupported_multi_image_error(decoded.error())) {
+    if (decoded.error().starts_with("Gain Map:") ||
+        decoder_registry_detail::is_unsupported_multi_image_error(decoded.error())) {
       return std::unexpected{decoded.error()};
     }
 

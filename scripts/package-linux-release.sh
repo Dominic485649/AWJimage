@@ -46,14 +46,19 @@ output_dir=$(realpath -m -- "$output_dir")
 case "$output_dir" in "$repo"/build/*) ;; *) die '--output-dir must stay below repo/build' ;; esac
 [[ ! -e "$output_dir" ]] || die "refusing to overwrite existing output: $output_dir"
 
-cmake_value() {
-  sed -nE "s/^set\\($1 \"([^\"]+)\".*/\\1/p" "$repo/CMakeLists.txt" | head -n 1
+command -v cmake >/dev/null || die 'cmake is required to read the version lock'
+lock_value() {
+  cmake "-DLOCK_FILE=$repo/cmake/codec-dependencies.json" "-DDEPENDENCY=$1" "-DFIELD=$2" \
+    -P "$repo/cmake/read_codec_lock.cmake" 2>&1
 }
 
 baseline=$(sed -nE 's/.*"baseline"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/p' "$repo/vcpkg-configuration.json" | head -n 1)
-libavif_commit=$(cmake_value AWJ_LIBAVIF_GIT_TAG)
-jpegli_commit=$(cmake_value AWJ_JPEGLI_GIT_TAG)
-slint_commit=$(cmake_value AWJ_SLINT_GIT_TAG)
+libavif_commit=$(lock_value libavif commit)
+jpegli_commit=$(lock_value jpegli commit)
+slint_commit=$(lock_value slint commit)
+heif_version=$(lock_value libheif tag)
+de265_version=$(lock_value libde265 tag)
+ultrahdr_version=$(lock_value libultrahdr tag)
 [[ -n "$baseline$libavif_commit$jpegli_commit$slint_commit" ]] || die 'could not read build pins'
 
 package="$output_dir/package/AWJ_Linux"
@@ -80,8 +85,9 @@ cp -- "$repo/LICENSE" "$package/LICENSE"
     "Slint commit: $slint_commit" \
     'libplacebo: v7.360.1' \
     'libarchive: v3.8.9' \
-    'libheif: 1.23.4 (decoder-only; libde265 backend)' \
-    'libde265: 1.1.2 (decoder library only)' \
+    "libheif: ${heif_version#v} (decoder-only; libde265 backend)" \
+    "libde265: ${de265_version#v} (decoder library only)" \
+    "libultrahdr: ${ultrahdr_version#v} (CPU gain-map reconstruction)" \
     'Source: https://github.com/Dominic485649/AWJimage' \
     '' \
     'THIRD-PARTY SOFTWARE NOTICES' \

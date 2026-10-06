@@ -2,6 +2,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <stop_token>
 #include <string_view>
 #include <vector>
 
@@ -50,6 +51,10 @@ awj::ImageBuffer make_scrgb_image() {
 
 int main() {
   auto source = make_scrgb_image();
+  std::stop_source canceled;
+  canceled.request_stop();
+  if (awj::hdr::tone_map_to_sdr_srgb(source, 8, canceled.get_token()))
+    return fail("HDR tone mapping ignored cancellation.");
   auto has_hdr = awj::hdr::has_explicit_hdr_signal(source);
   if (!has_hdr || !*has_hdr) return fail("scRGB HDR signal was not recognized.");
 

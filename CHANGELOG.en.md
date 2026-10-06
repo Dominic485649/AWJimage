@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0 - 2026-10-07
+
+- Reconstruct supported JPEG, AVIF and HEIC/HEIF gain maps into enhanced pixels in linear light. Ordinary images use the normal conversion path; recognized invalid or unsupported gain maps fail explicitly.
+- JPEG automatically preserves HDR: JPEGli encodes the 8-bit SDR base and generated multichannel gain map, with FP16 HDR processing and ISO 21496-1 / MPF packaging. CLI supports `--jpeg-hdr auto|sdr|hdr`; Studio and context menus always use auto. HDR JPEG rejects visual-quality search, and q100 does not imply lossless JPEG.
+- Automatically preserve GIF, APNG, WebP and AVIF sequences when converting to AVIF. Composite full canvases before encoding, retain VFR timing, loops and alpha, with automatic tuning and keyframes in Studio, presets and context menus. Animation tune (auto/ssim/psnr) and maximum keyframe interval (0 by default) are CLI-only. Sequences do not force still-image IQ or Grid.
+- Match avifenc YUV + auto: retain source 420/422/444; use 400 for grayscale with or without alpha; use 444 for RGB/RGBA and unknown sources. Add forced monochrome AVIF 400 output while retaining alpha. Lossless and 444 do not implicitly select Identity.
+- Remove forced top/bottom placement from normal and compatibility Windows context menus; reinstalling clears the old Position value and uses ordinary Explorer ordering.
+- Add libultrahdr 2.0.2 and update libaom to 3.15.1, libheif to 1.23.6, libpng to 1.6.59 and Slint to 1.18.1. Lock dependency revisions, source archives and local patch hashes per AWJ version; review the latest stable dependencies when preparing each new version.
+- Fix CRC calculation for empty PNG chunks, use fresh extraction timestamps to prevent stale codec objects after dependency updates, and check cancellation between HDR tone-mapping rows.
+
 ## 1.1.0 - 2026-09-29
 
 - The built-in preset now shows disabled Install/Remove context menu actions. The context menu preset shares the Common parameters, Resource limits, and Advanced format options structure with the built-in preset; Context menu options form a peer section shown only for applicable presets. The first controls are vertically centered and section spacing is consistent.

@@ -2,9 +2,13 @@
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <span>
+#include <stop_token>
 #include <string_view>
 #include <utility>
 #ifdef _WIN32
@@ -15,7 +19,12 @@ import awj.codec;
 import awj.config;
 import awj.image;
 import awj.jpegli_codec;
+import awj.jpeg_hdr_codec;
+import awj.gain_map;
+import awj.hdr_tonemap;
 import awj.resource_planner;
+
+bool jpeg_hdr_sdr_compatible(const std::byte*, std::size_t, std::size_t);
 
 namespace {
 
@@ -187,5 +196,60 @@ int main() {
     return fail("JPGLI invalid progressive/fixed Huffman combination was not rejected.");
   }
 
+  for (const auto size : {std::size_t{1}, std::size_t{3}, std::size_t{65}}) {
+    awj::ImageBuffer hdr{.width = size, .height = size,
+        .pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+        .sample_representation = awj::SampleRepresentation::ieee_half_float,
+        .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+            .color_primaries = 9, .transfer_characteristics = 8, .matrix_coefficients = 0,
+            .color_range = 1, .has_hdr_metadata = true, .color_metadata_source = "linear-test",
+            .linear_reference_white_nits = 203.0F}};
+    hdr.planes.push_back({std::vector<std::byte>(size * size * 8), size * 8});
+    for (std::size_t i = 0; i < size * size; ++i) {
+      const std::uint16_t samples[]{0x3e00, 0x4000, 0x4200, 0x3c00};
+      std::memcpy(hdr.planes.front().bytes.data() + i * 8, samples, 8);
+    }
+    auto opts = jpegli_settings(100, true);
+    opts.resources.memory_limit_bytes = 128 * 1024 * 1024;
+    auto enhanced = awj::encode_hdr_jpeg(hdr, opts);
+    if (!enhanced) return fail(enhanced.error());
+    if (!jpeg_hdr_sdr_compatible(enhanced->encoded.bytes.data(), enhanced->encoded.bytes.size(), size))
+      return fail("HDR JPEG SDR compatibility failed.");
+    const auto fixture = std::filesystem::temp_directory_path() / "awj-hdr-jpeg-roundtrip.jpg";
+    { std::ofstream file(fixture, std::ios::binary); file.write(reinterpret_cast<const char*>(enhanced->encoded.bytes.data()), enhanced->encoded.bytes.size()); }
+    auto reconstructed = awj::decode_jpeg_gain_map(fixture, {}, 1);
+    std::filesystem::remove(fixture, ec);
+    if (!reconstructed || !*reconstructed || (**reconstructed).image.width != size ||
+        !(**reconstructed).image.source_info->source_has_gain_map)
+      return fail(reconstructed ? "HDR JPEG did not reconstruct a gain map." : reconstructed.error());
+    const auto& result = (**reconstructed).image;
+    double relative_error = 0;
+    const float reference[]{1.5F, 2.F, 3.F};
+    for (std::size_t y = 0; y < size; ++y) {
+      const auto* row = result.planes[0].bytes.data() + y * result.planes[0].stride;
+      for (std::size_t x = 0; x < size; ++x) for (int c = 0; c < 3; ++c) {
+        const auto value = awj::hdr::hdr_detail::read_sample(result, row, x * 4 + c);
+        if (!std::isfinite(value) || value < 0) return fail("HDR JPEG produced invalid linear samples.");
+        relative_error += std::abs(value - reference[c]) / reference[c];
+      }
+    }
+    relative_error /= size * size * 3;
+    std::printf("HDR JPEG %zux%zu mean_relative_error=%.6f\n", size, size, relative_error);
+    if (relative_error > 0.2) return fail("HDR JPEG flat-field reconstruction color error exceeded 20 percent.");
+    for (const auto transfer : {16, 18}) {
+      auto nonlinear = hdr;
+      nonlinear.sample_representation = awj::SampleRepresentation::unorm;
+      nonlinear.source_info->transfer_characteristics = transfer;
+      nonlinear.source_info->linear_reference_white_nits.reset();
+      if (!awj::encode_hdr_jpeg(nonlinear, opts)) return fail("PQ/HLG HDR JPEG input was rejected.");
+    }
+    opts.visual_quality = 100;
+    if (awj::encode_hdr_jpeg(hdr, opts)) return fail("HDR JPEG visual-quality search was accepted.");
+    opts.visual_quality.reset(); opts.resources.memory_limit_bytes = 1;
+    if (awj::encode_hdr_jpeg(hdr, opts)) return fail("HDR JPEG ignored its memory limit.");
+    opts.resources.memory_limit_bytes = 128 * 1024 * 1024;
+    std::stop_source cancellation; cancellation.request_stop();
+    if (awj::encode_hdr_jpeg(hdr, opts, cancellation.get_token())) return fail("HDR JPEG ignored cancellation.");
+  }
   terminate_test_process(0);
 }

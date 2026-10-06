@@ -2,7 +2,9 @@
 
 English: [README.en.md](README.en.md)
 
-当前源码版本为 **1.1.0**。验证见 [1.1.0 验证记录](docs/validation-1.1.0.md)，发布说明见 [1.1.0 发布说明](docs/release-notes-1.1.0.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
+当前源码版本为 **1.2.0**（开发中，尚未发布）。最近已发布版本 1.1.0 的验证见 [1.1.0 验证记录](docs/validation-1.1.0.md)，发布说明见 [1.1.0 发布说明](docs/release-notes-1.1.0.md)。已发布版本与下载见 [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases)。
+
+1.2.0 开发功能：[Gain Map 增强合成与 GIF/APNG/WebP/AVIF 动画 AVIF](docs/gain-map-animation.md)。Gain Map 自动合成为最终图像；GIF/APNG/WebP/AVIF 输出 AVIF 时自动保留动画。
 
 AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux 现已合并到同一主线。Windows 保留完整 shell/WIC/D3D11 支持；Linux 提供 Vulkan visual metrics 与 Release ELF。当前内置转换路径只保留 native codec：
 
@@ -15,7 +17,7 @@ AWJimage 是一个 C++23 / Slint 批量图片转换工具。Windows 与 Linux �
 
 Linux 保留 Slint UI 与 CLI 共用单个 ELF `AWJ`；visual_quality GPU 指标路径使用 Vulkan，失败、小图或资源超限时自动回退 CPU。HEIC/HEIF 使用跨平台 native libheif/libde265 解码；WIC、JXR、`AWJ.com` shim 和 Windows 注册表 shell 集成仅限 Windows。Linux 上 WIC 兜底会被忽略并在界面中隐藏。Linux 右键入口使用用户级 Nautilus Scripts 与 Thunar UCA，不需要 sudo。
 
-从 1.1.0 起，Windows Release 最低要求 AVX2；Linux Release 最低要求 x86-64-v3。官方 Release 配置启用 IPO/LTO，工具链不支持时配置失败。Slint 固定为 1.18.0，保留 software、FemtoVG 和 accessibility。
+从 1.1.0 起，Windows Release 最低要求 AVX2；Linux Release 最低要求 x86-64-v3。官方 Release 配置启用 IPO/LTO，工具链不支持时配置失败。Slint 固定为 1.18.1，保留 software、FemtoVG 和 accessibility。
 
 Studio 参数页在内置默认、右键菜单和用户预设之间切换；右键菜单预设包含资源限制及独立的“右键菜单选项”，内置默认的菜单安装/移除按钮不可用。AVIF 仅使用 AOM，速度默认显示 5；启用额外 `.png` 后缀时，只同步已安装的右键菜单。
 
@@ -130,7 +132,7 @@ AVIF 普通单图会尽量留在普通编码队列：AOM/libaom 上限为宽高�
 
 PNG 默认 q100，不增加像素量化；没有其他像素变换时，解码后的像素保持一致。q1–99 逐行量化 RGB，再缩放回完整数值范围；8-bit/16-bit 存储位深不变，16-bit 有效精度最低为 10 位，alpha 保持原精度。合法的逐通道 `sBIT` 会被读取并保存，量化后的 RGB 有效位数独立记录。PNG 不支持视觉质量搜索；降低质量不保证文件更小，渐变与暗部应检查条带。
 
-`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度或未知源使用 420。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。CICP 按“用户显式值 > 源图值 > 兜底”生效，BT.2020/PQ/HLG 等 HDR 源会原样保留，只有源图和用户都没有 CICP 时才回退 BT.709/sRGB；source CICP range 默认保持（PC/full 或 TV/limited），未知 range 使用 full。`--alpha off` 会移除 alpha。
+`--chroma 400` 强制输出灰度 AVIF，保留透明通道；Studio 中可选择 400，JPEG 不支持此选项。动画优化和关键帧间隔仅提供 CLI 参数，Studio/预设/右键使用自动设置。`--alpha auto` 会自动保留非不透明 alpha。AVIF 的颜色与 alpha 都按请求的质量或 visual-quality 搜索结果编码；`--chroma auto` 优先保留源图表示：YUV 源保留 420/422/444，RGB/RGBA 使用 444，灰度（包括灰度加 alpha）使用 400，未知源使用 444，与 avifenc 的 YUV + auto 规则一致。默认 YUV 不会因无损或 444 自动改用 Identity；只有显式 `source/rgb` 颜色表示可选择 RGB/GBR Identity。q100 仅对未请求改写色彩、alpha、位深或元数据的既有 YUV420 AVIF 原码流直通；其他输入使用 AOM 无损量化，并按上述 auto 规则重编码。CICP 按“用户显式值 > 源图值 > 兜底”生效，BT.2020/PQ/HLG 等 HDR 源会原样保留，只有源图和用户都没有 CICP 时才回退 BT.709/sRGB；source CICP range 默认保持（PC/full 或 TV/limited），未知 range 使用 full。`--alpha off` 会移除 alpha。
 
 超过 AOM 单图上限后自动进入大图链路：
 使用 AOM Grid；编码器不可用、规划失败或触达输入／运行时内存上限时明确报错。
@@ -145,7 +147,7 @@ Studio 的自动线程预算在逻辑线程数 >=12、5-11、2-4 时分别预留
 
 `--allow-wic-fallback` 仅 Windows 有效；Linux 会接受但忽略该参数。Linux UI 的“选择”按钮会调用 `zenity`/`yad`/`kdialog`。右键菜单为 AVIF、WebP、JXL、JPGLI、PNG 分别写入 Nautilus 用户脚本，并同步写入 Thunar UCA；必要时重启文件管理器。
 
-多帧 WebP/GIF/APNG/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高；若奇数 grid 与实际选择的 420/422 采样不兼容，会明确要求显式选择 444，而不会静默改变采样。
+多帧 WebP/GIF/APNG/WebP/AVIF/JXL/TIFF/AVIF、Windows WIC 多帧和 JPEG MPF 输入只转换合成后的第一帧；无法可靠提取时直接报错。AVIF grid 支持非整数倍布局，右列和底行使用实际剩余尺寸，不会改变输出宽高；若奇数 grid 与实际选择的 420/422 采样不兼容，会明确要求显式选择 444，而不会静默改变采样。
 
 Studio 的编码队列支持拖拽文件/文件夹导入，也可以继续使用“选择输入”按钮。拖入目录时会按现有扫描规则批量处理图片；主页队列中未开始的项目可直接拖动调整顺序，右键仍可打开队列菜单。0.10.3 增加待处理、处理中、成功和失败计数、仅看失败、重试失败项及选中项详情；详情保留完整错误、输入/输出路径、编码器、线程数和 decode/prepare/encode/write 阶段耗时。
 

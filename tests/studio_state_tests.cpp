@@ -79,6 +79,7 @@ void config_check() {
   current.update_keyring_raw = "signed keyring bytes";
   current.update_keyring_signature = "keyring signature";
   current.menu_preset_description = "menu preset regression description";
+  current.menu_params[0].chroma_index = 4;
   {
     std::ofstream old(path);
     old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature"})";
@@ -90,10 +91,13 @@ void config_check() {
         parsed->at("last_verified_manifest_v2_sequence").integer == 42 &&
         parsed->at("update_manifest_v2_raw").string == current.update_manifest_v2_raw &&
         parsed->at("update_keyring_raw").string == current.update_keyring_raw &&
-        parsed->at("menu_preset_description").string == current.menu_preset_description,
+        parsed->at("menu_preset_description").string == current.menu_preset_description &&
+        parsed->at("menu_avif_chroma_index").integer == 4,
         "whitelist lost current config or v2 state");
   for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature"})
     check(!parsed->contains(key), "legacy UI cache was persisted");
+  check(!parsed->contains("menu_avif_avif_animation_tune_index") &&
+        !parsed->contains("menu_avif_avif_animation_keyframe"), "CLI-only animation options persisted in UI config");
   check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
         "config rewrite was not idempotent");
   {

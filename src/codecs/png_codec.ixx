@@ -6,6 +6,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cmath>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -22,6 +23,8 @@ module;
 #include <vector>
 
 #include <png.h>
+#include <zlib.h>
+#include <lcms2.h>
 
 #ifdef _MSC_VER
 #pragma warning(disable : 4611)
@@ -82,14 +85,9 @@ std::uint32_t png_crc_update(std::uint32_t crc, std::byte value) noexcept {
 
 std::uint32_t png_chunk_crc(std::string_view type,
                             std::span<const std::byte> payload) noexcept {
-  std::uint32_t crc = 0xffffffffu;
-  for (const char ch : type) {
-    crc = png_crc_update(crc, std::byte{static_cast<unsigned char>(ch)});
-  }
-  for (const auto value : payload) {
-    crc = png_crc_update(crc, value);
-  }
-  return crc ^ 0xffffffffu;
+  const auto crc = crc32_z(0, reinterpret_cast<const Bytef*>(type.data()), type.size());
+  if (payload.empty()) return static_cast<std::uint32_t>(crc);
+  return static_cast<std::uint32_t>(crc32_z(crc, reinterpret_cast<const Bytef*>(payload.data()), payload.size()));
 }
 
 void append_png_chunk(std::vector<std::byte>& out, std::string_view type,
@@ -402,9 +400,8 @@ const MetadataBlock* first_metadata(const ImageBuffer& image, MetadataKind kind)
 PixelFormat source_pixel_format_for_png(int color_type) noexcept {
   switch (color_type) {
     case PNG_COLOR_TYPE_GRAY:
-      return PixelFormat::gray;
     case PNG_COLOR_TYPE_GRAY_ALPHA:
-      return PixelFormat::rgba;
+      return PixelFormat::gray;
     case PNG_COLOR_TYPE_RGB:
       return PixelFormat::rgb;
     case PNG_COLOR_TYPE_RGB_ALPHA:
@@ -482,6 +479,36 @@ std::expected<std::vector<std::byte>, std::string> copy_exif_metadata(png_struct
   return copy_metadata_payload(exif, exif_size, "PNG Exif metadata");
 }
 
+// gAMA/cHRM describe encoded pixels. Synthesize an RGB ICC profile so AVIF
+// retains those semantics rather than silently assigning sRGB to the samples.
+std::expected<std::vector<std::byte>, std::string> gamma_chromaticity_profile(png_structp png, png_infop info) {
+  int intent{};
+  if (png_get_sRGB(png, info, &intent)) return std::vector<std::byte>{};
+  double gamma{};
+  double wx = 0.3127, wy = 0.3290, rx = 0.64, ry = 0.33, gx = 0.30, gy = 0.60, bx = 0.15, by = 0.06;
+  const bool has_gamma = png_get_gAMA(png, info, &gamma) != 0;
+  const bool has_chroma = png_get_cHRM(png, info, &wx, &wy, &rx, &ry, &gx, &gy, &bx, &by) != 0;
+  if (!has_gamma && !has_chroma) return std::vector<std::byte>{};
+  if (!has_gamma) gamma = 1.0 / 2.2;
+  if (!std::isfinite(gamma) || gamma <= 0) return std::unexpected{"PNG gAMA 无效。"};
+  cmsCIExyY white{wx, wy, 1};
+  cmsCIExyYTRIPLE primaries{{rx, ry, 1}, {gx, gy, 1}, {bx, by, 1}};
+  auto* curve = cmsBuildGamma(nullptr, 1.0 / gamma);
+  if (!curve) return std::unexpected{"无法创建 PNG gamma profile。"};
+  cmsToneCurve* curves[]{curve, curve, curve};
+  auto* profile = cmsCreateRGBProfile(&white, &primaries, curves);
+  cmsFreeToneCurve(curve);
+  if (!profile) return std::unexpected{"PNG cHRM 无效。"};
+  struct Guard { cmsHPROFILE profile; ~Guard() { cmsCloseProfile(profile); } } guard{profile};
+  cmsUInt32Number size{};
+  if (!cmsSaveProfileToMem(profile, nullptr, &size) || size > encoding_defaults::codec_metadata_max_bytes)
+    return std::unexpected{"无法序列化 PNG 色彩 profile。"};
+  auto bytes = decoder_common::make_byte_buffer(size, "PNG gamma/chromaticity ICC");
+  if (!bytes) return std::unexpected{bytes.error()};
+  if (!cmsSaveProfileToMem(profile, bytes->data(), &size)) return std::unexpected{"无法写入 PNG 色彩 profile。"};
+  return bytes;
+}
+
 std::expected<std::vector<std::byte>, std::string> copy_exif_metadata(png_structp png,
                                                                       png_infop info,
                                                                       png_infop end_info) {
@@ -551,7 +578,7 @@ class PngImageDecoder final : public ImageDecoder {
   [[nodiscard]] std::string_view id() const noexcept override { return "libpng"; }
 
   [[nodiscard]] bool can_decode(const fs::path& path) const override {
-    static constexpr std::wstring_view extensions[] = {L".png"};
+    static constexpr std::wstring_view extensions[] = {L".png", L".apng"};
     return decoder_common::extension_is_one_of(path, extensions);
   }
 
@@ -582,11 +609,18 @@ class PngImageDecoder final : public ImageDecoder {
   }
 
   std::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
+    auto bytes = decoder_common::read_file_bytes(path, "PNG");
+    if (!bytes) return std::unexpected{bytes.error()};
+    return decode_memory(*bytes, display_path_for_user(path));
+  }
+
+  std::expected<ImageDecodeResult, std::string> decode_memory(
+      std::span<const std::byte> input, std::string_view source_name,
+      DecodeOptions options = {}) const override {
+    const bool copy_payloads = options.copy_metadata_payloads.value_or(true);
+    const fs::path path{std::string{source_name}};
     try {
-      auto bytes = decoder_common::read_file_bytes(path, "PNG");
-      if (!bytes) {
-        return std::unexpected{bytes.error()};
-      }
+      const auto* bytes = &input;
       if (bytes->size() < 8 || png_sig_cmp(reinterpret_cast<png_const_bytep>(bytes->data()), 0, 8) != 0) {
         return std::unexpected{std::format("PNG 签名无效: {}", display_path_for_user(path))};
       }
@@ -711,21 +745,21 @@ class PngImageDecoder final : public ImageDecoder {
       png_read_image(png.get(), context->rows.data());
       png_read_end(png.get(), end_info.get());
 
-      {
+      if (copy_payloads) {
         auto icc_profile = png_detail::copy_icc_profile(png.get(), info.get());
         if (!icc_profile) {
           return std::unexpected{icc_profile.error()};
         }
         context->icc_profile = std::move(*icc_profile);
       }
-      {
+      if (copy_payloads) {
         auto exif_metadata = png_detail::copy_exif_metadata(png.get(), info.get(), end_info.get());
         if (!exif_metadata) {
           return std::unexpected{exif_metadata.error()};
         }
         context->exif_metadata = std::move(*exif_metadata);
       }
-      {
+      if (copy_payloads) {
         auto xmp_metadata = png_detail::copy_xmp_metadata(png.get(), info.get(), end_info.get());
         if (!xmp_metadata) {
           return std::unexpected{xmp_metadata.error()};
@@ -747,6 +781,18 @@ class PngImageDecoder final : public ImageDecoder {
         source_info.has_hdr_metadata = source_info.transfer_characteristics == 16 ||
                                        source_info.transfer_characteristics == 18;
         source_info.color_metadata_source = "png-cicp";
+      }
+      if (!color_chunks->has_cicp && context->icc_profile.empty()) {
+        if (copy_payloads) {
+          auto profile = png_detail::gamma_chromaticity_profile(png.get(), info.get());
+          if (!profile) return std::unexpected{profile.error()};
+          context->icc_profile = std::move(*profile);
+        }
+        source_info.color_primaries = 1;
+        source_info.transfer_characteristics = 13;
+        source_info.matrix_coefficients = 0;
+        source_info.color_range = 1;
+        source_info.color_metadata_source = context->icc_profile.empty() ? "png-srgb-default" : "png-gamma-chromaticity-icc";
       }
       if (color_chunks->content_light) {
         source_info.content_light = color_chunks->content_light;

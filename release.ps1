@@ -281,25 +281,34 @@ Ensure-VcpkgManifestPackages $VcpkgRoot $VcpkgTriplet @(
 
 # Release pins must take effect even when an earlier configure populated FetchContent.
 # Reuse only clean sources whose resolved commit already matches the release pin.
+$CodecLock = Get-Content (Join-Path $Repo 'cmake/codec-dependencies.json') -Raw | ConvertFrom-Json
 $PinnedFetchContentCommits = @{
-    "libavif" = "c5240fc79fe5c2407e10afd35f5505ef6333ea49"
-    "jpegli"  = "031a0077f5799a6041004267fc12b956c1f52a20"
-    "slint"   = "cf62c975c311e7036d599ed8ed0b7e6a8386a934"
+    "libavif" = $CodecLock.libavif.commit
+    "jpegli"  = $CodecLock.jpegli.commit
+    "slint"   = $CodecLock.slint.commit
 }
 $PinnedFetchContentPatchedFiles = @{
     "libavif" = @(
+        " M include/avif/avif.h",
         " M src/write.c"
     )
     "slint"   = @(
+        " M api/cpp/Cargo.toml",
         " M api/cpp/include/private/slint_config.h",
-        " M internal/backends/winit/accesskit.rs",
+        " M api/cpp/include/private/slint_models.h",
         " M internal/backends/winit/event_loop.rs",
+        " M internal/backends/winit/winitwindowadapter.rs",
         " M internal/core/window.rs"
     )
 }
 $FetchContentSourceOverrides = @()
+$ExistingCache = if (Test-Path (Join-Path $BuildDir 'CMakeCache.txt')) {
+    Get-Content (Join-Path $BuildDir 'CMakeCache.txt')
+} else { @() }
 foreach ($FetchContentName in @("libavif", "jpegli", "slint")) {
     $SourceDir = Join-Path $BuildDir "_deps\$FetchContentName-src"
+    $Override = @($ExistingCache | Where-Object { $_ -match "^FETCHCONTENT_SOURCE_DIR_$($FetchContentName.ToUpperInvariant()):PATH=.+$" })
+    if ($Override.Count -eq 1) { $SourceDir = $Override[0].Substring($Override[0].IndexOf('=') + 1) }
     $ExpectedCommit = $PinnedFetchContentCommits[$FetchContentName]
     $KeepSource = $ExpectedCommit -and
         (Test-Path -LiteralPath (Join-Path $SourceDir ".git"))
@@ -400,6 +409,8 @@ $LibplaceboVersion = Get-VcpkgPackageVersion $VcpkgRoot $VcpkgTriplet "libplaceb
 $FetchContentCommit = {
     param([string]$Name)
     $SourceDir = Join-Path $BuildDir "_deps\$Name-src"
+    $Override = @($FetchContentSourceOverrides | Where-Object { $_.StartsWith("-DFETCHCONTENT_SOURCE_DIR_$($Name.ToUpperInvariant())=") })
+    if ($Override.Count -eq 1) { $SourceDir = $Override[0].Substring($Override[0].IndexOf('=') + 1) }
     $CommitMarker = Join-Path $SourceDir ".awj-source-commit"
     if (Test-Path -LiteralPath $CommitMarker -PathType Leaf) {
         $Commit = (Get-Content -LiteralPath $CommitMarker -Raw).Trim()
@@ -439,8 +450,9 @@ dav1d: $Dav1dVersion
 libyuv: $LibyuvVersion
 libarchive: $LibarchiveVersion
 libplacebo: $LibplaceboVersion
-libheif: 1.23.4 (decoder-only; libde265 backend)
-libde265: 1.1.2 (decoder library only)
+libheif: $($CodecLock.libheif.tag.TrimStart('v')) (decoder-only; libde265 backend)
+libde265: $($CodecLock.libde265.tag.TrimStart('v')) (decoder library only)
+libultrahdr: $($CodecLock.libultrahdr.tag.TrimStart('v')) (CPU HDR JPEG and gain maps)
 
 FetchContent Dependencies (actual commits):
   libavif:     $LibavifCommit

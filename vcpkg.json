@@ -1,6 +1,6 @@
 {
   "name": "awjimage",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "dependencies": [
     "aom",
     "dav1d",
@@ -20,6 +20,7 @@
     "libjpeg-turbo",
     "libarchive",
     "libjxl",
+    "lcms",
     "libplacebo",
     "libsodium",
     "libpng",

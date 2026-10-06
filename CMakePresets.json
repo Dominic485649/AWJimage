@@ -18,8 +18,7 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
         "AWJ_VCPKG_LIBRARY_CONFIG": "Debug",
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
-        "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON"
+        "AVIF_STATIC_SLINT": "ON"
       }
     },
     {
@@ -35,7 +34,6 @@
         "AWJ_VCPKG_LIBRARY_CONFIG": "Release",
         "AVIF_STATIC_MSVC_RUNTIME": "ON",
         "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON",
         "AWJ_ENABLE_X64_V3": "ON",
         "AVIF_ENABLE_RELEASE_IPO": "ON"
       }
@@ -51,8 +49,6 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
         "AVIF_STATIC_MSVC_RUNTIME": "OFF",
         "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON",
-        "AWJ_ENABLE_SVTAV1HDR": "ON",
         "AWJ_ENABLE_JPEGLI": "ON",
         "BUILD_TESTING": "OFF"
       }
@@ -96,8 +92,6 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
         "AVIF_STATIC_MSVC_RUNTIME": "OFF",
         "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON",
-        "AWJ_ENABLE_SVTAV1HDR": "ON",
         "AWJ_ENABLE_JPEGLI": "ON",
         "BUILD_TESTING": "OFF",
         "CMAKE_BUILD_TYPE": "Debug",
@@ -120,8 +114,6 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
         "AVIF_STATIC_MSVC_RUNTIME": "OFF",
         "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON",
-        "AWJ_ENABLE_SVTAV1HDR": "ON",
         "AWJ_ENABLE_JPEGLI": "ON",
         "BUILD_TESTING": "OFF",
         "CMAKE_BUILD_TYPE": "Release",
@@ -145,8 +137,6 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
         "AVIF_STATIC_MSVC_RUNTIME": "OFF",
         "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON",
-        "AWJ_ENABLE_SVTAV1HDR": "ON",
         "AWJ_ENABLE_JPEGLI": "ON",
         "BUILD_TESTING": "OFF",
         "CMAKE_BUILD_TYPE": "Debug",
@@ -166,8 +156,6 @@
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/vcpkg-overlays",
         "AVIF_STATIC_MSVC_RUNTIME": "OFF",
         "AVIF_STATIC_SLINT": "ON",
-        "AWJ_ENABLE_ZENRAVIF": "ON",
-        "AWJ_ENABLE_SVTAV1HDR": "ON",
         "AWJ_ENABLE_JPEGLI": "ON",
         "BUILD_TESTING": "OFF",
         "CMAKE_BUILD_TYPE": "Release",

@@ -10,6 +10,7 @@ module;
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <limits>
 #include <new>
 #include <optional>
@@ -33,11 +34,17 @@ enum class OutputFormat { png, avif, webp, jxl, jpgli };
 enum class BackendMode { native };
 enum class OutputPolicy { normal, shell };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random, suffix_number };
-enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420 };
+enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420, yuv400 };
 // AVIF 的颜色表示与 YUV 4:2:0/4:2:2/4:4:4 采样是两件事。
 enum class AvifColorRepresentation { yuv, source, rgb_identity };
 enum class AvifEncoderMode { automatic, aom = 2 };
 enum class AlphaModePolicy { force, automatic, off };
+enum class JpegHdrMode { automatic, sdr, hdr };
+enum class AvifAnimationTune { automatic, ssim, psnr };
+
+constexpr std::wstring_view avif_animation_tune_name(AvifAnimationTune tune) noexcept {
+  return tune == AvifAnimationTune::ssim ? L"ssim" : tune == AvifAnimationTune::psnr ? L"psnr" : L"auto";
+}
 enum class ImageSizeLimitMode { automatic, none, manual };
 
 struct ImageSizeLimit {
@@ -136,6 +143,9 @@ struct AppConfig {
   int jpegli_progressive_level{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  JpegHdrMode jpeg_hdr{JpegHdrMode::automatic};
+  AvifAnimationTune avif_animation_tune{AvifAnimationTune::automatic};
+  int avif_animation_keyframe{};
   bool jxl_jpeg_lossless{true};
   int max_jobs{default_max_jobs()};
   std::uint64_t memory_limit_bytes{
@@ -167,6 +177,8 @@ struct AppConfig {
   std::wstring studio_large_action{};
   // session-only unlock of 20 GiB input/runtime caps; never persist.
   bool unlock_max_input_file_bytes{false};
+  // Runtime callback only; never serialized into presets or update manifests.
+  std::function<void(std::size_t, std::size_t, std::size_t)> frame_progress{};
 };
 
 std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
@@ -574,6 +586,7 @@ std::optional<ChromaMode> parse_chroma(std::wstring_view value) {
   if (lower == L"422" || lower == L"4:2:2") {
     return ChromaMode::yuv422;
   }
+  if (lower == L"400" || lower == L"4:0:0") return ChromaMode::yuv400;
   if (lower == L"420" || lower == L"4:2:0") {
     return ChromaMode::yuv420;
   }
@@ -588,6 +601,8 @@ std::string chroma_name(ChromaMode mode) {
       return "422";
     case ChromaMode::yuv420:
       return "420";
+    case ChromaMode::yuv400:
+      return "400";
     case ChromaMode::auto_keep:
     default:
       return "auto";
@@ -733,6 +748,8 @@ std::expected<std::uint64_t, std::string> parse_memory_limit(
 }
 
 std::expected<void, std::string> validate_config(const AppConfig& cfg) {
+  if (cfg.avif_animation_keyframe < 0 || static_cast<int>(cfg.avif_animation_tune) < 0 || static_cast<int>(cfg.avif_animation_tune) > 2)
+    return std::unexpected{"动画参数无效。"};
   if (cfg.image_size_limit.scale_percent &&
       (*cfg.image_size_limit.scale_percent < 1 || *cfg.image_size_limit.scale_percent > 100)) {
     return std::unexpected{"scale-percent 必须为 1～100 的整数。"};
@@ -810,6 +827,8 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       }
       break;
     case OutputFormat::jpgli:
+      if (cfg.chroma_mode == ChromaMode::yuv400)
+        return std::unexpected{"400 强制灰度仅支持 AVIF；JPGLI 支持 auto/444/422/420。"};
       if (cfg.speed) {
         return std::unexpected{"JPGLI 不支持 --speed；请移除该参数。"};
       }
@@ -885,6 +904,7 @@ std::string help_text() {
 
 默认后端：内置 native（libavif/AOM/WebP/JXL/JPGLI）
 默认质量：PNG q100（无损），AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
+默认动画：GIF/APNG 输出 AVIF 时自动保留动画；零时长 GIF 使用 10ms，APNG 使用 1ms
 质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按 auto 色度规则重编码；默认颜色表示始终为非 Identity 的 YUV
 
 用法:
@@ -903,9 +923,12 @@ std::string help_text() {
   --no-visual-quality-fallback visual_quality 搜索未达标时失败
 @WINDOWS_TIMESTAMP_OPTIONS@
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPGLI 输出 JPEG 兼容 8-bit precision
-  --chroma <auto|444|422|420> AVIF/JPGLI 色度采样；AVIF auto 保留 YUV 源的 420/422/444，RGB/RGBA 转为 444，灰度或未知为 420；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
+  --chroma <auto|444|422|420|400> AVIF/JPGLI 色度采样；AVIF 400 强制灰度并保留 alpha；JPGLI 支持 auto/444/422/420；AVIF auto 参考 avifenc：保留 YUV 源的 420/422/444，灰度使用 400，RGB/RGBA 与未知源使用 444；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
   --avif-color-representation <yuv|source|rgb> AVIF 颜色表示；默认 yuv，source 跟随源的 YUV 或 RGB Identity，rgb 强制 RGB(A)/GBR(A) Identity 与 4:4:4（自动选择 AOM）
   --append-png-suffix        AVIF 输出额外添加 .png 后缀，实际字节仍为 AVIF
+  --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：SDR 使用普通 JPEGli，HDR 输出 8-bit SDR base + ISO Gain Map；HDR 不支持 visual-quality
+  --avif-animation-tune <auto|ssim|psnr> 动画优化；默认 auto 使用编码器默认值；静态图保留 IQ
+  --avif-animation-keyframe <N> 动画最大关键帧间隔；0 自动（默认），正整数指定最大帧间隔
   --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
   --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
@@ -1300,7 +1323,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       const auto chroma = config_detail::parse_chroma(*value);
       if (!chroma) {
         return std::unexpected{
-            std::format("chroma 不支持: {}。可选值：auto、444、422、420。",
+            std::format("chroma 不支持: {}。可选值：auto、444、422、420、400。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.chroma_mode = *chroma;
@@ -1326,6 +1349,37 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
     if (lower == L"--append-png-suffix") {
       cfg.append_png_suffix = true;
+      continue;
+    }
+    if (lower == L"--jpeg-hdr" || lower == L"--avif-animation-tune") {
+      const auto value = require_value(i, args[i]);
+      if (!value) return std::unexpected{value.error()};
+      const auto mode = config_detail::lower_copy(*value);
+      if (lower == L"--jpeg-hdr") {
+        if (mode == L"auto") cfg.jpeg_hdr = JpegHdrMode::automatic;
+        else if (mode == L"sdr") cfg.jpeg_hdr = JpegHdrMode::sdr;
+        else if (mode == L"hdr") cfg.jpeg_hdr = JpegHdrMode::hdr;
+        else return std::unexpected{"jpeg-hdr 只支持 auto、sdr、hdr。"};
+      } else {
+        if (mode == L"auto") cfg.avif_animation_tune = AvifAnimationTune::automatic;
+        else if (mode == L"ssim") cfg.avif_animation_tune = AvifAnimationTune::ssim;
+        else if (mode == L"psnr") cfg.avif_animation_tune = AvifAnimationTune::psnr;
+        else return std::unexpected{"avif-animation-tune 只支持 auto、ssim、psnr。"};
+      }
+      continue;
+    }
+    if (lower == L"--avif-animation-keyframe") {
+      const auto value = require_value(i, args[i]);
+      if (!value) return std::unexpected{value.error()};
+      const auto count = config_detail::parse_int_range(*value, 0, std::numeric_limits<int>::max(), "avif-animation-keyframe");
+      if (!count) return std::unexpected{count.error()};
+      if (*count < 0) return std::unexpected{"avif-animation-keyframe 必须大于等于 0。"};
+      cfg.avif_animation_keyframe = *count;
+      continue;
+    }
+    if (lower == L"--preserve-animation") {
+      // Accepted for compatibility with early 1.2.0 development commands.
+      // GIF/APNG animation is now preserved automatically for AVIF output.
       continue;
     }
     if (lower == L"--no-append-png-suffix") {

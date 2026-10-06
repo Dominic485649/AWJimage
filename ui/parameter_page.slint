@@ -1,4 +1,4 @@
-import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-widgets.slint";
+import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button, SpinBox } from "std-widgets.slint";
 import { TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
 import { StudioTheme } from "studio_theme.slint";
 
@@ -376,14 +376,14 @@ export component ParameterForm inherits VerticalLayout {
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("色度采样"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        SoftComboBox { accessible-name: @tr("色度采样"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        SoftComboBox { accessible-name: @tr("色度采样"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }, { text: "400", enabled: root.format-index == 0 }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
         ParamHint {
             horizontal-stretch: 1;
             lead: @tr("自动 = 跟随源");
             lead-color: root.hint-blue;
             detail: root.format-index == 3
                 ? @tr("JPGLI 支持 444 / 422 / 420，自动时用 Jpegli 默认采样。")
-                : @tr("一律以 YUV 编码：源是 420 / 422 / 444 就原样保留，RGB 与 RGBA 视作 444，灰度按 420 处理。");
+                : @tr("400 强制灰度并保留透明；YUV + 自动参考 avifenc：保留源 420 / 422 / 444，灰度使用 400，RGB / RGBA 与未知源使用 444；444 不等于 RGB Identity。");
             detail-color: root.text-muted;
         }
     }

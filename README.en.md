@@ -2,7 +2,9 @@
 
 Chinese: [README.md](README.md)
 
-The source version is **1.1.0**. See the [1.1.0 validation record (Chinese)](docs/validation-1.1.0.md) and [release notes](docs/release-notes-1.1.0.md). Published versions and downloads are on [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases).
+The source version is **1.2.0** (in development, not released yet). For the latest published version, 1.1.0, see the [1.1.0 validation record (Chinese)](docs/validation-1.1.0.md) and [release notes](docs/release-notes-1.1.0.md). Published versions and downloads are on [GitHub Releases](https://github.com/Dominic485649/AWJimage/releases).
+
+1.2.0 development: [Gain Map reconstruction and GIF/APNG/WebP/AVIF to animated AVIF (Chinese)](docs/gain-map-animation.md). Gain maps are reconstructed into final pixels automatically; GIF/APNG/WebP/AVIF animation is preserved automatically when converting to AVIF.
 
 AWJimage is a C++23 / Slint batch image converter. Windows and Linux now share the same mainline. The conversion path is native-only:
 
@@ -17,7 +19,7 @@ The built-in ImageMagick/MagickWand backend has been removed. Magick and ffmpeg 
 
 Linux keeps one ELF `AWJ` for both Slint UI and CLI. Visual-quality GPU metrics use Vulkan and fall back to CPU on failure, tiny images, or resource limits. HEIC/HEIF uses the cross-platform native libheif/libde265 decoder; WIC, JXR, `AWJ.com`, and Windows registry shell integration remain Windows-only. Linux hides WIC fallback UI and provides user-level Nautilus Scripts plus Thunar UCA actions without sudo.
 
-Starting with 1.1.0, Windows Release requires AVX2 and Linux Release requires x86-64-v3. Official Release configurations enable IPO/LTO and fail configuration if the toolchain cannot support it. Slint is pinned to 1.18.0 with software rendering, FemtoVG, and accessibility retained.
+Starting with 1.1.0, Windows Release requires AVX2 and Linux Release requires x86-64-v3. Official Release configurations enable IPO/LTO and fail configuration if the toolchain cannot support it. Slint is pinned to 1.18.1 with software rendering, FemtoVG, and accessibility retained.
 
 Studio switches among Built-in default, Context menu, and user presets. The Context menu preset includes resource limits and a separate options section; Install/Remove actions are disabled for Built-in default. AVIF uses AOM only, Speed displays 5 by default, and the extra `.png` suffix refreshes only an already installed context menu.
 
@@ -126,7 +128,7 @@ Studio no longer has a separate large-image page; automatic large-image status s
 
 PNG defaults to q100 without additional pixel quantization; decoded pixels remain identical when no other pixel transform is requested. q1–99 quantizes RGB one row at a time and rescales values to the full range. Storage stays 8-bit or 16-bit, with at least 10 effective bits for 16-bit input, while alpha retains its original precision. Valid per-channel `sBIT` is read and preserved, with quantized RGB precision recorded separately. PNG does not support visual-quality search. Lower quality does not guarantee smaller files; check gradients and dark regions for banding.
 
-`--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; `--chroma auto` preserves the source representation: YUV 4:2:0/4:2:2/4:4:4 sources are kept as-is, RGB/RGBA sources use 4:4:4, and grayscale or unknown sources use 4:2:0. Lossless or 4:4:4 output does not automatically select Identity. Explicit `source/rgb` color representation controls RGB/GBR Identity. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and those auto rules. CICP precedence is explicit user value, then source value, then fallback, so BT.2020/PQ/HLG HDR sources keep their own CICP and BT.709/sRGB applies only when neither supplies one. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
+`--chroma 400` forces monochrome AVIF while retaining alpha; Studio offers 400 for AVIF, not JPEG. Animation tune and keyframe interval are CLI-only; Studio, presets and context menus use automatic settings. `--alpha auto` retains non-opaque alpha automatically. AVIF color and alpha both use the requested quality or visual-quality result; `--chroma auto` preserves the source representation: YUV 4:2:0/4:2:2/4:4:4 sources are kept as-is, RGB/RGBA sources use 4:4:4, grayscale sources (including grayscale with alpha) use 4:0:0, and unknown sources use 4:4:4, following avifenc YUV + auto. Lossless or 4:4:4 output does not automatically select Identity. Explicit `source/rgb` color representation controls RGB/GBR Identity. q100 permits byte-stream passthrough only for a YUV 4:2:0 AVIF with no requested color, alpha, bit-depth, or metadata rewrite; all other inputs use lossless AOM quantization and those auto rules. CICP precedence is explicit user value, then source value, then fallback, so BT.2020/PQ/HLG HDR sources keep their own CICP and BT.709/sRGB applies only when neither supplies one. Source CICP range is retained by default (PC/full or TV/limited); unknown range uses full. `--alpha off` removes alpha.
 
 CLI session unlock (not written to `AWJ.jsonc`):
 - `--unlock-max-input-file-bytes` / `--unlock-20gib-limit` removes the default 20 GiB input/runtime cap for the current process only; huge images may OOM.
@@ -192,7 +194,7 @@ Custom combos, buttons, navigation, and queue menus expose keyboard focus and ac
 | Shell integration | registry context menu | Nautilus Scripts + Thunar UCA |
 | Preferred compiler | MSVC | GCC 16 side-by-side |
 
-Animated or multi-image WebP/GIF/APNG/JXL/TIFF/AVIF, Windows WIC inputs, and JPEG MPF inputs are flattened to their composed first frame. Extraction failures are reported instead of silently retaining extra frames.
+Animated or multi-image WebP/GIF/APNG/WebP/AVIF/JXL/TIFF/AVIF, Windows WIC inputs, and JPEG MPF inputs are flattened to their composed first frame. Extraction failures are reported instead of silently retaining extra frames.
 
 Windows Explorer multi-selection launches are coalesced into one shell window and one queue. The shell window offers graceful cancellation and force termination; closing either UI terminates active work first.
 

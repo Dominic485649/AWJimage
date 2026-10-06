@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <array>
+#include <climits>
 #include <cstdint>
 #include <format>
 #include <limits>
@@ -47,7 +48,7 @@ struct WireFormat {
   std::array<std::int32_t, 13> number{};
 };
 struct Request {
-  std::uint64_t magic{0x41574a4d454e5514ull};
+  std::uint64_t magic{0x41574a4d454e5515ull};
   std::uint32_t remove{};
   std::array<WireFormat, 5> formats{};
 };
@@ -152,7 +153,8 @@ WireFormat encode(const FormatParams& p) {
 }
 
 FormatParams decode(const WireFormat& wire) {
-  const std::array maxima{1, 2, 3, 2, 2, 1, 1, 1, 1, 1, 1, 1, 2};
+  constexpr std::array maxima{1, 2, 4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 2};
+  static_assert(maxima.size() == WireFormat{}.number.size());
   for (std::size_t i = 0; i < maxima.size(); ++i)
     if (wire.number[i] < 0 || wire.number[i] > maxima[i])
       throw std::runtime_error("Menu helper rejected an invalid option.");

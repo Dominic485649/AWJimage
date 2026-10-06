@@ -3,6 +3,7 @@
 #include <scn/scan.h>
 
 #include <array>
+#include <charconv>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -11,6 +12,22 @@
 #include <string_view>
 
 namespace awj::studio {
+
+std::optional<StudioWorkerFrameEvent> parse_studio_worker_frame_event(std::string_view line) {
+  constexpr std::string_view prefix = "@AWJ-STUDIO/1 FRAME ";
+  if (!line.starts_with(prefix)) return std::nullopt;
+  line.remove_prefix(prefix.size());
+  std::array<std::size_t, 3> values{};
+  for (std::size_t i = 0; i < values.size(); ++i) {
+    const auto end = i == 2 ? line.size() : line.find(' ');
+    if (end == std::string_view::npos || !end) return std::nullopt;
+    auto parsed = std::from_chars(line.data(), line.data() + end, values[i]);
+    if (parsed.ec != std::errc{} || parsed.ptr != line.data() + end) return std::nullopt;
+    line.remove_prefix(end + (i == 2 ? 0 : 1));
+  }
+  if (!values[1] || !values[2] || values[1] > values[2]) return std::nullopt;
+  return StudioWorkerFrameEvent{values[0], values[1], values[2]};
+}
 
 std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
     std::string_view line) {

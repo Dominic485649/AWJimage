@@ -804,3 +804,6 @@ msgstr "Applying context menu settings. Machine menu changes require administrat
 
 msgid "检查更新"
 msgstr "Check for updates"
+
+msgid "400 强制灰度并保留透明；YUV + 自动参考 avifenc：保留源 420 / 422 / 444，灰度使用 400，RGB / RGBA 与未知源使用 444；444 不等于 RGB Identity。"
+msgstr "400 forces grayscale and retains alpha. YUV + auto follows avifenc: retain source 420 / 422 / 444; grayscale uses 400, RGB / RGBA and unknown sources use 444. 444 does not imply RGB Identity."

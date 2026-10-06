@@ -51,7 +51,7 @@ std::optional<int> nearest_supported_bit_depth_not_exceeding(
 ChromaMode applied_chroma_for(const AvifEncoderCapability& capability,
                               ChromaMode requested) {
   if (requested == ChromaMode::auto_keep) {
-    return contains_chroma(capability, ChromaMode::yuv420) ? ChromaMode::yuv420
+    return contains_chroma(capability, ChromaMode::yuv444) ? ChromaMode::yuv444
                                                           : capability.chroma_modes.front();
   }
   return requested;
@@ -202,7 +202,7 @@ std::vector<AvifEncoderCapability> avif_encoder_capabilities_for_build(bool aom_
   return {AvifEncoderCapability{
       .mode = AvifEncoderMode::aom,
       .id = "aom",
-      .chroma_modes = {ChromaMode::yuv420, ChromaMode::yuv422, ChromaMode::yuv444},
+      .chroma_modes = {ChromaMode::yuv420, ChromaMode::yuv422, ChromaMode::yuv444, ChromaMode::yuv400},
       .bit_depths = {8, 10, 12},
       .supports_alpha = true,
       .supports_avif_grid = true,

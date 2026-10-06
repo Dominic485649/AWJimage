@@ -1,6 +1,7 @@
 module;
 
 #include <expected>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <stop_token>
@@ -10,6 +11,7 @@ module;
 export module awj.avif_aom_codec;
 
 import awj.codec;
+import awj.animation;
 import awj.config;
 import awj.image;
 
@@ -29,6 +31,12 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     std::stop_token stop_token = {});
 
 std::unique_ptr<ImageDecoder> make_avif_image_decoder(int decode_threads);
+std::expected<bool, std::string> avif_has_sequence(const std::filesystem::path& path);
+std::expected<std::unique_ptr<AnimationReader>, std::string> open_avif_animation(
+    const std::filesystem::path& path, std::uint64_t budget, std::stop_token stop);
+std::expected<NativeEncodeResult, std::string> encode_avif_animation(
+    AnimationReader& reader, const NativeEncodeSettings& settings,
+    std::stop_token stop_token = {});
 std::expected<ImageBuffer, std::string> parse_avif_container_info(const std::filesystem::path& path);
 std::unique_ptr<ImageEncoder> make_avif_image_encoder(AvifEncoderMode mode);
 

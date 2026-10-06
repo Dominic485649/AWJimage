@@ -19,7 +19,7 @@ int main() try {
   check(capabilities.size() == 1 && capabilities.front().mode == awj::AvifEncoderMode::aom,
         "Only AOM may be registered");
   for (const auto mode : {awj::AvifEncoderMode::automatic, awj::AvifEncoderMode::aom}) {
-    for (const auto chroma : {awj::ChromaMode::yuv420, awj::ChromaMode::yuv422, awj::ChromaMode::yuv444}) {
+    for (const auto chroma : {awj::ChromaMode::yuv420, awj::ChromaMode::yuv422, awj::ChromaMode::yuv444, awj::ChromaMode::yuv400}) {
       for (const int depth : {8, 10, 12}) {
         for (const bool alpha : {false, true}) {
           const auto selected = awj::select_avif_encoder_from_capabilities({
@@ -38,7 +38,8 @@ int main() try {
   }
   awj::AvifEncoderSelectionRequest request{.pixel_count = 1024, .width = 32, .height = 32};
   auto selected = awj::select_avif_encoder_from_capabilities(request, capabilities);
-  check(selected && selected->applied_bit_depth == 10 && selected->speed == awj::encoding_defaults::default_aom_cpu_used,
+  check(selected && selected->applied_chroma == awj::ChromaMode::yuv444 &&
+        selected->applied_bit_depth == 10 && selected->speed == awj::encoding_defaults::default_aom_cpu_used,
         "Automatic AOM defaults changed");
   check(!awj::select_avif_encoder_from_capabilities(request, awj::avif_encoder_capabilities_for_build(false)),
         "Unavailable AOM silently selected another encoder");

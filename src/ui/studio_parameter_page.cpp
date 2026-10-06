@@ -49,6 +49,8 @@ awj::ChromaMode chroma_from_index(int index) {
       return awj::ChromaMode::yuv422;
     case 3:
       return awj::ChromaMode::yuv420;
+    case 4:
+      return awj::ChromaMode::yuv400;
     case 0:
     default:
       return awj::ChromaMode::auto_keep;

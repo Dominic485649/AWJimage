@@ -80,7 +80,7 @@ std::optional<std::filesystem::path> choose_path(PathPickerMode mode) {
     const COMDLG_FILTERSPEC filters[] = {
         {L"图片文件",
          L"*.jpg;*.jpeg;*.jpe;*.jfif;*.png;*.webp;*.bmp;*.dib;*.rle;*.tif;*."
-         L"tiff;*.gif;*.ico;*.jxl;*.avif;*.awsraw;*.dng;*.cr2;*.cr3;*.nef;*.arw;*."
+         L"tiff;*.gif;*.ico;*.jxl;*.avif;*.avifs;*.apng;*.awsraw;*.dng;*.cr2;*.cr3;*.nef;*.arw;*."
          L"rw2;*.orf;*.raf;*.pef;*.srw;*.x3f;*.3fr;*.erf;*.kdc;*.mrw;*.raw;*."
          L"heic;*.heif;*.jxr;*.wdp;*.hdp"},
         {L"所有文件", L"*.*"}};

@@ -1,4 +1,4 @@
-# Patches for the pinned Slint 1.18.0 only. AccessKit #12938 is upstream.
+# Patches for the pinned Slint 1.18.1 only. AccessKit #12938 is upstream.
 if(NOT DEFINED SOURCE_DIR)
     message(FATAL_ERROR "SOURCE_DIR is required.")
 endif()
@@ -14,7 +14,7 @@ function(awj_slint_replace relative before after)
     endif()
     string(FIND "${content}" "${before}" position)
     if(position EQUAL -1)
-        message(FATAL_ERROR "Slint 1.18.0 patch anchor missing in ${relative}: ${before}")
+        message(FATAL_ERROR "Slint 1.18.1 patch anchor missing in ${relative}: ${before}")
     endif()
     string(REPLACE "${before}" "${after}" content "${content}")
     file(WRITE "${path}" "${content}")
@@ -71,7 +71,7 @@ awj_slint_replace(internal/backends/winit/event_loop.rs
             .filter_map(|window| window.upgrade()).collect::<Vec<_>>();
         for window in windows { window.flush_pending_native_file_drops(); }]=])
 
-# FilterModel still fails to shift rejected insertions in 1.18.0. Mapping changes
+# FilterModel still fails to shift rejected insertions in 1.18.1. Mapping changes
 # must notify consumers that expose source row indices, even when no row matches.
 set(models api/cpp/include/private/slint_models.h)
 awj_slint_replace(${models}

@@ -1,0 +1,168 @@
+{
+  "awj_version": "1.2.0",
+  "selected_at": "2026-10-06",
+  "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
+  "vcpkg_baseline": "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4",
+  "libultrahdr": {
+    "tag": "v2.0.2",
+    "commit": "e5f5a022fe96fc4dc2ee35c19f733a50df807abe",
+    "url": "https://codeload.github.com/google/libultrahdr/tar.gz/refs/tags/v2.0.2",
+    "sha256": "aa8d193bb887c348c419780511dd03b374f4e07af8812b6d3f80c8537cf1ef2c",
+    "patches": [
+      "cmake/patch_libultrahdr_threads.cmake"
+    ]
+  },
+  "libheif": {
+    "tag": "v1.23.6",
+    "commit": "f81f28ac014b1c28dee483ac45b72c6b05bc421a",
+    "url": "https://github.com/strukturag/libheif/releases/download/v1.23.6/libheif-1.23.6.tar.gz",
+    "sha256": "4484346dc5995319dbc11e3a1c35d0a2ec46511ce370900869337fd2c7033125",
+    "patches": [
+      "cmake/patch_libheif_decoder_only.cmake",
+      "cmake/patch_libheif_gain_map.cmake"
+    ]
+  },
+  "libde265": {
+    "tag": "v1.1.3",
+    "commit": "ba62bf4cfb3242f3bf0a45617ff09e35236e4d82",
+    "url": "https://github.com/strukturag/libde265/releases/download/v1.1.3/libde265-1.1.3.tar.gz",
+    "sha256": "554228bd17788c99a7e63b37ab5634722190e6e2bf60c1dcb01cef328e133905",
+    "patches": []
+  },
+  "libavif": {
+    "tag": "v1.4.2",
+    "commit": "c5240fc79fe5c2407e10afd35f5505ef6333ea49",
+    "url": "https://codeload.github.com/AOMediaCodec/libavif/tar.gz/c5240fc79fe5c2407e10afd35f5505ef6333ea49",
+    "sha256": "5e9aa73e43af8021a57d744712ee0bc145267863afb7c9b118723a15dbd4cfbf",
+    "patches": [
+      "cmake/patch_libavif_parallel_grid.cmake",
+      "cmake/patch_libavif_animation_budget.cmake"
+    ]
+  },
+  "jpegli": {
+    "commit": "031a0077f5799a6041004267fc12b956c1f52a20",
+    "url": "https://codeload.github.com/google/jpegli/tar.gz/031a0077f5799a6041004267fc12b956c1f52a20",
+    "sha256": "269b3a75d6b2da2351f7fb2d642043f60f9b6d1bd5839f20c0d7c569be073367",
+    "exception": "Upstream does not publish stable releases; retain the audited commit until the next AWJ dependency review.",
+    "patches": [
+      "cmake/patch_jpegli_allocator.cmake"
+    ],
+    "submodules": {
+      "third_party/libjpeg-turbo": "8ecba3647edb6dd940463fedf38ca33a8e2a73d1"
+    }
+  },
+  "slint": {
+    "tag": "v1.18.1",
+    "commit": "372cf0ee5577c3dfec309a45e7b778ba4e81b734",
+    "url": "https://codeload.github.com/slint-ui/slint/tar.gz/372cf0ee5577c3dfec309a45e7b778ba4e81b734",
+    "sha256": "e25f9e2dc37ad2cf11166ac0df400f59772b024b22bb9577d729af68291f3481",
+    "patches": [
+      "cmake/patch_slint_static_import.cmake"
+    ]
+  },
+  "libjxl": {
+    "tag": "v0.12.0",
+    "commit": "a7a9c787341cf703dede03c2009fa460cae5e5df",
+    "url": "https://github.com/libjxl/libjxl/archive/refs/tags/v0.12.0.tar.gz",
+    "sha256": "03e9be69a30be4011f559da75328b6d7cea8ad921fabfbd551ce10bf45cdc992",
+    "sha512": "71d45123e47588c8028c0e01a7820c7a18d98df05c29b5318ab6858eaff5f249879763907201ba19a93f817c6ef75c393c1974d2a0cc8e461c4e2709ca6fa45f",
+    "source": "vcpkg-overlays/libjxl",
+    "patches": [
+      "vcpkg-overlays/libjxl/fix-dependencies.patch"
+    ]
+  },
+  "dav1d": {
+    "url": "https://github.com/videolan/dav1d/archive/refs/tags/1.5.4.tar.gz",
+    "commit": "54706fc6bc0cdecab7e9593974a4039cc038fca7",
+    "sha256": "a1d5b63d2d38ec9bd03acf643caa51fa22edd1e89c5a109c4807717216bbec07",
+    "source": "vcpkg-overlays/dav1d",
+    "version": "1.5.4",
+    "tag": "1.5.4"
+  },
+  "libjpeg-turbo": {
+    "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.0.tar.gz",
+    "commit": "c85e6b905bf237038faa936dab160ebfc5da0344",
+    "sha256": "980dd81f425082aa6d7c9e47fef27554ce7a9ffc8e2f6e863b97d263c5c50858",
+    "source": "vcpkg baseline",
+    "version": "3.2.0",
+    "tag": "3.2.0"
+  },
+  "libpng": {
+    "url": "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.59.tar.gz",
+    "commit": "cd952f49f95bb27154ae77dbb103032d95f6e580",
+    "sha256": "2540302a1844ad2b2b501977abecfa850f265f97b78f065a712ab4074a89f5b5",
+    "source": "vcpkg-overlays/libpng",
+    "version": "1.6.59",
+    "tag": "v1.6.59"
+  },
+  "libwebp": {
+    "url": "https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz",
+    "commit": "4fa21912338357f89e4fd51cf2368325b59e9bd9",
+    "sha256": "93a852c2b3efafee3723efd4636de855b46f9fe1efddd607e1f42f60fc8f2136",
+    "source": "vcpkg baseline",
+    "version": "1.6.0",
+    "tag": "v1.6.0"
+  },
+  "lcms": {
+    "url": "https://github.com/mm2/Little-CMS/archive/refs/tags/lcms2.19.1.tar.gz",
+    "commit": "21c582a594fe5279f90c0b93437c398f93bf62b0",
+    "sha256": "267705e278e2f7c2fb886c259dadcbaeb2be52748bcbc71c79f08aacacb7a709",
+    "source": "vcpkg baseline",
+    "version": "2.19.1",
+    "tag": "lcms2.19.1"
+  },
+  "aom": {
+    "tag": "v3.15.1",
+    "url": "https://storage.googleapis.com/aom-releases/libaom-3.15.1.tar.gz",
+    "version": "3.15.1",
+    "sha256": "8ca0c52746174603500f0adb6f2a215d69c9ca2aab2acb3caa06fb791d8d01bf",
+    "commit": "44d0a57786f432d933ff64b653347c66f4d0fa1d",
+    "source": "vcpkg-overlays/aom"
+  },
+  "giflib": {
+    "tag": "6.1.3",
+    "exception": "Use the upstream release tarball hash as the source identity; no verified release-to-Git commit mapping is available.",
+    "url": "https://sourceforge.net/projects/giflib/files/giflib-6.1.3.tar.gz/download",
+    "version": "6.1.3",
+    "sha256": "b65b66b99f0424b93525f987386f22fc5efb9da2bfc92ad4a532249aaffbab0e",
+    "commit": null,
+    "source": "vcpkg baseline"
+  },
+  "local_build_sha256": {
+    "cmake/patch_libheif_decoder_only.cmake": "2db12d016184fc23bc7d3e9185313b13251e800df718d0d7c5e88163686fc328",
+    "cmake/patch_libheif_gain_map.cmake": "10ae2230394038a30d4a6dfa9a34eceb0e3f576770b9eb0f19295ca5b4ba4046",
+    "cmake/patch_libavif_parallel_grid.cmake": "eeb38346e6f974f3e2c2d0e054b7f96209b332ce868886556dd9ed440121fb11",
+    "cmake/patch_libavif_animation_budget.cmake": "b2f2c1a3a5409bfe3eee5b0bad047327f5acafe4f46bc410e805f1f1b0c1a5d6",
+    "cmake/patch_jpegli_allocator.cmake": "04104442f3e4b29068ca1eb4f6e661b8f730844537ebdd0600ff67f55cdcad4c",
+    "cmake/patch_slint_static_import.cmake": "d5aba7ea5b219747d46f3b2b2ab69be49b609ff004f7699faf58182052893aaa",
+    "vcpkg-overlays/libjxl/fix-dependencies.patch": "f57a52305f168815b11aa6f1e284a525ffa3471c7a5b5c47d0d61684fbb579cf",
+    "vcpkg-overlays/aom/aom-rename-static.diff": "94f8f7fc7a7b661d488733cf43fb90e94f2cc345ae2317f6d5a2d3b2fc5f57ad",
+    "vcpkg-overlays/aom/aom-uninitialized-pointer.diff": "5a07138d20ac842bf1b491bdeaae17bf6fbae4c6c085e544361ef2d8cec6d2b0",
+    "vcpkg-overlays/aom/portfile.cmake": "2e94c84a08ca1c9c8573244539d8532c2b2558804300d34da44e047068536ef8",
+    "vcpkg-overlays/aom/vcpkg.json": "d1a4ef8530278bd3204a728cf333e080a900b6e098e75f28911ade9e8efccad1",
+    "vcpkg-overlays/dav1d/portfile.cmake": "0dbcaeb1ed440a7089ab7261fb8ada8e1bf7f002d6bc4baa18cee2f20c13bced",
+    "vcpkg-overlays/dav1d/usage": "9a9ed47aee5fdb08fcf21c1585e56c19fd5276f6416fbed9216128a9314bcae0",
+    "vcpkg-overlays/dav1d/vcpkg.json": "c59def987dd9fba57f885019f884b9044041e4dee26bf328d241ecbe2b271b1e",
+    "vcpkg-overlays/libarchive/portfile.cmake": "50dd0fba384660ca99422682253d6b7e8ecac06fe76ce41a695c7ee5bd2d8b4f",
+    "vcpkg-overlays/libarchive/vcpkg-cmake-wrapper.cmake.in": "216fc7aa427e7ebfb9b6f271ec40eaa5c7bb736e9f14db0e059ad1253c8eae26",
+    "vcpkg-overlays/libarchive/vcpkg.json": "b8c76b54fca76110dfa121aeae7bb724f28fb5e8e66d05bfd66f3bcd11bd73c6",
+    "vcpkg-overlays/libjxl/portfile.cmake": "43a7782fe9a8dad945fab11cc8c6c64d17b33dcc4c8ec2a0eb203e650647968e",
+    "vcpkg-overlays/libjxl/vcpkg.json": "26544c5e61c6120693a0b0fe21eeb56553b1db2156d155b00c58d905c28e3ae8",
+    "vcpkg-overlays/libplacebo/CMakeLists.txt": "7315bd393c28bf958d9828482e985bb72397b9a0fe678d3f229cc555981f08b5",
+    "vcpkg-overlays/libplacebo/portfile.cmake": "217caaad97370a2c87a72c2459740e8e210bb0b48304c61f08175244de1f08a9",
+    "vcpkg-overlays/libplacebo/vcpkg.json": "727b8a66123bacce5806d4105867ebaf352170d652df6ae24161c2ef8fc99d94",
+    "vcpkg-overlays/libyuv/cmake.diff": "656bf8f64eda479762df5e4b6cf30fdc98cf85670b8dc3963f53aa646c218fbd",
+    "vcpkg-overlays/libyuv/libyuv-config.cmake": "cdad93ddebb938e09680f76350a40f053e200522af483cbb1d9aa5ffa5ec1d1d",
+    "vcpkg-overlays/libyuv/portfile.cmake": "472e881a65e284622379c78d94225e8e9689fbdd19178bcb2bd917a3e877cde7",
+    "vcpkg-overlays/libyuv/usage": "0349d92bb20741341ff15af25c416369ff7673323e09865bc0797b8e5070a8d1",
+    "vcpkg-overlays/libyuv/vcpkg.json": "f48f825c171d0bf96f80873a7a12ffb8959b13bb48121f641f364a69a720fa49",
+    "cmake/patch_libultrahdr_threads.cmake": "5f027f631cc147b95bc5c749df91d912cfe226cefc288cbfb698e4f2cd77262b",
+    "vcpkg-overlays/libpng/cmake.patch": "e1c91b1739580791b8bfe770981cdb07bf65261caf6b2a99da988a8bb21d4094",
+    "vcpkg-overlays/libpng/libpng-config.cmake": "24086e8ff194402a0f2d68e9f992ca7a6899a194883a9df0054818e42d41c246",
+    "vcpkg-overlays/libpng/portfile.cmake": "06b17efcb5b7f8700780de9272e63c90046ebce016dba5f874ee44d080a5d890",
+    "vcpkg-overlays/libpng/usage": "78d7cf48b6a62ad52b10cb5f2134b2f6b61128c08802e10092020e28fb992542",
+    "vcpkg-overlays/libpng/vcpkg-cmake-wrapper.cmake": "4267e69abf185f2228a4cc012e3fe87d5de21a187c75950b5a7615f41c3f6371",
+    "vcpkg-overlays/libpng/vcpkg.json": "ec34dfb1f223ac006bb72361edfb2c80ec4dd2067bcc5fa31152f9f7232e2376"
+  },
+  "local_build_hash_normalization": "UTF-8 text, CRLF normalized to LF; source archives retain byte-exact hashes"
+}

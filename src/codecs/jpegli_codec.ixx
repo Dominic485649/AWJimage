@@ -547,6 +547,9 @@ class JpegliImageEncoder final : public ImageEncoder {
         jpegli_set_xyb_mode(&cinfo);
       }
       jpegli_set_defaults(&cinfo);
+      if (settings.jpegli_gain_map_samples) {
+        jpegli_enable_adaptive_quantization(&cinfo, FALSE);
+      }
       jpegli_detail::apply_chroma_sampling(cinfo, settings.chroma_mode);
       const int final_quality = std::clamp(settings.quality, 1, 100);
       jpegli_set_quality(&cinfo, final_quality, TRUE);

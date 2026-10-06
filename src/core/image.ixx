@@ -71,6 +71,9 @@ struct ImageSourceInfo {
   std::optional<HdrContentLightMetadata> content_light{};
   bool has_hdr_metadata{};
   std::string color_metadata_source{};
+  // Linear FP16 values are relative to this diffuse white, not necessarily scRGB's 80 nits.
+  std::optional<float> linear_reference_white_nits{};
+  bool source_has_gain_map{};
 };
 
 // Precision of the current unorm samples, independent of their 8/16-bit storage.

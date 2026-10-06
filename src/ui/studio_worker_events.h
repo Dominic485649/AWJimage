@@ -27,6 +27,11 @@ struct StudioWorkerDetailEvent {
   std::int64_t write_microseconds{-1};
 };
 
+struct StudioWorkerFrameEvent {
+  std::size_t index{}, completed{}, total{};
+};
+std::optional<StudioWorkerFrameEvent> parse_studio_worker_frame_event(std::string_view line);
+
 std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
     std::string_view line);
 std::optional<StudioWorkerDetailEvent> parse_studio_worker_detail_event(

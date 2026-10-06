@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <climits>
 #include <expected>
 #include <format>
 #include <fstream>
@@ -219,7 +220,7 @@ std::expected<void, std::string> apply_menu_config_values(
     }
     if (param.avif_encoder_index == 2) param.avif_encoder_index = 1;
     if (auto r = one(apply_int(menu_config_key(prefix, "avif_color_representation_index"), 0, 2, param.avif_color_representation_index)); !r) return r;
-    if (auto r = one(apply_int(menu_config_key(prefix, "chroma_index"), 0, 3, param.chroma_index)); !r) return r;
+    if (auto r = one(apply_int(menu_config_key(prefix, "chroma_index"), 0, 4, param.chroma_index)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "alpha_policy_index"), 0, 2, param.alpha_policy_index)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "jpegli_progressive_index"), 0, 2, param.jpegli_progressive_index)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), param.jpegli_optimize_huffman)); !r) return r;

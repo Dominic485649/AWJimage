@@ -273,6 +273,21 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
         if (line.empty()) {
           return;
         }
+        if (auto frame = parse_studio_worker_frame_event(line)) {
+          post_to_ui(weak, [state, run_id, frame = *frame](AwjStudio& app) {
+            std::scoped_lock lock{state->mutex};
+            if (state->run_id != run_id) return;
+            if (auto queue_index = queue_index_for_run_index(*state, frame.index)) {
+              auto& item = state->queue_items[*queue_index];
+              item.status_text = std::format("编码帧 {}/{}", frame.completed, frame.total);
+              awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                  make_queue_task_row(item, *queue_index));
+            }
+            app.set_status_text(to_shared(std::format("第 {} 项：动画帧 {}/{}",
+                frame.index + 1, frame.completed, frame.total)));
+          });
+          return;
+        }
         if (auto event = parse_studio_worker_item_event(line)) {
           if (event->status != 'R') {
             pending_item = *event;

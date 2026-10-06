@@ -75,8 +75,8 @@ int main() {
       const auto position = std::ranges::find_if(schema.values, [&](const auto& value) {
         return value.key == parent && value.name == L"Position";
       });
-      if (position == schema.values.end() || position->string_value != L"Bottom")
-        return fail("top-level context menu is not positioned at the bottom");
+      if (position != schema.values.end())
+        return fail("top-level context menu must use normal Shell placement");
     }
   }
   if (schema_without_png.parent_roots.size() != supported_extensions().size() + 1 ||
@@ -132,7 +132,11 @@ int main() {
       !avif_command.ends_with(L"-i \"%1\" %*")) {
     return fail("AVIF shell command generation changed CLI semantics");
   }
-  const auto avif_png_command = build_convert_command_line(exe, L"avif", params_with_png[0], true);
+    const auto avif_png_command = build_convert_command_line(exe, L"avif", params_with_png[0], true);
+    auto mono_params = params_with_png[0]; mono_params.chroma_index = 4;
+    const auto mono_command = build_convert_command_line(exe, L"avif", mono_params, false);
+    if (!contains(mono_command, L"--chroma 400") || contains(mono_command, L"--avif-animation-tune") ||
+        contains(mono_command, L"--avif-animation-keyframe")) return fail("UI shell monochrome/automatic animation semantics incorrect.");
   if (!contains(avif_png_command, L"--append-png-suffix")) {
     return fail("AVIF.png command did not include suffix switch");
   }

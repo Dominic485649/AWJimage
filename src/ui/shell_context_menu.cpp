@@ -102,7 +102,7 @@ constexpr std::wstring_view kExtendedSubCommandsKey = L"ExtendedSubCommandsKey";
 constexpr std::wstring_view kSupportedExtensions[] = {
     L".jpg",    L".jpeg", L".jpe", L".jfif", L".png",  L".webp",
     L".bmp",    L".dib",  L".rle", L".ico",  L".tif",  L".tiff",
-    L".gif",    L".jxl",  L".avif", L".awsraw", L".dng", L".cr2",
+    L".gif",    L".jxl",  L".avif", L".avifs", L".apng", L".awsraw", L".dng", L".cr2",
     L".cr3",    L".nef",  L".arw", L".rw2",  L".orf",  L".raf",
     L".pef",    L".srw",  L".x3f", L".3fr",  L".erf",  L".kdc",
     L".mrw",    L".raw",  L".heic", L".heif", L".jxr",  L".wdp",
@@ -409,6 +409,7 @@ std::wstring chroma_arg(int index) {
     case 1: return L"444";
     case 2: return L"422";
     case 3: return L"420";
+    case 4: return L"400";
     default: return L"auto";
   }
 }
@@ -724,7 +725,6 @@ RegistrySchema build_registry_schema(const std::filesystem::path& awj_exe,
   for (const auto& parent : schema.parent_roots) {
     schema.keys.push_back(parent);
     append_string_spec(schema.values, parent, L"MUIVerb", std::wstring{kMenuLabel});
-    append_string_spec(schema.values, parent, L"Position", L"Bottom");
     append_string_spec(schema.values, parent, L"Icon", icon);
     append_string_spec(schema.values, parent, L"MultiSelectModel", std::wstring{kMultiSelectModel});
     if (compatibility) {

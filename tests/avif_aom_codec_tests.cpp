@@ -1,17 +1,27 @@
+#include <array>
 #include <cstddef>
+#include <cstdint>
+#include <cmath>
 #include <cstdio>
+#include <expected>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <memory>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
 
 #include <lcms2.h>
+#include <avif/avif.h>
 
+import awj.animation;
 import awj.avif_aom_codec;
 import awj.codec;
 import awj.config;
+import awj.gain_map;
 import awj.image;
 import awj.hdr_tonemap;
 import awj.large_image_plan;
@@ -294,10 +304,215 @@ int verify_avif_matrix(const awj::EncodedImage& encoded, int expected_matrix) {
   return 0;
 }
 
+int verify_animation_sequence() {
+  const std::array<awj::FrameDuration, 3> long_delays{{{65535, 1}, {1, 65521}, {1, 65519}}};
+  const auto scale = awj::animation_timescale(long_delays);
+  if (scale < 65521 || scale * 65535 > std::numeric_limits<std::uint32_t>::max())
+    return fail("Long APNG frame durations would overflow AVIF sample_delta.");
+
+  struct Frames final : awj::AnimationReader {
+    awj::AnimationInfo details{.width = 2, .height = 2,
+        .durations = {{1, 10}, {3, 20}, {1, 50}, {7, 100}}};
+    std::array<awj::ImageBuffer, 4> images{make_test_image(), make_test_image(), make_test_image(), make_test_image()};
+    std::size_t index{};
+    Frames() {
+      images[0].alpha_mode = awj::AlphaMode::none;
+      images[1].planes[0].bytes[3] = std::byte{0};
+      images[2].planes[0].bytes[3] = std::byte{0};
+    }
+    const awj::AnimationInfo& info() const noexcept override { return details; }
+    const awj::ImageBuffer& frame() const noexcept override { return images[index]; }
+    std::uint64_t memory_usage_bytes() const noexcept override { return 256; }
+    std::expected<bool, std::string> next(std::stop_token = {}) override { return ++index < details.durations.size(); }
+  };
+  auto sequence_settings = settings(10, awj::ChromaMode::yuv444, awj::AvifEncoderMode::aom);
+  sequence_settings.quality = 100;
+  sequence_settings.speed = 10;
+  sequence_settings.resources.memory_limit_bytes = 64 * 1024 * 1024;
+  for (int repetitions : {-1, 0, 2}) {
+    Frames frames;
+    frames.details.repetitions = repetitions;
+    std::size_t progress = 0;
+    sequence_settings.frame_progress = [&](std::size_t completed, std::size_t total) {
+      if (completed == progress + 1 && total == 4) progress = completed;
+    };
+    auto encoded = awj::encode_avif_animation(frames, sequence_settings);
+    if (!encoded) return fail(encoded.error());
+    std::unique_ptr<avifDecoder, decltype(&avifDecoderDestroy)> decoder{avifDecoderCreate(), avifDecoderDestroy};
+    if (!decoder || avifDecoderSetSource(decoder.get(), AVIF_DECODER_SOURCE_TRACKS) != AVIF_RESULT_OK ||
+        avifDecoderSetIOMemory(decoder.get(), reinterpret_cast<const std::uint8_t*>(encoded->encoded.bytes.data()),
+            encoded->encoded.bytes.size()) != AVIF_RESULT_OK || avifDecoderParse(decoder.get()) != AVIF_RESULT_OK ||
+        decoder->imageCount != 4 || decoder->repetitionCount != repetitions ||
+        decoder->timescale != 100 || decoder->durationInTimescales != 34 || progress != 4)
+      return fail("Animation frame count, VFR duration, loop or progress was not preserved.");
+    for (int index = 0; index < 4; ++index) {
+      if (avifDecoderNextImage(decoder.get()) != AVIF_RESULT_OK || decoder->image->depth != 10 ||
+          !decoder->image->alphaPlane || ((index == 1 || index == 2) && decoder->image->alphaPlane[0] != 0))
+        return fail("10-bit sequence lost alpha after its opaque first frame.");
+    }
+    const auto path = std::filesystem::temp_directory_path() / "awj-sequence-reader.avifs";
+    { std::ofstream file(path, std::ios::binary); file.write(reinterpret_cast<const char*>(encoded->encoded.bytes.data()), encoded->encoded.bytes.size()); }
+    auto probe = awj::avif_has_sequence(path);
+    auto reader = awj::open_avif_animation(path, 64 * 1024 * 1024, {});
+    if (!probe || !*probe || !reader || !*reader || (*reader)->info().durations.size() != 4 || (*reader)->info().repetitions != repetitions)
+      return fail(reader ? "AVIF sequence reader lost timing or repetitions." : reader.error());
+    for (int index = 0; index < 4; ++index) {
+      auto next = (*reader)->next();
+      if (!next || !*next || (*reader)->frame().bit_depth != 16 || (*reader)->frame().source_info->bit_depth != 10)
+        return fail(next ? "AVIF sequence precision was lost." : next.error());
+    }
+    reader->reset(); std::filesystem::remove(path);
+  }
+  for (auto tune : {awj::AvifAnimationTune::automatic, awj::AvifAnimationTune::ssim, awj::AvifAnimationTune::psnr}) {
+    Frames frames; sequence_settings.quality = 70; sequence_settings.speed = 5;
+    sequence_settings.resources.encoder_threads_per_file = 1;
+    sequence_settings.avif_animation_tune = tune; sequence_settings.avif_animation_keyframe = 2;
+    auto lossy = awj::encode_avif_animation(frames, sequence_settings);
+    if (!lossy || lossy->lossless) return fail(lossy ? "Lossy sequence unexpectedly lossless." : lossy.error());
+  }
+  {
+    Frames frames;
+    sequence_settings.bit_depth = 12;
+    sequence_settings.applied_color_primaries = 9;
+    sequence_settings.applied_transfer_characteristics = 16;
+    sequence_settings.applied_matrix_coefficients = 9;
+    for (auto& image : frames.images) image.source_info = awj::ImageSourceInfo{
+        .pixel_format = awj::PixelFormat::rgba, .bit_depth = 8, .color_primaries = 9,
+        .transfer_characteristics = 16, .matrix_coefficients = 9, .has_hdr_metadata = true};
+    frames.details.durations = {{1,65521}, {1,65519}, {1,65513}, {1,65507}};
+    auto encoded = awj::encode_avif_animation(frames, sequence_settings);
+    if (!encoded) return fail(encoded.error());
+    std::unique_ptr<avifDecoder, decltype(&avifDecoderDestroy)> decoder{avifDecoderCreate(), avifDecoderDestroy};
+    avifDecoderSetSource(decoder.get(), AVIF_DECODER_SOURCE_TRACKS);
+    avifDecoderSetIOMemory(decoder.get(), reinterpret_cast<const std::uint8_t*>(encoded->encoded.bytes.data()), encoded->encoded.bytes.size());
+    long double expected = 0;
+    for (const auto duration : frames.details.durations) expected += static_cast<long double>(duration.numerator) / duration.denominator;
+    if (avifDecoderParse(decoder.get()) != AVIF_RESULT_OK || decoder->image->depth != 12 ||
+        decoder->image->colorPrimaries != 9 || decoder->image->transferCharacteristics != 16 ||
+        std::abs(expected * decoder->timescale - decoder->durationInTimescales) > 1)
+      return fail("12-bit HDR sequence or VFR cumulative rounding failed.");
+    Frames single; single.details.durations.resize(1);
+    auto still = awj::encode_avif_animation(single, sequence_settings);
+    if (!still) return fail(still.error());
+    Frames tiny; tiny.details.durations = {{1,4000000000u},{1,4000000000u},{1,4000000000u},{1,4000000000u}};
+    if (awj::encode_avif_animation(tiny, sequence_settings)) return fail("Unrepresentable animation timing accepted.");
+    std::stop_source stop; stop.request_stop(); Frames canceled;
+    if (awj::encode_avif_animation(canceled, sequence_settings, stop.get_token())) return fail("Sequence cancellation ignored.");
+    sequence_settings.resources.memory_limit_bytes = 1; Frames limited;
+    if (awj::encode_avif_animation(limited, sequence_settings)) return fail("Sequence memory budget ignored.");
+  }
+  return 0;
+}
+
 }  // namespace
 
+int verify_gain_map_geometry_and_samples() {
+  const std::array<std::array<unsigned, 6>, 8> expected{{
+      {1,2,3,4,5,6}, {2,1,4,3,6,5}, {6,5,4,3,2,1}, {5,6,3,4,1,2},
+      {1,3,5,2,4,6}, {5,3,1,6,4,2}, {6,4,2,5,3,1}, {2,4,6,1,3,5}}};
+  for (unsigned orientation = 1; orientation <= 8; ++orientation) {
+    auto image = make_test_image(); image.height = 3;
+    image.planes.front().bytes.resize(24);
+    for (unsigned i = 0; i < 6; ++i) image.planes.front().bytes[i * 4] = std::byte(i + 1);
+    const std::array<unsigned, 26> tiff{0x49,0x49,0x2a,0,8,0,0,0,1,0,
+        0x12,1,3,0,1,0,0,0,orientation,0,0,0,0,0,0,0};
+    awj::MetadataBlock exif{.kind = awj::MetadataKind::exif};
+    for (auto value : tiff) exif.bytes.push_back(std::byte(value));
+    image.metadata.push_back(std::move(exif));
+    auto result = awj::gain_map_detail::apply_exif_orientation(image);
+    if (!result) return fail(result.error());
+    if (image.width != (orientation >= 5 ? 3u : 2u) || image.height != (orientation >= 5 ? 2u : 3u))
+      return fail("Gain Map Exif orientation dimensions incorrect.");
+    for (unsigned i = 0; i < 6; ++i)
+      if (std::to_integer<unsigned>(image.planes.front().bytes[i * 4]) != expected[orientation - 1][i])
+        return fail("Gain Map Exif orientation pixels incorrect.");
+    const auto once = image.planes.front().bytes;
+    if (!awj::gain_map_detail::apply_exif_orientation(image) || once != image.planes.front().bytes)
+      return fail("Gain Map Exif orientation applied twice.");
+    if (awj::gain_map_detail::crop_rgba(image, image.width, 0, 1, 1))
+      return fail("Gain Map invalid crop accepted.");
+  }
+  auto base = make_test_image();
+  for (unsigned i = 0; i < 4; ++i) {
+    for (unsigned c = 0; c < 3; ++c) base.planes.front().bytes[i * 4 + c] = std::byte{128};
+    base.planes.front().bytes[i * 4 + 3] = std::byte{64};
+  }
+  base.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 8,
+      .color_primaries = 1, .transfer_characteristics = 13, .matrix_coefficients = 1, .color_range = 1};
+  auto map = base; map.width = map.height = 1; map.planes.front().stride = 4; map.planes.front().bytes.resize(4);
+  std::unique_ptr<avifGainMap, decltype(&avifGainMapDestroy)> metadata(avifGainMapCreate(), avifGainMapDestroy);
+  if (!metadata) return fail("Gain Map metadata allocation failed.");
+  metadata->alternateHdrHeadroom = {2,1};
+  for (int c = 0; c < 3; ++c) {
+    metadata->gainMapMax[c] = {2,1}; metadata->gainMapGamma[c] = {2,1};
+    metadata->baseOffset[c] = {1,100}; metadata->alternateOffset[c] = {2,100};
+  }
+  auto enhanced = awj::compose_iso_gain_map(base, map, *metadata);
+  if (!enhanced) return fail(enhanced.error());
+  auto transform = awj::hdr::hdr_detail::make_source_transform(*enhanced);
+  if (!transform) return fail(transform.error());
+  auto nits = awj::hdr::hdr_detail::linear_nits(*enhanced, *transform, enhanced->planes.front().bytes.data(), 0);
+  const float linear = std::pow((128.0f / 255 + 0.055f) / 1.055f, 2.4f);
+  const float reference = ((linear + 0.01f) * std::exp2(2 * std::sqrt(128.0f / 255)) - 0.02f) * 203;
+  if (!nits || std::abs((*nits)[0] - reference) > reference * 0.02f || enhanced->width != 2 ||
+      !enhanced->source_info->source_has_gain_map || metadata->image != nullptr ||
+      std::abs(awj::hdr::hdr_detail::read_sample(*enhanced, enhanced->planes.front().bytes.data(), 3) - 64.0f / 255) > 0.001f)
+    return fail("ISO Gain Map gamma/offset/size/alpha reconstruction incorrect.");
+  metadata->gainMapGamma[0].n = 0;
+  if (awj::compose_iso_gain_map(base, map, *metadata)) return fail("Zero Gain Map gamma accepted.");
+  metadata->gainMapGamma[0].n = 2; metadata->baseHdrHeadroom.d = 0;
+  if (awj::compose_iso_gain_map(base, map, *metadata)) return fail("Zero Gain Map denominator accepted.");
+  metadata->baseHdrHeadroom.d = 1;
+  base.metadata.push_back({awj::MetadataKind::icc, {std::byte{0}}});
+  if (awj::compose_iso_gain_map(base, map, *metadata)) return fail("Unsupported ISO ICC silently accepted.");
+  base.metadata.clear();
+  if (awj::compose_apple_gain_map(base, map)) return fail("Apple Gain Map missing metadata accepted.");
+  const std::string xmp = R"(<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/"><HDRGainMap:HDRGainMapVersion>131072</HDRGainMap:HDRGainMapVersion><HDRGainMap:HDRGainMapHeadroom>2</HDRGainMap:HDRGainMapHeadroom></rdf:Description></rdf:RDF></x:xmpmeta>)";
+  awj::MetadataBlock packet{.kind = awj::MetadataKind::xmp};
+  for (unsigned char value : xmp) packet.bytes.push_back(std::byte(value));
+  base.metadata.push_back(std::move(packet));
+  for (unsigned c = 0; c < 3; ++c) map.planes.front().bytes[c] = std::byte{255};
+  auto apple = awj::compose_apple_gain_map(base, map);
+  if (!apple) return fail(apple.error());
+  auto apple_transform = awj::hdr::hdr_detail::make_source_transform(*apple);
+  if (!apple_transform) return fail(apple_transform.error());
+  auto apple_nits = awj::hdr::hdr_detail::linear_nits(*apple, *apple_transform, apple->planes.front().bytes.data(), 0);
+  if (!apple_nits || std::abs((*apple_nits)[0] - linear * 4 * 203) > linear * 203 * 0.02f)
+    return fail("Apple Gain Map headroom reconstruction incorrect.");
+  map.planes.front().bytes[1] = std::byte{0};
+  if (awj::compose_apple_gain_map(base, map)) return fail("Non-grayscale Apple Gain Map accepted.");
+  return 0;
+}
+
 int main() {
+  if (const int rc = verify_gain_map_geometry_and_samples(); rc != 0) return rc;
+  if (const int rc = verify_animation_sequence(); rc != 0) return rc;
   auto aom = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom);
+  {
+    auto colored = make_test_image(); colored.planes.front().bytes[3] = std::byte{64};
+    auto mono_settings = settings(10, awj::ChromaMode::yuv400, awj::AvifEncoderMode::aom);
+    mono_settings.quality = 100;
+    mono_settings.source_has_alpha_channel = true;
+    mono_settings.encoder_supports_alpha = true;
+    mono_settings.applied_alpha = "kept";
+    auto mono = aom->encode(colored, mono_settings);
+    if (!mono || mono->diagnostics.applied_chroma != "400")
+      return fail(mono ? "Forced AVIF monochrome diagnostics incorrect." : mono.error());
+    auto decoder = awj::make_avif_image_decoder(1);
+    auto decoded = decoder->decode_memory(mono->encoded.bytes, "forced monochrome");
+    if (!decoded || !decoded->image.source_info || decoded->image.source_info->pixel_format != awj::PixelFormat::gray)
+      return fail(decoded ? "Forced AVIF monochrome retained color planes." : decoded.error());
+    const auto& image = decoded->image;
+    const auto* row = image.planes.front().bytes.data();
+    for (unsigned p = 0; p < 4; ++p) {
+      const auto r = awj::hdr::hdr_detail::read_sample(image, row, p * 4);
+      for (unsigned c = 1; c < 3; ++c)
+        if (std::abs(r - awj::hdr::hdr_detail::read_sample(image, row, p * 4 + c)) > 0.001f)
+          return fail("Forced AVIF monochrome decoded colored pixels.");
+    }
+    if (std::abs(awj::hdr::hdr_detail::read_sample(image, row, 3) - 64.0f / 255) > 0.01f)
+      return fail("Forced AVIF monochrome lost alpha.");
+  }
 
   auto scrgb_materialized = awj::hdr::materialize_scrgb_as_hdr10(make_scrgb_image());
   if (!scrgb_materialized || scrgb_materialized->bit_depth != 16 ||
@@ -306,6 +521,14 @@ int main() {
                     ? "scRGB materialization no longer uses a 16-bit UNORM input container."
                     : scrgb_materialized.error());
   }
+  auto gain_map_linear = make_scrgb_image();
+  gain_map_linear.source_info->color_metadata_source = "jpeg-gain-map-linear";
+  gain_map_linear.source_info->linear_reference_white_nits = 203;
+  gain_map_linear.source_info->source_has_gain_map = true;
+  auto gain_map_hdr = awj::hdr::materialize_scrgb_as_hdr10(gain_map_linear);
+  if (!gain_map_hdr || gain_map_hdr->planes[0].bytes[1] <= scrgb_materialized->planes[0].bytes[1])
+    return fail(gain_map_hdr ? "203-nit Gain Map reference white was treated as 80-nit scRGB."
+                            : gain_map_hdr.error());
   auto scrgb_12_settings = settings(12, awj::ChromaMode::yuv444,
                                     awj::AvifEncoderMode::aom);
   scrgb_12_settings.source_bit_depth = 16;
@@ -424,6 +647,14 @@ int main() {
   }
 
   auto default_yuv_q100 = lossless_auto_chroma_settings;
+  if (const int rc = verify_auto_chroma(awj::PixelFormat::gray,
+                                      awj::PixelFormat::gray, "400"); rc != 0) {
+    return rc;
+  }
+  if (const int rc = verify_auto_chroma(awj::PixelFormat::unknown,
+                                      awj::PixelFormat::yuv444, "444"); rc != 0) {
+    return rc;
+  }
   default_yuv_q100.avif_color_representation =
       awj::AvifColorRepresentation::yuv;
   auto default_yuv_q100_encoded =
@@ -478,12 +709,12 @@ int main() {
     range_settings.chroma_mode = awj::ChromaMode::auto_keep;
     range_settings.applied_color_range = color_range;
     auto range_encoded = aom->encode(make_test_image(), range_settings);
-    if (!range_encoded || range_encoded->diagnostics.applied_chroma != "420") {
-      return fail(range_encoded ? "AOM default chroma was not 420."
+    if (!range_encoded || range_encoded->diagnostics.applied_chroma != "444") {
+      return fail(range_encoded ? "AOM RGB auto chroma was not 444."
                                 : range_encoded.error());
     }
     return verify_avif_source_info(range_encoded->encoded,
-                                   awj::PixelFormat::yuv420, color_range);
+                                   awj::PixelFormat::yuv444, color_range);
   };
   if (const int rc = verify_color_range(0); rc != 0) {
     return rc;
@@ -567,7 +798,7 @@ int main() {
   auto alpha_encoded = aom->encode(alpha_image, alpha_settings);
   if (!alpha_encoded || alpha_encoded->encoded.bytes.empty() ||
       alpha_encoded->lossless || alpha_encoded->final_quality != 1 ||
-      alpha_encoded->diagnostics.applied_chroma != "420" ||
+      alpha_encoded->diagnostics.applied_chroma != "444" ||
       alpha_encoded->diagnostics.speed_mapping.user_speed != 6 ||
       alpha_encoded->diagnostics.encoder_threads != 28) {
     return fail(alpha_encoded ? "AOM alpha encode produced no bytes." : alpha_encoded.error());
@@ -587,7 +818,7 @@ int main() {
   auto auto_alpha_encoded = aom->encode(alpha_image, auto_alpha_settings);
   if (!auto_alpha_encoded || auto_alpha_encoded->lossless ||
       auto_alpha_encoded->final_quality != 1 ||
-      auto_alpha_encoded->diagnostics.applied_chroma != "420" ||
+      auto_alpha_encoded->diagnostics.applied_chroma != "444" ||
       auto_alpha_encoded->diagnostics.applied_bit_depth != 10 ||
       auto_alpha_encoded->diagnostics.timing.avif_rgb_to_yuv_seconds < 0.0 ||
       auto_alpha_encoded->diagnostics.timing.avif_add_image_seconds < 0.0 ||
@@ -604,7 +835,7 @@ int main() {
                               : alpha_decoded.error());
   }
 
-  auto edge_grid_settings = settings(8, awj::ChromaMode::auto_keep,
+  auto edge_grid_settings = settings(8, awj::ChromaMode::yuv420,
                                      awj::AvifEncoderMode::aom);
   edge_grid_settings.alpha_policy = awj::AlphaModePolicy::off;
   edge_grid_settings.avif_grid_plan = awj::GridPlan{
@@ -615,7 +846,7 @@ int main() {
                                        edge_grid_settings);
   if (edge_grid_encoded ||
       edge_grid_encoded.error().find("420") == std::string::npos) {
-    return fail("AOM edge grid auto mode did not reject incompatible 420 chroma.");
+    return fail("AOM edge grid did not reject explicitly requested incompatible 420 chroma.");
   }
 
   const auto temp_dir = std::filesystem::temp_directory_path();

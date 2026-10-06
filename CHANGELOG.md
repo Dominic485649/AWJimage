@@ -1,5 +1,15 @@
 # 更新日志
 
+## 1.2.0 - 2026-10-07
+
+- 自动识别 JPEG、AVIF、HEIC/HEIF 的受支持 Gain Map，在线性光空间重建增强图像；无 Gain Map 时正常转换，损坏或不支持的增益图明确报错。
+- JPEG 自动区分 SDR 与 HDR。SDR 使用普通 JPEGli；HDR 使用线性 FP16 生成 Gain Map，由 JPEGli 分别编码 8-bit SDR 主图和多通道增益图，再封装为 ISO 21496-1 / MPF HDR JPEG。CLI 提供 `--jpeg-hdr auto|sdr|hdr`，界面和右键固定 auto。HDR JPEG 不支持视觉质量搜索，q100 不声明无损。
+- GIF、APNG、WebP 和 AVIF 序列转 AVIF 时自动保留动画，合成完整画布后顺序编码，保留 VFR、循环和透明。UI、预设和右键默认自动；动画 tune（auto/ssim/psnr）及最大关键帧间隔（默认 0 自动）仅在 CLI 提供；多帧不强制静态 IQ 或 Grid。
+- AVIF YUV + auto 对齐 avifenc：保留源 420/422/444，灰度及灰度加 alpha 使用 400，RGB/RGBA 和未知源使用 444；新增 AVIF 400 强制灰度选项，保留 alpha；无损和 444 不会自动改为 Identity。
+- Windows 正常和兼容右键菜单移除强制顶部/底部位置，重新安装时清除旧 Position，采用 Explorer 普通排序。
+- 新增 libultrahdr 2.0.2；升级 libaom 至 3.15.1、libheif 至 1.23.6、libpng 至 1.6.59、Slint 至 1.18.1，并锁定完整 revision、源码及本地补丁哈希。每个 AWJ 新版本重新审核当时最新稳定版，历史构建使用对应锁定记录。
+- 修正空 PNG chunk 的 CRC 计算；依赖归档更新采用新提取时间，避免旧对象混入升级后的编解码器。HDR 色调映射增加逐行取消检查。
+
 ## 1.1.0 - 2026-09-29
 
 - 参数页内置默认也显示禁用的右键菜单安装/移除按钮。右键菜单预设采用与内置默认相同的常用参数、资源限制、格式高级选项结构；右键菜单选项与格式高级选项同级，只在可用预设中显示。调整首行标签与控件垂直居中、分组间距和顶部留白。

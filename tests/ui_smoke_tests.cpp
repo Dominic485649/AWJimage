@@ -363,6 +363,8 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
           };
           if (check("质量", "Quality", Role::TextInput, true) ||
               check("AVIF 编码器", "AVIF encoder", Role::Combobox, false) ||
+              check("动画 tune", "Animation tune", Role::Combobox, false) ||
+              check("关键帧间隔", "Keyframe interval", Role::Text, false) ||
               check("视觉质量", "Visual quality", Role::TextInput, format != 4) ||
               check("速度", "Speed", Role::TextInput, format < 3) ||
               check("线程", "Threads", Role::TextInput, true) ||

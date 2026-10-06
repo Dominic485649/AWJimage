@@ -33,6 +33,28 @@ int main() {
   }
 
   const auto defaults = awj::default_app_config();
+  if (defaults.jpeg_hdr != awj::JpegHdrMode::automatic ||
+      defaults.avif_animation_tune != awj::AvifAnimationTune::automatic ||
+      defaults.avif_animation_keyframe != 0) return fail("HDR/animation defaults changed.");
+  auto animation = awj::parse_arguments({L"--avif-animation-tune", L"ssim", L"--avif-animation-keyframe", L"48", L"--jpeg-hdr", L"sdr"});
+  if (!animation || animation->config.avif_animation_tune != awj::AvifAnimationTune::ssim ||
+      animation->config.avif_animation_keyframe != 48 || animation->config.jpeg_hdr != awj::JpegHdrMode::sdr)
+    return fail("HDR/animation CLI roundtrip failed.");
+  for (const auto* chroma : {L"400", L"4:0:0"}) {
+    auto gray = awj::parse_arguments({L"--format", L"avif", L"--chroma", chroma});
+    if (!gray || gray->config.chroma_mode != awj::ChromaMode::yuv400 ||
+        !awj::validate_execution_config(gray->config)) return fail("Forced monochrome AVIF CLI rejected.");
+  }
+  for (const auto args : {std::vector<std::wstring>{L"--format", L"jpgli", L"--chroma", L"400"},
+      std::vector<std::wstring>{L"--chroma", L"400", L"--avif-color-representation", L"rgb"}}) {
+    auto gray = awj::parse_arguments(args);
+    if (gray && awj::validate_execution_config(gray->config)) return fail("Unsupported monochrome combination accepted.");
+  }
+  for (const auto args : {std::vector<std::wstring>{L"--avif-animation-tune", L"iq"},
+      std::vector<std::wstring>{L"--avif-animation-keyframe", L"-1"},
+      std::vector<std::wstring>{L"--avif-animation-keyframe", L"2147483648"},
+      std::vector<std::wstring>{L"--jpeg-hdr", L"invalid"}})
+    if (awj::parse_arguments(args)) return fail("Invalid HDR/animation CLI accepted.");
   if (defaults.input_path.generic_string() !=
       awj::encoding_defaults::default_input_path_text) {
     return fail("default input path does not come from encoding defaults.");

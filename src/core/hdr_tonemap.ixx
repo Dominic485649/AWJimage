@@ -12,6 +12,7 @@ module;
 #include <new>
 #include <optional>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -161,6 +162,8 @@ const pl_raw_primaries* primaries_from_cicp(int value) noexcept {
       return pl_raw_primaries_get(PL_COLOR_PRIM_BT_709);
     case 9:
       return pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020);
+    case 12:
+      return pl_raw_primaries_get(PL_COLOR_PRIM_DISPLAY_P3);
     default:
       return nullptr;
   }
@@ -171,8 +174,15 @@ std::expected<SignalKind, std::string> signal_kind(const ImageBuffer& image) {
                             (image.source_info->color_metadata_source == "wic-scrgb-half-linear" ||
                              image.source_info->color_metadata_source == "wgc-scrgb-half-linear");
   if (image.sample_representation == SampleRepresentation::ieee_half_float) {
-    if (!marked_scrgb) {
-      return std::unexpected{"浮点 RGBA 缺少 scRGB 色彩语义，拒绝猜测 HDR 色彩空间。"};
+    const bool marked_linear = image.source_info &&
+        image.source_info->transfer_characteristics == 8 &&
+        image.source_info->color_primaries &&
+        primaries_from_cicp(*image.source_info->color_primaries) &&
+        image.source_info->linear_reference_white_nits &&
+        std::isfinite(*image.source_info->linear_reference_white_nits) &&
+        *image.source_info->linear_reference_white_nits > 0;
+    if (!marked_scrgb && !marked_linear) {
+      return std::unexpected{"浮点 RGBA 缺少线性原色与参考白亮度，拒绝猜测 HDR 色彩空间。"};
     }
     return SignalKind::scrgb;
   }
@@ -213,12 +223,15 @@ std::expected<SourceTransform, std::string> make_source_transform(const ImageBuf
   }
   SourceTransform result{.kind = *kind, .primaries = bt709};
   if (*kind == SignalKind::scrgb) {
+    if (image.source_info && image.source_info->linear_reference_white_nits) {
+      result.primaries = primaries_from_cicp(*image.source_info->color_primaries);
+    }
     return result;
   }
   const auto& source = *image.source_info;
   result.primaries = primaries_from_cicp(*source.color_primaries);
   result.color_space.primaries = *source.color_primaries == 9 ? PL_COLOR_PRIM_BT_2020
-                                                               : PL_COLOR_PRIM_BT_709;
+      : *source.color_primaries == 12 ? PL_COLOR_PRIM_DISPLAY_P3 : PL_COLOR_PRIM_BT_709;
   result.color_space.transfer = *kind == SignalKind::pq ? PL_COLOR_TRC_PQ : PL_COLOR_TRC_HLG;
   if (source.content_light && source.content_light->max_cll > 0 &&
       (source.content_light->max_pall == 0 ||
@@ -243,7 +256,7 @@ std::expected<std::array<float, 3>, std::string> linear_nits(
   }
   if (transform.kind == SignalKind::scrgb) {
     for (auto& value : rgb) {
-      value *= kScRgbReferenceWhiteNits;
+      value *= image.source_info->linear_reference_white_nits.value_or(kScRgbReferenceWhiteNits);
     }
     return rgb;
   }
@@ -269,12 +282,13 @@ struct LuminanceStats {
 };
 
 std::expected<LuminanceStats, std::string> luminance_stats(
-    const ImageBuffer& image, const SourceTransform& transform) {
+    const ImageBuffer& image, const SourceTransform& transform, std::stop_token stop = {}) {
   float scanned_peak{};
   double sum{};
   std::size_t count{};
   const auto& plane = image.planes.front();
   for (std::size_t y = 0; y < image.height; ++y) {
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
     const auto* row = plane.bytes.data() + y * plane.stride;
     for (std::size_t x = 0; x < image.width; ++x) {
       auto rgb = linear_nits(image, transform, row, x * 4);
@@ -343,7 +357,10 @@ std::expected<bool, std::string> has_explicit_hdr_signal(const ImageBuffer& imag
   return *kind != hdr_detail::SignalKind::none;
 }
 
-std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& image) {
+std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(
+    const ImageBuffer& image, int output_depth = 8, std::stop_token stop = {}) {
+  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (output_depth != 8 && output_depth != 16) return std::unexpected{"SDR 输出位深必须为 8 或 16。"};
   if (auto valid = hdr_detail::validate_rgba(image, "HDR -> SDR"); !valid) {
     return std::unexpected{valid.error()};
   }
@@ -351,7 +368,7 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& 
   if (!transform) {
     return std::unexpected{transform.error()};
   }
-  auto stats = hdr_detail::luminance_stats(image, *transform);
+  auto stats = hdr_detail::luminance_stats(image, *transform, stop);
   if (!stats) {
     return std::unexpected{stats.error()};
   }
@@ -387,7 +404,7 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& 
   gamut_params.constants.softclip_knee = 0.70F;
   gamut_params.constants.softclip_desat = 0.35F;
 
-  auto pixels = hdr_detail::make_rgba_bytes(image.width, image.height, 1, "HDR -> SDR");
+  auto pixels = hdr_detail::make_rgba_bytes(image.width, image.height, output_depth / 8, "HDR -> SDR");
   if (!pixels) {
     return std::unexpected{pixels.error()};
   }
@@ -395,8 +412,9 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& 
   auto output_to_rgb = pl_ipt_lms2rgb(bt709);
   const auto& input_plane = image.planes.front();
   for (std::size_t y = 0; y < image.height; ++y) {
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
     const auto* input_row = input_plane.bytes.data() + y * input_plane.stride;
-    auto* output_row = pixels->data() + y * image.width * 4;
+    auto* output_row = pixels->data() + y * image.width * 4 * (output_depth / 8);
     for (std::size_t x = 0; x < image.width; ++x) {
       const auto sample = x * 4;
       auto rgb = hdr_detail::linear_nits(image, *transform, input_row, sample);
@@ -426,23 +444,23 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& 
         value = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, std::max(value, 0.0F));
       }
 
-      output_row[sample] = std::byte{hdr_detail::dithered_unorm8(
-          hdr_detail::srgb_encode(ipt[0] / hdr_detail::kSdrTargetPeakNits), x, y)};
-      output_row[sample + 1] = std::byte{hdr_detail::dithered_unorm8(
-          hdr_detail::srgb_encode(ipt[1] / hdr_detail::kSdrTargetPeakNits), x, y)};
-      output_row[sample + 2] = std::byte{hdr_detail::dithered_unorm8(
-          hdr_detail::srgb_encode(ipt[2] / hdr_detail::kSdrTargetPeakNits), x, y)};
+      for (std::size_t c = 0; c < 3; ++c) {
+        const auto encoded = hdr_detail::srgb_encode(ipt[c] / hdr_detail::kSdrTargetPeakNits);
+        if (output_depth == 16) hdr_detail::write_unorm16(output_row, sample + c, encoded);
+        else output_row[sample + c] = std::byte{hdr_detail::dithered_unorm8(encoded, x, y)};
+      }
       const auto alpha = hdr_detail::read_sample(image, input_row, sample + 3);
       if (!std::isfinite(alpha)) {
         return std::unexpected{"HDR 输入包含非有限 alpha 浮点值。"};
       }
-      output_row[sample + 3] = std::byte{static_cast<std::uint8_t>(std::clamp(
+      if (output_depth == 16) hdr_detail::write_unorm16(output_row, sample + 3, alpha);
+      else output_row[sample + 3] = std::byte{static_cast<std::uint8_t>(std::clamp(
           std::lround(std::clamp(alpha, 0.0F, 1.0F) * 255.0F), 0l, 255l))};
     }
   }
 
   ImageSourceInfo source_info{.pixel_format = PixelFormat::rgba,
-                               .bit_depth = 8,
+                               .bit_depth = output_depth,
                                .color_primaries = 1,
                                .transfer_characteristics = 13,
                                .matrix_coefficients = 0,
@@ -450,7 +468,7 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& 
                                .has_hdr_metadata = false,
                                .color_metadata_source = "hdr-sdr-libplacebo-spline-perceptual"};
   auto output = hdr_detail::make_rgba_image(
-      image.width, image.height, std::move(*pixels), image.alpha_mode, 8,
+      image.width, image.height, std::move(*pixels), image.alpha_mode, output_depth,
       SampleRepresentation::unorm, std::move(source_info), "HDR -> SDR");
   if (!output) {
     return std::unexpected{output.error()};
@@ -470,14 +488,15 @@ std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(const ImageBu
     return std::unexpected{kind.error()};
   }
   if (*kind != hdr_detail::SignalKind::scrgb) {
-    return std::unexpected{"只可将带 scRGB 标记的 FP16 图像转换为 HDR 输出。"};
+    return std::unexpected{"只可将具有明确线性语义的 FP16 图像转换为 HDR 输出。"};
   }
-  const auto* bt709 = pl_raw_primaries_get(PL_COLOR_PRIM_BT_709);
+  auto transform = hdr_detail::make_source_transform(image);
+  if (!transform) return std::unexpected{transform.error()};
   const auto* bt2020 = pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020);
-  if (!bt709 || !bt2020) {
+  if (!bt2020) {
     return std::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
   }
-  const auto matrix = pl_get_color_mapping_matrix(bt709, bt2020, PL_INTENT_RELATIVE_COLORIMETRIC);
+  const auto matrix = pl_get_color_mapping_matrix(transform->primaries, bt2020, PL_INTENT_RELATIVE_COLORIMETRIC);
   auto pixels = hdr_detail::make_rgba_bytes(image.width, image.height, 2, "scRGB -> HDR");
   if (!pixels) {
     return std::unexpected{pixels.error()};
@@ -488,15 +507,9 @@ std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(const ImageBu
     auto* output_row = pixels->data() + y * image.width * 4 * sizeof(std::uint16_t);
     for (std::size_t x = 0; x < image.width; ++x) {
       const auto sample = x * 4;
-      std::array<float, 3> rgb{hdr_detail::read_sample(image, input_row, sample) *
-                                     hdr_detail::kScRgbReferenceWhiteNits,
-                               hdr_detail::read_sample(image, input_row, sample + 1) *
-                                     hdr_detail::kScRgbReferenceWhiteNits,
-                               hdr_detail::read_sample(image, input_row, sample + 2) *
-                                     hdr_detail::kScRgbReferenceWhiteNits};
-      if (!std::isfinite(rgb[0]) || !std::isfinite(rgb[1]) || !std::isfinite(rgb[2])) {
-        return std::unexpected{"scRGB 输入包含非有限 RGB 浮点值。"};
-      }
+      auto linear = hdr_detail::linear_nits(image, *transform, input_row, sample);
+      if (!linear) return std::unexpected{linear.error()};
+      auto rgb = *linear;
       pl_matrix3x3_apply(&matrix, rgb.data());
       for (std::size_t channel = 0; channel < 3; ++channel) {
         hdr_detail::write_unorm16(output_row, sample + channel,

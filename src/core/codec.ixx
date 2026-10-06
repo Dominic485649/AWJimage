@@ -4,6 +4,7 @@ module;
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <optional>
 #include <span>
@@ -24,6 +25,16 @@ import awj.visual_quality;
 export namespace awj {
 
 namespace fs = std::filesystem;
+
+// Match avifenc --yuv auto; source sampling is separate from Identity RGB.
+constexpr ChromaMode avif_auto_chroma(PixelFormat source_format) noexcept {
+  switch (source_format) {
+    case PixelFormat::yuv420: return ChromaMode::yuv420;
+    case PixelFormat::yuv422: return ChromaMode::yuv422;
+    case PixelFormat::gray: return ChromaMode::yuv400;
+    default: return ChromaMode::yuv444;
+  }
+}
 
 enum class BackendId {
   native,
@@ -241,13 +252,17 @@ struct NativeEncodeSettings {
   bool visual_quality_gpu{true};
   bool jxl_jpeg_lossless_candidate{};
   bool avif_tune_iq{encoding_defaults::default_avif_tune_iq};
+  AvifAnimationTune avif_animation_tune{AvifAnimationTune::automatic};
+  int avif_animation_keyframe{};
   int jpegli_progressive_level{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
+  bool jpegli_gain_map_samples{};
   ResourcePlan resources{};
   std::optional<GridPlan> avif_grid_plan{};
   std::span<const std::byte> jxl_rgb8_input{};
   std::span<const std::byte> jpegli_rgb8_input{};
+  std::function<void(std::size_t, std::size_t)> frame_progress{};
 };
 
 struct NativeEncodeResult {

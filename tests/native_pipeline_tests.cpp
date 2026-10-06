@@ -14,6 +14,7 @@
 #include <utility>
 #include <vector>
 #include <windows.h>
+#include <avif/avif.h>
 #include <jxl/decode.h>
 
 import awj.config;
@@ -22,6 +23,7 @@ import awj.encoding_defaults;
 import awj.avif_aom_codec;
 import awj.image;
 import awj.jpegli_codec;
+import awj.gain_map;
 import awj.jxl_codec;
 import awj.native_backend;
 import awj.resource_planner;
@@ -162,6 +164,38 @@ int main() {
   cfg.max_jobs = 1;
 
   awj::FileLogger logger{output, false};
+  {
+    // Two one-pixel GIF frames: automatic animation must survive the normal preset path.
+    constexpr unsigned char header[]{'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0x80, 0, 0,
+        0, 0, 0, 255, 255, 255};
+    constexpr unsigned char frame[]{0x21, 0xf9, 4, 0, 10, 0, 0, 0,
+        0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0, 2, 2, 0x44, 1, 0};
+    const auto gif = root / "automatic-animation.gif";
+    {
+      std::ofstream stream{gif, std::ios::binary};
+      stream.write(reinterpret_cast<const char*>(header), sizeof(header));
+      for (int i = 0; i < 2; ++i) stream.write(reinterpret_cast<const char*>(frame), sizeof(frame));
+      stream.put('\x3b');
+    }
+    awj::AppConfig automatic;
+    automatic.input_path = gif;
+    automatic.output_dir = output;
+    awj::NativeBackend animated{automatic, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
+        .memory_limit_bytes = 64 * 1024 * 1024}};
+    auto converted = animated.encode(awj::ImageFile{.index = 0, .path = gif,
+        .bytes = std::filesystem::file_size(gif)});
+    if (!converted.ok || converted.integration_mode != "libavif-sequence" ||
+        converted.applied_bit_depth != 10 || converted.applied_chroma != "444" ||
+        converted.final_encoder_quality != awj::encoding_defaults::default_avif_quality)
+      return fail(converted.ok ? "Default preset did not automatically preserve GIF animation." : converted.message);
+    const auto bytes = read_text(converted.output_path);
+    std::unique_ptr<avifDecoder, decltype(&avifDecoderDestroy)> decoder{avifDecoderCreate(), avifDecoderDestroy};
+    if (!decoder || avifDecoderSetSource(decoder.get(), AVIF_DECODER_SOURCE_TRACKS) != AVIF_RESULT_OK ||
+        avifDecoderSetIOMemory(decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()) != AVIF_RESULT_OK ||
+        avifDecoderParse(decoder.get()) != AVIF_RESULT_OK || decoder->imageCount != 2)
+      return fail("Automatic animation conversion produced a single-frame AVIF.");
+  }
   awj::NativeBackend backend{cfg, logger, awj::ResourcePlan{
                                                .file_parallelism = 1,
                                                .encoder_threads_per_file = 1,
@@ -232,6 +266,43 @@ int main() {
       hdr_result.applied_hdr_metadata != "sdr-tone-map" ||
       hdr_result.fallback_reason != "HDR -> SDR tone-map") {
     return fail("native backend HDR tone-map diagnostics invalid.");
+  }
+
+  for (const auto mode : {awj::JpegHdrMode::automatic, awj::JpegHdrMode::sdr, awj::JpegHdrMode::hdr}) {
+    auto jpeg_cfg = awj::default_app_config();
+    jpeg_cfg.output_format = awj::OutputFormat::jpgli;
+    jpeg_cfg.jpeg_hdr = mode;
+    jpeg_cfg.output_dir = output / std::format("hdr-jpeg-{}", static_cast<int>(mode));
+    jpeg_cfg.quality = 85;
+    jpeg_cfg.max_jobs = 1;
+    awj::NativeBackend jpeg_backend{jpeg_cfg, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
+        .memory_limit_bytes = 128 * 1024 * 1024}};
+    const auto result = jpeg_backend.encode(awj::ImageFile{.index = 0, .path = hdr_input, .bytes = hdr_input_bytes});
+    if (!result.ok) return fail(result.message);
+    const bool enhanced = mode != awj::JpegHdrMode::sdr;
+    auto restored = awj::decode_jpeg_gain_map(result.output_path);
+    if (!restored) return fail(restored.error());
+    if (restored->has_value() != enhanced) return fail("HDR JPEG output map presence failed.");
+    if ((result.integration_mode.find("ultrahdr") != std::string::npos) != enhanced)
+      return fail("HDR JPEG auto/sdr/hdr routing failed.");
+  }
+
+  {
+    auto rejected_cfg = awj::default_app_config();
+    rejected_cfg.output_format = awj::OutputFormat::jpgli;
+    rejected_cfg.output_dir = output / "hdr-jpeg-rejected";
+    rejected_cfg.visual_quality = 100;
+    const awj::ResourcePlan budget{.file_parallelism = 1, .encoder_threads_per_file = 1,
+        .global_thread_budget = 1, .memory_limit_bytes = 128 * 1024 * 1024};
+    awj::NativeBackend visual{rejected_cfg, logger, budget};
+    if (visual.encode(awj::ImageFile{.index = 0, .path = hdr_input, .bytes = hdr_input_bytes}).ok ||
+        std::filesystem::exists(rejected_cfg.output_dir / "input-hdr.jpg"))
+      return fail("HDR JPEG visual search rejection left a completed output.");
+    rejected_cfg.visual_quality.reset(); rejected_cfg.jpeg_hdr = awj::JpegHdrMode::hdr;
+    awj::NativeBackend forced{rejected_cfg, logger, budget};
+    if (forced.encode(awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes}).ok)
+      return fail("Forced HDR JPEG accepted SDR input.");
   }
 
   auto hdr_avif_cfg = awj::default_app_config();

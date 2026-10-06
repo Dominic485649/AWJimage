@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <climits>
 #include <any>
 #include <array>
 #include <cctype>
@@ -227,7 +228,7 @@ void load_linux_menu_params(const nlohmann::ordered_json& document,
     integer("avif_encoder_index", 0, 3, params.avif_encoder_index);
     integer("avif_color_representation_index", 0, 2,
             params.avif_color_representation_index);
-    integer("chroma_index", 0, 3, params.chroma_index);
+    integer("chroma_index", 0, 4, params.chroma_index);
     integer("alpha_policy_index", 0, 2, params.alpha_policy_index);
     integer("jpegli_progressive_index", 0, 2, params.jpegli_progressive_index);
     boolean("jpegli_optimize_huffman", params.jpegli_optimize_huffman);
@@ -1208,6 +1209,27 @@ void mark_linux_task_row_running(AwjStudio& app,
   }
 }
 
+void attach_linux_frame_progress(awj::AppConfig& cfg, slint::ComponentWeakHandle<AwjStudio> weak,
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows) {
+  cfg.frame_progress = [weak, rows](std::size_t item, std::size_t completed, std::size_t total) {
+    if (completed != 1 && completed != total && completed % 16) return;
+    slint::invoke_from_event_loop([weak, rows, item, completed, total] {
+      if (auto app = weak.lock()) {
+        const auto text = to_shared(std::format("编码帧 {}/{}", completed, total));
+        for (std::size_t index = 0; rows && index < rows->row_count(); ++index) {
+          auto row = rows->row_data(index);
+          if (row && shared_to_string(row->order) == std::to_string(item + 1) && row->state == 1) {
+            row->status = text;
+            awj::ui::replace_queue_row(**app, rows, index, *row);
+            break;
+          }
+        }
+        (*app)->set_status_text(text);
+      }
+    });
+  };
+}
+
 void set_linux_task_row_result(
     AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
@@ -1646,6 +1668,7 @@ std::wstring chroma_arg(int index) {
     case 1: return L"444";
     case 2: return L"422";
     case 3: return L"420";
+    case 4: return L"400";
     default: return L"auto";
   }
 }
@@ -1928,6 +1951,7 @@ int linux_chroma_index(awj::ChromaMode value) noexcept {
     case awj::ChromaMode::yuv444: return 1;
     case awj::ChromaMode::yuv422: return 2;
     case awj::ChromaMode::yuv420: return 3;
+    case awj::ChromaMode::yuv400: return 4;
     default: return 0;
   }
 }
@@ -3354,6 +3378,7 @@ int awj::studio::run_studio_ui() {
                 }
               });
             };
+            attach_linux_frame_progress(cfg, weak, rows);
             auto summary = awj::run_batch(cfg, progress, token);
             std::error_code cleanup_ec;
             fs::remove(manifest_path, cleanup_ec);
@@ -3555,6 +3580,7 @@ int awj::studio::run_studio_ui() {
             }
           });
         };
+        attach_linux_frame_progress(cfg, weak, rows);
         auto summary = awj::run_batch(cfg, progress, token);
         std::error_code cleanup_ec;
         fs::remove(manifest_path, cleanup_ec);

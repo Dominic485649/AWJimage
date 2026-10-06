@@ -1022,10 +1022,10 @@ bool is_supported_image_extension(const fs::path& path) {
   std::ranges::transform(ext, ext.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
   return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe" ||
-         ext == L".jfif" || ext == L".png" || ext == L".webp" ||
+         ext == L".jfif" || ext == L".png" || ext == L".apng" || ext == L".webp" ||
          ext == L".bmp" || ext == L".dib" || ext == L".rle" || ext == L".ico" || ext == L".tif" ||
          ext == L".tiff" || ext == L".gif" || ext == L".jxl" ||
-         ext == L".avif" || ext == L".awsraw" || ext == L".dng" ||
+         ext == L".avif" || ext == L".avifs" || ext == L".awsraw" || ext == L".dng" ||
          ext == L".cr2" || ext == L".cr3" || ext == L".nef" || ext == L".arw" ||
          ext == L".rw2" || ext == L".orf" || ext == L".raf" || ext == L".pef" ||
          ext == L".srw" || ext == L".x3f" || ext == L".3fr" || ext == L".erf" ||
@@ -2106,6 +2106,7 @@ std::wstring encode_params_token_for(const AppConfig& cfg) {
         token += L"_420";
         break;
       case ChromaMode::auto_keep:
+      case ChromaMode::yuv400:
         break;
     }
   }

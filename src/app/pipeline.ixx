@@ -48,6 +48,7 @@ module;
 export module awj.pipeline;
 
 import awj.avif_aom_codec;
+import awj.animation_decoder;
 import awj.avif_registry;
 import awj.codec;
 import awj.config;
@@ -263,7 +264,13 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
                 std::max<std::uintmax_t>(1, image.bytes))});
         continue;
       }
-      auto decision = classify_large_image(*dimensions, grid_available);
+      bool input_grid_available = grid_available;
+      if (input_grid_available) {
+        auto animated = input_uses_animation_reader(image.path);
+        if (!animated) return std::unexpected{animated.error()};
+        input_grid_available = !*animated;
+      }
+      auto decision = classify_large_image(*dimensions, input_grid_available);
       switch (decision.klass) {
         case LargeImageClass::ordinary:
           classified.ordinary.push_back(ClassifiedImageFile{
@@ -1548,6 +1555,11 @@ std::expected<BatchSummary, std::string> run_batch(
                                            file_ec.message())};
       }
       const bool grid_action = cfg.studio_large_action == L"grid";
+      if (grid_action) {
+        auto animated = input_uses_animation_reader(cfg.input_path);
+        if (!animated) return std::unexpected{animated.error()};
+        if (*animated) return std::unexpected{"保留动画时不能使用静态 Grid。"};
+      }
       auto decision = classify_large_image(*dimensions, grid_action);
       decision.klass = LargeImageClass::large_mode_required;
       if (decision.reason == LargeImageReason::none) {
@@ -2053,8 +2065,20 @@ int run_pipeline(const AppConfig& cfg,
                  std::span<const std::filesystem::path> input_paths,
                  std::stop_token stop_token) {
   std::mutex print_mutex;
+  auto runtime_cfg = cfg;
+  runtime_cfg.frame_progress = [&](std::size_t item, std::size_t completed, std::size_t total) {
+    // Bound worker event volume for long animations while retaining first/last progress.
+    if (completed != 1 && completed != total && completed % 16 != 0) return;
+    std::scoped_lock lock{print_mutex};
+    if (!cfg.studio_queue_manifest.empty()) {
+      print_line(std::format("@AWJ-STUDIO/1 FRAME {} {} {}", item, completed, total));
+    } else {
+      print_line(std::format("动画 {}: 帧 {}/{}", item + 1, completed, total));
+    }
+    if (cfg.frame_progress) cfg.frame_progress(item, completed, total);
+  };
   const auto summary = run_batch(
-      cfg,
+      runtime_cfg,
       [&](const BatchProgress& event) {
         std::scoped_lock lock{print_mutex};
         if (!cfg.studio_queue_manifest.empty() &&

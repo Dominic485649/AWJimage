@@ -2,6 +2,7 @@ module;
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -19,6 +20,9 @@ module;
 
 #include <libheif/heif.h>
 #include <avif/avif.h>
+#include <libheif/heif_items.h>
+#include <libheif/heif_properties.h>
+#include "heif_gain_map_adapter.h"
 
 export module awj.heif_codec;
 
@@ -26,6 +30,8 @@ import awj.codec;
 import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
+import awj.gain_map;
+import awj.hdr_tonemap;
 import awj.image;
 import awj.large_image_plan;
 
@@ -208,7 +214,7 @@ void normalize_exif_orientation(std::span<std::byte> exif) noexcept {
 }
 
 std::expected<void, std::string> copy_metadata(ImageBuffer& image,
-                                               const heif_image_handle* handle) {
+                                               const heif_image_handle* handle, bool normalize_orientation = true) {
   std::size_t total_bytes = 0;
 
   const auto icc_size = heif_image_handle_get_raw_color_profile_size(handle);
@@ -292,7 +298,7 @@ std::expected<void, std::string> copy_metadata(ImageBuffer& image,
       }
       const auto start = 4 + offset;
       // libheif already applied HEIF's irot/imir; do not let an output reader rotate again.
-      normalize_exif_orientation(std::span<std::byte>{payload->data() + start, payload->size() - start});
+      if (normalize_orientation) normalize_exif_orientation(std::span<std::byte>{payload->data() + start, payload->size() - start});
       auto appended = append_metadata(
           image, MetadataKind::exif,
           std::span<const std::byte>{payload->data() + start, payload->size() - start},
@@ -330,31 +336,21 @@ std::expected<HandlePtr, std::string> open_primary_image(heif_context* context,
   return HandlePtr{raw_handle};
 }
 
-std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::byte> bytes,
+std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_handle* handle,
                                                            std::string_view source_name,
                                                            int decode_threads,
                                                            bool copy_metadata_payloads,
-                                                           std::stop_token stop_token = {}) {
+                                                           std::stop_token stop_token = {}, bool ignore_transformations = false) {
   if (stop_token.stop_requested()) {
     return std::unexpected{"任务已取消。"};
-  }
-  ContextPtr context{heif_context_alloc()};
-  if (!context) {
-    return std::unexpected{"无法创建 libheif context。"};
   }
   const int threads = std::clamp(decode_threads, 1,
                                  encoding_defaults::max_automatic_thread_budget);
   // libde265 owns the per-image budget; parallel tiles must not multiply it.
-  heif_context_set_max_decoding_threads(context.get(), 0);
-
-  auto handle = open_primary_image(context.get(), bytes, source_name);
-  if (!handle) {
-    return std::unexpected{handle.error()};
-  }
-  auto source_info = source_info_from_handle(handle->get());
-  const bool has_alpha = heif_image_handle_has_alpha_channel(handle->get()) != 0;
+  auto source_info = source_info_from_handle(handle);
+  const bool has_alpha = heif_image_handle_has_alpha_channel(handle) != 0;
   const bool premultiplied = has_alpha &&
-                             heif_image_handle_is_premultiplied_alpha(handle->get()) != 0;
+                             heif_image_handle_is_premultiplied_alpha(handle) != 0;
   const int source_bit_depth = source_info.bit_depth > 0 ? source_info.bit_depth : 8;
   const int output_bit_depth = source_bit_depth > 8 ? 16 : 8;
 
@@ -362,7 +358,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::
   if (!options) {
     return std::unexpected{"无法创建 libheif decoding options。"};
   }
-  options->ignore_transformations = 0;
+  options->ignore_transformations = ignore_transformations ? 1 : 0;
   options->convert_hdr_to_8bit = 0;
   options->strict_decoding = 1;
   options->num_codec_threads = threads;
@@ -379,7 +375,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::
              : heif_chroma_interleaved_RRGGBBAA_BE)
       : heif_chroma_interleaved_RGBA;
   heif_image* raw_image = nullptr;
-  const auto decode_error = heif_decode_image(handle->get(), &raw_image,
+  const auto decode_error = heif_decode_image(handle, &raw_image,
                                                heif_colorspace_RGB, rgba_chroma,
                                                options.get());
   if (stop_token.stop_requested()) {
@@ -459,11 +455,218 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::
         .alpha = source_bit_depth};
   }
   if (copy_metadata_payloads) {
-    if (auto copied = copy_metadata(*image, handle->get()); !copied) {
+    if (auto copied = copy_metadata(*image, handle, !ignore_transformations); !copied) {
       return std::unexpected{copied.error()};
     }
   }
   return ImageDecodeResult{.image = std::move(*image), .decoder_id = "libheif-libde265"};
+}
+
+std::expected<void, std::string> parse_iso_metadata(std::span<const std::byte> bytes, avifGainMap& map) {
+  // ToneMapImage + GainMapMetadata, ISO 21496-1 C.2.2; same syntax as libavif read.c.
+  if (bytes.size() < 22 || bytes[0] != std::byte{0} || bytes[1] != std::byte{0} ||
+      bytes[2] != std::byte{0} || bytes[3] != std::byte{0} || bytes[4] != std::byte{0})
+    return std::unexpected{"Gain Map: HEIF ISO metadata version 不支持或截断。"};
+  const auto flags = std::to_integer<unsigned>(bytes[5]);
+  const auto channels = flags & 128 ? 3u : 1u;
+  if ((flags & 63) || bytes.size() != 22 + channels * 40)
+    return std::unexpected{"Gain Map: HEIF ISO metadata 长度/保留位无效。"};
+  map.useBaseColorSpace = flags & 64 ? AVIF_TRUE : AVIF_FALSE;
+  std::size_t pos = 6;
+  auto u32 = [&] { const auto result = read_be_u32(bytes.subspan(pos, 4)); pos += 4; return result; };
+  auto unsigned_fraction = [&] { return avifUnsignedFraction{u32(), u32()}; };
+  auto signed_fraction = [&] { const auto numerator = std::bit_cast<std::int32_t>(u32()); return avifSignedFraction{numerator, u32()}; };
+  map.baseHdrHeadroom = unsigned_fraction();
+  map.alternateHdrHeadroom = unsigned_fraction();
+  for (unsigned c = 0; c < channels; ++c) {
+    map.gainMapMin[c] = signed_fraction(); map.gainMapMax[c] = signed_fraction();
+    map.gainMapGamma[c] = unsigned_fraction(); map.baseOffset[c] = signed_fraction();
+    map.alternateOffset[c] = signed_fraction();
+  }
+  for (unsigned c = channels; c < 3; ++c) {
+    map.gainMapMin[c] = map.gainMapMin[0]; map.gainMapMax[c] = map.gainMapMax[0];
+    map.gainMapGamma[c] = map.gainMapGamma[0]; map.baseOffset[c] = map.baseOffset[0];
+    map.alternateOffset[c] = map.alternateOffset[0];
+  }
+  return {};
+}
+
+std::expected<void, std::string> apply_transformations(heif_context* context, heif_item_id id, ImageBuffer& image,
+    bool apply_exif = true) {
+  const auto count = heif_item_get_transformation_properties(context, id, nullptr, 0);
+  if (count < 0 || count > 16) return std::unexpected{"Gain Map: HEIF 方向属性数量无效。"};
+  std::vector<heif_property_id> properties(count);
+  if (heif_item_get_transformation_properties(context, id, properties.data(), count) != count)
+    return std::unexpected{"Gain Map: HEIF 方向属性索引无效。"};
+  bool oriented = false;
+  for (auto property : properties) {
+    const auto type = heif_item_get_property_type(context, id, property);
+    std::expected<void, std::string> changed;
+    if (type == heif_item_property_type_transform_rotation) {
+      const auto angle = heif_item_get_property_transform_rotation_ccw(context, id, property);
+      if (angle < 0 || angle % 90) return std::unexpected{"Gain Map: HEIF rotation 无效。"};
+      changed = gain_map_detail::transform_rgba(image, angle / 90);
+      oriented = true;
+    } else if (type == heif_item_property_type_transform_mirror) {
+      const auto axis = heif_item_get_property_transform_mirror(context, id, property);
+      if (axis == heif_transform_mirror_direction_invalid) return std::unexpected{"Gain Map: HEIF mirror 无效。"};
+      changed = gain_map_detail::transform_rgba(image, 0, static_cast<int>(axis));
+      oriented = true;
+    } else if (type == heif_item_property_type_transform_crop) {
+      int left{}, top{}, right{}, bottom{};
+      heif_item_get_property_transform_crop_borders(context, id, property,
+          static_cast<int>(image.width), static_cast<int>(image.height), &left, &top, &right, &bottom);
+      if (left < 0 || top < 0 || right < 0 || bottom < 0 ||
+          static_cast<std::size_t>(left) + right >= image.width || static_cast<std::size_t>(top) + bottom >= image.height)
+        return std::unexpected{"Gain Map: HEIF crop 无效。"};
+      changed = gain_map_detail::crop_rgba(image, left, top, image.width - left - right, image.height - top - bottom);
+    } else return std::unexpected{"Gain Map: HEIF 使用不支持的变换属性。"};
+    if (!changed) return changed;
+  }
+  if (oriented) gain_map_detail::normalize_exif_orientation(image);
+  else if (apply_exif) return gain_map_detail::apply_exif_orientation(image);
+  return {};
+}
+
+void make_alpha_straight(ImageBuffer& image) {
+  if (image.alpha_mode != AlphaMode::premultiplied) return;
+  auto& plane = image.planes.front();
+  const auto maximum = image.bit_depth == 16 ? 65535u : 255u;
+  const auto sample_bytes = image.bit_depth == 16 ? 2u : 1u;
+  for (std::size_t y = 0; y < image.height; ++y) {
+    auto* row = plane.bytes.data() + y * plane.stride;
+    for (std::size_t x = 0; x < image.width; ++x) {
+      const auto alpha = hdr::hdr_detail::read_sample(image, row, x * 4 + 3);
+      for (std::size_t c = 0; c < 3; ++c) {
+        const auto value = static_cast<std::uint16_t>(std::clamp(
+            std::lround((alpha > 0 ? hdr::hdr_detail::read_sample(image, row, x * 4 + c) / alpha : 0) * maximum), 0l, static_cast<long>(maximum)));
+        if (sample_bytes == 1) row[x * 4 + c] = std::byte{static_cast<unsigned char>(value)};
+        else std::memcpy(row + (x * 4 + c) * 2, &value, 2);
+      }
+    }
+  }
+  image.alpha_mode = AlphaMode::straight;
+}
+
+std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::byte> bytes,
+    std::string_view source_name, int decode_threads, bool copy_metadata_payloads, std::stop_token stop_token = {}) {
+  ContextPtr context{heif_context_alloc()};
+  if (!context) return std::unexpected{"无法创建 libheif context。"};
+  heif_context_set_max_decoding_threads(context.get(), 0);
+  auto primary = open_primary_image(context.get(), bytes, source_name);
+  if (!primary) {
+    const std::string_view raw{reinterpret_cast<const char*>(bytes.data()), bytes.size()};
+    if (raw.find("urn:com:apple:photo:2020:aux:hdrgainmap") != raw.npos || raw.find("tmap") != raw.npos)
+      return std::unexpected{"Gain Map: " + primary.error()};
+    return std::unexpected{primary.error()};
+  }
+  heif_item_id base_id{};
+  if (heif_context_get_primary_image_ID(context.get(), &base_id).code != heif_error_Ok)
+    return std::unexpected{"Gain Map: HEIF primary ID 读取失败。"};
+  std::optional<heif_item_id> tmap_id, auxiliary_id;
+  bool apple = false;
+  const int item_count = heif_context_get_number_of_items(context.get());
+  if (item_count < 0 || item_count > 16384) return std::unexpected{"HEIF item 数量超出上限。"};
+  std::vector<heif_item_id> items(item_count);
+  if (heif_context_get_list_of_item_IDs(context.get(), items.data(), item_count) != item_count)
+    return std::unexpected{"HEIF item 索引无效。"};
+  for (auto id : items) {
+    if (heif_item_get_item_type(context.get(), id) != heif_fourcc('t','m','a','p')) continue;
+    bool found = false;
+    for (int index = 0; index < 16; ++index) {
+      uint32_t type{}; heif_item_id* references = nullptr;
+      const auto count = heif_context_get_item_references(context.get(), id, index, &type, &references);
+      struct References { heif_context* ctx; heif_item_id** data; ~References() { heif_release_item_references(ctx, data); } } guard{context.get(), &references};
+      if (!count) break;
+      if (type != heif_fourcc('d','i','m','g')) continue;
+      if (count != 2 || !references || references[0] == references[1])
+        return std::unexpected{"Gain Map: HEIF tmap 必须恰好引用主图与一个增益图。"};
+      if (references[0] != base_id) continue;
+      if (tmap_id || found) return std::unexpected{"Gain Map: HEIF primary 存在多个 ISO gain map。"};
+      tmap_id = id; auxiliary_id = references[1]; found = true;
+    }
+  }
+  const int filter = LIBHEIF_AUX_IMAGE_FILTER_OMIT_ALPHA | LIBHEIF_AUX_IMAGE_FILTER_OMIT_DEPTH;
+  const int aux_count = heif_image_handle_get_number_of_auxiliary_images(primary->get(), filter);
+  if (aux_count < 0 || aux_count > 4096) return std::unexpected{"Gain Map: HEIF auxiliary 数量无效。"};
+  std::vector<heif_item_id> auxiliary_ids(aux_count);
+  if (heif_image_handle_get_list_of_auxiliary_image_IDs(primary->get(), filter, auxiliary_ids.data(), aux_count) != aux_count)
+    return std::unexpected{"Gain Map: HEIF auxiliary 索引无效。"};
+  for (auto id : auxiliary_ids) {
+    heif_image_handle* raw_handle = nullptr;
+    if (heif_image_handle_get_auxiliary_image_handle(primary->get(), id, &raw_handle).code != heif_error_Ok || !raw_handle)
+      return std::unexpected{"Gain Map: HEIF auxiliary handle 无效。"};
+    HandlePtr handle{raw_handle};
+    const char* type = nullptr;
+    const auto error = heif_image_handle_get_auxiliary_type(handle.get(), &type);
+    const std::string urn = type ? type : "";
+    if (type) heif_image_handle_release_auxiliary_type(handle.get(), &type);
+    if (error.code != heif_error_Ok) return std::unexpected{"Gain Map: HEIF auxiliary 类型无效。"};
+    if (urn == "urn:com:apple:photo:2020:aux:hdrgainmap") {
+      if (tmap_id && auxiliary_id == id) continue; // Prefer ISO for the same map.
+      if (auxiliary_id) return std::unexpected{"Gain Map: HEIF primary 存在多个 gain map。"};
+      auxiliary_id = id; apple = true;
+    } else if (urn.find("21496") != urn.npos && (!tmap_id || auxiliary_id != id)) {
+      return std::unexpected{"Gain Map: HEIF ISO auxiliary 缺少支持的 tmap 元数据。"};
+    }
+  }
+  if (!auxiliary_id) return decode_handle(primary->get(), source_name, decode_threads, copy_metadata_payloads, stop_token);
+  heif_image_handle* raw_auxiliary = nullptr;
+  auto aux_error = heif_context_get_image_handle(context.get(), *auxiliary_id, &raw_auxiliary);
+  if (aux_error.code != heif_error_Ok || !raw_auxiliary) return std::unexpected{"Gain Map: HEIF 无法取得 gain map 图像。"};
+  HandlePtr auxiliary{raw_auxiliary};
+  auto base = decode_handle(primary->get(), source_name, decode_threads, true, stop_token, true);
+  if (!base) return std::unexpected{"Gain Map: " + base.error()};
+  auto gain = decode_handle(auxiliary.get(), source_name, decode_threads, apple, stop_token, true);
+  if (!gain) return std::unexpected{"Gain Map: " + gain.error()};
+  const auto auxiliary_transforms = heif_item_get_transformation_properties(context.get(), *auxiliary_id, nullptr, 0);
+  if (auxiliary_transforms < 0) return std::unexpected{"Gain Map: HEIF auxiliary 变换属性无效。"};
+  // Auxiliary-local transforms define its own displayed sample canvas. Otherwise
+  // the base transform is shared and applied once after reconstruction.
+  if (auxiliary_transforms) {
+    if (auto transformed = apply_transformations(context.get(), base_id, base->image, false); !transformed)
+      return std::unexpected{transformed.error()};
+    if (auto transformed = apply_transformations(context.get(), *auxiliary_id, gain->image, false); !transformed)
+      return std::unexpected{transformed.error()};
+  }
+  make_alpha_straight(base->image);
+  std::expected<ImageBuffer, std::string> composed = std::unexpected{"Gain Map: 未选择合成方式。"};
+  if (apple) composed = compose_apple_gain_map(base->image, gain->image, stop_token);
+  else {
+    uint8_t* raw_data = nullptr; std::size_t size{};
+    auto data_error = heif_item_get_item_data(context.get(), *tmap_id, nullptr, &raw_data, &size);
+    struct Data { heif_context* ctx; uint8_t** data; ~Data() { heif_release_item_data(ctx, data); } } guard{context.get(), &raw_data};
+    if (data_error.code != heif_error_Ok || !raw_data || size > 142)
+      return std::unexpected{"Gain Map: HEIF ISO metadata 缺失或过大。"};
+    using GainMap = std::unique_ptr<avifGainMap, decltype(&avifGainMapDestroy)>;
+    GainMap metadata{avifGainMapCreate(), &avifGainMapDestroy};
+    if (!metadata) return std::unexpected{"Gain Map: 无法分配 ISO metadata。"};
+    auto parsed = parse_iso_metadata({reinterpret_cast<const std::byte*>(raw_data), size}, *metadata);
+    if (!parsed) return std::unexpected{parsed.error()};
+    int primaries{}, transfer{}, matrix{};
+    const auto color = awjHeifItemNclx(context.get(), *tmap_id, &primaries, &transfer, &matrix);
+    if (color < 0) return std::unexpected{"Gain Map: HEIF ISO alternate 色彩 profile 暂不支持。"};
+    if (color) {
+      metadata->altColorPrimaries = static_cast<avifColorPrimaries>(primaries);
+      metadata->altTransferCharacteristics = static_cast<avifTransferCharacteristics>(transfer);
+      metadata->altMatrixCoefficients = static_cast<avifMatrixCoefficients>(matrix);
+    }
+    composed = compose_iso_gain_map(base->image, gain->image, *metadata);
+  }
+  if (!composed) return std::unexpected{composed.error()};
+  if (!auxiliary_transforms) {
+    if (auto transformed = apply_transformations(context.get(), base_id, *composed, false); !transformed)
+      return std::unexpected{transformed.error()};
+  }
+  if (tmap_id) {
+    if (auto transformed = apply_transformations(context.get(), *tmap_id, *composed, false); !transformed)
+      return std::unexpected{transformed.error()};
+  }
+  if (auto transformed = gain_map_detail::apply_exif_orientation(*composed); !transformed)
+    return std::unexpected{transformed.error()};
+  if (!copy_metadata_payloads) composed->metadata.clear();
+  return ImageDecodeResult{.image = std::move(*composed),
+      .decoder_id = apple ? "libheif-apple-gain-map-enhanced" : "libheif-iso-gain-map-enhanced"};
 }
 
 }  // namespace heif_detail

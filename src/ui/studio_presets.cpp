@@ -238,6 +238,8 @@ int chroma_index_from_mode(awj::ChromaMode mode) noexcept {
       return 2;
     case awj::ChromaMode::yuv420:
       return 3;
+    case awj::ChromaMode::yuv400:
+      return 4;
     case awj::ChromaMode::auto_keep:
     default:
       return 0;

@@ -34,11 +34,55 @@ set(AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX "652b506c2fbd71d75ae48cca3d0196cd5
 set(AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX "65a49e06e12dfc48bf26dbbcc5380d5fbd61198c6e7cd65af4f860dfe5b6f65a" CACHE STRING
     "Offline recovery root B public key for the signed updater keyring")
 set(AWJ_LIBAVIF_GIT_REPOSITORY "https://github.com/AOMediaCodec/libavif.git" CACHE STRING "libavif repository used for the static AOM build")
-set(AWJ_LIBAVIF_GIT_TAG "c5240fc79fe5c2407e10afd35f5505ef6333ea49" CACHE STRING "libavif git tag or commit")
 set(AWJ_JPEGLI_GIT_REPOSITORY "https://github.com/google/jpegli.git" CACHE STRING "google/jpegli repository used for JPGLI support")
-set(AWJ_JPEGLI_GIT_TAG "031a0077f5799a6041004267fc12b956c1f52a20" CACHE STRING "google/jpegli git tag or commit")
 set(AWJ_SLINT_GIT_REPOSITORY "https://github.com/slint-ui/slint.git" CACHE STRING "Slint repository")
-set(AWJ_SLINT_GIT_TAG "bd20dab8529add087b5cbc81aec70bf30861ae4c" CACHE STRING "Slint git tag or commit")
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/cmake/codec-dependencies.json" AWJ_CODEC_DEPENDENCIES)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/codec-dependencies.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/VERSION"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg.json"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-configuration.json")
+string(JSON AWJ_LOCK_VERSION GET "${AWJ_CODEC_DEPENDENCIES}" awj_version)
+if(NOT AWJ_LOCK_VERSION STREQUAL PROJECT_VERSION)
+    message(FATAL_ERROR "Review codec-dependencies.json for AWJ ${PROJECT_VERSION} before building")
+endif()
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/vcpkg-configuration.json" AWJ_VCPKG_CONFIGURATION)
+string(JSON AWJ_LOCK_BASELINE GET "${AWJ_CODEC_DEPENDENCIES}" vcpkg_baseline)
+string(JSON AWJ_CONFIG_BASELINE GET "${AWJ_VCPKG_CONFIGURATION}" default-registry baseline)
+if(NOT AWJ_LOCK_BASELINE STREQUAL AWJ_CONFIG_BASELINE)
+    message(FATAL_ERROR "The codec lock and vcpkg baseline disagree")
+endif()
+string(JSON AWJ_LOCAL_BUILD_COUNT LENGTH "${AWJ_CODEC_DEPENDENCIES}" local_build_sha256)
+if(AWJ_LOCAL_BUILD_COUNT GREATER 0)
+    math(EXPR AWJ_LOCAL_BUILD_LAST "${AWJ_LOCAL_BUILD_COUNT} - 1")
+    foreach(AWJ_LOCAL_INDEX RANGE ${AWJ_LOCAL_BUILD_LAST})
+        string(JSON AWJ_LOCAL_PATH MEMBER "${AWJ_CODEC_DEPENDENCIES}" local_build_sha256 ${AWJ_LOCAL_INDEX})
+        string(JSON AWJ_LOCAL_EXPECTED GET "${AWJ_CODEC_DEPENDENCIES}" local_build_sha256 "${AWJ_LOCAL_PATH}")
+        set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${AWJ_LOCAL_PATH}")
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/${AWJ_LOCAL_PATH}" AWJ_LOCAL_TEXT)
+        string(REPLACE "\r\n" "\n" AWJ_LOCAL_TEXT "${AWJ_LOCAL_TEXT}")
+        string(SHA256 AWJ_LOCAL_ACTUAL "${AWJ_LOCAL_TEXT}")
+        if(NOT AWJ_LOCAL_ACTUAL STREQUAL AWJ_LOCAL_EXPECTED)
+            message(FATAL_ERROR "${AWJ_LOCAL_PATH} differs from the version lock; review and update its hash")
+        endif()
+    endforeach()
+endif()
+foreach(AWJ_DEP IN ITEMS LIBAVIF JPEGLI SLINT)
+    string(TOLOWER "${AWJ_DEP}" AWJ_DEP_KEY)
+    string(JSON AWJ_LOCK_COMMIT GET "${AWJ_CODEC_DEPENDENCIES}" "${AWJ_DEP_KEY}" commit)
+    set(AWJ_${AWJ_DEP}_GIT_TAG "${AWJ_LOCK_COMMIT}" CACHE STRING "Locked ${AWJ_DEP} commit")
+    if(NOT AWJ_${AWJ_DEP}_GIT_TAG STREQUAL AWJ_LOCK_COMMIT)
+        message(FATAL_ERROR "${AWJ_DEP} cached revision differs from the version lock; review/update the lock and cache together")
+    endif()
+    if(FETCHCONTENT_SOURCE_DIR_${AWJ_DEP})
+        find_package(Git REQUIRED)
+        execute_process(COMMAND "${GIT_EXECUTABLE}" -C "${FETCHCONTENT_SOURCE_DIR_${AWJ_DEP}}" rev-parse HEAD
+            OUTPUT_VARIABLE AWJ_OVERRIDE_COMMIT OUTPUT_STRIP_TRAILING_WHITESPACE RESULT_VARIABLE AWJ_OVERRIDE_RESULT)
+        if(NOT AWJ_OVERRIDE_RESULT EQUAL 0 OR NOT AWJ_OVERRIDE_COMMIT STREQUAL AWJ_LOCK_COMMIT)
+            message(FATAL_ERROR "${AWJ_DEP} source override must be a checkout of the locked commit")
+        endif()
+    endif()
+endforeach()
 
 set(AVIF_RELEASE_IPO_SUPPORTED OFF)
 if(AVIF_ENABLE_RELEASE_IPO)
@@ -489,14 +533,11 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 
 # HEIC decode is deliberately self-contained: libheif + the libde265 backend only.
 # Release tarballs and hashes are pinned so configure fails closed on source drift.
-set(AWJ_LIBHEIF_URL
-    "https://github.com/strukturag/libheif/releases/download/v1.23.4/libheif-1.23.4.tar.gz")
-set(AWJ_LIBHEIF_SHA256
-    "d0c02b4b0e978f34a1974b6f3eea7975a537bf7a9195ffeea38e7242ff316fdd")
-set(AWJ_LIBDE265_URL
-    "https://github.com/strukturag/libde265/releases/download/v1.1.2/libde265-1.1.2.tar.gz")
-set(AWJ_LIBDE265_SHA256
-    "eaacd1943ab0c452c19f6136a36ca227e6b761b39a81eaca8454d48c147e1f67")
+foreach(AWJ_DEP IN ITEMS LIBHEIF LIBDE265 LIBULTRAHDR)
+    string(TOLOWER "${AWJ_DEP}" AWJ_DEP_KEY)
+    string(JSON AWJ_${AWJ_DEP}_URL GET "${AWJ_CODEC_DEPENDENCIES}" "${AWJ_DEP_KEY}" url)
+    string(JSON AWJ_${AWJ_DEP}_SHA256 GET "${AWJ_CODEC_DEPENDENCIES}" "${AWJ_DEP_KEY}" sha256)
+endforeach()
 
 set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
 set(BUILD_TESTING OFF)
@@ -510,7 +551,7 @@ set(DE265_LOG_LEVEL none CACHE STRING "" FORCE)
 FetchContent_Declare(libde265
     URL ${AWJ_LIBDE265_URL}
     URL_HASH SHA256=${AWJ_LIBDE265_SHA256}
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
 FetchContent_MakeAvailable(libde265)
 
 set(LIBDE265_INCLUDE_DIR "${libde265_SOURCE_DIR}" CACHE PATH "" FORCE)
@@ -543,8 +584,14 @@ FetchContent_Declare(libheif
     PATCH_COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=<SOURCE_DIR>
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libheif_decoder_only.cmake"
-    DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
 FetchContent_MakeAvailable(libheif)
+execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libheif_SOURCE_DIR}
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libheif_gain_map.cmake"
+    RESULT_VARIABLE AWJ_HEIF_GAIN_MAP_PATCH_RESULT)
+if(NOT AWJ_HEIF_GAIN_MAP_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply libheif gain map container adapter")
+endif()
 # FetchContent does not rerun PATCH_COMMAND for an already-populated dependency.
 # Apply the same idempotent decoder-only patch here as well so an incremental
 # configure cannot silently retain libheif's built-in mask encoder.
@@ -600,6 +647,36 @@ FetchContent_Declare(libavif
     UPDATE_DISCONNECTED TRUE
     ${AWJ_LIBAVIF_PATCH_COMMAND})
 FetchContent_MakeAvailable(libavif)
+execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libavif_SOURCE_DIR}
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_animation_budget.cmake"
+    RESULT_VARIABLE AWJ_AVIF_ANIMATION_PATCH_RESULT)
+if(NOT AWJ_AVIF_ANIMATION_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply libavif animation memory accounting patch")
+endif()
+
+# JPEG Ultra HDR only: share the existing JPEG dependency, with no nested codecs.
+set(UHDR_WRITE_XMP OFF CACHE BOOL "" FORCE)
+set(UHDR_WRITE_ISO ON CACHE BOOL "" FORCE)
+foreach(AWJ_UHDR_OPTION IN ITEMS BUILD_EXAMPLES BUILD_TESTS BUILD_BENCHMARK BUILD_FUZZERS
+        BUILD_DEPS BUILD_JAVA BUILD_PACKAGING ENABLE_INSTALL ENABLE_HEIF ENABLE_GLES ENABLE_WERROR)
+    set(UHDR_${AWJ_UHDR_OPTION} OFF CACHE BOOL "" FORCE)
+endforeach()
+FetchContent_Declare(libultrahdr
+    URL ${AWJ_LIBULTRAHDR_URL}
+    URL_HASH SHA256=${AWJ_LIBULTRAHDR_SHA256}
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+FetchContent_MakeAvailable(libultrahdr)
+execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libultrahdr_SOURCE_DIR}
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_threads.cmake"
+    RESULT_VARIABLE AWJ_UHDR_THREADS_PATCH_RESULT)
+if(NOT AWJ_UHDR_THREADS_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply libultrahdr CPU budget adapter")
+endif()
+if(TARGET uhdr-static)
+    set(AWJ_UHDR_TARGET uhdr-static)
+else()
+    set(AWJ_UHDR_TARGET uhdr)
+endif()
 
 if(AWJ_ENABLE_JPEGLI)
     set(AWJ_PARENT_BUILD_TESTING ${BUILD_TESTING})
@@ -791,6 +868,7 @@ target_sources(awj_base
             src/core/visual_quality.ixx
             src/core/visual_metrics.ixx
             src/core/image.ixx
+            src/core/animation.ixx
             src/core/hdr_tonemap.ixx
             src/core/resource_planner.ixx
             src/core/codec.ixx
@@ -838,10 +916,13 @@ target_link_libraries(awj_native_codecs PUBLIC
     GIF::GIF
     TIFF::TIFF
     libraw::raw_r
-    heif)
+    heif
+    ${AWJ_UHDR_TARGET})
 target_include_directories(awj_native_codecs PUBLIC
     "${libheif_SOURCE_DIR}/libheif/api"
     "${libheif_BINARY_DIR}")
+target_include_directories(awj_native_codecs PRIVATE "${libultrahdr_SOURCE_DIR}/lib/include")
+target_link_libraries(awj_native_codecs PUBLIC "${JXL_LCMS_LIBRARY}")
 if(WIN32)
     target_link_libraries(awj_native_codecs PUBLIC ole32 windowscodecs)
     target_compile_definitions(awj_native_codecs PUBLIC AWJ_HAS_WINDOWS_CODECS=1)
@@ -853,6 +934,8 @@ target_sources(awj_native_codecs
         FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
             src/codecs/avif_registry.ixx
             src/codecs/decoder_common.ixx
+            src/codecs/gain_map.ixx
+            src/codecs/animation_decoder.ixx
             src/codecs/decoder_registry.ixx
             src/codecs/webp_codec.ixx
             src/codecs/jxl_codec.ixx
@@ -883,7 +966,8 @@ if(AWJ_JPEGLI_AVAILABLE)
     target_sources(awj_native_codecs
         PUBLIC
             FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
-                src/codecs/jpegli_codec.ixx)
+                src/codecs/jpegli_codec.ixx
+                src/codecs/jpeg_hdr_codec.ixx)
 endif()
 
 # ponytail: keep avif module+impl on awj_native_codecs so decoder_registry can import it without a cycle.
@@ -1059,7 +1143,8 @@ if(BUILD_TESTING)
     endif()
 
     if(AWJ_JPEGLI_AVAILABLE)
-        add_executable(awj_jpegli_codec_tests tests/jpegli_codec_tests.cpp)
+        add_executable(awj_jpegli_codec_tests tests/jpegli_codec_tests.cpp tests/jpeg_hdr_compat.cpp)
+        target_compile_definitions(awj_jpegli_codec_tests PRIVATE AWJ_TEST_TURBO_HEADER="${JPEG_INCLUDE_DIR}/jpeglib.h")
         avif_enable_common_options(awj_jpegli_codec_tests)
         target_link_libraries(awj_jpegli_codec_tests PRIVATE awj_native_codecs)
     endif()
@@ -1105,7 +1190,11 @@ if(BUILD_TESTING)
         target_link_libraries(awj_cli_native_avif_aom_tests PRIVATE awj_native_backend)
     endif()
 
+    add_executable(awj_animation_decoder_tests tests/animation_decoder_tests.cpp)
+    avif_enable_common_options(awj_animation_decoder_tests)
+    target_link_libraries(awj_animation_decoder_tests PRIVATE awj_native_codecs ZLIB::ZLIB)
     set(AWJ_TEST_TARGETS
+        awj_animation_decoder_tests
         awj_update_model_tests
         awj_update_manifest_tests
         awj_update_archive_tests
@@ -1145,6 +1234,7 @@ if(BUILD_TESTING)
     endforeach()
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
+    add_test(NAME animation_decoder_core COMMAND awj_animation_decoder_tests)
     add_test(NAME update_model_core COMMAND awj_update_model_tests)
     add_test(NAME update_manifest_security COMMAND awj_update_manifest_tests)
     add_test(NAME update_archive_security COMMAND awj_update_archive_tests)

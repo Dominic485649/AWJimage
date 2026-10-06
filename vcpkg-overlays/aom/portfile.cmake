@@ -1,7 +1,7 @@
 vcpkg_download_distfile(ARCHIVE
-    URLS "https://storage.googleapis.com/aom-releases/libaom-3.14.1.tar.gz"
-    FILENAME "libaom-3.14.1.tar.gz"
-    SHA512 a4c3427db0bb4cd49b8873ffae0a287570b86d6f0733da52798b08470519755ffe08198222be86d3bc8c9bd0052477017dc595b98bbbd77f76bfe7b9ce48d7fa
+    URLS "https://storage.googleapis.com/aom-releases/libaom-3.15.1.tar.gz"
+    FILENAME "libaom-3.15.1.tar.gz"
+    SHA512 0e1f93b0ddff4754d408e48adc2c4c0985db2f3b55aa89706e8584c9a386bafd2217a2dd4e4b08dfe82be85208038f2b3ae5a8ba908b6b04396ee612840a5cc5
 )
 
 vcpkg_extract_source_archive(
@@ -33,6 +33,7 @@ vcpkg_cmake_configure(
     OPTIONS
         ${aom_target_cpu}
         -DENABLE_DOCS=OFF
+        -DENABLE_APPS=OFF
         -DENABLE_EXAMPLES=OFF
         -DENABLE_TESTDATA=OFF
         -DENABLE_TESTS=OFF
