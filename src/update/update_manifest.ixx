@@ -25,10 +25,6 @@ import awj.update_model;
 
 export namespace awj::update {
 
-inline constexpr std::string_view manifest_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest.json";
-inline constexpr std::string_view manifest_signature_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest.json.sig";
 inline constexpr std::size_t maximum_manifest_bytes = 1024 * 1024;
 inline constexpr std::size_t maximum_signature_bytes = 4096;
 inline constexpr std::uint64_t maximum_asset_bytes = 512ull * 1024 * 1024;
@@ -167,38 +163,6 @@ std::expected<std::string, std::string> required_string(
   return value;
 }
 
-std::expected<AssetInfo, std::string> parse_asset(const Json& value,
-                                                   std::string_view name) {
-  if (!value.is_object()) {
-    return std::unexpected{std::format("manifest 资产 {} 必须是对象。", name)};
-  }
-  auto url = required_string(value, "url", 4096);
-  if (!url) {
-    return std::unexpected{url.error()};
-  }
-  if (auto allowed = parse_allowed_https_url(*url); !allowed) {
-    return std::unexpected{std::format("manifest 资产 {}：{}", name,
-                                       allowed.error())};
-  }
-  if (!value.contains("size") || !value.at("size").is_number_unsigned()) {
-    return std::unexpected{std::format("manifest 资产 {} 缺少无符号 size。", name)};
-  }
-  const auto size = value.at("size").get<std::uint64_t>();
-  if (size == 0 || size > maximum_asset_bytes) {
-    return std::unexpected{std::format("manifest 资产 {} 的 size 超出限制。", name)};
-  }
-  auto sha256 = required_string(value, "sha256", 64);
-  if (!sha256 || sha256->size() != 64 ||
-      !std::ranges::all_of(*sha256, [](unsigned char ch) {
-        return (ch >= '0' && ch <= '9') || (ch >= 'a' && ch <= 'f');
-      })) {
-    return std::unexpected{std::format(
-        "manifest 资产 {} 的 SHA-256 必须是 64 位小写十六进制。", name)};
-  }
-  return AssetInfo{.url = std::move(*url),
-                   .size_bytes = size,
-                   .sha256 = std::move(*sha256)};
-}
 
 bool valid_rfc3339_utc(std::string_view value) noexcept {
   if (value.size() != 20 || value[4] != '-' || value[7] != '-' ||
@@ -241,75 +205,6 @@ bool valid_rfc3339_utc(std::string_view value) noexcept {
   return day >= 1 && day <= maximum_day;
 }
 
-std::expected<ManifestEntry, std::string> parse_entry(const Json& value) {
-  if (!value.is_object()) {
-    return std::unexpected{"manifest entries 的元素必须是对象。"};
-  }
-  auto version_text = required_string(value, "version", 64);
-  auto channel_text = required_string(value, "channel", 32);
-  auto release_url = required_string(value, "release_url", 4096);
-  auto published_at = required_string(value, "published_at", 64);
-  auto minimum_text = required_string(value, "minimum_updater_version", 64);
-  if (!version_text) return std::unexpected{version_text.error()};
-  if (!channel_text) return std::unexpected{channel_text.error()};
-  if (!release_url) return std::unexpected{release_url.error()};
-  if (!published_at) return std::unexpected{published_at.error()};
-  if (!minimum_text) return std::unexpected{minimum_text.error()};
-  auto version = parse_version(*version_text);
-  auto channel = parse_channel(*channel_text);
-  auto minimum = parse_version(*minimum_text);
-  if (!version) return std::unexpected{version.error()};
-  if (!channel) return std::unexpected{channel.error()};
-  if (!minimum) return std::unexpected{minimum.error()};
-  if (!valid_rfc3339_utc(*published_at)) {
-    return std::unexpected{"manifest published_at 必须是 YYYY-MM-DDTHH:MM:SSZ。"};
-  }
-  auto parsed_release = parse_allowed_https_url(*release_url);
-  const auto expected_release_path =
-      std::format("/Dominic485649/AWJimage/releases/tag/{}", *version_text);
-  if (!parsed_release || parsed_release->host != "github.com" ||
-      parsed_release->path != expected_release_path) {
-    return std::unexpected{"manifest release_url 必须指向 AWJimage GitHub Release。"};
-  }
-  if (!value.contains("assets") || !value.at("assets").is_object()) {
-    return std::unexpected{"manifest entry 缺少 assets 对象。"};
-  }
-  const auto& assets = value.at("assets");
-  auto windows_exe = parse_asset(assets.value("windows_x64_exe", Json{}),
-                                 "windows_x64_exe");
-  auto windows_com = parse_asset(assets.value("windows_x64_com", Json{}),
-                                 "windows_x64_com");
-  auto linux = parse_asset(assets.value("linux_x64", Json{}), "linux_x64");
-  if (!windows_exe) return std::unexpected{windows_exe.error()};
-  if (!windows_com) return std::unexpected{windows_com.error()};
-  if (!linux) return std::unexpected{linux.error()};
-  if (!value.contains("changelog") || !value.at("changelog").is_object()) {
-    return std::unexpected{"manifest entry 缺少 changelog 对象。"};
-  }
-  const auto& changelog = value.at("changelog");
-  auto zh = required_string(changelog, "zh-CN", 256 * 1024);
-  auto en = required_string(changelog, "en", 256 * 1024);
-  if (!zh) return std::unexpected{zh.error()};
-  if (!en) return std::unexpected{en.error()};
-  bool revoked = false;
-  if (value.contains("revoked")) {
-    if (!value.at("revoked").is_boolean()) {
-      return std::unexpected{"manifest revoked 必须是布尔值。"};
-    }
-    revoked = value.at("revoked").get<bool>();
-  }
-  return ManifestEntry{.version = *version,
-                       .channel = *channel,
-                       .release_url = std::move(*release_url),
-                       .published_at = std::move(*published_at),
-                       .minimum_updater_version = *minimum,
-                       .windows_x64_exe = std::move(*windows_exe),
-                       .windows_x64_com = std::move(*windows_com),
-                       .linux_x64 = std::move(*linux),
-                       .changelog = {.zh_cn = std::move(*zh),
-                                     .en = std::move(*en)},
-                       .revoked = revoked};
-}
 
 }  // namespace manifest_detail
 
@@ -362,70 +257,6 @@ std::expected<void, std::string> validate_signed_update_document_window(
   return {};
 }
 
-std::expected<Manifest, std::string> parse_manifest_json(
-    std::string_view raw_bytes) {
-  if (raw_bytes.empty() || raw_bytes.size() > maximum_manifest_bytes ||
-      raw_bytes.contains('\0') ||
-      (raw_bytes.size() >= 3 &&
-       static_cast<unsigned char>(raw_bytes[0]) == 0xef &&
-       static_cast<unsigned char>(raw_bytes[1]) == 0xbb &&
-       static_cast<unsigned char>(raw_bytes[2]) == 0xbf)) {
-    return std::unexpected{"manifest 为空、过大、含 NUL 或带 UTF-8 BOM。"};
-  }
-  try {
-    auto json = manifest_detail::Json::parse(raw_bytes.begin(), raw_bytes.end());
-    if (!json.is_object() || !json.contains("schema") ||
-        !json.at("schema").is_number_unsigned() || !json.contains("sequence") ||
-        !json.at("sequence").is_number_unsigned() || !json.contains("key_id") ||
-        !json.contains("issued_at") || !json.contains("expires_at") ||
-        !json.contains("entries") || !json.at("entries").is_array()) {
-      return std::unexpected{"manifest 根对象字段不完整或类型错误。"};
-    }
-    auto key_id = manifest_detail::required_string(json, "key_id", 64);
-    auto issued_at = manifest_detail::required_string(json, "issued_at", 20);
-    auto expires_at = manifest_detail::required_string(json, "expires_at", 20);
-    if (!key_id || !issued_at || !expires_at) {
-      return std::unexpected{!key_id ? key_id.error()
-                          : !issued_at ? issued_at.error()
-                                       : expires_at.error()};
-    }
-    if (!valid_update_key_id(*key_id)) {
-      return std::unexpected{"manifest key_id 只能包含小写字母、数字和连字符。"};
-    }
-    auto issued = parse_rfc3339_utc(*issued_at, "manifest issued_at");
-    auto expires = parse_rfc3339_utc(*expires_at, "manifest expires_at");
-    if (!issued || !expires || *expires <= *issued ||
-        *expires - *issued > maximum_signed_update_document_lifetime) {
-      return std::unexpected{"manifest 的 issued_at/expires_at 有效期非法。"};
-    }
-    Manifest manifest{.schema = json.at("schema").get<std::uint32_t>(),
-                      .sequence = json.at("sequence").get<std::uint64_t>(),
-                      .key_id = std::move(*key_id),
-                      .issued_at = std::move(*issued_at),
-                      .expires_at = std::move(*expires_at)};
-    if (manifest.sequence == 0 || json.at("entries").size() > 256) {
-      return std::unexpected{"manifest sequence 或 entries 数量非法。"};
-    }
-    manifest.entries.reserve(json.at("entries").size());
-    for (const auto& value : json.at("entries")) {
-      auto entry = manifest_detail::parse_entry(value);
-      if (!entry) {
-        return std::unexpected{entry.error()};
-      }
-      manifest.entries.push_back(std::move(*entry));
-    }
-    if (auto consistent = validate_manifest_consistency(manifest); !consistent) {
-      return std::unexpected{consistent.error()};
-    }
-    return manifest;
-  } catch (const nlohmann::json::exception& error) {
-    return std::unexpected{std::format("解析 update-manifest.json 失败：{}",
-                                       error.what())};
-  } catch (const std::exception& error) {
-    return std::unexpected{std::format("读取 update-manifest.json 失败：{}",
-                                       error.what())};
-  }
-}
 
 std::expected<void, std::string> verify_manifest_signature(
     std::string_view raw_bytes, std::string_view signature_base64) {
@@ -436,23 +267,8 @@ std::expected<void, std::string> verify_manifest_signature(
   }
   return verify_detached_ed25519_signature(raw_bytes, signature_base64,
                                            public_key_hex,
-                                           "update-manifest.json.sig");
+                                           "update-archive.json.sig");
 }
 
-std::expected<Manifest, std::string> verify_and_parse_manifest(
-    std::string_view raw_bytes, std::string_view signature_base64) {
-  if (auto verified = verify_manifest_signature(raw_bytes, signature_base64);
-      !verified) {
-    return std::unexpected{verified.error()};
-  }
-  auto manifest = parse_manifest_json(raw_bytes);
-  if (!manifest) return std::unexpected{manifest.error()};
-  if (auto valid = validate_signed_update_document_window(
-          manifest->issued_at, manifest->expires_at);
-      !valid) {
-    return std::unexpected{valid.error()};
-  }
-  return manifest;
-}
 
 }  // namespace awj::update

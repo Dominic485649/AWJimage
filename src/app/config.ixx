@@ -1,8 +1,18 @@
 module;
 
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
+
 #include <scn/scan.h>
 
 #include <algorithm>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -72,8 +82,67 @@ constexpr int automatic_thread_budget(unsigned hardware) noexcept {
   return static_cast<int>(hardware - 1);
 }
 
+unsigned available_processor_count() noexcept {
+  const unsigned hardware = std::max(1u, std::thread::hardware_concurrency());
+#ifdef _WIN32
+  DWORD_PTR process_mask{}, system_mask{};
+  if (GetProcessAffinityMask(GetCurrentProcess(), &process_mask, &system_mask) && process_mask) {
+    return std::min(hardware, static_cast<unsigned>(std::popcount(process_mask)));
+  }
+#else
+  cpu_set_t allowed{};
+  if (sched_getaffinity(0, sizeof(allowed), &allowed) == 0) {
+    const auto count = CPU_COUNT(&allowed);
+    if (count > 0) return std::min(hardware, static_cast<unsigned>(count));
+  }
+#endif
+  return hardware;
+}
+
 int default_max_jobs() noexcept {
-  return automatic_thread_budget(std::thread::hardware_concurrency());
+  return automatic_thread_budget(available_processor_count());
+}
+
+// shortcut: Windows CPU IDs refer to the current processor group; extend only when multi-group selection is needed.
+constexpr unsigned cpu_affinity_capacity() noexcept {
+#ifdef _WIN32
+  return sizeof(DWORD_PTR) * 8;
+#else
+  return CPU_SETSIZE;
+#endif
+}
+
+std::expected<void, std::string> apply_cpu_affinity(const std::vector<unsigned>& cpus) {
+  if (cpus.empty()) return {};
+#ifdef _WIN32
+  DWORD_PTR allowed{}, system{}, requested{};
+  if (!GetProcessAffinityMask(GetCurrentProcess(), &allowed, &system) || !allowed)
+    return std::unexpected{"无法读取进程 CPU 亲和性。"};
+  for (const auto cpu : cpus) {
+    if (cpu >= cpu_affinity_capacity() || !(allowed & (DWORD_PTR{1} << cpu)))
+      return std::unexpected{std::format("CPU {} 不在进程允许的 CPU 集合内。", cpu)};
+    requested |= DWORD_PTR{1} << cpu;
+  }
+  if (!SetProcessAffinityMask(GetCurrentProcess(), requested))
+    return std::unexpected{std::format("无法设置 CPU 亲和性，Windows 错误 {}。", GetLastError())};
+  if (!GetProcessAffinityMask(GetCurrentProcess(), &allowed, &system) || allowed != requested)
+    return std::unexpected{"CPU 亲和性回读与请求不一致。"};
+#else
+  cpu_set_t allowed{}, requested{};
+  if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0)
+    return std::unexpected{"无法读取进程 CPU 亲和性。"};
+  CPU_ZERO(&requested);
+  for (const auto cpu : cpus) {
+    if (cpu >= cpu_affinity_capacity() || !CPU_ISSET(cpu, &allowed))
+      return std::unexpected{std::format("CPU {} 不在进程允许的 CPU 集合内。", cpu)};
+    CPU_SET(cpu, &requested);
+  }
+  if (sched_setaffinity(0, sizeof(requested), &requested) != 0)
+    return std::unexpected{"无法设置 CPU 亲和性。"};
+  if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0 || !CPU_EQUAL(&allowed, &requested))
+    return std::unexpected{"CPU 亲和性回读与请求不一致。"};
+#endif
+  return {};
 }
 
 constexpr int default_quality_for(OutputFormat format) noexcept {
@@ -148,6 +217,8 @@ struct AppConfig {
   int avif_animation_keyframe{};
   bool jxl_jpeg_lossless{true};
   int max_jobs{default_max_jobs()};
+  // CLI session only; apply before creating pipeline workers.
+  std::vector<unsigned> cpu_affinity{};
   std::uint64_t memory_limit_bytes{
        encoding_defaults::default_memory_limit_bytes};
   int encode_timeout_minutes{
@@ -432,6 +503,33 @@ std::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
   return parse_int_range(text, 1, 128, "并发数量");
 }
 
+std::expected<std::vector<unsigned>, std::string> parse_cpu_affinity(std::wstring_view text) {
+  std::vector<unsigned> cpus;
+  const auto parse_id = [](std::wstring_view value) -> std::expected<int, std::string> {
+    if (value.empty() || !std::ranges::all_of(value, [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; }))
+      return std::unexpected{"cpu-affinity 使用从 0 开始的 CPU 编号，例如 0-3,6。"};
+    return parse_int_range(value, 0, static_cast<int>(cpu_affinity_capacity() - 1), "CPU 编号");
+  };
+  do {
+    const auto comma = text.find(L',');
+    const auto item = text.substr(0, comma);
+    const auto dash = item.find(L'-');
+    const auto first = parse_id(item.substr(0, dash));
+    const auto last = dash == std::wstring_view::npos ? first : parse_id(item.substr(dash + 1));
+    if (!first) return std::unexpected{first.error()};
+    if (!last) return std::unexpected{last.error()};
+    if (*last < *first) return std::unexpected{"cpu-affinity 范围必须从小到大。"};
+    for (auto cpu = *first; cpu <= *last; ++cpu) {
+      if (std::ranges::find(cpus, static_cast<unsigned>(cpu)) != cpus.end())
+        return std::unexpected{"cpu-affinity 不允许重复 CPU 编号。"};
+      cpus.push_back(static_cast<unsigned>(cpu));
+    }
+    if (comma == std::wstring_view::npos) break;
+    text.remove_prefix(comma + 1);
+  } while (true);
+  return cpus;
+}
+
 std::expected<std::uint64_t, std::string> parse_memory_limit(
     std::wstring_view text) {
   const auto lower = lower_copy(text);
@@ -547,7 +645,7 @@ std::optional<OutputFormat> parse_output_format(std::wstring_view value) {
   if (lower == L"jxl") {
     return OutputFormat::jxl;
   }
-  if (lower == L"jpgli" || lower == L"jpegli") {
+  if (lower == L"jpg" || lower == L"jpeg" || lower == L"jpgli" || lower == L"jpegli") {
     return OutputFormat::jpgli;
   }
   return std::nullopt;
@@ -828,26 +926,26 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       break;
     case OutputFormat::jpgli:
       if (cfg.chroma_mode == ChromaMode::yuv400)
-        return std::unexpected{"400 强制灰度仅支持 AVIF；JPGLI 支持 auto/444/422/420。"};
+        return std::unexpected{"400 强制灰度仅支持 AVIF；JPG 支持 auto/444/422/420。"};
       if (cfg.speed) {
-        return std::unexpected{"JPGLI 不支持 --speed；请移除该参数。"};
+        return std::unexpected{"JPG 不支持 --speed；请移除该参数。"};
       }
       if (cfg.bit_depth && *cfg.bit_depth != 8) {
         return std::unexpected{
-            "JPGLI 输出 JPEG 兼容 bitstream，当前仅支持 8-bit 输入写入；请把位深设为 8，或留空。"};
+            "JPG 底图使用 8-bit；HDR 通过 Gain Map 保存。请把输出位深设为 8，或留空。"};
       }
       if (!config_detail::jpegli_progressive_level_supported(
               cfg.jpegli_progressive_level)) {
         return std::unexpected{
-            "JPGLI progressive level 只支持 0、1、2；0 表示顺序 JPEG。"};
+            "JPG progressive level 只支持 0、1、2；0 表示顺序 JPEG。"};
       }
       if (cfg.jpegli_progressive_level > 0 && !cfg.jpegli_optimize_huffman) {
         return std::unexpected{
-            "JPGLI 渐进 JPEG 需要优化哈夫曼表；若要关闭优化，请将渐进设为 0。"};
+            "JPG 渐进 JPEG 需要优化哈夫曼表；若要关闭优化，请将渐进设为 0。"};
       }
       if (cfg.alpha_policy == AlphaModePolicy::force) {
         return std::unexpected{
-            "JPGLI 不支持 alpha 输出；请使用 --alpha auto/off，或选择支持透明通道的格式。"};
+            "JPG 不支持 alpha 输出；请使用 --alpha auto/off，或选择支持透明通道的格式。"};
       }
       break;
   }
@@ -902,8 +1000,8 @@ std::string help_text() {
   std::string help = R"(AWJimage C++23
 =======================
 
-默认后端：内置 native（libavif/AOM/WebP/JXL/JPGLI）
-默认质量：PNG q100（无损），AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPGLI q@JPEGLI_QUALITY@
+默认后端：内置 native（libavif/AOM/WebP/JXL/JPG）
+默认质量：PNG q100（无损），AVIF q@AVIF_QUALITY@，WebP q@WEBP_QUALITY@，JXL q@JXL_QUALITY@，JPG q@JPEGLI_QUALITY@
 默认动画：GIF/APNG 输出 AVIF 时自动保留动画；零时长 GIF 使用 10ms，APNG 使用 1ms
 质量范围：q1..q100；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL q100 为编码器无损；AVIF q100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入使用 AOM 无损量化并按 auto 色度规则重编码；默认颜色表示始终为非 Identity 的 YUV
 
@@ -913,25 +1011,25 @@ std::string help_text() {
 常用选项:
   -i, --input <路径>          输入文件或目录，默认 @INPUT_PATH@
   -o, --output <目录>         输出目录；默认与输入同目录
-  -f, --format <png|avif|webp|jxl|jpgli|jpegli> 输出格式，默认 avif；PNG 保持 8/16-bit 存储位深，q100 无损、q1–99 量化 RGB，JPGLI 生成 JPEG 兼容 bitstream，扩展名为 .jpg
-  -q, --quality <1-100>       编码质量，PNG 默认 100；q1–99 降低 RGB 有效精度（16-bit 最低 10 位），alpha 保持原精度；PNG 不支持视觉质量搜索，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPGLI 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPGLI 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入走 AOM 无损量化：默认 YUV 保留 420/422/444 采样但始终使用非 Identity matrix；--avif-color-representation source 仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；--avif-color-representation rgb 强制 Identity + 444。也接受 q90 或 0.9
-  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPGLI 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入直通，其他输入走 AOM 无损量化；默认 YUV 不会因无损自动切换 Identity。1..99 自动搜索最小体积达标候选
+  -f, --format <png|avif|webp|jxl|jpg> 输出格式，默认 avif；PNG 保持 8/16-bit 存储位深，q100 无损、q1–99 量化 RGB，JPG 生成 JPEG 兼容 bitstream，扩展名为 .jpg
+  -q, --quality <1-100>       编码质量，PNG 默认 100；q1–99 降低 RGB 有效精度（16-bit 最低 10 位），alpha 保持原精度；PNG 不支持视觉质量搜索，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPG 默认 @JPEGLI_QUALITY@；JXL 对 JPEG 输入优先使用原始码流级无损转封装，冲突时回退普通 JXL 编码；其他 WebP/JXL 100 为编码器无损；JPG 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入走 AOM 无损量化：默认 YUV 保留 420/422/444 采样但始终使用非 Identity matrix；--avif-color-representation source 仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；--avif-color-representation rgb 强制 Identity + 444。也接受 q90 或 0.9
+  --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 对 JPEG 输入优先原始码流级无损转封装，其他 WebP/JXL 按编码器无损语义处理，JPG 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入直通，其他输入走 AOM 无损量化；默认 YUV 不会因无损自动切换 Identity。1..99 自动搜索最小体积达标候选
                             1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
   --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选（默认）
   --no-visual-quality-fallback visual_quality 搜索未达标时失败
 @WINDOWS_TIMESTAMP_OPTIONS@
-  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPGLI 输出 JPEG 兼容 8-bit precision
-  --chroma <auto|444|422|420|400> AVIF/JPGLI 色度采样；AVIF 400 强制灰度并保留 alpha；JPGLI 支持 auto/444/422/420；AVIF auto 参考 avifenc：保留 YUV 源的 420/422/444，灰度使用 400，RGB/RGBA 与未知源使用 444；JPGLI auto 使用 Jpegli 默认采样；也可用 --444 / --422 / --420
+  -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPG 输出 JPEG 兼容 8-bit precision
+  --chroma <auto|444|422|420|400> AVIF/JPG 色度采样；AVIF 400 强制灰度并保留 alpha；JPG 支持 auto/444/422/420；AVIF auto 参考 avifenc：保留 YUV 源的 420/422/444，灰度使用 400，RGB/RGBA 与未知源使用 444；JPG auto 使用 YCbCr 4:2:0；也可用 --444 / --422 / --420
   --avif-color-representation <yuv|source|rgb> AVIF 颜色表示；默认 yuv，source 跟随源的 YUV 或 RGB Identity，rgb 强制 RGB(A)/GBR(A) Identity 与 4:4:4（自动选择 AOM）
   --append-png-suffix        AVIF 输出额外添加 .png 后缀，实际字节仍为 AVIF
-  --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：SDR 使用普通 JPEGli，HDR 输出 8-bit SDR base + ISO Gain Map；HDR 不支持 visual-quality
+  --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：SDR 使用普通 JPG，HDR 输出 8-bit SDR base + ISO Gain Map；HDR 不支持 visual-quality
   --avif-animation-tune <auto|ssim|psnr> 动画优化；默认 auto 使用编码器默认值；静态图保留 IQ
   --avif-animation-keyframe <N> 动画最大关键帧间隔；0 自动（默认），正整数指定最大帧间隔
-  --jpegli-progressive-level <0|1|2> JPGLI 渐进级别；0 为顺序 JPEG，默认 2
-  --jpegli-optimize-huffman / --no-jpegli-optimize-huffman JPGLI 优化哈夫曼表；渐进级别大于 0 时必须开启
-  --jpegli-xyb               JPGLI 启用 Jpegli XYB 模式（实验）
+  --jpeg-progressive-level <0|1|2> JPG 渐进级别；0 为顺序 JPEG，默认 2
+  --jpeg-optimize-huffman / --no-jpeg-optimize-huffman JPG 优化哈夫曼表；渐进级别大于 0 时必须开启
+  --jpeg-xyb               JPG 启用 XYB 模式（实验）
   --avif-encoder <auto|aom>   AVIF 使用 AOM；单图上限 65536 边/2^30 像素，超限自动使用 AOM Grid
   --alpha <force|auto|off>   透明通道策略：force 强制保留源 alpha，auto 保留非不透明 alpha，off 总是删除 alpha；AVIF 颜色与 alpha 都跟随请求质量，auto chroma 按源图选择
   --color-primaries <n>      AVIF CICP color primaries；未指定时保留源值（含 BT.2020 等 HDR 源），源与用户都没有时才回退 BT.709；AOM/libavif 可应用
@@ -943,13 +1041,14 @@ std::string help_text() {
   -p, --preset <名称>         从程序同目录 preset/ 按 JSONC 内 name 加载用户预设；未指定使用当前内置默认
   --preset-file <路径>        加载指定 JSONC 用户预设；显式 CLI 参数始终覆盖预设
   --list-presets              列出程序同目录 preset/ 中可用的用户预设及简介
-  -t, --threads <auto|数量>   总线程预算；auto/jthread/自动 按 CPU 线程数预留桌面余量，预算精确拆分为编码器线程与文件并发
+  -t, --threads <auto|数量>   总线程预算；auto 按允许的逻辑 CPU 数预留桌面余量，显式数量不扣除预留（1-128）
+  --cpu-affinity <编号列表>  限定逻辑 CPU，例如 0-3,6；编号从 0 开始，必须在进程允许集合内；Windows 使用当前处理器组
   --memory-limit <auto|大小>  内存限制；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
   --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/运行时上限（默认关闭，不写入配置）
   --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持默认 20 GiB 上限
   --image-size-limit <auto|none|manual> 图片边长限制；manual 可配合 --max-width/--max-height/--max-long-edge/--max-short-edge
   -m, --template <模板>       输出命名，最多 512 个字符，默认 @OUTPUT_TEMPLATE@
-  --speed <0-10>             统一速度参数；支持 AVIF/WebP/JXL；JPGLI/PNG 不支持
+  --speed <0-10>             统一速度参数；支持 AVIF/WebP/JXL；JPG/PNG 不支持
   --allow-wic-fallback       Windows: 允许 native 解码器失败后使用 WIC 兜底；Linux: 接受但忽略
   --no-wic-fallback          禁用 WIC 解码兜底
   --close-on-finish / --no-close-on-finish 右键转换窗口完成后是否自动关闭
@@ -992,7 +1091,7 @@ std::string help_text() {
   AWJ -i "D:\图片" -o Avifoutput -q q90
   AWJ -i input --format webp --template "{name}-{date}"
   AWJ -i input.png -o output.jxl --format jxl -q 90
-  AWJ -i input.png --format jpgli -q 95
+  AWJ -i input.png --format jpg -q 95
   AWJ -i input --visual-quality 92 --summary
   AWJ -i input --chroma 444 --bit-depth 10
 )";
@@ -1043,6 +1142,8 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
   // CLI 参数直接落到 AppConfig，确保命令行和 Slint UI 走同一套核心逻辑。
   bool preset_was_set = preset_base_active;
   bool quality_was_set = false;
+  bool automatic_threads = !preset_base_active;
+  std::optional<int> explicit_threads;
   std::optional<std::wstring> preset_name;
   std::optional<std::filesystem::path> preset_file;
   std::vector<std::filesystem::path> shell_inputs;
@@ -1122,7 +1223,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       const auto format = config_detail::parse_output_format(*value);
       if (!format) {
         return std::unexpected{
-            std::format("输出格式不支持: {}。可选值：png、avif、webp、jxl、jpgli、jpegli。",
+            std::format("输出格式不支持: {}。可选值：png、avif、webp、jxl、jpg。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.output_format = *format;
@@ -1387,7 +1488,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--jpegli-progressive-level" ||
+    if (lower == L"--jpeg-progressive-level" || lower == L"--jpegli-progressive-level" ||
         lower == L"--jpgli-progressive-level" ||
         lower == L"--jpegli-progressive_level" ||
         lower == L"--jpgli-progressive_level") {
@@ -1396,7 +1497,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         return std::unexpected{value.error()};
       }
       const auto level =
-          config_detail::parse_int_range(*value, 0, 2, "jpegli-progressive-level");
+          config_detail::parse_int_range(*value, 0, 2, "jpeg-progressive-level");
       if (!level) {
         return std::unexpected{level.error()};
       }
@@ -1407,20 +1508,20 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--jpegli-progressive" ||
+    if (lower == L"--jpeg-progressive" || lower == L"--jpegli-progressive" ||
         lower == L"--jpgli-progressive") {
       cfg.jpegli_progressive_level = 2;
       cfg.jpegli_optimize_huffman = true;
       continue;
     }
 
-    if (lower == L"--no-jpegli-progressive" ||
+    if (lower == L"--no-jpeg-progressive" || lower == L"--no-jpegli-progressive" ||
         lower == L"--no-jpgli-progressive") {
       cfg.jpegli_progressive_level = 0;
       continue;
     }
 
-    if (lower == L"--jpegli-optimize-huffman" ||
+    if (lower == L"--jpeg-optimize-huffman" || lower == L"--jpegli-optimize-huffman" ||
         lower == L"--jpgli-optimize-huffman" ||
         lower == L"--jpegli-optimize-huffman-table" ||
         lower == L"--jpgli-optimize-huffman-table") {
@@ -1428,7 +1529,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--no-jpegli-optimize-huffman" ||
+    if (lower == L"--no-jpeg-optimize-huffman" || lower == L"--no-jpegli-optimize-huffman" ||
         lower == L"--no-jpgli-optimize-huffman" ||
         lower == L"--jpegli-fixed-huffman" ||
         lower == L"--jpgli-fixed-huffman" ||
@@ -1438,13 +1539,13 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--jpegli-xyb" || lower == L"--jpgli-xyb" ||
+    if (lower == L"--jpeg-xyb" || lower == L"--jpegli-xyb" || lower == L"--jpgli-xyb" ||
         lower == L"--jpegli-xyz" || lower == L"--jpgli-xyz") {
       cfg.jpegli_xyb = true;
       continue;
     }
 
-    if (lower == L"--no-jpegli-xyb" || lower == L"--no-jpgli-xyb" ||
+    if (lower == L"--no-jpeg-xyb" || lower == L"--no-jpegli-xyb" || lower == L"--no-jpgli-xyb" ||
         lower == L"--no-jpegli-xyz" || lower == L"--no-jpgli-xyz") {
       cfg.jpegli_xyb = false;
       continue;
@@ -1523,6 +1624,19 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         return std::unexpected{jobs.error()};
       }
       cfg.max_jobs = *jobs;
+      const auto mode = config_detail::lower_copy(*value);
+      automatic_threads = mode == L"auto" || mode == L"jthread" || mode == L"自动";
+      explicit_threads = automatic_threads ? std::nullopt : std::optional{*jobs};
+      continue;
+    }
+
+    if (lower == L"--cpu-affinity") {
+      if (!cfg.cpu_affinity.empty()) return std::unexpected{"cpu-affinity 只能指定一次。"};
+      const auto value = require_value(i, args[i]);
+      if (!value) return std::unexpected{value.error()};
+      auto cpus = config_detail::parse_cpu_affinity(*value);
+      if (!cpus) return std::unexpected{cpus.error()};
+      cfg.cpu_affinity = std::move(*cpus);
       continue;
     }
 
@@ -1834,6 +1948,10 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
   }
 
   std::vector<std::filesystem::path> unique_shell_inputs;
+  if (automatic_threads) {
+    cfg.max_jobs = automatic_thread_budget(cfg.cpu_affinity.empty()
+        ? available_processor_count() : static_cast<unsigned>(cfg.cpu_affinity.size()));
+  } else if (explicit_threads) cfg.max_jobs = *explicit_threads;
   if (cfg.output_policy == OutputPolicy::shell) {
     std::vector<std::filesystem::path::string_type> seen_keys;
     unique_shell_inputs.reserve(shell_inputs.size());

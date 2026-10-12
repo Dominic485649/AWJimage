@@ -4,16 +4,10 @@
 * text=auto
 
 # Detached manifest signatures cover the exact UTF-8 bytes served by GitHub Raw.
-/update-manifest.json text eol=lf
-/update-manifest.json.sig text eol=lf
-/update-manifest-v2.json text eol=lf
-/update-manifest-v2.json.sig text eol=lf
 /update-archive.json text eol=lf
 /update-archive.json.sig text eol=lf
 /update-keyring.json text eol=lf
 /update-keyring.json.sig text eol=lf
-/update-keyring-v1.json text eol=lf
-/update-keyring-v1.json.sig text eol=lf
 /scripts/package-linux-release.sh text eol=lf
 
 ###############################################################################

@@ -474,19 +474,19 @@ int main() {
                                                             .path = input,
                                                             .bytes = input_bytes});
   if (!jpegli_result.ok || jpegli_result.skipped || jpegli_result.canceled) {
-    return fail(jpegli_result.message.empty() ? "native backend JPGLI encode failed."
+    return fail(jpegli_result.message.empty() ? "native backend JPG encode failed."
                                               : jpegli_result.message);
   }
   const auto jpegli_output_file = output / "input.jpg";
   if (!std::filesystem::exists(jpegli_output_file)) {
-    return fail("native backend did not create JPGLI .jpg output file.");
+    return fail("native backend did not create JPG .jpg output file.");
   }
   if (jpegli_result.output_path != jpegli_output_file ||
       jpegli_result.output_bytes == 0 ||
-      jpegli_result.output_format != "JPGLI" ||
+      jpegli_result.output_format != "JPG" ||
       jpegli_result.encoder_id != "jpegli" ||
-      jpegli_result.command.find("JPGLI") == std::string::npos) {
-    return fail("native backend JPGLI result metadata invalid.");
+      jpegli_result.command.find("JPG") == std::string::npos) {
+    return fail("native backend JPG result metadata invalid.");
   }
   const auto jpegli_summary_dir = output / "jpegli-summary";
   if (auto csv_ok = awj::write_csv(
@@ -497,8 +497,8 @@ int main() {
   }
   const auto jpegli_summary_csv = read_text(jpegli_summary_dir / "summary.csv");
   if (jpegli_summary_csv.find("format,encoder_id") == std::string::npos ||
-      jpegli_summary_csv.find("JPGLI,jpegli") == std::string::npos) {
-    return fail("native backend JPGLI summary diagnostics invalid.");
+      jpegli_summary_csv.find("JPG,jpegli") == std::string::npos) {
+    return fail("native backend JPG summary diagnostics invalid.");
   }
 #endif
 

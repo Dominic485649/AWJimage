@@ -1,4 +1,5 @@
 #include <slint.h>
+#include <slint-platform.h>
 #include <private/slint_tests_helpers.h>
 
 #include <algorithm>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -64,7 +66,7 @@ int verify_native_file_payload() {
 }
 
 int verify_runtime_images() {
-  for (const auto* name : {"ui/logo.png", "tests/slint_runtime_images/pixel.jpg",
+  for (const auto* name : {"ui/logo-light.png", "ui/logo-dark.png", "tests/slint_runtime_images/pixel.jpg",
                            "tests/slint_runtime_images/pixel.svg"}) {
     const auto path = (std::filesystem::path{AWJ_UI_SOURCE_DIR} / name).u8string();
     const auto image = slint::Image::load_from_path(slint::SharedString{
@@ -144,8 +146,9 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   app->window().set_size(slint::LogicalSize({window_width, 560.0f}));
   const auto collision = find_one(app, english ? "On conflict" : "重复处理",
                                   slint::language::AccessibleRole::Combobox);
-  if (!collision || collision->absolute_position().x + collision->size().width > window_width - 10)
-    return fail("collision dropdown overflows the queue header");
+  if (!collision || collision->absolute_position().x + collision->size().width > window_width - 10) {
+    return fail(std::format("collision dropdown overflows: window={} right={}", window_width, collision ? collision->absolute_position().x + collision->size().width : -1));
+  }
   const std::array<std::string_view, 6> zh{"参数", "日期", "时间", "随机", "哈希", "SHA"};
   const std::array<std::string_view, 6> en{"Params", "Date", "Time", "Rand", "Hash", "SHA"};
   const auto& labels = english ? en : zh;
@@ -160,7 +163,7 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   }
 
   const float expected_width = buttons.front().size().width;
-  if (std::fabs(expected_width - 68.0f) > 0.5f) {
+  if (std::fabs(expected_width - (english ? 68.0f : 70.0f)) > 0.5f) {
     return fail(std::format("template token button width changed: {:.1f}px",
                             expected_width));
   }
@@ -183,8 +186,8 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   }
   const float sha_right = x(5) + buttons[5].size().width;
   const float collision_right = collision->absolute_position().x + collision->size().width;
-  if (window_width == 796.0f && std::fabs(sha_right - collision_right) > 1.0f)
-    return fail(std::format("SHA/collision right edges differ: {:.1f}px", sha_right - collision_right));
+  if (window_width == 747.0f && std::fabs(sha_right - collision_right) > 1.0f)
+    return fail(std::format("SHA and collision dropdown are not aligned: {:.1f}px", sha_right - collision_right));
   if (sha_right > window_width - 10.0f)
     return fail("SHA button overflows the queue header");
   const auto format = find_one(app, english ? "Queue output format" : "队列输出格式",
@@ -205,7 +208,7 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
     std::array<float, 2> narrow_widths{};
-    for (const float width : {796.0f, 1220.0f, 1800.0f}) {
+    for (const float width : {747.0f, 1171.0f, 1800.0f}) {
       app->window().set_size(slint::LogicalSize({width, 560.0f}));
       const auto install = find_one(app, language ? "Install context menu" : "安装右键菜单", Role::Button);
       const auto remove = find_one(app, language ? "Remove context menu" : "移除右键菜单", Role::Button);
@@ -218,7 +221,7 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
         return fail("context menu toolbar control is missing");
       const std::array buttons{*install, *remove};
       for (std::size_t i = 0; i < buttons.size(); ++i) {
-        if (width == 796.0f) narrow_widths[i] = buttons[i].size().width;
+        if (width == 747.0f) narrow_widths[i] = buttons[i].size().width;
         else if (std::fabs(buttons[i].size().width - narrow_widths[i]) > 0.5f)
           return fail("context menu action button stretched with the window");
         if (buttons[i].size().width < 60.0f || buttons[i].size().width > 190.0f)
@@ -231,7 +234,7 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
       const float preset_left = preset->absolute_position().x;
       const float preset_y = preset->absolute_position().y;
       const float action_y = install->absolute_position().y;
-      if (width == 796.0f ? preset_y <= action_y + 40.0f :
+      if (width == 747.0f ? preset_y <= action_y + 40.0f :
           (std::fabs(preset_y - action_y) > 2.5f || preset_left <= action_right))
         return fail("context menu toolbar did not use the expected one/two-row layout");
       if (save_preset->absolute_position().x < preset_left + preset->size().width ||
@@ -240,7 +243,7 @@ int verify_menu_toolbar_layout(const slint::ComponentHandle<AwjStudio>& app) {
           delete_preset->absolute_position().x + delete_preset->size().width > width - 10.0f ||
           heading->absolute_position().y < preset_y + preset->size().height)
         return fail("context menu preset controls overlap or precede common parameters");
-      if (width != 796.0f) {
+      if (width != 747.0f) {
         const float menu_heading_y = heading->absolute_position().y;
         app->set_parameter_preset_index(0);
         const auto builtin_heading = find_one(app, language ? "Common parameters" : "常用参数", Role::Text);
@@ -372,7 +375,7 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
               check("右键菜单选项", "Context menu options", Role::Text, page == 1) ||
               check("位深", "Bit depth", Role::TextInput, format == 0) ||
               check("色度采样", "Chroma subsampling", Role::Combobox, format == 0 || format == 3) ||
-              check("JPGLI 渐进级别", "JPGLI progressive level", Role::Combobox, format == 3) ||
+              check("JPG 渐进级别", "JPG progressive level", Role::Combobox, format == 3) ||
               check("启用 XYB", "Enable XYB", Role::Checkbox, format == 3)) return 1;
           if (theme == 1 && format == 0) {
             for (const float width : {1220.0f, 1800.0f}) {
@@ -412,7 +415,7 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
               slint::private_api::testing::mock_elapsed_time(1);
               if (check("优化哈夫曼表", "Optimize Huffman tables", Role::Checkbox, progressive == 0)) return 1;
               if (progressive > 0 && !(page == 0 ? app->get_jpegli_optimize_huffman() : app->get_menu_jpegli_optimize_huffman()))
-                return fail("progressive JPGLI did not force Huffman optimization");
+                return fail("progressive JPG did not force Huffman optimization");
             }
           }
         }
@@ -499,15 +502,15 @@ int verify_manual_update(const slint::ComponentHandle<AwjStudio>& app) {
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
-    for (const float width : {820.0f, 1220.0f, 1440.0f, 1834.0f}) {
+    for (const float width : {747.0f, 796.0f, 1171.0f, 1440.0f, 1834.0f}) {
       app->window().set_size(slint::LogicalSize({width, 2000.0f}));
       app->set_update_checking(false);
       const auto button = find_one(app, language ? "Check for updates" : "检查更新", Role::Button);
-      if (!button || button->size().width < 100 || button->size().width > 145 ||
+      if (!button || button->size().width < 95 || button->size().width > 145 ||
           button->absolute_position().x + button->size().width > width - 10)
         return fail("manual update button is missing, oversized, or clipped");
-      if (width >= 1440.0f) {
-        const auto checkbox = find_one(app, language ? "Show changelog after update" : "更新后显示更新日志", Role::Checkbox);
+      {
+        const auto checkbox = find_one(app, language ? "Show changelog only after updates" : "仅在更新后显示更新日志", Role::Checkbox);
         if (!checkbox || button->absolute_position().x < checkbox->absolute_position().x + checkbox->size().width ||
             std::fabs(button->absolute_position().y - checkbox->absolute_position().y) > 8.0f)
           return fail("manual update button is not directly right of the changelog checkbox");
@@ -535,28 +538,45 @@ int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
-    for (const float width : {820.0f, 1220.0f, 1440.0f}) {
+    for (const float width : {747.0f, 796.0f, 960.0f, 1171.0f, 1440.0f}) {
       app->window().set_size(slint::LogicalSize({width, 827.0f}));
       const auto& labels = language ? en : zh;
+      std::array<float, 6> tops{};
+      float required_width = 50;
+      float content_left = 0;
       float option_width = 0;
-      float first_y = 0;
-      const bool single_row = width >= (language ? 1400 : 1100);
       for (std::size_t i = 0; i < labels.size(); ++i) {
         const auto option = find_one(app, labels[i], Role::Checkbox);
         if (!option) return fail("queue option is missing");
-        if (i == 0) { option_width = option->size().width; first_y = option->absolute_position().y; }
-        if (std::fabs(option->size().width - option_width) > 0.5f ||
-            option->absolute_position().x + option->size().width > width - 10 ||
-            (language && option->size().width < 180))
-          return fail("queue options are unequal, clipped, or too narrow for English");
-        if ((i < 3 || single_row) != (std::fabs(option->absolute_position().y - first_y) < 0.5f))
-          return fail("queue options did not wrap into the expected equal columns");
+        if (i == 0) { content_left = option->absolute_position().x; option_width = option->size().width; }
+        else if (std::fabs(option->size().width - option_width) > 0.5f) return fail("queue options are not equal width");
+        tops[i] = option->absolute_position().y;
+        required_width += option->size().width;
+        if (option->size().width <= 20 ||
+            option->absolute_position().x + option->size().width > width - 25.5f)
+          return fail("queue option is clipped or has no text space");
+      }
+      const float available = width - 26 - content_left;
+      const int columns = required_width <= available + 0.5f ? 6 : option_width * 3 + 20 <= available + 0.5f ? 3 : option_width * 2 + 10 <= available + 0.5f ? 2 : 1;
+      for (std::size_t i = 0; i < tops.size(); ++i) {
+        if (std::fabs(tops[i] - tops[(i / columns) * columns]) > 0.5f ||
+            (i >= columns && tops[i] <= tops[i - columns]))
+          return fail("queue options do not use the available equal-width columns");
       }
       const auto format = find_one(app, language ? "Queue output format" : "队列输出格式", Role::Combobox);
       const auto preset = find_one(app, language ? "Queue preset" : "队列预设", Role::Combobox);
-      if (!format || !preset || std::fabs(format->size().width - preset->size().width) > 0.5f ||
-          preset->absolute_position().x + preset->size().width > width - 10)
-        return fail("queue format/preset selectors are unequal or clipped");
+      const auto collision = find_one(app, language ? "On conflict" : "重复处理", Role::Combobox);
+      const auto sha = find_one(app, "SHA", Role::Button);
+      const auto input = find_one(app, language ? "Input path" : "输入路径", Role::TextInput);
+      const auto params = find_one(app, language ? "Params" : "参数", Role::Button);
+      if (!format || !preset || !collision || !sha || !input || !params)
+        return fail("queue alignment control is missing");
+      const float edge = collision->absolute_position().x + collision->size().width;
+      if (std::fabs(format->size().width - preset->size().width) > 0.5f ||
+          std::fabs(preset->absolute_position().x + preset->size().width - sha->absolute_position().x - sha->size().width) > 0.5f ||
+          (width == 747.0f && std::fabs(sha->absolute_position().x + sha->size().width - edge) > 0.5f) ||
+          std::fabs(params->absolute_position().x - input->absolute_position().x) > 0.5f)
+        return fail("queue controls do not share the path and collision edges");
     }
   }
   slint::select_bundled_translation("");
@@ -861,6 +881,28 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   auto settings =
       find_one(app, "设置", slint::language::AccessibleRole::Tab);
   settings->invoke_accessible_default_action();
+  // A tall window must leave its spare space below the settings cards.
+  app->window().set_size(slint::LogicalSize({1220.0f, 2000.0f}));
+  auto theme_control = find_one(app, "主题", slint::language::AccessibleRole::Combobox);
+  auto font_control = find_one(app, "字体", slint::language::AccessibleRole::Combobox);
+  auto show_log = find_one(app, "显示更新日志", slint::language::AccessibleRole::Checkbox);
+  auto only_updates = find_one(app, "仅在更新后显示更新日志", slint::language::AccessibleRole::Checkbox);
+  auto check_updates = find_one(app, "检查更新", slint::language::AccessibleRole::Button);
+  auto github = find_one(app, "https://github.com/Dominic485649/AWJimage", slint::language::AccessibleRole::Button);
+  auto qq = find_one(app, "https://qm.qq.com/q/Wt4Ssh1igi", slint::language::AccessibleRole::Button);
+  if (!theme_control || !font_control || !show_log || !only_updates || !check_updates || !github || !qq)
+    return fail("settings controls or accessible links are missing");
+  if (find_one(app, "AWJ的GitHub仓库地址：", slint::language::AccessibleRole::Button) ||
+      find_one(app, "问题反馈/Q群交流：", slint::language::AccessibleRole::Button))
+    return fail("About descriptions must not be clickable links");
+  if (theme_control->absolute_position().y > 120 || font_control->absolute_position().y > 240 ||
+      qq->absolute_position().y - github->absolute_position().y > 60)
+    return fail("settings cards stretched their internal spacing in a tall window");
+  const auto center_y = [](const auto& item) { return item->absolute_position().y + item->size().height / 2; };
+  if (std::fabs(center_y(show_log) - center_y(only_updates)) > 2 ||
+      std::fabs(center_y(show_log) - center_y(check_updates)) > 2)
+    return fail("update controls are not on the same row");
+  app->window().set_size(slint::LogicalSize({820.0f, 560.0f}));
   int menu_toggles = 0;
   app->on_shell_menu_compatibility_requested([&] { ++menu_toggles; });
   app->set_shell_menu_compatibility(false);
@@ -1091,17 +1133,17 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
-    float fixed_selector_width = -1.0f;
-    for (const float width : {796.0f, 1220.0f, 1800.0f}) {
+    float previous_selector_width = -1.0f;
+    for (const float width : {747.0f, 1171.0f, 1800.0f}) {
       if (const int result = verify_template_token_layout(app, width, language == 1);
           result != 0) return result;
       const auto selector = find_one(app, language ? "Queue preset" : "队列预设",
                                      slint::language::AccessibleRole::Combobox);
       if (!selector) return fail("queue preset selector disappeared after resize");
-      if (fixed_selector_width >= 0.0f &&
-          std::fabs(selector->size().width - fixed_selector_width) > 0.5f)
-        return fail("queue selector width changed with window resize");
-      fixed_selector_width = selector->size().width;
+      if (previous_selector_width >= 0.0f &&
+          std::fabs(selector->size().width - previous_selector_width) > 0.5f)
+        return fail("queue selector changed its fixed width");
+      previous_selector_width = selector->size().width;
     }
   }
   slint::select_bundled_translation("");
@@ -1229,6 +1271,64 @@ int main(int argc, char** argv) {
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
   }
+  if ((argc == 2 || argc == 3) && std::string_view{argv[1]} == "--resize-window") {
+    auto app = AwjStudio::create();
+    app->set_theme_index(argc == 3 ? std::stoi(argv[2]) : 1);
+    std::string text;
+    for (int line = 0; line < 48; ++line) text += "窗口缩放测试 / Native resize rendering check.\n";
+    std::vector<UpdateHistoryRow> history(12, *update_history_rows()->row_data(0));
+    for (auto& row : history) row.changelog_zh_cn = row.changelog_en = slint::SharedString{text};
+    app->set_update_history(std::make_shared<slint::VectorModel<UpdateHistoryRow>>(std::move(history)));
+    app->set_selected_page(4);
+    app->set_show_update_changelog(true);
+    bool invalid_frame = false;
+    bool reported_window = false;
+    slint::Timer frames;
+    frames.start(slint::TimerMode::Repeated, std::chrono::milliseconds{200}, [&] {
+#ifdef _WIN32
+      if (!reported_window && app->window().win32_hwnd()) {
+        std::printf("resize-window,%p\n", static_cast<void*>(app->window().win32_hwnd()));
+        reported_window = true;
+      }
+#endif
+      const auto size = app->window().size();
+      const auto snapshot = app->window().take_snapshot();
+      const auto current_size = app->window().size();
+      if (size.width != current_size.width || size.height != current_size.height) return;
+      if (!snapshot || snapshot->width() != size.width || snapshot->height() != size.height) {
+        invalid_frame = true;
+        slint::quit_event_loop();
+        return;
+      }
+      const bool dark = app->get_theme_index() == 2;
+      const auto matches = [&](int x, int y, bool panel) {
+        const auto pixel = snapshot->begin()[y * size.width + x];
+        return panel ? pixel.r == (dark ? 40 : 255) && pixel.g == pixel.r && pixel.b == pixel.r
+                     : pixel.r == (dark ? 36 : 238) && pixel.g == (dark ? 36 : 244) && pixel.b == (dark ? 36 : 251);
+      };
+      const int padding_x = static_cast<int>(169 * app->window().scale_factor());
+      if (!matches(4, size.height - 10, false) ||
+          !matches(size.width - 2, size.height / 2, true) ||
+          !matches(padding_x, size.height - 2, true)) {
+        invalid_frame = true;
+        slint::quit_event_loop();
+      }
+      std::printf("resize-frame,%u,%u,%s\n", size.width, size.height, invalid_frame ? "fail" : "pass");
+      std::fflush(stdout);
+    });
+    app->window().on_close_requested([] {
+      slint::quit_event_loop();
+      return slint::CloseRequestResponse::HideWindow;
+    });
+    slint::Timer timeout;
+    timeout.start(slint::TimerMode::SingleShot, std::chrono::seconds{30}, [&] {
+      app->hide();
+      slint::quit_event_loop();
+    });
+    app->show();
+    slint::run_event_loop();
+    return invalid_frame ? fail("native resize produced an outdated size or edge") : 0;
+  }
   if (argc == 2 && (std::string_view{argv[1]} == "--renderer-smoke" ||
                     std::string_view{argv[1]} == "--font-stress")) {
     const bool fonts = std::string_view{argv[1]} == "--font-stress";
@@ -1320,19 +1420,29 @@ int main(int argc, char** argv) {
     app->hide();
     return 0;
   }
-  if ((argc == 3 || argc == 4) && (std::string_view{argv[1]} == "--snapshots" ||
+  if ((argc >= 3 && argc <= 5) && (std::string_view{argv[1]} == "--snapshots" ||
+                                 std::string_view{argv[1]} == "--scroll-snapshots" ||
                                  std::string_view{argv[1]} == "--menu-snapshots" ||
                                  std::string_view{argv[1]} == "--menu-operation-snapshots")) {
     const bool menu_operations = std::string_view{argv[1]} == "--menu-operation-snapshots";
+    const bool scrolling = std::string_view{argv[1]} == "--scroll-snapshots";
     const bool menu_only = menu_operations || std::string_view{argv[1]} == "--menu-snapshots";
     const std::filesystem::path directory{argv[2]};
     if (!std::filesystem::create_directory(directory)) return fail("snapshot directory must be fresh");
     auto app = AwjStudio::create();
-    const float scale = argc == 4 ? std::stof(argv[3]) : 1.0f;
+    const float scale = argc >= 4 ? std::stof(argv[3]) : 1.0f;
     if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2)
       return fail("snapshot scale must be 1, 1.25, 1.5, or 2");
     app->window().window_handle().set_const_scale_factor(scale);
-    app->set_current_version("1.0.14");
+    app->set_current_version("1.2.1");
+    app->set_update_history(update_history_rows());
+    if (scrolling) {
+      std::vector<UpdateHistoryRow> history(64, *update_history_rows()->row_data(0));
+      app->set_update_history(std::make_shared<slint::VectorModel<UpdateHistoryRow>>(std::move(history)));
+    }
+    app->set_only_show_changelog_after_update(true);
+    app->set_show_update_changelog(true);
+    app->set_update_status("已是最新版 / Already up to date — long status text for ellipsis");
     awj::ui::bind_queue_model(*app, task_rows());
     app->set_queue_failed_count(1);
     app->set_queue_success_count(1);
@@ -1342,26 +1452,38 @@ int main(int argc, char** argv) {
       app->set_language_index(language);
       for (const int theme : {1, 2}) {
         app->set_theme_index(theme);
-        for (const int page : (menu_operations ? std::vector{3} : menu_only ? std::vector{2, 3} : std::vector{0, 1, 3})) {
+        for (const int page : (menu_only ? std::vector{0} : scrolling ? std::vector{0, 2, 4} : std::vector{0, 1, 2, 4})) {
           app->set_selected_page(page);
+          app->set_parameter_preset_index(menu_only ? 1 : 0);
           app->set_selected_queue_index(page == 1 ? 0 : -1);
-          const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround((menu_only ? 900 : 1220) * scale)),
-                                         static_cast<std::uint32_t>(std::lround((page == 1 ? 827 : 2000) * scale))}};
+          const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround((argc == 5 ? std::stof(argv[4]) : menu_only ? 900 : 1171) * scale)),
+                                         static_cast<std::uint32_t>(std::lround((page == 1 ? 827 : scrolling ? 560 : 2000) * scale))}};
           app->window().set_size(size);
-          for (int format = 0; format < (menu_operations ? 3 : page == 1 || menu_only ? 1 : 5); ++format) {
+          for (int format = 0; format < (menu_operations ? 3 : scrolling || page == 1 || page == 2 || page == 4 || menu_only ? 1 : 5); ++format) {
             app->set_format_index(menu_operations ? 0 : format);
             app->set_menu_format_index(menu_operations ? 0 : format);
             // Snapshot 0 is idle, 1 is ordinary registration, 2 requires UAC.
             app->set_menu_operation_active(menu_operations && format != 0);
             app->set_menu_elevation_required(menu_operations && format == 2);
+            for (int stage = 0; stage < (scrolling ? 3 : 1); ++stage) {
+            if (stage > 0) app->window().dispatch_pointer_scroll_event(
+                slint::LogicalPosition({static_cast<float>(size.width / scale - 30), 300}),
+                0, stage == 1 ? -220 : -100000);
             (void)app->window().take_snapshot();
-            slint::private_api::testing::mock_elapsed_time(250);
+            if (scrolling) {
+              std::this_thread::sleep_for(std::chrono::milliseconds{250});
+              slint::platform::update_timers_and_animations();
+            } else {
+              slint::private_api::testing::mock_elapsed_time(250);
+            }
             const auto snapshot = app->window().take_snapshot();
             if (!snapshot) return fail("Slint renderer could not produce a snapshot");
             if (snapshot->width() != size.width || snapshot->height() != size.height ||
                 std::fabs(app->window().scale_factor() - scale) > 0.001f)
               return fail("snapshot did not use the requested pixel size and scale");
-            std::ofstream file{directory / std::format("lang{}-theme{}-page{}-format{}.ppm", language, theme, page, format), std::ios::binary};
+            const auto name = std::format("lang{}-theme{}-page{}-format{}", language, theme, page, format) +
+                (scrolling ? std::format("-scroll{}.ppm", stage) : ".ppm");
+            std::ofstream file{directory / name, std::ios::binary};
             file << "P6\n" << snapshot->width() << ' ' << snapshot->height() << "\n255\n";
             for (const auto& pixel : *snapshot) {
               file.put(static_cast<char>(pixel.r));
@@ -1369,6 +1491,7 @@ int main(int argc, char** argv) {
               file.put(static_cast<char>(pixel.b));
             }
             if (!file) return fail("could not write the renderer snapshot");
+            }
           }
         }
       }

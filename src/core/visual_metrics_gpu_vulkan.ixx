@@ -1,6 +1,8 @@
 module;
 
+#define VK_NO_PROTOTYPES
 #include <vulkan/vulkan.h>
+#include <dlfcn.h>
 
 #include <algorithm>
 #include <array>
@@ -33,6 +35,109 @@ import awj.visual_metrics;
 namespace awj::visual_metrics_gpu_detail {
 
 using Clock = std::chrono::steady_clock;
+
+PFN_vkAllocateCommandBuffers vkAllocateCommandBuffers{};
+PFN_vkAllocateDescriptorSets vkAllocateDescriptorSets{};
+PFN_vkAllocateMemory vkAllocateMemory{};
+PFN_vkBeginCommandBuffer vkBeginCommandBuffer{};
+PFN_vkBindBufferMemory vkBindBufferMemory{};
+PFN_vkCmdBindDescriptorSets vkCmdBindDescriptorSets{};
+PFN_vkCmdBindPipeline vkCmdBindPipeline{};
+PFN_vkCmdDispatch vkCmdDispatch{};
+PFN_vkCmdPipelineBarrier vkCmdPipelineBarrier{};
+PFN_vkCreateBuffer vkCreateBuffer{};
+PFN_vkCreateCommandPool vkCreateCommandPool{};
+PFN_vkCreateComputePipelines vkCreateComputePipelines{};
+PFN_vkCreateDescriptorPool vkCreateDescriptorPool{};
+PFN_vkCreateDescriptorSetLayout vkCreateDescriptorSetLayout{};
+PFN_vkCreateDevice vkCreateDevice{};
+PFN_vkCreateFence vkCreateFence{};
+PFN_vkCreateInstance vkCreateInstance{};
+PFN_vkCreatePipelineLayout vkCreatePipelineLayout{};
+PFN_vkCreateShaderModule vkCreateShaderModule{};
+PFN_vkDestroyBuffer vkDestroyBuffer{};
+PFN_vkDestroyCommandPool vkDestroyCommandPool{};
+PFN_vkDestroyDescriptorPool vkDestroyDescriptorPool{};
+PFN_vkDestroyDescriptorSetLayout vkDestroyDescriptorSetLayout{};
+PFN_vkDestroyDevice vkDestroyDevice{};
+PFN_vkDestroyFence vkDestroyFence{};
+PFN_vkDestroyInstance vkDestroyInstance{};
+PFN_vkDestroyPipeline vkDestroyPipeline{};
+PFN_vkDestroyPipelineLayout vkDestroyPipelineLayout{};
+PFN_vkDestroyShaderModule vkDestroyShaderModule{};
+PFN_vkDeviceWaitIdle vkDeviceWaitIdle{};
+PFN_vkEndCommandBuffer vkEndCommandBuffer{};
+PFN_vkEnumeratePhysicalDevices vkEnumeratePhysicalDevices{};
+PFN_vkFreeCommandBuffers vkFreeCommandBuffers{};
+PFN_vkFreeMemory vkFreeMemory{};
+PFN_vkGetBufferMemoryRequirements vkGetBufferMemoryRequirements{};
+PFN_vkGetDeviceQueue vkGetDeviceQueue{};
+PFN_vkGetPhysicalDeviceProperties vkGetPhysicalDeviceProperties{};
+PFN_vkGetPhysicalDeviceMemoryProperties vkGetPhysicalDeviceMemoryProperties{};
+PFN_vkGetPhysicalDeviceQueueFamilyProperties vkGetPhysicalDeviceQueueFamilyProperties{};
+PFN_vkMapMemory vkMapMemory{};
+PFN_vkQueueSubmit vkQueueSubmit{};
+PFN_vkResetDescriptorPool vkResetDescriptorPool{};
+PFN_vkUnmapMemory vkUnmapMemory{};
+PFN_vkUpdateDescriptorSets vkUpdateDescriptorSets{};
+PFN_vkWaitForFences vkWaitForFences{};
+
+std::expected<void, std::string> load_vulkan() {
+  // The cached device and this dispatch table share the process lifetime.
+  static void* library = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
+  if (!library) return std::unexpected{"Vulkan loader 不可用，使用 CPU 指标。"};
+#define AWJ_LOAD_VK(name) \
+  name = reinterpret_cast<PFN_##name>(dlsym(library, #name)); \
+  if (!name) return std::unexpected{"Vulkan 入口 " #name " 不可用，使用 CPU 指标。"}
+  AWJ_LOAD_VK(vkAllocateCommandBuffers);
+  AWJ_LOAD_VK(vkAllocateDescriptorSets);
+  AWJ_LOAD_VK(vkAllocateMemory);
+  AWJ_LOAD_VK(vkBeginCommandBuffer);
+  AWJ_LOAD_VK(vkBindBufferMemory);
+  AWJ_LOAD_VK(vkCmdBindDescriptorSets);
+  AWJ_LOAD_VK(vkCmdBindPipeline);
+  AWJ_LOAD_VK(vkCmdDispatch);
+  AWJ_LOAD_VK(vkCmdPipelineBarrier);
+  AWJ_LOAD_VK(vkCreateBuffer);
+  AWJ_LOAD_VK(vkCreateCommandPool);
+  AWJ_LOAD_VK(vkCreateComputePipelines);
+  AWJ_LOAD_VK(vkCreateDescriptorPool);
+  AWJ_LOAD_VK(vkCreateDescriptorSetLayout);
+  AWJ_LOAD_VK(vkCreateDevice);
+  AWJ_LOAD_VK(vkCreateFence);
+  AWJ_LOAD_VK(vkCreateInstance);
+  AWJ_LOAD_VK(vkCreatePipelineLayout);
+  AWJ_LOAD_VK(vkCreateShaderModule);
+  AWJ_LOAD_VK(vkDestroyBuffer);
+  AWJ_LOAD_VK(vkDestroyCommandPool);
+  AWJ_LOAD_VK(vkDestroyDescriptorPool);
+  AWJ_LOAD_VK(vkDestroyDescriptorSetLayout);
+  AWJ_LOAD_VK(vkDestroyDevice);
+  AWJ_LOAD_VK(vkDestroyFence);
+  AWJ_LOAD_VK(vkDestroyInstance);
+  AWJ_LOAD_VK(vkDestroyPipeline);
+  AWJ_LOAD_VK(vkDestroyPipelineLayout);
+  AWJ_LOAD_VK(vkDestroyShaderModule);
+  AWJ_LOAD_VK(vkDeviceWaitIdle);
+  AWJ_LOAD_VK(vkEndCommandBuffer);
+  AWJ_LOAD_VK(vkEnumeratePhysicalDevices);
+  AWJ_LOAD_VK(vkFreeCommandBuffers);
+  AWJ_LOAD_VK(vkFreeMemory);
+  AWJ_LOAD_VK(vkGetBufferMemoryRequirements);
+  AWJ_LOAD_VK(vkGetDeviceQueue);
+  AWJ_LOAD_VK(vkGetPhysicalDeviceProperties);
+  AWJ_LOAD_VK(vkGetPhysicalDeviceMemoryProperties);
+  AWJ_LOAD_VK(vkGetPhysicalDeviceQueueFamilyProperties);
+  AWJ_LOAD_VK(vkMapMemory);
+  AWJ_LOAD_VK(vkQueueSubmit);
+  AWJ_LOAD_VK(vkResetDescriptorPool);
+  AWJ_LOAD_VK(vkUnmapMemory);
+  AWJ_LOAD_VK(vkUpdateDescriptorSets);
+  AWJ_LOAD_VK(vkWaitForFences);
+#undef AWJ_LOAD_VK
+  return {};
+}
+
 
 constexpr std::size_t kMinimumGpuSessionPixelCount = 1ull * 1000ull * 1000ull;
 constexpr std::size_t kMinimumGpuOneShotPixelCount = 2ull * 1000ull * 1000ull;
@@ -270,6 +375,7 @@ std::expected<void, std::string> run_compute(VulkanMetricContext& gpu, VkPipelin
 }
 
 std::expected<std::unique_ptr<VulkanMetricContext>, std::string> create_context() {
+  if (auto loaded = load_vulkan(); !loaded) return std::unexpected{loaded.error()};
   auto gpu = std::make_unique<VulkanMetricContext>();
   VkApplicationInfo app{.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO, .pApplicationName = "AWJimage", .applicationVersion = 1, .pEngineName = "AWJimage", .engineVersion = 1, .apiVersion = VK_API_VERSION_1_1};
   VkInstanceCreateInfo instance_info{.sType = VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, .pApplicationInfo = &app};
@@ -280,6 +386,9 @@ std::expected<std::unique_ptr<VulkanMetricContext>, std::string> create_context(
   std::vector<VkPhysicalDevice> physical_devices(physical_count);
   if (auto ok = check_vk(vkEnumeratePhysicalDevices(gpu->instance, &physical_count, physical_devices.data()), "读取 physical device"); !ok) return std::unexpected{ok.error()};
   for (auto physical : physical_devices) {
+    VkPhysicalDeviceProperties properties{};
+    vkGetPhysicalDeviceProperties(physical, &properties);
+    if (properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU) continue;
     std::uint32_t queue_count{};
     vkGetPhysicalDeviceQueueFamilyProperties(physical, &queue_count, nullptr);
     std::vector<VkQueueFamilyProperties> queues(queue_count);
@@ -309,16 +418,9 @@ std::expected<std::unique_ptr<VulkanMetricContext>, std::string> create_context(
 }
 
 std::expected<VulkanMetricContext*, std::string> shared_metric_context() {
-  static std::mutex init_mutex;
-  static std::unique_ptr<VulkanMetricContext> context;
-  static std::string init_error;
-  std::lock_guard lock{init_mutex};
-  if (context != nullptr) return context.get();
-  if (!init_error.empty()) return std::unexpected{init_error};
-  auto created = create_context();
-  if (!created) { init_error = created.error(); return std::unexpected{init_error}; }
-  context = std::move(*created);
-  return context.get();
+  static const auto context = create_context();
+  if (!context) return std::unexpected{context.error()};
+  return context->get();
 }
 
 struct LumaDispatchInfo { std::size_t pixel_count{}, input_byte_count{}, input_word_count{}; std::uint32_t width{}, height{}, stride{}, channels{}, groups_x{}, groups_y{}; };

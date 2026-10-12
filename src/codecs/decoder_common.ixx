@@ -246,49 +246,28 @@ std::expected<ImageBuffer, std::string> make_rgba_image(std::size_t width,
 
 std::expected<bool, std::string> has_non_opaque_alpha(const ImageBuffer& image,
                                                        std::string_view context) {
-  if (image.alpha_mode == AlphaMode::none) {
-    return false;
-  }
-  if (image.pixel_format != PixelFormat::rgba ||
-      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
-    return std::unexpected{std::format("{} alpha 检测需要 RGBA ImageBuffer。", context)};
-  }
-  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
-  const auto stride = checked_rgba_stride(image.width, context, bytes_per_sample);
-  if (!stride) {
-    return std::unexpected{stride.error()};
-  }
-  const auto byte_count = checked_image_bytes(image.planes.front().stride, image.height, context);
-  if (!byte_count) {
-    return std::unexpected{byte_count.error()};
-  }
-  const auto& plane = image.planes.front();
-  if (plane.stride < *stride || plane.bytes.size() < *byte_count) {
-    return std::unexpected{std::format("{} RGBA buffer 尺寸无效。", context)};
-  }
-  if (image.bit_depth == 16) {
-    for (std::size_t y = 0; y < image.height; ++y) {
-      for (std::size_t x = 0; x < image.width; ++x) {
-        std::uint16_t alpha{};
-        std::memcpy(&alpha, plane.bytes.data() + y * plane.stride +
-                                (x * 4 + 3) * sizeof(alpha), sizeof(alpha));
-        const auto opaque = image.sample_representation == SampleRepresentation::ieee_half_float
-                                ? std::uint16_t{0x3c00}
-                                : std::uint16_t{65535};
-        if (alpha != opaque) {
-          return true;
-        }
-      }
-    }
-    return false;
-  }
-  for (std::size_t y = 0; y < image.height; ++y) {
-    const auto* row = reinterpret_cast<const std::uint8_t*>(plane.bytes.data() + y * plane.stride);
-    for (std::size_t x = 0; x < image.width; ++x) {
-      if (row[x * 4 + 3] != 255) {
-        return true;
-      }
-    }
+  if (image.alpha_mode == AlphaMode::none) return false;
+  const bool planar = image.pixel_format == PixelFormat::yuv444 || image.pixel_format == PixelFormat::yuv422 ||
+      image.pixel_format == PixelFormat::yuv420 || image.pixel_format == PixelFormat::gray;
+  if (!valid_image_geometry(image) || (image.bit_depth != 8 && image.bit_depth != 10 && image.bit_depth != 12 && image.bit_depth != 16) ||
+      (!planar && image.pixel_format != PixelFormat::rgba) || image.planes.size() < (planar ? 4u : 1u))
+    return std::unexpected{std::format("{} alpha 检测需要有效 RGBA/YUV ImageBuffer。", context)};
+  const auto size = image_storage_dimensions(image);
+  const auto bytes = image.bit_depth > 8 ? 2u : 1u;
+  const auto channels = planar ? 1u : 4u;
+  const auto& plane = image.planes[planar ? 3 : 0];
+  if (size[0] > std::numeric_limits<std::size_t>::max() / channels / bytes || plane.stride == 0 ||
+      plane.stride < size[0] * channels * bytes || size[1] > std::numeric_limits<std::size_t>::max() / plane.stride ||
+      plane.bytes.size() < size[1] * plane.stride)
+    return std::unexpected{std::format("{} alpha buffer 尺寸无效。", context)};
+  const auto opaque = image.sample_representation == SampleRepresentation::ieee_half_float ? 0x3c00u : (1u << image.bit_depth) - 1;
+  for (std::size_t y = 0; y < image.height; ++y) for (std::size_t x = 0; x < image.width; ++x) {
+    const auto point = image_sample_coordinates(image, x, y);
+    const auto offset = point[1] * plane.stride + (point[0] * channels + (planar ? 0 : 3)) * bytes;
+    std::uint16_t alpha{};
+    if (bytes == 1) alpha = std::to_integer<unsigned char>(plane.bytes[offset]);
+    else std::memcpy(&alpha, plane.bytes.data() + offset, 2);
+    if (alpha != opaque) return true;
   }
   return false;
 }

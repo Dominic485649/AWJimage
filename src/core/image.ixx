@@ -1,6 +1,7 @@
 module;
 
 #include <cstddef>
+#include <array>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -85,6 +86,13 @@ struct SignificantBits {
   int alpha{};
 };
 
+struct ImageGeometry {
+  std::size_t stored_width{}, stored_height{};
+  std::size_t crop_x{}, crop_y{}, crop_width{}, crop_height{};
+  unsigned rotation{}; // Counterclockwise quarter turns.
+  int mirror_axis{-1};
+};
+
 struct ImageBuffer {
   std::size_t width{};
   std::size_t height{};
@@ -94,6 +102,7 @@ struct ImageBuffer {
   SampleRepresentation sample_representation{SampleRepresentation::unorm};
   std::optional<ImageSourceInfo> source_info{};
   std::optional<SignificantBits> significant_bits{};
+  std::optional<ImageGeometry> geometry{};
   std::vector<ImagePlane> planes{};
   std::vector<MetadataBlock> metadata{};
 
@@ -101,6 +110,37 @@ struct ImageBuffer {
     return width == 0 || height == 0 || planes.empty();
   }
 };
+
+std::array<std::size_t, 2> image_storage_dimensions(const ImageBuffer& image) noexcept {
+  return image.geometry ? std::array{image.geometry->stored_width, image.geometry->stored_height}
+                        : std::array{image.width, image.height};
+}
+
+bool valid_image_geometry(const ImageBuffer& image) noexcept {
+  if (!image.geometry) return true;
+  const auto& g = *image.geometry;
+  return image.width && image.height && image.width <= UINT32_MAX && image.height <= UINT32_MAX &&
+      g.stored_width && g.stored_height && g.stored_width <= UINT32_MAX && g.stored_height <= UINT32_MAX &&
+      g.crop_width && g.crop_height && g.crop_x < g.stored_width && g.crop_y < g.stored_height &&
+      g.crop_width <= g.stored_width - g.crop_x && g.crop_height <= g.stored_height - g.crop_y &&
+      g.rotation < 4 && g.mirror_axis >= -1 && g.mirror_axis <= 1;
+}
+
+std::array<std::size_t, 2> image_sample_coordinates(const ImageBuffer& image, std::size_t x, std::size_t y) noexcept {
+  if (!image.geometry) return {x, y};
+  const auto& g = *image.geometry;
+  const auto width = g.rotation % 2 ? g.crop_height : g.crop_width;
+  const auto height = g.rotation % 2 ? g.crop_width : g.crop_height;
+  x = x * width / image.width; y = y * height / image.height;
+  if (g.mirror_axis == 0) y = height - 1 - y;
+  if (g.mirror_axis == 1) x = width - 1 - x;
+  switch (g.rotation) {
+    case 1: return {g.crop_x + g.crop_width - 1 - y, g.crop_y + x};
+    case 2: return {g.crop_x + g.crop_width - 1 - x, g.crop_y + g.crop_height - 1 - y};
+    case 3: return {g.crop_x + y, g.crop_y + g.crop_height - 1 - x};
+    default: return {g.crop_x + x, g.crop_y + y};
+  }
+}
 
 struct EncodedImage {
   std::vector<std::byte> bytes{};

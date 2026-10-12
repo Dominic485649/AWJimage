@@ -86,12 +86,48 @@ std::string read_text(const std::filesystem::path& path) {
 }  // namespace
 
 int main() {
+  {
+    auto dimensions = awj::make_image_dimensions(4096, 4096);
+    dimensions.opaque_sdr8_yuv420 = true;
+    const auto defaults = awj::default_app_config();
+    const auto conservative = awj::avif_encode_working_set_bytes_for_dimensions(dimensions);
+    if (awj::pipeline_detail::estimated_regular_working_set_bytes(dimensions, defaults) >= conservative)
+      return fail("Known ordinary SDR420 did not use its calibrated memory profile");
+    for (int mode = 0; mode < 10; ++mode) {
+      auto cfg = defaults;
+      switch (mode) {
+        case 0: cfg.quality = 100; break;
+        case 1: cfg.visual_quality = 90; break;
+        case 2: cfg.alpha_policy = awj::AlphaModePolicy::force; break;
+        case 3: cfg.transfer_characteristics = 16; break;
+        case 4: cfg.color_primaries = 9; break;
+        case 5: cfg.matrix_coefficients = 9; break;
+        case 6: cfg.color_range = 1; break;
+        case 7: cfg.bit_depth = 12; break;
+        case 8: cfg.chroma_mode = awj::ChromaMode::yuv444; break;
+        case 9: cfg.avif_color_representation = awj::AvifColorRepresentation::rgb_identity; break;
+      }
+      if (awj::pipeline_detail::estimated_regular_working_set_bytes(dimensions, cfg) < conservative)
+        return fail("HDR, alpha or overridden output used an ordinary SDR memory profile");
+    }
+  }
   const auto root = std::filesystem::temp_directory_path() / "awjimage-pipeline-security-tests";
   std::error_code ec;
   std::filesystem::remove_all(root, ec);
   std::filesystem::create_directories(root, ec);
   if (ec) {
     return fail("failed to create temp root.");
+  }
+  {
+    auto cfg = awj::default_app_config();
+    const std::vector<awj::ImageFile> unknown{{.path = root / "missing.jpg", .bytes = 7}};
+    constexpr auto budget = 512ull * 1024 * 1024;
+    for (auto format : {awj::OutputFormat::avif, awj::OutputFormat::png}) {
+      cfg.output_format = format;
+      auto work = awj::pipeline_detail::classify_work_for_avif(cfg, unknown, budget);
+      if (!work || work->ordinary.size() != 1 || work->ordinary.front().estimated_bytes != budget)
+        return fail("Unknown dimensions used compressed size instead of exclusive admission");
+    }
   }
   {
     auto cfg = awj::default_app_config();

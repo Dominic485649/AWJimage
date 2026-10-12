@@ -67,14 +67,17 @@ export component QueuePage inherits VerticalLayout {
     in property <bool> dark-mode;
     in property <int> language-index;
     property <length> path-label-width: root.language-index == 1 ? 90px : 78px;
-    property <length> queue-option-width: root.language-index == 1
-        ? max(180px, max(max(max(option-strip-measure.preferred-width, option-summary-measure.preferred-width), option-log-measure.preferred-width), max(max(option-creation-measure.preferred-width, option-modification-measure.preferred-width), option-access-measure.preferred-width)))
-        : max(max(max(option-strip-measure.preferred-width, option-summary-measure.preferred-width), option-log-measure.preferred-width), max(max(option-creation-measure.preferred-width, option-modification-measure.preferred-width), option-access-measure.preferred-width));
-    property <length> options-single-row-width: root.timestamp-ui-visible
-        ? (root.language-index == 1 ? 1400px : 1100px)
-        : 760px;
-    // Match the fixed SHA button edge; the selectors never grow with the window.
-    property <length> queue-selector-width: (92px + 6 * root.template-token-button-width + 6 * 8px - root.path-label-width - 42px - 3 * 10px) / 2;
+    in property <length> right-frame-inset: 0px;
+    property <length> queue-content-width: max(0px, root.width - 32px - root.right-frame-inset);
+    property <length> queue-option-width: max(option-strip-measure.preferred-width,
+        max(option-summary-measure.preferred-width, max(option-log-measure.preferred-width,
+        max(option-creation-measure.preferred-width, max(option-modification-measure.preferred-width,
+        option-access-measure.preferred-width)))));
+    property <length> options-single-row-width: root.queue-option-width * (root.timestamp-ui-visible ? 6 : 3) + (root.timestamp-ui-visible ? 50px : 20px);
+    property <length> options-two-row-width: root.queue-option-width * 3 + 20px;
+    // Fixed at their minimum-window sizes; surplus width stays to the right.
+    property <length> template-token-button-width: root.language-index == 1 ? 68px : 70px;
+    property <length> queue-selector-width: root.language-index == 1 ? 193px : 199px;
     in property <color> field-bg;
     in property <color> field-border;
     in-out property <bool> force-terminate-supported;
@@ -146,7 +149,6 @@ export component QueuePage inherits VerticalLayout {
     in-out property <bool> template-sha2568-selected;
     in-out property <string> template-text;
     in-out property <bool> template-time-selected;
-    in property <length> template-token-button-width;
     in property <color> text-body;
     in property <color> text-muted;
     in property <color> text-soft;
@@ -170,8 +172,7 @@ export component QueuePage inherits VerticalLayout {
         border-width: 1px;
         animate background, border-color { duration: 180ms; easing: ease-out; }
 
-        // Measure the actual localized checkbox widgets once and give every
-        // visible option the widest intrinsic width. The zero-sized host keeps
+        // Measure each localized checkbox without occupying layout space. The zero-sized host keeps
         // these metrics out of the layout and accessibility tree.
         Rectangle {
             width: 0px;
@@ -187,6 +188,7 @@ export component QueuePage inherits VerticalLayout {
 
         VerticalLayout {
             padding: 16px;
+            padding-right: 16px + root.right-frame-inset;
             spacing: 8px;
 
             VerticalLayout {
@@ -283,31 +285,29 @@ export component QueuePage inherits VerticalLayout {
 
                 HorizontalLayout {
                     spacing: 8px;
-                    // The 92px indent is the wider localized path label plus 2px.
-                    // Six 68px buttons and six 8px gaps then end at the collision selector's right edge at 796px.
-                    Rectangle { width: 92px; background: transparent; }
+                    alignment: start;
+                    Rectangle { width: root.path-label-width + 2px; background: transparent; }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("参数"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-params-selected; clicked => { root.toggle-template-token("{params}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("日期"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-date-selected; clicked => { root.toggle-template-token("{date}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("时间"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-time-selected; clicked => { root.toggle-template-token("{time}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("随机"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-rand-selected; clicked => { root.toggle-template-token("{rand}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: @tr("哈希"); width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-hash8-selected; clicked => { root.toggle-template-token("{hash8}"); } }
                     SoftButton { dark-mode: root.dark-mode; text: "SHA"; width: root.template-token-button-width; height: 38px; enabled: !root.running; checkable: true; checked: root.template-sha2568-selected; clicked => { root.toggle-template-token("{sha2568}"); } }
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
             }
 
                 HorizontalLayout {
                     spacing: 10px;
+                    alignment: start;
                     Text { text: @tr("输出格式"); width: root.path-label-width; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                    queue-format := SoftComboBox { accessible-name: root.queue-format-index == 1 ? @tr("AVIF.png：实际编码为 AVIF，仅额外添加 .png 文件名后缀") : @tr("队列输出格式"); accessible-description: root.queue-format-index == 1 ? @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀") : ""; viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "AVIF.png", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPGLI", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.queue-format-index; enabled: !root.running; width: root.queue-selector-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀"); hover-help-option-index: 1;
+                    queue-format := SoftComboBox { accessible-name: root.queue-format-index == 1 ? @tr("AVIF.png：实际编码为 AVIF，仅额外添加 .png 文件名后缀") : @tr("队列输出格式"); accessible-description: root.queue-format-index == 1 ? @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀") : ""; viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: "AVIF", enabled: true }, { text: "AVIF.png", enabled: true }, { text: "WebP", enabled: true }, { text: "JXL", enabled: true }, { text: "JPG", enabled: true }, { text: "PNG", enabled: true }]; current-index <=> root.queue-format-index; enabled: !root.running; width: root.queue-selector-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: @tr("实际编码为 AVIF，仅额外添加 .png 文件名后缀"); hover-help-option-index: 1;
                     }
                     Text { text: @tr("预设"); width: 42px; color: root.text-body; font-size: 13px; font-weight: 700; vertical-alignment: center; }
                     queue-preset := SoftComboBox { accessible-name: @tr("队列预设"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: root.queue-preset-options; current-index <=> root.queue-preset-index; enabled: !root.running; width: root.queue-selector-width; height: root.control-button-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.accent-strong; hover-help-text: root.queue-preset-description; hover-help-always: true; selection-accepted(index, click-x, click-y) => { root.queue-preset-selected(index); }
                     }
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
 
-                if root.window-width >= root.options-single-row-width: HorizontalLayout {
+                if root.queue-content-width >= root.options-single-row-width: HorizontalLayout {
                     spacing: 10px;
                     CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; width: root.queue-option-width; }
                     CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; width: root.queue-option-width; }
@@ -317,7 +317,7 @@ export component QueuePage inherits VerticalLayout {
                     if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; width: root.queue-option-width; }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
-                if root.window-width >= 760px && root.window-width < root.options-single-row-width: VerticalLayout {
+                if root.queue-content-width >= root.options-two-row-width && root.queue-content-width < root.options-single-row-width: VerticalLayout {
                     spacing: 6px;
                     HorizontalLayout {
                         spacing: 10px;
@@ -334,7 +334,28 @@ export component QueuePage inherits VerticalLayout {
                         Rectangle { horizontal-stretch: 1; background: transparent; }
                     }
                 }
-                if root.window-width < 760px: VerticalLayout {
+                if root.queue-content-width >= root.queue-option-width * 2 + 10px && root.queue-content-width < root.options-two-row-width: VerticalLayout {
+                    spacing: 6px;
+                    HorizontalLayout {
+                        spacing: 10px;
+                        CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; width: root.queue-option-width; }
+                        CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; width: root.queue-option-width; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        CheckBox { text: @tr("写入运行日志"); checked <=> root.write-log; enabled: !root.running; width: root.queue-option-width; }
+                        if root.timestamp-ui-visible: CheckBox { text: @tr("保留创建时间"); checked <=> root.preserve-creation-time; enabled: !root.running; width: root.queue-option-width; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                    if root.timestamp-ui-visible: HorizontalLayout {
+                        spacing: 10px;
+                        CheckBox { text: @tr("保留修改时间"); checked <=> root.preserve-modification-time; enabled: !root.running; width: root.queue-option-width; }
+                        CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; width: root.queue-option-width; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                    }
+                }
+                if root.queue-content-width < root.queue-option-width * 2 + 10px: VerticalLayout {
                     spacing: 6px;
                     CheckBox { text: @tr("移除元数据"); checked <=> root.strip-metadata; enabled: !root.running; width: root.queue-option-width; }
                     CheckBox { text: @tr("写入 CSV 报告"); checked <=> root.write-summary; enabled: !root.running; width: root.queue-option-width; }
@@ -366,6 +387,7 @@ export component QueuePage inherits VerticalLayout {
 
         VerticalLayout {
             padding: 10px;
+            padding-right: 10px + root.right-frame-inset;
             spacing: 6px;
 
             HorizontalLayout {

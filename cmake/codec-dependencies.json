@@ -1,5 +1,5 @@
 {
-  "awj_version": "1.2.0",
+  "awj_version": "1.2.1",
   "selected_at": "2026-10-06",
   "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
   "vcpkg_baseline": "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4",
@@ -134,7 +134,7 @@
     "cmake/patch_libavif_parallel_grid.cmake": "eeb38346e6f974f3e2c2d0e054b7f96209b332ce868886556dd9ed440121fb11",
     "cmake/patch_libavif_animation_budget.cmake": "b2f2c1a3a5409bfe3eee5b0bad047327f5acafe4f46bc410e805f1f1b0c1a5d6",
     "cmake/patch_jpegli_allocator.cmake": "04104442f3e4b29068ca1eb4f6e661b8f730844537ebdd0600ff67f55cdcad4c",
-    "cmake/patch_slint_static_import.cmake": "d5aba7ea5b219747d46f3b2b2ab69be49b609ff004f7699faf58182052893aaa",
+    "cmake/patch_slint_static_import.cmake": "8b7e75ebafb60bd79e6ac8c824c3b84c5bea6b54ded7ee1b8fa90483ec16a736",
     "vcpkg-overlays/libjxl/fix-dependencies.patch": "f57a52305f168815b11aa6f1e284a525ffa3471c7a5b5c47d0d61684fbb579cf",
     "vcpkg-overlays/aom/aom-rename-static.diff": "94f8f7fc7a7b661d488733cf43fb90e94f2cc345ae2317f6d5a2d3b2fc5f57ad",
     "vcpkg-overlays/aom/aom-uninitialized-pointer.diff": "5a07138d20ac842bf1b491bdeaae17bf6fbae4c6c085e544361ef2d8cec6d2b0",

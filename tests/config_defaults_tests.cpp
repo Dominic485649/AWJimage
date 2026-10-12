@@ -33,6 +33,37 @@ int main() {
   }
 
   const auto defaults = awj::default_app_config();
+  for (const auto& args : {
+      std::vector<std::wstring>{L"--threads", L"10", L"--cpu-affinity", L"0-4,9-13"},
+      std::vector<std::wstring>{L"--cpu-affinity", L"0-4,9-13", L"--threads", L"10"},
+      std::vector<std::wstring>{L"--shell-convert", L"--threads", L"10", L"--cpu-affinity", L"0-4,9-13"}}) {
+    const auto parsed = awj::parse_arguments(args);
+    if (!parsed || parsed->config.max_jobs != 10 || parsed->config.cpu_affinity.size() != 10)
+      return fail("Explicit threads were reserved or affinity argument order changed the budget.");
+  }
+  for (const auto& args : {
+      std::vector<std::wstring>{L"--cpu-affinity", L"0-4,9-13"},
+      std::vector<std::wstring>{L"--threads", L"auto", L"--cpu-affinity", L"0-4,9-13"},
+      std::vector<std::wstring>{L"--cpu-affinity", L"0-4,9-13", L"--threads", L"auto"}}) {
+    const auto parsed = awj::parse_arguments(args);
+    if (!parsed || parsed->config.max_jobs != 8 ||
+        parsed->config.cpu_affinity != std::vector<unsigned>{0,1,2,3,4,9,10,11,12,13})
+      return fail("Auto did not reserve two CPUs from the selected ten CPUs.");
+  }
+  auto preset_base = defaults;
+  preset_base.max_jobs = 6;
+  const auto preset_numeric = awj::parse_arguments_with_preset_base({L"--cpu-affinity", L"0-9"}, preset_base);
+  const auto preset_auto = awj::parse_arguments_with_preset_base(
+      {L"--threads", L"auto", L"--cpu-affinity", L"0-9"}, preset_base);
+  if (!preset_numeric || preset_numeric->config.max_jobs != 6 || !preset_auto || preset_auto->config.max_jobs != 8)
+    return fail("Affinity lost the preset budget or explicit auto override.");
+  for (const auto* value : {L"", L"0,", L",0", L"0,,1", L"-1", L"+1", L"0-", L"3-1",
+      L"1-2-3", L"0,0", L"0-2,2", L"1.5", L" 0", L"999999999999999"}) {
+    if (awj::parse_arguments({L"--cpu-affinity", value})) return fail("Invalid CPU affinity was accepted.");
+  }
+  if (awj::parse_arguments({L"--cpu-affinity", std::to_wstring(awj::cpu_affinity_capacity())}) ||
+      awj::parse_arguments({L"--cpu-affinity", L"0", L"--cpu-affinity", L"1"}) ||
+      awj::parse_arguments({L"--cpu-affinity"})) return fail("Affinity bound/duplicate/missing value accepted.");
   if (defaults.jpeg_hdr != awj::JpegHdrMode::automatic ||
       defaults.avif_animation_tune != awj::AvifAnimationTune::automatic ||
       defaults.avif_animation_keyframe != 0) return fail("HDR/animation defaults changed.");
@@ -161,7 +192,7 @@ int main() {
   parsed = awj::parse_arguments({L"--format", L"jpgli"});
   if (!parsed || parsed->config.output_format != awj::OutputFormat::jpgli ||
       parsed->config.quality != awj::encoding_defaults::default_jpegli_quality) {
-    return fail("CLI JPGLI format alias did not parse.");
+    return fail("CLI JPG format alias did not parse.");
   }
 
   parsed = awj::parse_arguments({L"--format", L"jpegli"});
@@ -178,7 +209,7 @@ int main() {
       parsed->config.jpegli_progressive_level != 0 ||
       parsed->config.jpegli_optimize_huffman ||
       !parsed->config.jpegli_xyb) {
-    return fail("CLI JPGLI advanced options did not parse.");
+    return fail("CLI JPG advanced options did not parse.");
   }
 
   parsed = awj::parse_arguments(
@@ -186,18 +217,19 @@ int main() {
        L"--jpegli-fixed-huffman"});
   if (parsed ||
       parsed.error().find("渐进 JPEG 需要优化哈夫曼表") == std::string::npos) {
-    return fail("CLI JPGLI invalid progressive/fixed huffman combination was not rejected.");
+    return fail("CLI JPG invalid progressive/fixed huffman combination was not rejected.");
   }
 
   parsed = awj::parse_arguments({L"--format", L"jpg"});
-  if (parsed || parsed.error().find("输出格式不支持") == std::string::npos) {
-    return fail("CLI should not accept plain jpg as the JPGLI entry.");
+  if (!parsed || parsed->config.output_format != awj::OutputFormat::jpgli ||
+      parsed->config.quality != awj::encoding_defaults::default_jpegli_quality) {
+    return fail("CLI JPG format did not parse with its default quality.");
   }
 
   parsed = awj::parse_arguments({L"--format", L"jpgli", L"--alpha", L"force"});
   if (parsed ||
-      parsed.error().find("JPGLI 不支持 alpha 输出") == std::string::npos) {
-    return fail("CLI did not reject forced alpha for JPGLI.");
+      parsed.error().find("JPG 不支持 alpha 输出") == std::string::npos) {
+    return fail("CLI did not reject forced alpha for JPG.");
   }
 
   parsed = awj::parse_arguments({L"--format", L"webp", L"--quality", L"82"});
@@ -210,8 +242,8 @@ int main() {
   }
 
   parsed = awj::parse_arguments({L"--format", L"jpgli", L"--speed", L"6"});
-  if (parsed || parsed.error().find("JPGLI 不支持 --speed") == std::string::npos) {
-    return fail("CLI should reject speed for JPGLI.");
+  if (parsed || parsed.error().find("JPG 不支持 --speed") == std::string::npos) {
+    return fail("CLI should reject speed for JPG.");
   }
   parsed = awj::parse_arguments({L"--format", L"png", L"--speed", L"6"});
   if (parsed || parsed.error().find("PNG 不支持 --speed") == std::string::npos) {
@@ -513,11 +545,11 @@ int main() {
       help.find(std::format("WebP q{}",
                             awj::encoding_defaults::default_webp_quality)) ==
           std::string::npos ||
-      help.find(std::format("JPGLI q{}",
+      help.find(std::format("JPG q{}",
                             awj::encoding_defaults::default_jpegli_quality)) ==
           std::string::npos ||
-      help.find("jpgli|jpegli") == std::string::npos ||
-      help.find("--jpegli-progressive-level") == std::string::npos ||
+      help.find("<png|avif|webp|jxl|jpg>") == std::string::npos ||
+      help.find("--jpeg-progressive-level") == std::string::npos ||
       help.find("--avif-encoder") == std::string::npos ||
       help.find("--experimental-encoders") != std::string::npos ||
       help.find("zenrav1e") != std::string::npos ||

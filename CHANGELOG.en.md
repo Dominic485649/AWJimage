@@ -1,5 +1,38 @@
 # Changelog
 
+
+## 1.2.1 - 2026-10-12
+
+### Optimization
+
+- Unify target-pixel conversion. Prefer native YUV when decoding AVIF, HEIF, JPG and lossy WebP; reuse compatible layouts and combine matrix, depth, sampling, HDR, crop, rotation, mirroring and resizing into the target pixels. AVIF, JPG and lossy WebP can encode YUV directly; PNG, JXL and lossless WebP convert to RGB as needed.
+- Use prepared plane views for Grid cells and remove the old full-image RGBA depth-conversion buffer. Retain luminance analysis for tone mapping, gain-map reconstruction, animation compositing and visual-search reference preparation.
+- Add CLI `--cpu-affinity` for logical CPU selection. Auto reserves desktop capacity from the allowed CPUs; explicit `--threads N` uses the full budget, regardless of argument order.
+- Move the Windows conversion core entirely into standalone AWJ.com. AWJ.exe contains the GUI, context menus and updater; both GUI conversion paths use COM workers. Preserve legacy EXE forwarding, exit codes and cancellation.
+- Encode ordinary large images in the normal queue, removing the pixel-count deferral; keep Grid scheduling separate. Skip unrelated animation/Grid probes for ordinary images.
+- Honor process CPU affinity when selecting automatic threads. Disable AOM row-mt for single-thread encoding and retain it for multiple threads.
+- Use exactly equivalent bit operations for FP16 reads. Map ordinary HDR output directly into destination pixels with cancellation support, eliminating the extra full-image RGBA16 copy.
+- Use JPG as the format name, defaulting to 8-bit YCbCr 4:2:0 with 4:2:2, 4:4:4 and HDR Gain Maps retained. Convert RGB scanlines without a full-image copy and preserve previous format/option aliases.
+- Load DX11 and Linux Vulkan metrics on demand and cache device initialization results. Small images and disabled acceleration skip GPU initialization; GPU metric failures switch remaining search candidates to the CPU.
+- Reuse CPU reference pyramids, statistics and candidate buffers, reduce GMSD boundary calculations, and move fixed HDR matrices outside pixel loops. Include additional buffers in memory budgets.
+- Create WIC factories on demand and reuse them per thread, preserving JXR. Cache GUI OpenGL probes and retain software rendering and ordinary windows when optional graphics features are unavailable.
+- Include Gain Map JPEG dimensions and orientation in memory preflight, account for compressed buffers and codec block padding, and use a separate reservation for clearly identified ordinary 8-bit 4:2:0 JPEG. Retain conservative HDR/alpha/unknown estimates and exclusive admission for unknown dimensions.
+
+### Interface
+
+- Reduce the sidebar to 147px, center the AWJ title, and use 16px parameter-page top padding. Keep settings cards at their natural height, with spare space below the content.
+- Merge changelog preferences into the default-enabled “Only show changelog after updates”, synchronized with the changelog page. Keep the main switch, version history and manual entry.
+- Keep update controls and status on one row; truncate status with an ellipsis and show full text on hover.
+- Add repository and QQ links to About. Crop light/dark icons from the original PNG. Caption icons follow the app theme; running taskbar icons follow the Windows system theme.
+- Use a 1171px default width and 747px minimum, keep naming buttons and format/preset selectors at their minimum-window widths, and give all six checkboxes the widest localized width before wrapping. Match the canvas, sidebar and native caption, with a slightly deeper light background. Restore separate section cards with 8px corners and matching dark content and controls. Keep the light-blue changelog cards unchanged.
+
+- Keep viewport corners rounded while scrolling, let the native frame cover the right/bottom panel strokes, and separate About descriptions from clickable URLs. Update Windows rendering immediately at the current client size during continuous resizing.
+
+### Maintenance
+
+- Rebuild both READMEs, move development and validation commands to the contribution guide, and remove outdated documents and personal paths.
+- Retire legacy update documents and keyring aliases, preserving archive updates, signature verification, replay protection and transaction recovery. Versions 1.0.12 and earlier require a manual upgrade.
+
 ## 1.2.0 - 2026-10-07
 
 - Reconstruct supported JPEG, AVIF and HEIC/HEIF gain maps into enhanced pixels in linear light. Ordinary images use the normal conversion path; recognized invalid or unsupported gain maps fail explicitly.

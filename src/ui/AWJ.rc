@@ -1,1 +1,2 @@
-IDI_ICON1 ICON "app.ico"
+1 ICON "app.ico"
+2 ICON "app-dark.ico"

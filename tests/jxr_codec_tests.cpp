@@ -5,6 +5,8 @@
 #include <filesystem>
 #include <string_view>
 #include <windows.h>
+#include <thread>
+#include <atomic>
 #include <wincodec.h>
 #include <wrl/client.h>
 
@@ -194,6 +196,23 @@ int main() {
   if (const auto code = decode_and_check(hdr_jxr, 1, 16); code != 0) {
     return code;
   }
+
+  // Each thread owns its factory; a borrowed STA must not outlive the caller's COM scope.
+  std::atomic<bool> decode_failed{false};
+  const auto check_thread = [&](DWORD apartment) {
+    for (int pass = 0; pass != 3; ++pass) {
+      const auto hr = CoInitializeEx(nullptr, apartment);
+      if (FAILED(hr)) { decode_failed = true; return; }
+      awj::JxrImageDecoder decoder;
+      if (!decoder.decode(jxr)) decode_failed = true;
+      CoUninitialize();
+    }
+  };
+  {
+    std::jthread sta{check_thread, DWORD{COINIT_APARTMENTTHREADED}};
+    std::jthread mta{check_thread, DWORD{COINIT_MULTITHREADED}};
+  }
+  if (decode_failed) return fail("WIC factory reuse broke the COM apartment lifetime.");
 
   std::filesystem::remove(jxr, ec);
   std::filesystem::remove(wdp, ec);

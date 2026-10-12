@@ -263,6 +263,7 @@ struct NativeEncodeSettings {
   std::span<const std::byte> jxl_rgb8_input{};
   std::span<const std::byte> jpegli_rgb8_input{};
   std::function<void(std::size_t, std::size_t)> frame_progress{};
+  bool tone_map_to_sdr_pixels{};
 };
 
 struct NativeEncodeResult {
@@ -328,6 +329,7 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
 
 struct DecodeOptions {
   std::optional<bool> copy_metadata_payloads{};
+  bool native_pixels{};
 };
 
 class ImageDecoder {
@@ -337,6 +339,8 @@ class ImageDecoder {
   [[nodiscard]] virtual bool can_decode(const fs::path& path) const = 0;
   virtual std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const = 0;
+  virtual std::expected<ImageDecodeResult, std::string> decode(
+      const fs::path& path, DecodeOptions) const { return decode(path); }
   virtual std::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte>, std::string_view,
       DecodeOptions = {}) const {

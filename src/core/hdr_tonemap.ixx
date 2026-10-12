@@ -2,6 +2,7 @@ module;
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -122,21 +123,17 @@ std::expected<ImageBuffer, std::string> make_rgba_image(
 }
 
 float binary16_to_float(std::uint16_t bits) noexcept {
-  const auto sign = (bits >> 15) & 1U;
-  const auto exponent = (bits >> 10) & 0x1fU;
-  const auto mantissa = bits & 0x03ffU;
-  const auto signed_value = [sign](float value) { return sign == 0 ? value : -value; };
-  if (exponent == 0) {
-    return signed_value(std::ldexp(static_cast<float>(mantissa), -24));
+  const std::uint32_t sign = static_cast<std::uint32_t>(bits & 0x8000u) << 16;
+  const std::uint32_t exponent = (bits >> 10) & 31u;
+  const std::uint32_t mantissa = bits & 1023u;
+  if (exponent == 31u) {
+    if (mantissa) return std::numeric_limits<float>::quiet_NaN();
+    return std::bit_cast<float>(sign | 0x7f800000u);
   }
-  if (exponent == 0x1fU) {
-    if (mantissa != 0) {
-      return std::numeric_limits<float>::quiet_NaN();
-    }
-    return signed_value(std::numeric_limits<float>::infinity());
-  }
-  return signed_value(std::ldexp(1.0F + static_cast<float>(mantissa) / 1024.0F,
-                                 static_cast<int>(exponent) - 15));
+  if (exponent) return std::bit_cast<float>(sign | ((exponent + 112u) << 23) | (mantissa << 13));
+  if (!mantissa) return std::bit_cast<float>(sign);
+  const auto shift = std::countl_zero(mantissa) - 21;
+  return std::bit_cast<float>(sign | ((113u - shift) << 23) | (((mantissa << shift) & 1023u) << 13));
 }
 
 float read_sample(const ImageBuffer& image, const std::byte* row, std::size_t sample) noexcept {
@@ -270,8 +267,7 @@ std::expected<std::array<float, 3>, std::string> linear_nits(
   return rgb;
 }
 
-float luma_nits(std::array<float, 3> rgb, const pl_raw_primaries& primaries) noexcept {
-  const auto matrix = pl_get_rgb2xyz_matrix(&primaries);
+float luma_nits(std::array<float, 3> rgb, const pl_matrix3x3& matrix) noexcept {
   pl_matrix3x3_apply(&matrix, rgb.data());
   return std::max(rgb[1], 0.0F);
 }
@@ -283,6 +279,7 @@ struct LuminanceStats {
 
 std::expected<LuminanceStats, std::string> luminance_stats(
     const ImageBuffer& image, const SourceTransform& transform, std::stop_token stop = {}) {
+  const auto luma_matrix = pl_get_rgb2xyz_matrix(transform.primaries);
   float scanned_peak{};
   double sum{};
   std::size_t count{};
@@ -295,7 +292,7 @@ std::expected<LuminanceStats, std::string> luminance_stats(
       if (!rgb) {
         return std::unexpected{rgb.error()};
       }
-      const auto luma = luma_nits(*rgb, *transform.primaries);
+      const auto luma = luma_nits(*rgb, luma_matrix);
       scanned_peak = std::max(scanned_peak, luma);
       sum += luma;
       ++count;
@@ -408,6 +405,7 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(
   if (!pixels) {
     return std::unexpected{pixels.error()};
   }
+  const auto luma_matrix = pl_get_rgb2xyz_matrix(transform->primaries);
   auto input_to_lms = pl_ipt_rgb2lms(transform->primaries);
   auto output_to_rgb = pl_ipt_lms2rgb(bt709);
   const auto& input_plane = image.planes.front();
@@ -421,7 +419,7 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(
       if (!rgb) {
         return std::unexpected{rgb.error()};
       }
-      const auto source_luma = hdr_detail::luma_nits(*rgb, *transform->primaries);
+      const auto source_luma = hdr_detail::luma_nits(*rgb, luma_matrix);
       if (source_luma > 0.0F) {
         const auto mapped_luma = pl_tone_map_sample(source_luma, &tone_params);
         const auto scale = std::max(mapped_luma, 0.0F) / source_luma;
@@ -479,7 +477,7 @@ std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(
   return output;
 }
 
-std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(const ImageBuffer& image) {
+std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(ImageBuffer&& image, std::stop_token stop_token = {}) {
   if (auto valid = hdr_detail::validate_rgba(image, "scRGB -> HDR"); !valid) {
     return std::unexpected{valid.error()};
   }
@@ -497,14 +495,11 @@ std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(const ImageBu
     return std::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
   }
   const auto matrix = pl_get_color_mapping_matrix(transform->primaries, bt2020, PL_INTENT_RELATIVE_COLORIMETRIC);
-  auto pixels = hdr_detail::make_rgba_bytes(image.width, image.height, 2, "scRGB -> HDR");
-  if (!pixels) {
-    return std::unexpected{pixels.error()};
-  }
-  const auto& input_plane = image.planes.front();
+  auto& input_plane = image.planes.front();
   for (std::size_t y = 0; y < image.height; ++y) {
-    const auto* input_row = input_plane.bytes.data() + y * input_plane.stride;
-    auto* output_row = pixels->data() + y * image.width * 4 * sizeof(std::uint16_t);
+    if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+    auto* output_row = input_plane.bytes.data() + y * input_plane.stride;
+    const auto* input_row = output_row;
     for (std::size_t x = 0; x < image.width; ++x) {
       const auto sample = x * 4;
       auto linear = hdr_detail::linear_nits(image, *transform, input_row, sample);
@@ -531,16 +526,25 @@ std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(const ImageBu
                                .color_range = 1,
                                .has_hdr_metadata = true,
                                .color_metadata_source = "scrgb-linear-to-bt2020-pq"};
-  auto output = hdr_detail::make_rgba_image(
-      image.width, image.height, std::move(*pixels), image.alpha_mode, 16,
-      SampleRepresentation::unorm, std::move(source_info), "scRGB -> HDR");
-  if (!output) {
-    return std::unexpected{output.error()};
+  image.sample_representation = SampleRepresentation::unorm;
+  image.source_info = std::move(source_info);
+  image.significant_bits.reset();
+  std::erase_if(image.metadata, [](const MetadataBlock& block) {
+    return block.kind != MetadataKind::exif && block.kind != MetadataKind::xmp;
+  });
+  return std::move(image);
+}
+
+std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(
+    const ImageBuffer& image, std::stop_token stop_token = {}) {
+  if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+  try {
+    return materialize_scrgb_as_hdr10(ImageBuffer{image}, stop_token);
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"scRGB -> HDR 输入复制内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"scRGB -> HDR 输入复制超过运行时限制。"};
   }
-  if (auto copied = hdr_detail::copy_non_color_metadata(*output, image); !copied) {
-    return std::unexpected{copied.error()};
-  }
-  return output;
 }
 
 }  // namespace awj::hdr

@@ -3,7 +3,7 @@ import { TaskRow, SoftButton } from "studio_components.slint";
 
 export component ShellConvertWindow inherits Window {
     title: @tr("AWJimage 右键转换");
-    icon: @image-url("logo.png");
+    icon: root.dark-mode ? @image-url("logo-dark.png") : @image-url("logo-light.png");
     default-font-family: root.ui-font-family;
     preferred-width: 840px;
     preferred-height: 560px;

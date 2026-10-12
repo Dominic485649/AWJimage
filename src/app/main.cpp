@@ -19,11 +19,17 @@
 #include <exception>
 #include <filesystem>
 #include <limits>
+#include <span>
+#include <string>
+#include <vector>
 
 #ifdef _WIN32
 import awj.update_windows;
 
-int run_cli(int argc, wchar_t* argv[]);
+namespace awj::studio {
+std::wstring command_line_from_args(std::span<const std::wstring> args);
+}
+
 int run_studio_ui(const wchar_t* health_event = nullptr,
                   const wchar_t* installed_version = nullptr);
 #else
@@ -313,16 +319,37 @@ int wmain(int argc, wchar_t* argv[]) {
     }
   }
 
-  crash_stage.store("cli", std::memory_order_relaxed);
-  std::setvbuf(stdout, nullptr, _IONBF, 0);
-  std::setvbuf(stderr, nullptr, _IONBF, 0);
-  const int exit_code = run_cli(argc, argv);
-  std::fflush(stdout);
-  std::fflush(stderr);
-  // 部分第三方 native codec 的静态运行时会在进程静态析构阶段
-  // 触发清理顺序问题。CLI 到这里时工作已完成，直接交还退出码；
-  // std::_Exit 避免运行 CRT/第三方静态析构，比 ExitProcess 更稳定。
-  std::_Exit(exit_code);
+  crash_stage.store("cli-forward", std::memory_order_relaxed);
+  std::array<wchar_t, 32768> path{};
+  const auto length = GetModuleFileNameW(nullptr, path.data(), path.size());
+  if (!length || length == path.size()) return 1;
+  auto cli_path = std::filesystem::path{path.data()}.replace_extension(L".com");
+  std::vector<std::wstring> args{cli_path.native()};
+  for (int i = 1; i < argc; ++i) args.emplace_back(argv[i]);
+  auto command = awj::studio::command_line_from_args(args);
+  if (command.size() >= 32767) return 1;
+  STARTUPINFOW startup{};
+  startup.cb = sizeof(startup);
+  startup.dwFlags = STARTF_USESTDHANDLES;
+  startup.hStdInput = GetStdHandle(STD_INPUT_HANDLE);
+  startup.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+  startup.hStdError = GetStdHandle(STD_ERROR_HANDLE);
+  PROCESS_INFORMATION child{};
+  if (!CreateProcessW(cli_path.c_str(), command.data(), nullptr, nullptr, TRUE, 0,
+                      nullptr, nullptr, &startup, &child)) {
+    std::fprintf(stderr, "Cannot start AWJ.com (error %lu).\n", GetLastError());
+    return 1;
+  }
+  CloseHandle(child.hThread);
+  // Ctrl+C reaches the console worker in the same process group.
+  SetConsoleCtrlHandler([](DWORD event) -> BOOL {
+    return event == CTRL_C_EVENT || event == CTRL_BREAK_EVENT;
+  }, TRUE);
+  WaitForSingleObject(child.hProcess, INFINITE);
+  DWORD code = 1;
+  GetExitCodeProcess(child.hProcess, &code);
+  CloseHandle(child.hProcess);
+  return static_cast<int>(code);
 }
 #else
 int main(int argc, char* argv[]) {

@@ -36,7 +36,7 @@
 import awj.config;
 import awj.core;
 import awj.large_image_plan;
-import awj.pipeline;
+import awj.batch_protocol;
 import awj.preset;
 import awj.studio_defaults;
 
@@ -236,8 +236,7 @@ struct StudioConfigSnapshot {
 
   std::string update_channel{"stable"};
   bool show_update_changelog{true};
-  bool hide_update_changelog_after_exit{true};
-  bool show_update_changelog_after_update{true};
+  bool only_show_changelog_after_update{true};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
   // schema 1 remains cached solely for already-installed 1.0.3 bridge
@@ -310,8 +309,8 @@ struct UiState {
 
   std::string update_channel{"stable"};
   bool show_update_changelog{true};
-  bool hide_update_changelog_after_exit{true};
-  bool show_update_changelog_after_update{true};
+  bool changelog_opened_manually{};
+  bool only_show_changelog_after_update{true};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
   std::int64_t last_verified_manifest_v2_sequence{};

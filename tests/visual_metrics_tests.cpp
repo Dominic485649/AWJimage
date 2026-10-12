@@ -1,4 +1,6 @@
+#include <algorithm>
 #include <cmath>
+#include <utility>
 #include <cstddef>
 #include <cstdio>
 #include <string_view>
@@ -59,6 +61,38 @@ awj::ImageBuffer make_high_bit_depth_test_image(int bit_depth) {
   return image;
 }
 
+double pixel_at_clamped(const awj::LumaImage& image, std::size_t x, std::size_t y) noexcept {
+  x = std::min(x, image.width - 1);
+  y = std::min(y, image.height - 1);
+  return image.pixels[y * image.width + x];
+}
+
+double gradient_magnitude(const awj::LumaImage& image, std::size_t x, std::size_t y) noexcept {
+  const auto left = x == 0 ? x : x - 1;
+  const auto right = std::min(x + 1, image.width - 1);
+  const auto top = y == 0 ? y : y - 1;
+  const auto bottom = std::min(y + 1, image.height - 1);
+  const double dx = pixel_at_clamped(image, right, y) - pixel_at_clamped(image, left, y);
+  const double dy = pixel_at_clamped(image, x, bottom) - pixel_at_clamped(image, x, top);
+  return std::sqrt(dx * dx + dy * dy);
+}
+
+double reference_gmsd(const awj::LumaImage& reference, const awj::LumaImage& candidate) {
+  std::size_t count = 0;
+  double mean = 0.0, m2 = 0.0;
+  for (std::size_t y = 0; y < reference.height; ++y) {
+    for (std::size_t x = 0; x < reference.width; ++x) {
+      const double ref = gradient_magnitude(reference, x, y);
+      const double test = gradient_magnitude(candidate, x, y);
+      const double similarity = (2.0 * ref * test + 0.0026) / (ref * ref + test * test + 0.0026);
+      const double delta = similarity - mean;
+      mean += delta / static_cast<double>(++count);
+      m2 += delta * (similarity - mean);
+    }
+  }
+  return std::sqrt(m2 / static_cast<double>(count));
+}
+
 }  // namespace
 
 int main() {
@@ -108,5 +142,24 @@ int main() {
     }
   }
 
+  for (const auto shape : {std::pair{1u, 1u}, {1u, 9u}, {9u, 1u}, {9u, 11u}, {64u, 32u}}) {
+    awj::LumaImage ref{.width = shape.first, .height = shape.second};
+    ref.pixels.resize(ref.width * ref.height);
+    for (std::size_t i = 0; i < ref.pixels.size(); ++i)
+      ref.pixels[i] = float((i * 37 + 11) % 257) / 256.0F;
+    awj::CpuVisualMetricWorkspace workspace;
+    for (int pass = 0; pass < 3; ++pass) {
+      auto test = ref;
+      for (std::size_t i = 0; i < test.pixels.size(); ++i)
+        test.pixels[i] = std::clamp(test.pixels[i] + float(pass) * 0.01F, 0.0F, 1.0F);
+      auto gmsd = awj::compute_gmsd(ref, test);
+      if (!gmsd || !nearly_equal(*gmsd, reference_gmsd(ref, test), 1e-8))
+        return fail("CPU GMSD changed at a boundary.");
+      auto old = awj::compute_ms_ssim(ref, test);
+      auto cached = awj::compute_ms_ssim_cached(ref, test, workspace);
+      if (!old || !cached || !nearly_equal(*old, *cached, 1e-8))
+        return fail("Cached CPU MS-SSIM changed the metric.");
+    }
+  }
   return 0;
 }

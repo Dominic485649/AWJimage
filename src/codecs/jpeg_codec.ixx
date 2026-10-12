@@ -499,6 +499,14 @@ ImageSourceInfo source_info_from_header(const jpeg_decompress_struct& cinfo) noe
                          .bit_depth = cinfo.data_precision > 0 ? cinfo.data_precision : 0};
 }
 
+bool opaque_sdr8_yuv420_header(const jpeg_decompress_struct& cinfo) noexcept {
+  const auto info = source_info_from_header(cinfo);
+  if (info.bit_depth != 8 || info.pixel_format != PixelFormat::yuv420) return false;
+  for (auto* marker = cinfo.marker_list; marker; marker = marker->next)
+    if (marker->marker == JPEG_APP0 + 2 && has_icc_signature(*marker)) return false;
+  return true;
+}
+
 }  // namespace jpeg_detail
 
 class JpegImageDecoder final : public ImageDecoder {
@@ -559,9 +567,10 @@ class JpegImageDecoder final : public ImageDecoder {
       if (cinfo.image_width > JPEG_MAX_DIMENSION || cinfo.image_height > JPEG_MAX_DIMENSION) {
         return std::unexpected{std::format("JPEG 尺寸超过 libjpeg-turbo 上限: {}", display_path_for_user(path))};
       }
-      return decoder_common::make_image_dimensions_checked(cinfo.image_width,
-                                                           cinfo.image_height,
-                                                           "JPEG");
+      auto dimensions = decoder_common::make_image_dimensions_checked(cinfo.image_width,
+                                                           cinfo.image_height, "JPEG");
+      if (dimensions) dimensions->opaque_sdr8_yuv420 = jpeg_detail::opaque_sdr8_yuv420_header(cinfo);
+      return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"JPEG 尺寸探测内存不足。"};
     } catch (const std::length_error&) {

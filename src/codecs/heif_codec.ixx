@@ -20,6 +20,7 @@ module;
 
 #include <libheif/heif.h>
 #include <avif/avif.h>
+#include <avif/internal.h>
 #include <libheif/heif_items.h>
 #include <libheif/heif_properties.h>
 #include "heif_gain_map_adapter.h"
@@ -33,6 +34,7 @@ import awj.encoding_defaults;
 import awj.gain_map;
 import awj.hdr_tonemap;
 import awj.image;
+import awj.pixel_conversion;
 import awj.large_image_plan;
 
 export namespace awj {
@@ -340,7 +342,8 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
                                                            std::string_view source_name,
                                                            int decode_threads,
                                                            bool copy_metadata_payloads,
-                                                           std::stop_token stop_token = {}, bool ignore_transformations = false) {
+                                                           std::stop_token stop_token = {}, bool ignore_transformations = false,
+                                                           bool native_pixels = false) {
   if (stop_token.stop_requested()) {
     return std::unexpected{"任务已取消。"};
   }
@@ -353,6 +356,8 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
                              heif_image_handle_is_premultiplied_alpha(handle) != 0;
   const int source_bit_depth = source_info.bit_depth > 0 ? source_info.bit_depth : 8;
   const int output_bit_depth = source_bit_depth > 8 ? 16 : 8;
+  native_pixels = native_pixels && (source_bit_depth == 8 || source_bit_depth == 10 ||
+                                   source_bit_depth == 12 || source_bit_depth == 16);
 
   DecodingOptionsPtr options{heif_decoding_options_alloc()};
   if (!options) {
@@ -376,7 +381,8 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
       : heif_chroma_interleaved_RGBA;
   heif_image* raw_image = nullptr;
   const auto decode_error = heif_decode_image(handle, &raw_image,
-                                               heif_colorspace_RGB, rgba_chroma,
+                                               native_pixels ? heif_colorspace_undefined : heif_colorspace_RGB,
+                                               native_pixels ? heif_chroma_undefined : rgba_chroma,
                                                options.get());
   if (stop_token.stop_requested()) {
     if (raw_image != nullptr) heif_image_release(raw_image);
@@ -388,6 +394,137 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
         std::format("HEIC 解码失败: {}: {}", source_name, error_text(decode_error))};
   }
   fill_missing_nclx_from_decoded(source_info, decoded.get());
+
+  if (native_pixels && (heif_image_get_colorspace(decoded.get()) == heif_colorspace_YCbCr ||
+      heif_image_get_colorspace(decoded.get()) == heif_colorspace_monochrome)) {
+    avifImage view{};
+    const auto chroma = heif_image_get_chroma_format(decoded.get());
+    view.yuvFormat = chroma == heif_chroma_420 ? AVIF_PIXEL_FORMAT_YUV420
+        : chroma == heif_chroma_422 ? AVIF_PIXEL_FORMAT_YUV422
+        : chroma == heif_chroma_444 ? AVIF_PIXEL_FORMAT_YUV444 : AVIF_PIXEL_FORMAT_YUV400;
+    const int width = heif_image_get_width(decoded.get(), heif_channel_Y);
+    const int height = heif_image_get_height(decoded.get(), heif_channel_Y);
+    const int depth = heif_image_get_bits_per_pixel_range(decoded.get(), heif_channel_Y);
+    if (width <= 0 || height <= 0 || (depth != 8 && depth != 10 && depth != 12 && depth != 16))
+      return std::unexpected{"HEIF 原生 YUV 尺寸或位深无效。"};
+    view.width = width; view.height = height; view.depth = depth;
+    view.matrixCoefficients = static_cast<avifMatrixCoefficients>(source_info.matrix_coefficients.value_or(6));
+    view.colorPrimaries = static_cast<avifColorPrimaries>(source_info.color_primaries.value_or(2));
+    view.transferCharacteristics = static_cast<avifTransferCharacteristics>(source_info.transfer_characteristics.value_or(2));
+    view.yuvRange = source_info.color_range == 0 ? AVIF_RANGE_LIMITED : AVIF_RANGE_FULL;
+    avifYUVColorSpaceInfo color{};
+    if (!avifGetYUVColorSpaceInfo(&view, &color)) {
+      decoded.reset();
+      return decode_handle(handle, source_name, decode_threads, copy_metadata_payloads,
+                           stop_token, ignore_transformations, false);
+    }
+    std::vector<std::byte> scaled_alpha;
+    const std::array<heif_channel, 4> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr, heif_channel_Alpha};
+    for (std::size_t c = 0; c < 4; ++c) {
+      if ((view.yuvFormat == AVIF_PIXEL_FORMAT_YUV400 && (c == 1 || c == 2)) || (c == 3 && !has_alpha)) continue;
+      std::size_t stride{};
+      const auto* pixels = heif_image_get_plane_readonly2(decoded.get(), channels[c], &stride);
+      const int plane_depth = heif_image_get_bits_per_pixel_range(decoded.get(), channels[c]);
+      if (!pixels || stride > UINT32_MAX || plane_depth <= 0 || plane_depth > 16 || (c != 3 && plane_depth != depth))
+        return std::unexpected{"HEIF 原生 YUV 平面无效。"};
+      if (c == 3 && plane_depth != depth) {
+        const auto source_bytes = plane_depth > 8 ? 2u : 1u;
+        const auto target_bytes = depth > 8 ? 2u : 1u;
+        if (stride < static_cast<std::size_t>(width) * source_bytes ||
+            heif_image_get_width(decoded.get(), channels[c]) != width ||
+            heif_image_get_height(decoded.get(), channels[c]) != height)
+          return std::unexpected{"HEIF alpha 尺寸无效。"};
+        auto count = decoder_common::checked_image_bytes(static_cast<std::size_t>(width) * target_bytes, height, "HEIF alpha");
+        if (!count) return std::unexpected{count.error()};
+        auto storage = decoder_common::make_byte_buffer(*count, "HEIF alpha");
+        if (!storage) return std::unexpected{storage.error()};
+        scaled_alpha = std::move(*storage);
+        const std::uint32_t source_max = (1u << plane_depth) - 1, target_max = (1u << depth) - 1;
+        for (int y = 0; y < height; ++y) {
+          if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+          for (int x = 0; x < width; ++x) {
+            std::uint16_t sample{};
+            if (source_bytes == 1) sample = pixels[y * stride + x];
+            else std::memcpy(&sample, pixels + y * stride + x * 2, 2);
+            const auto value = static_cast<std::uint16_t>((static_cast<std::uint64_t>(sample) * target_max + source_max / 2) / source_max);
+            if (target_bytes == 1) scaled_alpha[static_cast<std::size_t>(y) * width + x] = std::byte{static_cast<unsigned char>(value)};
+            else std::memcpy(scaled_alpha.data() + (static_cast<std::size_t>(y) * width + x) * 2, &value, 2);
+          }
+        }
+        pixels = reinterpret_cast<const std::uint8_t*>(scaled_alpha.data());
+        stride = static_cast<std::size_t>(width) * target_bytes;
+      }
+      if (c == 3) { view.alphaPlane = const_cast<std::uint8_t*>(pixels); view.alphaRowBytes = static_cast<std::uint32_t>(stride); }
+      else { view.yuvPlanes[c] = const_cast<std::uint8_t*>(pixels); view.yuvRowBytes[c] = static_cast<std::uint32_t>(stride); }
+    }
+    view.alphaPremultiplied = premultiplied ? AVIF_TRUE : AVIF_FALSE;
+    auto image = copy_yuv_pixels(view, stop_token);
+    if (!image) return std::unexpected{image.error()};
+    source_info.pixel_format = image->pixel_format; image->source_info = source_info;
+    if (copy_metadata_payloads) {
+      if (auto copied = copy_metadata(*image, handle, !ignore_transformations); !copied) return std::unexpected{copied.error()};
+    }
+    return ImageDecodeResult{.image = std::move(*image), .decoder_id = "libheif-libde265"};
+  }
+  if (native_pixels && heif_image_get_colorspace(decoded.get()) == heif_colorspace_RGB) {
+    const auto chroma = heif_image_get_chroma_format(decoded.get());
+    const bool packed = chroma == heif_chroma_interleaved_RGB || chroma == heif_chroma_interleaved_RGBA ||
+        chroma == heif_chroma_interleaved_RRGGBB_LE || chroma == heif_chroma_interleaved_RRGGBB_BE ||
+        chroma == heif_chroma_interleaved_RRGGBBAA_LE || chroma == heif_chroma_interleaved_RRGGBBAA_BE;
+    const bool packed_alpha = chroma == heif_chroma_interleaved_RGBA ||
+        chroma == heif_chroma_interleaved_RRGGBBAA_LE || chroma == heif_chroma_interleaved_RRGGBBAA_BE;
+    const auto first = packed ? heif_channel_interleaved : heif_channel_R;
+    const int width = heif_image_get_width(decoded.get(), first), height = heif_image_get_height(decoded.get(), first);
+    const int precision = heif_image_get_bits_per_pixel_range(decoded.get(), first);
+    if (width <= 0 || height <= 0 || precision <= 0 || precision > 16) return std::unexpected{"HEIF 原生 RGB 尺寸无效。"};
+    const int storage_depth = precision > 8 ? 16 : 8;
+    const auto bytes_per_sample = storage_depth / 8;
+    auto count = decoder_common::checked_image_bytes(static_cast<std::size_t>(width) * 4 * bytes_per_sample, height, "HEIF native RGB");
+    if (!count) return std::unexpected{count.error()};
+    auto storage = decoder_common::make_byte_buffer(*count, "HEIF native RGB");
+    if (!storage) return std::unexpected{storage.error()};
+    const std::array<heif_channel, 4> channels{heif_channel_R, heif_channel_G, heif_channel_B, heif_channel_Alpha};
+    std::array<const std::uint8_t*, 4> planes{}; std::array<std::size_t, 4> strides{};
+    std::array<int, 4> precisions{precision, precision, precision, precision};
+    for (std::size_t c = 0; c < (has_alpha ? 4u : 3u); ++c) {
+      const auto channel = packed && (c < 3 || packed_alpha) ? first : channels[c];
+      planes[c] = heif_image_get_plane_readonly2(decoded.get(), channel, &strides[c]);
+      precisions[c] = heif_image_get_bits_per_pixel_range(decoded.get(), channel);
+      if (!planes[c] || precisions[c] <= 0 || precisions[c] > 16 ||
+          heif_image_get_width(decoded.get(), channel) != width || heif_image_get_height(decoded.get(), channel) != height ||
+          strides[c] < static_cast<std::size_t>(width) * (precisions[c] > 8 ? 2u : 1u) *
+              (channel == first && packed ? packed_alpha ? 4u : 3u : 1u))
+        return std::unexpected{"HEIF 原生 RGB 平面无效。"};
+    }
+    const auto maximum = (1u << storage_depth) - 1;
+    const bool big_endian = chroma == heif_chroma_interleaved_RRGGBB_BE || chroma == heif_chroma_interleaved_RRGGBBAA_BE;
+    for (int y = 0; y < height; ++y) {
+      if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+      for (int x = 0; x < width; ++x) for (std::size_t c = 0; c < 4; ++c) {
+        std::uint16_t sample = static_cast<std::uint16_t>(maximum);
+        if (c < 3 || has_alpha) {
+          const bool interleaved = packed && (c < 3 || packed_alpha);
+          const auto source_bytes = precisions[c] > 8 ? 2u : 1u;
+          const auto* position = planes[c] + y * strides[c] +
+              (interleaved ? static_cast<std::size_t>(x) * (packed_alpha ? 4u : 3u) + c : x) * source_bytes;
+          if (source_bytes == 1) sample = *position;
+          else { std::memcpy(&sample, position, 2); if (interleaved && big_endian != (std::endian::native == std::endian::big)) sample = std::byteswap(sample); }
+          const auto source_maximum = (1u << precisions[c]) - 1;
+          sample = static_cast<std::uint16_t>((static_cast<std::uint64_t>(sample) * maximum + source_maximum / 2) / source_maximum);
+        }
+        const auto offset = (static_cast<std::size_t>(y) * width * 4 + x * 4 + c) * bytes_per_sample;
+        if (bytes_per_sample == 1) (*storage)[offset] = std::byte{static_cast<unsigned char>(sample)};
+        else std::memcpy(storage->data() + offset, &sample, 2);
+      }
+    }
+    ImageBuffer image{.width = static_cast<std::size_t>(width), .height = static_cast<std::size_t>(height),
+        .pixel_format = PixelFormat::rgba, .alpha_mode = has_alpha ? premultiplied ? AlphaMode::premultiplied : AlphaMode::straight : AlphaMode::none,
+        .bit_depth = storage_depth, .source_info = source_info};
+    image.planes.push_back(ImagePlane{.bytes = std::move(*storage), .stride = static_cast<std::size_t>(width) * 4 * bytes_per_sample});
+    image.significant_bits = SignificantBits{precisions[0], precisions[1], precisions[2], precisions[3]};
+    if (copy_metadata_payloads) { if (auto copied = copy_metadata(image, handle, !ignore_transformations); !copied) return std::unexpected{copied.error()}; }
+    return ImageDecodeResult{.image = std::move(image), .decoder_id = "libheif-libde265"};
+  }
 
   const int width_i = heif_image_get_width(decoded.get(), heif_channel_interleaved);
   const int height_i = heif_image_get_height(decoded.get(), heif_channel_interleaved);
@@ -549,7 +686,8 @@ void make_alpha_straight(ImageBuffer& image) {
 }
 
 std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::byte> bytes,
-    std::string_view source_name, int decode_threads, bool copy_metadata_payloads, std::stop_token stop_token = {}) {
+    std::string_view source_name, int decode_threads, bool copy_metadata_payloads, std::stop_token stop_token = {},
+    bool native_pixels = false) {
   ContextPtr context{heif_context_alloc()};
   if (!context) return std::unexpected{"无法创建 libheif context。"};
   heif_context_set_max_decoding_threads(context.get(), 0);
@@ -610,7 +748,8 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::
       return std::unexpected{"Gain Map: HEIF ISO auxiliary 缺少支持的 tmap 元数据。"};
     }
   }
-  if (!auxiliary_id) return decode_handle(primary->get(), source_name, decode_threads, copy_metadata_payloads, stop_token);
+  if (!auxiliary_id) return decode_handle(primary->get(), source_name, decode_threads, copy_metadata_payloads,
+                                        stop_token, false, native_pixels);
   heif_image_handle* raw_auxiliary = nullptr;
   auto aux_error = heif_context_get_image_handle(context.get(), *auxiliary_id, &raw_auxiliary);
   if (aux_error.code != heif_error_Ok || !raw_auxiliary) return std::unexpected{"Gain Map: HEIF 无法取得 gain map 图像。"};
@@ -720,7 +859,7 @@ class HeifImageDecoder final : public ImageDecoder {
       DecodeOptions options = {}) const override {
     try {
       return heif_detail::decode_bytes(bytes, source_name, decode_threads_,
-                                       options.copy_metadata_payloads.value_or(false), stop_token_);
+                                       options.copy_metadata_payloads.value_or(false), stop_token_, options.native_pixels);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"HEIC 解码内存不足。"};
     } catch (const std::length_error&) {
@@ -729,13 +868,17 @@ class HeifImageDecoder final : public ImageDecoder {
   }
 
   std::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
+    return decode(path, {});
+  }
+
+  std::expected<ImageDecodeResult, std::string> decode(const fs::path& path, DecodeOptions options) const override {
     try {
       auto bytes = decoder_common::read_file_bytes(path, "HEIC");
       if (!bytes) {
         return std::unexpected{bytes.error()};
       }
       return heif_detail::decode_bytes(*bytes, display_path_for_user(path), decode_threads_, true,
-                                       stop_token_);
+                                       stop_token_, options.native_pixels);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"HEIC 解码内存不足。"};
     } catch (const std::length_error&) {

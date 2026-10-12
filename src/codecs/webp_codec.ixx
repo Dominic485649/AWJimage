@@ -32,6 +32,7 @@ import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
 import awj.image;
+import awj.pixel_conversion;
 import awj.large_image_plan;
 
 export namespace awj {
@@ -464,17 +465,22 @@ class WebPImageDecoder final : public ImageDecoder {
       std::string_view source_name,
       DecodeOptions options = {}) const override {
     return decode_bytes(bytes, source_name,
-                        options.copy_metadata_payloads.value_or(false));
+                        options.copy_metadata_payloads.value_or(false), options.native_pixels);
   }
 
   std::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const override {
+    return decode(path, {});
+  }
+
+  std::expected<ImageDecodeResult, std::string> decode(
+      const fs::path& path, DecodeOptions options) const override {
     try {
       auto bytes = webp_detail::read_file_bytes(path);
       if (!bytes) {
         return std::unexpected{bytes.error()};
       }
-      return decode_bytes(*bytes, display_path_for_user(path), true);
+      return decode_bytes(*bytes, display_path_for_user(path), true, options.native_pixels);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"WebP 解码内存不足。"};
     } catch (const std::length_error&) {
@@ -488,7 +494,7 @@ class WebPImageDecoder final : public ImageDecoder {
   static std::expected<ImageDecodeResult, std::string> decode_bytes(
       std::span<const std::byte> bytes,
       std::string_view source_name,
-      bool copy_metadata_payloads) {
+      bool copy_metadata_payloads, bool native_pixels = false) {
     try {
       if (bytes.empty()) {
         return std::unexpected{std::format("WebP 输入为空: {}", source_name)};
@@ -501,6 +507,44 @@ class WebPImageDecoder final : public ImageDecoder {
       }
       const int width = features.width;
       const int height = features.height;
+      if (native_pixels && features.format == 1 && !features.has_animation) {
+        ImageBuffer image{.width = static_cast<std::size_t>(width), .height = static_cast<std::size_t>(height),
+            .pixel_format = PixelFormat::yuv420,
+            .alpha_mode = features.has_alpha ? AlphaMode::straight : AlphaMode::none, .bit_depth = 8,
+            .source_info = webp_detail::source_info_from_features(features)};
+        image.source_info->matrix_coefficients = 6; image.source_info->color_range = 0;
+        image.planes.resize(features.has_alpha ? 4 : 3);
+        for (std::size_t c = 0; c < image.planes.size(); ++c) {
+          const auto w = c == 1 || c == 2 ? (image.width + 1) / 2 : image.width;
+          const auto h = c == 1 || c == 2 ? (image.height + 1) / 2 : image.height;
+          auto count = decoder_common::checked_image_bytes(w, h, "WebP native YUV");
+          if (!count) return std::unexpected{count.error()};
+          auto storage = decoder_common::make_byte_buffer(*count, "WebP native YUV");
+          if (!storage) return std::unexpected{storage.error()};
+          image.planes[c] = ImagePlane{.bytes = std::move(*storage), .stride = w};
+        }
+        WebPDecoderConfig config{};
+        if (!WebPInitDecoderConfig(&config)) return std::unexpected{"WebP decoder 配置失败。"};
+        config.output.colorspace = features.has_alpha ? MODE_YUVA : MODE_YUV;
+        config.output.is_external_memory = 1;
+        auto& yuv = config.output.u.YUVA;
+        yuv.y = reinterpret_cast<std::uint8_t*>(image.planes[0].bytes.data());
+        yuv.u = reinterpret_cast<std::uint8_t*>(image.planes[1].bytes.data());
+        yuv.v = reinterpret_cast<std::uint8_t*>(image.planes[2].bytes.data());
+        yuv.y_stride = width; yuv.u_stride = yuv.v_stride = (width + 1) / 2;
+        yuv.y_size = image.planes[0].bytes.size(); yuv.u_size = image.planes[1].bytes.size(); yuv.v_size = image.planes[2].bytes.size();
+        if (features.has_alpha) {
+          yuv.a = reinterpret_cast<std::uint8_t*>(image.planes[3].bytes.data());
+          yuv.a_stride = width; yuv.a_size = image.planes[3].bytes.size();
+        }
+        const auto result = WebPDecode(data, bytes.size(), &config);
+        WebPFreeDecBuffer(&config.output);
+        if (result != VP8_STATUS_OK) return std::unexpected{"WebP 原生 YUV 解码失败。"};
+        if (copy_metadata_payloads) {
+          if (auto copied = webp_detail::copy_metadata(image, bytes); !copied) return std::unexpected{copied.error()};
+        }
+        return ImageDecodeResult{.image = std::move(image), .decoder_id = "libwebp"};
+      }
 
       const auto stride = webp_detail::checked_rgba_stride(static_cast<std::size_t>(width), "WebP decoder");
       if (!stride) {
@@ -585,10 +629,26 @@ class WebPImageEncoder final : public ImageEncoder {
       const NativeEncodeSettings& settings,
       std::stop_token stop_token = {}) const override {
     try {
+      const bool requested_lossless = settings.visual_quality ? *settings.visual_quality >= 100 : settings.quality >= 100;
+      const PixelConversionRequest request{.format = requested_lossless ? PixelFormat::rgba : PixelFormat::yuv420,
+          .bit_depth = 8, .matrix_coefficients = 6, .color_range = requested_lossless ? 1 : 0,
+          .preserve_alpha = settings.applied_alpha == "kept", .tone_map_to_sdr = settings.tone_map_to_sdr_pixels};
+      if ((image.geometry || is_yuv_format(image.pixel_format) || image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
+          image.sample_representation != SampleRepresentation::unorm || settings.tone_map_to_sdr_pixels) &&
+          !pixels_match(image, request)) {
+        auto converted = convert_image_pixels(image, request, stop_token);
+        if (!converted) return std::unexpected{converted.error()};
+        auto normalized = settings; normalized.tone_map_to_sdr_pixels = false;
+        return encode(*converted, normalized, stop_token);
+      }
       if (stop_token.stop_requested()) {
         return std::unexpected{"任务已取消。"};
       }
-      auto plane = webp_detail::rgba_plane(image);
+      if (is_yuv_format(image.pixel_format)) {
+        if (auto valid = validate_image_pixels(image); !valid) return std::unexpected{valid.error()};
+      }
+      auto plane = is_yuv_format(image.pixel_format)
+          ? std::expected<const ImagePlane*, std::string>{&image.planes.front()} : webp_detail::rgba_plane(image);
       if (!plane) {
         return std::unexpected{plane.error()};
       }
@@ -630,7 +690,7 @@ class WebPImageEncoder final : public ImageEncoder {
       if (!picture.initialized) {
         return std::unexpected{"WebP picture 初始化失败。"};
       }
-      picture.picture.use_argb = 1;
+      picture.picture.use_argb = is_yuv_format(image.pixel_format) ? 0 : 1;
       picture.picture.width = width;
       picture.picture.height = height;
       webp_detail::WebPVectorWriter writer{.stop_token = &stop_token};
@@ -641,7 +701,18 @@ class WebPImageEncoder final : public ImageEncoder {
       if (stop_token.stop_requested()) {
         return std::unexpected{"任务已取消。"};
       }
-      if (settings.applied_alpha == "kept") {
+      if (is_yuv_format(image.pixel_format)) {
+        picture.picture.colorspace = image.alpha_mode == AlphaMode::none ? WEBP_YUV420 : WEBP_YUV420A;
+        picture.picture.y = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[0].bytes.data()));
+        picture.picture.u = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[1].bytes.data()));
+        picture.picture.v = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[2].bytes.data()));
+        picture.picture.y_stride = static_cast<int>(image.planes[0].stride);
+        picture.picture.uv_stride = static_cast<int>(image.planes[1].stride);
+        if (image.alpha_mode != AlphaMode::none) {
+          picture.picture.a = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[3].bytes.data()));
+          picture.picture.a_stride = static_cast<int>(image.planes[3].stride);
+        }
+      } else if (settings.applied_alpha == "kept") {
         if (WebPPictureImportRGBA(&picture.picture, rgba, stride) == 0) {
           return std::unexpected{"WebP picture 导入 RGBA 失败。"};
         }

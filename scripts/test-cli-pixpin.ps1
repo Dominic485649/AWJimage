@@ -1,5 +1,5 @@
 param(
-    [string]$SourceDir = 'D:\图片\pixpin',
+    [Parameter(Mandatory)] [string]$SourceDir,
     [string]$BuildDir = 'build\x64\Release',
     [string]$Configuration = 'Release',
     [int]$SampleCount = 50
@@ -9,7 +9,7 @@ $ErrorActionPreference = 'Stop'
 $repo = Resolve-Path (Join-Path $PSScriptRoot '..')
 $cli = Join-Path $repo 'bin\x64\Release\AWJ.com'
 $runId = Get-Date -Format 'yyyyMMdd-HHmmss'
-$workRoot = Join-Path $repo ".claude\cli-pixpin-test\$runId"
+$workRoot = Join-Path $repo "build\cli-pixpin-test\$runId"
 $sampleDir = Join-Path $workRoot 'input'
 $outRoot = Join-Path $workRoot 'output'
 

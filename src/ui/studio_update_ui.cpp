@@ -26,8 +26,7 @@ namespace awj::studio {
 UpdatePersistentState capture_update_state(const UiState& state) {
   return {.channel = state.update_channel,
           .show_changelog = state.show_update_changelog,
-          .hide_changelog_after_exit = state.hide_update_changelog_after_exit,
-          .show_changelog_after_update = state.show_update_changelog_after_update,
+          .only_after_update = state.only_show_changelog_after_update,
           .last_changelog_exit_version = state.last_changelog_exit_version,
           .last_successful_check = state.last_successful_update_check_at,
           .last_verified_v2_sequence = state.last_verified_manifest_v2_sequence,
@@ -46,8 +45,7 @@ UpdatePersistentState capture_update_state(const UiState& state) {
 void restore_update_state(UiState& state, UpdatePersistentState value) {
   state.update_channel = std::move(value.channel);
   state.show_update_changelog = value.show_changelog;
-  state.hide_update_changelog_after_exit = value.hide_changelog_after_exit;
-  state.show_update_changelog_after_update = value.show_changelog_after_update;
+  state.only_show_changelog_after_update = value.only_after_update;
   state.last_changelog_exit_version = std::move(value.last_changelog_exit_version);
   state.last_successful_update_check_at = value.last_successful_check;
   state.last_verified_manifest_v2_sequence = value.last_verified_v2_sequence;
@@ -101,17 +99,16 @@ bool changelog_first_start_for_current_version(const UiState& state) {
 }
 
 bool changelog_visible_for_current_session(const UiState& state) {
-  const bool first_start = changelog_first_start_for_current_version(state);
-  if (!state.show_update_changelog) {
-    // 总开关关闭时，升级后的首次启动仍临时显示一次，退出后即恢复隐藏。
-    return first_start;
-  }
-  return !state.hide_update_changelog_after_exit || first_start;
+  return state.changelog_opened_manually ||
+         (state.show_update_changelog &&
+          (!state.only_show_changelog_after_update ||
+           changelog_first_start_for_current_version(state)));
 }
 
 bool changelog_should_open_on_start(const UiState& state) {
-  return changelog_first_start_for_current_version(state) &&
-         (!state.show_update_changelog || state.show_update_changelog_after_update);
+  return state.show_update_changelog &&
+         (!state.only_show_changelog_after_update ||
+          changelog_first_start_for_current_version(state));
 }
 
 void sync_update_ui(AwjStudio& app, const UiState& state) {
@@ -121,10 +118,8 @@ void sync_update_ui(AwjStudio& app, const UiState& state) {
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
   app.set_show_update_changelog_enabled(state.show_update_changelog);
   app.set_show_update_changelog(changelog_visible_for_current_session(state));
-  app.set_hide_update_changelog_after_exit(
-      state.hide_update_changelog_after_exit);
-  app.set_show_update_changelog_after_update(
-      state.show_update_changelog_after_update);
+  app.set_only_show_changelog_after_update(
+      state.only_show_changelog_after_update);
   app.set_update_available(available);
   app.set_update_version(to_shared(available ? state.pending_update_version : ""));
   app.set_update_published_at(

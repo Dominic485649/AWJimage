@@ -152,8 +152,8 @@ struct LinuxUiState {
   bool update_check_active{};
   std::string update_channel{"stable"};
   bool show_update_changelog{true};
-  bool hide_update_changelog_after_exit{true};
-  bool show_update_changelog_after_update{true};
+  bool changelog_opened_manually{};
+  bool only_show_changelog_after_update{true};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_update_check_at{};
   std::int64_t last_verified_manifest_v2_sequence{};
@@ -369,8 +369,7 @@ std::string shared_to_string(const slint::SharedString& value) {
 struct LinuxUpdatePersistentState {
   std::string channel{};
   bool show_changelog{};
-  bool hide_changelog_after_exit{};
-  bool show_changelog_after_update{};
+  bool only_after_update{};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_check{};
   std::int64_t last_verified_v2_sequence{};
@@ -390,8 +389,7 @@ LinuxUpdatePersistentState capture_linux_update_state(
     const LinuxUiState& state) {
   return {.channel = state.update_channel,
           .show_changelog = state.show_update_changelog,
-          .hide_changelog_after_exit = state.hide_update_changelog_after_exit,
-          .show_changelog_after_update = state.show_update_changelog_after_update,
+          .only_after_update = state.only_show_changelog_after_update,
           .last_changelog_exit_version = state.last_changelog_exit_version,
           .last_successful_check = state.last_successful_update_check_at,
           .last_verified_v2_sequence = state.last_verified_manifest_v2_sequence,
@@ -411,8 +409,7 @@ void restore_linux_update_state(LinuxUiState& state,
                                 LinuxUpdatePersistentState value) {
   state.update_channel = std::move(value.channel);
   state.show_update_changelog = value.show_changelog;
-  state.hide_update_changelog_after_exit = value.hide_changelog_after_exit;
-  state.show_update_changelog_after_update = value.show_changelog_after_update;
+  state.only_show_changelog_after_update = value.only_after_update;
   state.last_changelog_exit_version = std::move(value.last_changelog_exit_version);
   state.last_successful_update_check_at = value.last_successful_check;
   state.last_verified_manifest_v2_sequence = value.last_verified_v2_sequence;
@@ -454,17 +451,16 @@ bool linux_changelog_first_start_for_current_version(const LinuxUiState& state) 
 }
 
 bool linux_changelog_visible_for_current_session(const LinuxUiState& state) {
-  const bool first_start = linux_changelog_first_start_for_current_version(state);
-  if (!state.show_update_changelog) {
-    // 总开关关闭时，升级后的首次启动仍临时显示一次；该版本退出后隐藏。
-    return first_start;
-  }
-  return !state.hide_update_changelog_after_exit || first_start;
+  return state.changelog_opened_manually ||
+         (state.show_update_changelog &&
+          (!state.only_show_changelog_after_update ||
+           linux_changelog_first_start_for_current_version(state)));
 }
 
 bool linux_changelog_should_open_on_start(const LinuxUiState& state) {
-  return linux_changelog_first_start_for_current_version(state) &&
-         (!state.show_update_changelog || state.show_update_changelog_after_update);
+  return state.show_update_changelog &&
+         (!state.only_show_changelog_after_update ||
+          linux_changelog_first_start_for_current_version(state));
 }
 
 bool linux_pending_update_is_newer(const LinuxUiState& state) {
@@ -485,10 +481,8 @@ void sync_linux_update_ui(AwjStudio& app, const LinuxUiState& state) {
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
   app.set_show_update_changelog_enabled(state.show_update_changelog);
   app.set_show_update_changelog(linux_changelog_visible_for_current_session(state));
-  app.set_hide_update_changelog_after_exit(
-      state.hide_update_changelog_after_exit);
-  app.set_show_update_changelog_after_update(
-      state.show_update_changelog_after_update);
+  app.set_only_show_changelog_after_update(
+      state.only_show_changelog_after_update);
   app.set_update_available(available);
   app.set_update_version(to_shared(available ? state.pending_update_version : ""));
   app.set_update_published_at(
@@ -753,13 +747,9 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
       it != state.config_document.end() && it->is_boolean()) {
     state.show_update_changelog = it->get<bool>();
   }
-  if (const auto it = state.config_document.find("hide_update_changelog_after_exit");
+  if (const auto it = state.config_document.find("only_show_changelog_after_update");
       it != state.config_document.end() && it->is_boolean()) {
-    state.hide_update_changelog_after_exit = it->get<bool>();
-  }
-  if (const auto it = state.config_document.find("show_update_changelog_after_update");
-      it != state.config_document.end() && it->is_boolean()) {
-    state.show_update_changelog_after_update = it->get<bool>();
+    state.only_show_changelog_after_update = it->get<bool>();
   }
   state.last_changelog_exit_version =
       linux_config_string(state.config_document, "last_changelog_exit_version");
@@ -813,10 +803,10 @@ std::expected<void, std::string> persist_linux_update_config(
   document["menu_preset_description"] = state.menu_preset_description;
   document["update_channel"] = state.update_channel;
   document["show_update_changelog"] = state.show_update_changelog;
-  document["hide_update_changelog_after_exit"] =
-      state.hide_update_changelog_after_exit;
-  document["show_update_changelog_after_update"] =
-      state.show_update_changelog_after_update;
+  document.erase("hide_update_changelog_after_exit");
+  document.erase("show_update_changelog_after_update");
+  document["only_show_changelog_after_update"] =
+      state.only_show_changelog_after_update;
   document["last_changelog_exit_version"] = state.last_changelog_exit_version;
   document["last_successful_update_check_at"] =
       state.last_successful_update_check_at;
@@ -2306,7 +2296,7 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
 
 std::expected<void, std::string> validate_linux_menu_params(
     const std::array<LinuxMenuParams, 5>& menu_params) {
-  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   for (int format_index = 0; format_index < 5; ++format_index) {
     const auto& params = menu_params[static_cast<std::size_t>(format_index)];
     std::vector<std::wstring> args{L"--format", format_arg(format_index),
@@ -2387,7 +2377,7 @@ std::expected<void, std::string> write_nautilus_scripts(
   std::error_code ec;
   fs::create_directories(scripts_dir, ec);
   if (ec) return std::unexpected{std::format("创建 Nautilus 脚本目录失败: {}", ec.message())};
-  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
     const auto script_path = scripts_dir / std::format("AWJ 转换为 {}", labels[static_cast<std::size_t>(i)]);
     std::ofstream out{script_path, std::ios::binary | std::ios::trunc};
@@ -2419,7 +2409,7 @@ std::expected<void, std::string> remove_nautilus_script() {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) return {};
   std::error_code ec;
-  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   const auto scripts_dir = fs::path{home} / ".local" / "share" / "nautilus" / "scripts";
   for (const auto label : labels) fs::remove(scripts_dir / std::format("AWJ 转换为 {}", label), ec);
   fs::remove(scripts_dir / "AWJ 转换为 AVIF.png", ec);
@@ -2808,13 +2798,17 @@ int awj::studio::run_studio_ui() {
     app->on_show_update_changelog_requested([weak, state](bool visible) {
       if (auto app = weak.lock()) {
         const auto before = capture_linux_update_state(*state);
+        const bool previous_manual = state->changelog_opened_manually;
         state->show_update_changelog = visible;
+        state->changelog_opened_manually = visible;
+        if (visible) (*app)->set_selected_page(4);
         if (!linux_changelog_visible_for_current_session(*state) &&
             (*app)->get_selected_page() == 4) {
           (*app)->set_selected_page(2);
         }
         if (auto saved = persist_linux_update_config(**app, *state); !saved) {
           restore_linux_update_state(*state, before);
+          state->changelog_opened_manually = previous_manual;
           state->update_status_zh =
               std::format("更新日志设置保存失败：{}", saved.error());
           state->update_status_en =
@@ -2823,11 +2817,11 @@ int awj::studio::run_studio_ui() {
         sync_linux_update_ui(**app, *state);
       }
     });
-    app->on_hide_update_changelog_after_exit_requested(
+    app->on_only_show_changelog_after_update_requested(
         [weak, state](bool enabled) {
           if (auto app = weak.lock()) {
             const auto before = capture_linux_update_state(*state);
-            state->hide_update_changelog_after_exit = enabled;
+            state->only_show_changelog_after_update = enabled;
             if (auto saved = persist_linux_update_config(**app, *state); !saved) {
               restore_linux_update_state(*state, before);
               state->update_status_zh =
@@ -2838,33 +2832,24 @@ int awj::studio::run_studio_ui() {
             sync_linux_update_ui(**app, *state);
           }
         });
-    app->on_show_update_changelog_after_update_requested(
-        [weak, state](bool enabled) {
-          if (auto app = weak.lock()) {
-            const auto before = capture_linux_update_state(*state);
-            state->show_update_changelog_after_update = enabled;
-            if (auto saved = persist_linux_update_config(**app, *state); !saved) {
-              restore_linux_update_state(*state, before);
-              state->update_status_zh =
-                  std::format("更新日志设置保存失败：{}", saved.error());
-              state->update_status_en =
-                  "The changelog setting could not be saved.";
-            }
-            sync_linux_update_ui(**app, *state);
-          }
-        });
+    app->on_open_url([weak, state](slint::SharedString url) {
+      if (auto app = weak.lock()) {
+        const auto text = shared_to_string(url);
+        if (text != "https://github.com/Dominic485649/AWJimage" &&
+            text != "https://qm.qq.com/q/Wt4Ssh1igi") return;
+        if (auto opened = open_linux_url(text); !opened) {
+          state->update_status_zh = "无法打开链接。";
+          state->update_status_en = "Could not open link.";
+          sync_linux_update_ui(**app, *state);
+        }
+      }
+    });
     app->on_version_clicked([weak, state] {
       if (auto app = weak.lock()) {
         if (!linux_pending_update_is_newer(*state)) {
-          const auto url = std::format(
-              "https://github.com/Dominic485649/AWJimage/releases/tag/{}",
-              AWJ_BUILD_VERSION);
-          if (auto opened = open_linux_url(url); !opened) {
-            state->update_status_zh =
-                std::format("无法打开更新页面：{}", opened.error());
-            state->update_status_en = "The release page could not be opened.";
-            sync_linux_update_ui(**app, *state);
-          }
+          state->changelog_opened_manually = true;
+          sync_linux_update_ui(**app, *state);
+          (*app)->set_selected_page(4);
           return;
         }
         if ((*app)->get_running()) {

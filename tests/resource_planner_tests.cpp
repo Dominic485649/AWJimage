@@ -1,3 +1,11 @@
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sched.h>
+#endif
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -6,6 +14,8 @@
 #include <future>
 #include <chrono>
 #include <limits>
+#include <bit>
+#include <vector>
 #include "../src/core/work_memory_admission.h"
 
 import awj.codec;
@@ -25,6 +35,54 @@ int fail(std::string_view message) {
 }  // namespace
 
 int main() {
+  if (awj::default_max_jobs() != awj::automatic_thread_budget(awj::available_processor_count()))
+    return fail("Automatic threads ignored available CPU affinity.");
+#ifdef _WIN32
+  DWORD_PTR original{}, system{};
+  if (!GetProcessAffinityMask(GetCurrentProcess(), &original, &system) || !original)
+    return fail("Cannot inspect test CPU affinity.");
+  const auto one_cpu = original & (~original + 1);
+  if (!awj::apply_cpu_affinity({static_cast<unsigned>(std::countr_zero(one_cpu))}))
+    return fail("Cannot restrict test CPU affinity through CLI API.");
+  DWORD_PTR applied{}, applied_system{};
+  if (!GetProcessAffinityMask(GetCurrentProcess(), &applied, &applied_system) || applied != one_cpu ||
+      awj::apply_cpu_affinity({awj::cpu_affinity_capacity()})) return fail("Affinity API mask/bound validation failed.");
+  const auto outside = original & ~one_cpu;
+  if (outside && awj::apply_cpu_affinity({static_cast<unsigned>(std::countr_zero(outside))}))
+    return fail("Affinity API widened inherited limits.");
+  const bool affinity_ok = awj::available_processor_count() == 1 && awj::default_max_jobs() == 1;
+  if (!std::async(std::launch::async, [one_cpu] {
+        DWORD_PTR mask{}, system_mask{};
+        return GetProcessAffinityMask(GetCurrentProcess(), &mask, &system_mask) && mask == one_cpu;
+      }).get()) return fail("New workers lost CPU affinity.");
+  if (!SetProcessAffinityMask(GetCurrentProcess(), original) || !affinity_ok)
+    return fail("Automatic threads did not respect a one-CPU affinity mask.");
+#else
+  cpu_set_t original{};
+  if (sched_getaffinity(0, sizeof(original), &original)) return fail("Cannot inspect test CPU affinity.");
+  cpu_set_t one_cpu{}; CPU_ZERO(&one_cpu);
+  for (int cpu = 0; cpu < CPU_SETSIZE; ++cpu) if (CPU_ISSET(cpu, &original)) { CPU_SET(cpu, &one_cpu); break; }
+  unsigned selected{};
+  for (unsigned cpu = 0; cpu < CPU_SETSIZE; ++cpu) if (CPU_ISSET(cpu, &one_cpu)) { selected = cpu; break; }
+  if (!awj::apply_cpu_affinity({selected})) return fail("Cannot restrict test CPU affinity through CLI API.");
+  cpu_set_t applied{};
+  if (sched_getaffinity(0, sizeof(applied), &applied) || !CPU_EQUAL(&applied, &one_cpu) ||
+      awj::apply_cpu_affinity({awj::cpu_affinity_capacity()})) return fail("Affinity API mask/bound validation failed.");
+  for (unsigned cpu = 0; cpu < CPU_SETSIZE; ++cpu) if (CPU_ISSET(cpu, &original) && cpu != selected) {
+    if (awj::apply_cpu_affinity({cpu})) return fail("Affinity API widened inherited limits.");
+    break;
+  }
+  const bool affinity_ok = awj::available_processor_count() == 1 && awj::default_max_jobs() == 1;
+  if (!std::async(std::launch::async, [one_cpu] {
+        cpu_set_t mask{};
+        return sched_getaffinity(0, sizeof(mask), &mask) == 0 && CPU_EQUAL(&mask, &one_cpu);
+      }).get()) return fail("New workers lost CPU affinity.");
+  if (sched_setaffinity(0, sizeof(original), &original) || !affinity_ok)
+    return fail("Automatic threads did not respect a one-CPU affinity mask.");
+#endif
+  if (awj::classify_large_image(awj::make_image_dimensions(8192, 8192), true).klass != awj::LargeImageClass::ordinary ||
+      awj::classify_large_image(awj::make_image_dimensions(65537, 1), true).klass != awj::LargeImageClass::large_mode_required)
+    return fail("Ordinary large images were deferred or an encoder limit lost Grid routing.");
   struct Group { std::uint64_t estimated_bytes; };
   {
     const std::array groups{Group{8}, Group{7}, Group{2}};
@@ -69,6 +127,18 @@ int main() {
       awj::make_image_dimensions(4096, 4096));
   if (aom_working_set < gib + gib / 2)
     return fail("AOM estimate is below measured encoder memory plus headroom");
+  if (awj::avif_encode_working_set_bytes_for_dimensions(
+          awj::make_image_dimensions(4096, 4096), 16 * 1024 * 1024) !=
+      aom_working_set + 32 * 1024 * 1024 ||
+      awj::avif_encode_working_set_bytes_for_dimensions(
+          awj::make_image_dimensions(4096, 4096), std::numeric_limits<std::uint64_t>::max()) !=
+      std::numeric_limits<std::uint64_t>::max())
+    return fail("AVIF estimate omitted retained compressed input or overflowed");
+  const auto opaque = awj::avif_encode_working_set_bytes_for_dimensions(awj::make_image_dimensions(4096, 4096), 0, true);
+  if (opaque >= aom_working_set || opaque < gib ||
+      awj::avif_encode_working_set_bytes_for_dimensions(awj::make_image_dimensions(1, 65)) !=
+      awj::avif_encode_working_set_bytes_for_dimensions(awj::make_image_dimensions(64, 128)))
+    return fail("Known opaque memory profile or codec block padding is invalid.");
   const auto measured_budget = awj::plan_resources({.automatic_thread_budget = 8,
       .file_count = 4, .memory_limit_bytes = 3 * gib, .estimated_bytes_per_file = aom_working_set});
   if (measured_budget.file_parallelism != 1 || measured_budget.encoder_threads_per_file != 8)

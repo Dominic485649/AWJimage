@@ -16,8 +16,7 @@ namespace awj::studio {
 struct UpdatePersistentState {
   std::string channel{};
   bool show_changelog{};
-  bool hide_changelog_after_exit{};
-  bool show_changelog_after_update{};
+  bool only_after_update{};
   std::string last_changelog_exit_version{};
   std::int64_t last_successful_check{};
   std::int64_t last_verified_v2_sequence{};

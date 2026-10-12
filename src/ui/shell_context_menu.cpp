@@ -114,7 +114,7 @@ constexpr CommandSpec kCommands[] = {
     {.canonical_verb = L"AWJimage.Convert.30.avif", .label = L"转换为 AVIF", .format = L"avif", .params_index = 0},
     {.canonical_verb = L"AWJimage.Convert.40.avif-png", .label = L"转换为 AVIF.png", .format = L"avif", .params_index = 0, .append_png_suffix = true},
     {.canonical_verb = L"AWJimage.Convert.50.jxl", .label = L"转换为 JXL", .format = L"jxl", .params_index = 2},
-    {.canonical_verb = L"AWJimage.Convert.60.jpgli", .label = L"转换为 JPGLI", .format = L"jpgli", .params_index = 3},
+    {.canonical_verb = L"AWJimage.Convert.60.jpgli", .label = L"转换为 JPG", .format = L"jpgli", .params_index = 3},
 };
 
 bool missing_registry_status(LSTATUS status) noexcept {

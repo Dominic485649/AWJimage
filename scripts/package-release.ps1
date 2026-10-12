@@ -7,8 +7,6 @@ param(
     [string]$Version = "",
     [ValidateSet("stable", "prerelease")] [string]$Channel = "prerelease",
     [UInt64]$ArchiveManifestSequence = 0,
-    [UInt64]$LegacyManifestSequence = 0,
-    [switch]$BridgeRelease,
     [string]$PublishedAtUtc = "",
     [string]$UpdateSigningSeedFile = $env:AWJ_UPDATE_SIGNING_SEED_FILE,
     [string]$UpdatePublicKeyHex = $env:AWJ_UPDATE_PUBLIC_KEY_HEX,
@@ -315,9 +313,6 @@ if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) { throw "未找到 
 if (-not $SkipManifests) {
     if (-not $UpdateKeyringPath) {
         $UpdateKeyringPath = Join-Path $Repo 'update-keyring.json'
-        if (-not (Test-Path -LiteralPath $UpdateKeyringPath -PathType Leaf)) {
-            $UpdateKeyringPath = Join-Path $Repo 'update-keyring-v1.json'
-        }
     }
     if (-not $SignerPath) { $SignerPath = Join-Path (Split-Path -Parent $WindowsExePath) "awj_update_manifest_sign.exe" }
     $SignerPath = Assert-File $SignerPath "manifest 签名工具"
@@ -336,11 +331,8 @@ if (-not $SkipManifests) {
     Assert-ManifestSigningKey
 
     $CanonicalKeyringPath = Join-Path $Repo "update-keyring.json"
-    $LegacyKeyringPath = Join-Path $Repo "update-keyring-v1.json"
     Copy-ExactAlias $UpdateKeyringPath $CanonicalKeyringPath
     Copy-ExactAlias "$UpdateKeyringPath.sig" "$CanonicalKeyringPath.sig"
-    Copy-ExactAlias $CanonicalKeyringPath $LegacyKeyringPath
-    Copy-ExactAlias "$CanonicalKeyringPath.sig" "$LegacyKeyringPath.sig"
 }
 
 $Stage = Join-Path $Repo "build\release\$Version"
@@ -372,20 +364,14 @@ $GuiSmoke = Start-Process -FilePath (Join-Path $WinVerify "AWJ.exe") -ArgumentLi
 if ($GuiSmoke.ExitCode -ne 0) { throw "Windows AWJ.exe --help smoke 失败。" }
 & (Join-Path $WinVerify "AWJ.com") --help | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Windows AWJ.com --help smoke 失败。" }
-if ($BridgeRelease) {
-    Copy-Item -LiteralPath $WindowsExePath, $WindowsComPath -Destination $Assets -Force
-}
 
 if (-not $SkipManifests) {
     $ReleaseBase = "https://github.com/Dominic485649/AWJimage/releases"
     $Changelog = [ordered]@{ 'zh-CN' = Get-ChangelogBody (Join-Path $Repo "CHANGELOG.md"); en = Get-ChangelogBody (Join-Path $Repo "CHANGELOG.en.md") }
-    if (-not $BridgeRelease) {
-        if ($ArchiveManifestSequence -eq 0) { throw "1.0.4 归档更新需要 -ArchiveManifestSequence。" }
+        if ($ArchiveManifestSequence -eq 0) { throw "归档更新需要 -ArchiveManifestSequence。" }
         $ManifestPath = Join-Path $Repo "update-archive.json"
         $SignaturePath = "$ManifestPath.sig"
-        $LegacyManifestPath = Join-Path $Repo "update-manifest-v2.json"
-        $LegacySignaturePath = "$LegacyManifestPath.sig"
-        $ExistingManifestPath = if (Test-Path -LiteralPath $ManifestPath) { $ManifestPath } else { $LegacyManifestPath }
+        $ExistingManifestPath = $ManifestPath
         $ExistingSignaturePath = "$ExistingManifestPath.sig"
         $Old = if (Test-Path -LiteralPath $ExistingManifestPath) { Get-Content -LiteralPath $ExistingManifestPath -Raw | ConvertFrom-Json -AsHashtable } else { $null }
         if ($Old) {
@@ -397,7 +383,7 @@ if (-not $SkipManifests) {
         $LinuxUrl = "$ReleaseBase/download/$Version/AWJ_Linux.7z"
         $Entry = [ordered]@{
             version = $Version; channel = $Channel; published_at = $PublishedAtUtc
-            release_url = "$ReleaseBase/tag/$Version"; minimum_updater_version = "1.0.4"; revoked = $false
+            release_url = "$ReleaseBase/tag/$Version"; minimum_updater_version = "1.0.13"; revoked = $false
             assets = [ordered]@{
                 windows_x64_archive = [ordered]@{ archive = Get-Asset $WindowsArchive $WinUrl; members = Get-ArchiveMembers $WinPackage $WinUrl }
                 linux_x64_archive = [ordered]@{ archive = Get-Asset $LinuxArchive $LinuxUrl; members = Get-ArchiveMembers $LinuxPackage $LinuxUrl }
@@ -411,36 +397,7 @@ if (-not $SkipManifests) {
         if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v2 manifest entries 必须序列化为数组。" }
         Write-Utf8NoBom $ManifestPath $Json
         Sign-Manifest $ManifestPath $SignaturePath
-        Copy-ExactAlias $ManifestPath $LegacyManifestPath
-        Copy-ExactAlias $SignaturePath $LegacySignaturePath
-    }
-    if ($BridgeRelease) {
-        if ($LegacyManifestSequence -eq 0) { throw "1.0.5 桥接更新需要 -LegacyManifestSequence。" }
-        $LegacyPath = Join-Path $Repo "update-manifest.json"
-        $LegacySignature = "$LegacyPath.sig"
-        & $SignerPath --verify $LegacyPath $ExistingManifestPublicKeyHex $LegacySignature
-        if ($LASTEXITCODE -ne 0) { throw "现有 v1 manifest 签名无效。" }
-        $Old = Get-Content -LiteralPath $LegacyPath -Raw | ConvertFrom-Json -AsHashtable
-        if ($Old.schema -ne 1 -or $LegacyManifestSequence -le [UInt64]$Old.sequence) { throw "v1 sequence 必须递增。" }
-        $Entry = [ordered]@{
-            version = $Version; channel = $Channel; published_at = $PublishedAtUtc
-            release_url = "$ReleaseBase/tag/$Version"; minimum_updater_version = "1.0.1"; revoked = $false
-            assets = [ordered]@{
-                windows_x64_exe = Get-Asset (Join-Path $Assets "AWJ.exe") "$ReleaseBase/download/$Version/AWJ.exe"
-                windows_x64_com = Get-Asset (Join-Path $Assets "AWJ.com") "$ReleaseBase/download/$Version/AWJ.com"
-                linux_x64 = Get-Asset $LinuxArchive "$ReleaseBase/download/$Version/AWJ_Linux.7z"
-            }
-            changelog = $Changelog
-        }
-        [object[]]$Entries = @($Old.entries)
-        $Entries += ,$Entry
-        if (@($Entries | Where-Object { $_.version -eq $Version }).Count -ne 1) { throw "v1 manifest 版本重复。" }
-        $SortedEntries = [object[]]@(Get-SortedEntries $Entries)
-        $Json = ([ordered]@{ schema = 1; sequence = $LegacyManifestSequence; key_id = $ManifestKeyId; issued_at = $PublishedAtUtc; expires_at = $ManifestExpiresAtUtc; entries = $SortedEntries } | ConvertTo-Json -Depth 20).Replace("`r`n", "`n") + "`n"
-        if (-not ((ConvertFrom-Json -InputObject $Json).entries -is [System.Array])) { throw "v1 manifest entries 必须序列化为数组。" }
-        Write-Utf8NoBom $LegacyPath $Json
-        Sign-Manifest $LegacyPath $LegacySignature
-    }
+
 }
 
 Get-ChildItem -LiteralPath $Assets -File | Select-Object Name, Length, @{n='SHA256'; e={(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}} | Format-Table -AutoSize

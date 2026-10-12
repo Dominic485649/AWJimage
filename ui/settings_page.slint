@@ -21,16 +21,14 @@ export component SettingsPage inherits ScrollView {
     in property <color> combo-selected-bg;
     in property <length> control-button-height;
     in property <length> window-height;
-    in-out property <bool> hide-update-changelog-after-exit;
-    callback hide-update-changelog-after-exit-requested(bool);
+    in-out property <bool> only-show-changelog-after-update;
+    callback only-show-changelog-after-update-requested(bool);
     in-out property <int> language-index;
     callback language-selection-requested(int);
     in property <length> page-gap;
     in property <color> panel-bg;
     in property <color> panel-border;
     in-out property <bool> running;
-    in-out property <bool> show-update-changelog-after-update;
-    callback show-update-changelog-after-update-requested(bool);
     in-out property <bool> show-update-changelog-enabled;
     callback show-update-changelog-requested(bool);
     in property <color> text-body;
@@ -45,6 +43,7 @@ export component SettingsPage inherits ScrollView {
     in-out property <int> update-channel-index;
     callback update-channel-selection-requested(int);
     callback check-update-requested();
+    callback open-url(string);
     in-out property <bool> update-checking;
     in-out property <string> update-last-successful-check;
     in-out property <string> update-status;
@@ -56,22 +55,26 @@ export component SettingsPage inherits ScrollView {
     horizontal-stretch: 1;
     vertical-stretch: 1;
     viewport-width: root.width;
-    VerticalLayout {
+    settings-content := VerticalLayout {
+        alignment: start;
         spacing: root.page-gap;
 
         Rectangle {
+            height: self.preferred-height;
+            vertical-stretch: 0;
             border-radius: 8px;
             background: root.panel-bg;
             border-color: root.panel-border;
             border-width: 1px;
             animate background, border-color { duration: 180ms; easing: ease-out; }
             VerticalLayout {
+                alignment: start;
                 padding: 24px;
                 spacing: root.page-gap;
                 Text { text: @tr("外观"); color: root.text-strong; font-size: 18px; font-weight: 800; }
                 HorizontalLayout {
                     spacing: root.page-gap;
-                    Text { text: @tr("主题"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    Text { text: @tr("主题"); width: root.language-index == 1 ? 110px : 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                     SoftComboBox {
                         accessible-name: @tr("主题");
                                 viewport-height: root.window-height;
@@ -98,7 +101,7 @@ export component SettingsPage inherits ScrollView {
                 }
                 HorizontalLayout {
                     spacing: root.page-gap;
-                    Text { text: @tr("语言"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    Text { text: @tr("语言"); width: root.language-index == 1 ? 110px : 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                     SoftComboBox {
                         accessible-name: @tr("语言");
                         viewport-height: root.window-height;
@@ -127,7 +130,7 @@ export component SettingsPage inherits ScrollView {
                 }
                 HorizontalLayout {
                     spacing: root.page-gap;
-                    Text { text: @tr("字体"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    Text { text: @tr("字体"); width: root.language-index == 1 ? 110px : 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                     SoftComboBox {
                         accessible-name: @tr("字体");
                         viewport-height: root.window-height;
@@ -156,18 +159,21 @@ export component SettingsPage inherits ScrollView {
         }
 
         Rectangle {
+            height: self.preferred-height;
+            vertical-stretch: 0;
             border-radius: 8px;
             background: root.panel-bg;
             border-color: root.panel-border;
             border-width: 1px;
             animate background, border-color { duration: 180ms; easing: ease-out; }
             VerticalLayout {
+                alignment: start;
                 padding: 24px;
                 spacing: root.page-gap;
                 Text { text: @tr("自动更新"); color: root.text-strong; font-size: 18px; font-weight: 800; }
                 HorizontalLayout {
                     spacing: root.page-gap;
-                    Text { text: @tr("更新渠道"); width: 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                    Text { text: @tr("更新渠道"); width: root.language-index == 1 ? 110px : 88px; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                     SoftComboBox {
                         accessible-name: @tr("更新渠道");
                         viewport-height: root.window-height;
@@ -202,38 +208,33 @@ export component SettingsPage inherits ScrollView {
                         toggled => { root.show-update-changelog-requested(self.checked); }
                     }
                     CheckBox {
-                        text: @tr("退出后隐藏更新日志");
-                        checked <=> root.hide-update-changelog-after-exit;
-                        toggled => { root.hide-update-changelog-after-exit-requested(self.checked); }
+                        text: @tr("仅在更新后显示更新日志");
+                        checked <=> root.only-show-changelog-after-update;
+                        toggled => { root.only-show-changelog-after-update-requested(self.checked); }
                     }
-                    CheckBox {
-                        text: @tr("更新后显示更新日志");
-                        checked <=> root.show-update-changelog-after-update;
-                        toggled => { root.show-update-changelog-after-update-requested(self.checked); }
-                    }
-                    if root.width >= 1040px: SoftButton {
+                    SoftButton {
                         text: root.update-checking ? @tr("正在检查…") : @tr("检查更新");
                         accessible-name: @tr("检查更新");
-                        width: root.language-index == 1 ? 140px : 108px;
+                        width: root.language-index == 1 ? 144px : 96px;
                         height: 32px;
                         dark-mode: root.dark-mode;
                         enabled: !root.update-checking;
                         clicked => { root.check-update-requested(); }
                     }
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                }
-                HorizontalLayout {
-                    spacing: root.page-gap;
-                    if root.width < 1040px: SoftButton {
-                        text: root.update-checking ? @tr("正在检查…") : @tr("检查更新");
-                        accessible-name: @tr("检查更新");
-                        width: root.language-index == 1 ? 140px : 108px;
-                        height: 32px;
-                        dark-mode: root.dark-mode;
-                        enabled: !root.update-checking;
-                        clicked => { root.check-update-requested(); }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 0px;
+                        Text {
+                            text: root.update-status;
+                            color: root.text-muted;
+                            font-size: 13px;
+                            width: parent.width;
+                            height: parent.height;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
+                        TouchArea { Tooltip { text: @markdown("\{root.update-status}"); } }
                     }
-                    Text { text: root.update-status; color: root.text-muted; font-size: 13px; vertical-alignment: center; wrap: word-wrap; horizontal-stretch: 1; }
                 }
                 Text {
                     text: @tr("上次成功检查：") + root.update-last-successful-check;
@@ -245,12 +246,15 @@ export component SettingsPage inherits ScrollView {
         }
 
         Rectangle {
+            height: self.preferred-height;
+            vertical-stretch: 0;
             border-radius: 8px;
             background: root.panel-bg;
             border-color: root.panel-border;
             border-width: 1px;
             animate background, border-color { duration: 180ms; easing: ease-out; }
             VerticalLayout {
+                alignment: start;
                 padding: 24px;
                 spacing: root.page-gap;
                 Text { text: @tr("高级与实验功能"); color: root.text-strong; font-size: 18px; font-weight: 800; }
@@ -303,16 +307,82 @@ export component SettingsPage inherits ScrollView {
         }
 
         Rectangle {
+            height: self.preferred-height;
+            vertical-stretch: 0;
             border-radius: 8px;
             background: root.panel-bg;
             border-color: root.panel-border;
             border-width: 1px;
             animate background, border-color { duration: 180ms; easing: ease-out; }
             VerticalLayout {
+                alignment: start;
                 padding: 24px;
                 spacing: root.page-gap;
-                Text { text: @tr("关于后端"); color: root.text-strong; font-size: 18px; font-weight: 800; }
-                Text { text: @tr("Studio 输出支持 libavif / AOM、WebP、JXL、JPGLI 与 PNG。"); color: root.text-body; font-size: 14px; wrap: word-wrap; min-width: 0px; width: 100%; }
+                Text { text: @tr("关于"); color: root.text-strong; font-size: 18px; font-weight: 800; }
+                HorizontalLayout {
+                    spacing: 0px;
+                    github-label := Text {
+                        text: @tr("AWJ的GitHub仓库地址：");
+                        color: root.text-strong;
+                        font-size: 14px;
+                        horizontal-stretch: 0;
+                    }
+                github-link := Text {
+                    text: "https://github.com/Dominic485649/AWJimage";
+                    color: root.dark-mode ? #60a5fa : #0067c0;
+                    font-size: 14px; wrap: word-wrap;
+                    min-width: 0px; horizontal-stretch: 1;
+                    accessible-role: button;
+                    accessible-label: self.text;
+                    accessible-action-default => { root.open-url("https://github.com/Dominic485649/AWJimage"); }
+                    forward-focus: github-focus;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { github-focus.focus(); root.open-url("https://github.com/Dominic485649/AWJimage"); }
+                    }
+                    github-focus := FocusScope {
+                        key-pressed(event) => {
+                            if (event.text == "\n" || event.text == " ") {
+                                root.open-url("https://github.com/Dominic485649/AWJimage");
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+                }
+                }
+                HorizontalLayout {
+                    spacing: 0px;
+                    qq-label := Text {
+                        text: @tr("问题反馈/Q群交流：");
+                        color: root.text-strong;
+                        font-size: 14px;
+                        horizontal-stretch: 0;
+                    }
+                qq-link := Text {
+                    text: "https://qm.qq.com/q/Wt4Ssh1igi";
+                    color: root.dark-mode ? #60a5fa : #0067c0;
+                    font-size: 14px; wrap: word-wrap;
+                    min-width: 0px; horizontal-stretch: 1;
+                    accessible-role: button;
+                    accessible-label: self.text;
+                    accessible-action-default => { root.open-url("https://qm.qq.com/q/Wt4Ssh1igi"); }
+                    forward-focus: qq-focus;
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { qq-focus.focus(); root.open-url("https://qm.qq.com/q/Wt4Ssh1igi"); }
+                    }
+                    qq-focus := FocusScope {
+                        key-pressed(event) => {
+                            if (event.text == "\n" || event.text == " ") {
+                                root.open-url("https://qm.qq.com/q/Wt4Ssh1igi");
+                                return accept;
+                            }
+                            return reject;
+                        }
+                    }
+                }
+                }
             }
         }
     }

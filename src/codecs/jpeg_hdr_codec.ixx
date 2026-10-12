@@ -145,10 +145,10 @@ std::expected<NativeEncodeResult, std::string> encode_hdr_jpeg(
     base->encoded.codec_name = "jpegli-ultrahdr";
     base->diagnostics.integration_mode = "jpegli-ultrahdr-iso";
     base->diagnostics.applied_hdr_metadata = "iso21496-1-gain-map";
-    base->diagnostics.color_reason = "8-bit SDR base + JPEGli Gain Map；线性 FP16 HDR 重建";
+    base->diagnostics.color_reason = "8-bit SDR base + JPEG Gain Map；线性 FP16 HDR 重建";
     base->diagnostics.applied_color_primaries = 1;
     base->diagnostics.applied_transfer_characteristics = 13;
-    base->diagnostics.applied_matrix_coefficients = 0;
+    base->diagnostics.applied_matrix_coefficients = settings.jpegli_xyb ? 0 : 6;
     base->diagnostics.applied_icc = "essential-base-and-alternate";
     return base;
   } catch (const std::bad_alloc&) { return std::unexpected{"HDR JPEG 编码内存不足。"}; }

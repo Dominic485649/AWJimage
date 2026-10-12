@@ -828,7 +828,8 @@ function(avif_add_slint_sources target slint_file)
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/preset_editor.slint"
             "${CMAKE_CURRENT_SOURCE_DIR}/ui/shell_convert_window.slint"
             "${awj_translation_po}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo-light.png"
+            "${CMAKE_CURRENT_SOURCE_DIR}/ui/logo-dark.png"
         COMMENT "Generating ${slint_base}.h"
         VERBATIM)
 
@@ -840,39 +841,45 @@ function(avif_add_slint_sources target slint_file)
     target_include_directories(${target} PUBLIC "$<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}>")
 endfunction()
 
+add_library(awj_shared STATIC)
+avif_enable_common_options(awj_shared)
+target_compile_definitions(awj_shared PRIVATE AWJ_BUILD_VERSION="${PROJECT_VERSION}")
+target_link_libraries(awj_shared PUBLIC scn::scn nlohmann_json::nlohmann_json)
+if(WIN32)
+    target_link_libraries(awj_shared PUBLIC bcrypt)
+endif()
+target_sources(awj_shared PUBLIC
+    FILE_SET awj_shared_modules TYPE CXX_MODULES FILES
+        src/core/encoding_defaults.ixx
+        src/core/large_image_plan.ixx
+        src/app/config.ixx
+        src/app/preset.ixx
+        src/core/visual_quality.ixx
+        src/core/image.ixx
+        src/core/animation.ixx
+        src/core/resource_planner.ixx
+        src/core/codec.ixx
+        src/core/process.ixx
+        src/codecs/avif_registry.ixx
+        src/app/batch_protocol.ixx
+)
+
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
-target_compile_definitions(awj_base PRIVATE
-    AWJ_BUILD_VERSION="${PROJECT_VERSION}")
 add_dependencies(awj_base awj_visual_metric_shaders)
-target_link_libraries(awj_base PUBLIC
-    scn::scn
-    nlohmann_json::nlohmann_json
-    awj_libplacebo)
+target_link_libraries(awj_base PUBLIC awj_shared awj_libplacebo)
 if(WIN32)
-    target_link_libraries(awj_base PUBLIC bcrypt d3d11)
     target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=1 AWJ_HAS_VULKAN=0)
 else()
-    target_link_libraries(awj_base PUBLIC Vulkan::Vulkan Threads::Threads)
+    target_link_libraries(awj_base PUBLIC Vulkan::Headers Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=0 AWJ_HAS_VULKAN=1)
 endif()
 target_sources(awj_base PRIVATE "${AWJ_VISUAL_SHADER_HEADER}")
 target_include_directories(awj_base PUBLIC "$<BUILD_INTERFACE:${AWJ_VISUAL_SHADER_GENERATED_DIR}>")
-target_sources(awj_base
-    PUBLIC
-        FILE_SET awj_base_modules TYPE CXX_MODULES FILES
-            src/core/encoding_defaults.ixx
-            src/core/large_image_plan.ixx
-            src/app/config.ixx
-            src/app/preset.ixx
-            src/core/visual_quality.ixx
-            src/core/visual_metrics.ixx
-            src/core/image.ixx
-            src/core/animation.ixx
-            src/core/hdr_tonemap.ixx
-            src/core/resource_planner.ixx
-            src/core/codec.ixx
-            src/core/process.ixx)
+target_sources(awj_base PUBLIC
+    FILE_SET awj_base_modules TYPE CXX_MODULES FILES
+        src/core/visual_metrics.ixx
+        src/core/hdr_tonemap.ixx)
 
 if(WIN32)
     target_sources(awj_base
@@ -932,8 +939,8 @@ endif()
 target_sources(awj_native_codecs
     PUBLIC
         FILE_SET avif_native_codec_modules TYPE CXX_MODULES FILES
-            src/codecs/avif_registry.ixx
             src/codecs/decoder_common.ixx
+            src/core/pixel_conversion.ixx
             src/codecs/gain_map.ixx
             src/codecs/animation_decoder.ixx
             src/codecs/decoder_registry.ixx
@@ -1030,7 +1037,7 @@ if(WIN32)
 else()
     # update_linux imports awj.core for executable-path discovery.  Declare
     # the module provider here so GCC receives its CXX module mapper entry.
-    target_link_libraries(awj_update PUBLIC awj_base CURL::libcurl)
+    target_link_libraries(awj_update PUBLIC awj_shared CURL::libcurl)
 endif()
 target_sources(awj_update
     PUBLIC
@@ -1108,6 +1115,9 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_resource_planner_tests)
     target_link_libraries(awj_resource_planner_tests PRIVATE awj_base)
 
+    add_executable(awj_optional_graphics_tests tests/optional_graphics_tests.cpp)
+    avif_enable_common_options(awj_optional_graphics_tests)
+    target_link_libraries(awj_optional_graphics_tests PRIVATE awj_base)
     add_executable(awj_visual_metrics_tests tests/visual_metrics_tests.cpp)
     avif_enable_common_options(awj_visual_metrics_tests)
     target_link_libraries(awj_visual_metrics_tests PRIVATE awj_base)
@@ -1119,6 +1129,12 @@ if(BUILD_TESTING)
     add_executable(awj_png_codec_tests tests/png_codec_tests.cpp)
     avif_enable_common_options(awj_png_codec_tests)
     target_link_libraries(awj_png_codec_tests PRIVATE awj_native_codecs)
+
+    add_executable(awj_pixel_conversion_tests tests/pixel_conversion_tests.cpp)
+    avif_enable_common_options(awj_pixel_conversion_tests)
+    target_link_libraries(awj_pixel_conversion_tests PRIVATE awj_native_codecs)
+    target_compile_definitions(awj_pixel_conversion_tests PRIVATE AWJ_HEIF_TEST_DATA="${libheif_SOURCE_DIR}/tests/data")
+    add_test(NAME awj_pixel_conversion_tests COMMAND awj_pixel_conversion_tests)
 
     add_executable(awj_avif_aom_codec_tests tests/avif_aom_codec_tests.cpp)
     avif_enable_common_options(awj_avif_aom_codec_tests)
@@ -1206,6 +1222,7 @@ if(BUILD_TESTING)
         awj_config_defaults_tests
         awj_process_tests
         awj_resource_planner_tests
+        awj_optional_graphics_tests
         awj_visual_metrics_tests
         awj_webp_codec_tests
         awj_png_codec_tests
@@ -1254,6 +1271,8 @@ if(BUILD_TESTING)
     add_test(NAME process_core COMMAND awj_process_tests)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)
     add_test(NAME visual_metrics_core COMMAND awj_visual_metrics_tests)
+    add_test(NAME optional_graphics_core COMMAND awj_optional_graphics_tests)
+    set_tests_properties(optional_graphics_core PROPERTIES TIMEOUT 60)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
     add_test(NAME png_codec_core COMMAND awj_png_codec_tests)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
@@ -1282,19 +1301,19 @@ if(BUILD_TESTING)
         PASS_REGULAR_EXPRESSION "AWJimage C[+][+]23")
 
     add_test(NAME cli_unknown_argument
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--definitely-unknown-option' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('未知参数')) { exit 1 }")
 
     add_test(NAME cli_rejects_nan_quality
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--quality' 'nan' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('质量参数必须是有限数字')) { exit 1 }")
 
     add_test(NAME cli_rejects_low_visual_quality
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--visual-quality' '0' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('visual-quality 范围必须在 1 到 100 之间')) { exit 1 }")
 
     add_test(NAME cli_rejects_high_visual_quality
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--visual-quality' '101' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('visual-quality 范围必须在 1 到 100 之间')) { exit 1 }")
 
     add_test(NAME cli_accepts_visual_quality_priority
@@ -1305,22 +1324,22 @@ if(BUILD_TESTING)
     set_tests_properties(cli_native_avif_aom_converts_webp PROPERTIES TIMEOUT 30)
 
     add_test(NAME cli_rejects_removed_encoder
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--avif-encoder' 'svt' '--chroma' '444' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('已移除')) { exit 1 }")
 
     add_test(NAME cli_rejects_rav1e
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--avif-encoder' 'rav1e' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('AVIF encoder 不支持')) { exit 1 }")
 
     add_test(NAME cli_rejects_tiny_memory_limit
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--memory-limit' '1MiB' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('memory-limit 不能低于 64MiB')) { exit 1 }")
 
     add_test(NAME cli_accepts_auto_memory_limit
         COMMAND awj_cli_config_entry --memory-limit auto --help)
 
     add_test(NAME cli_rejects_empty_option_key
-        COMMAND powershell -NoProfile -ExecutionPolicy Bypass -Command
+        COMMAND pwsh -NoProfile -ExecutionPolicy Bypass -Command
             "$OutputEncoding = [System.Text.UTF8Encoding]::new(); [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new(); $output = & '$<TARGET_FILE:awj_cli_config_entry>' '--option' '=x' 2>&1; $code = $LASTEXITCODE; $output; if ($code -eq 0) { exit 1 }; if (($output -join [Environment]::NewLine) -notmatch [regex]::Escape('--option 的 key 不能为空')) { exit 1 }")
     endif()
 endif()
@@ -1344,7 +1363,6 @@ endif()
 if(WIN32)
     add_executable(AWJ WIN32
         src/app/main.cpp
-        src/cli/main.cpp
         src/ui/import_service.cpp
         src/ui/file_drop_win32.cpp
         src/ui/path_picker_win32.cpp
@@ -1420,11 +1438,15 @@ target_compile_definitions(AWJ PRIVATE
     AWJ_BUILD_VERSION="${PROJECT_VERSION}")
 if(MSVC)
     target_link_options(AWJ PRIVATE "/ENTRY:wmainCRTStartup")
+    target_link_options(AWJ PRIVATE "/DELAYLOAD:opengl32.dll" "/DELAYLOAD:dwmapi.dll")
+    target_link_libraries(AWJ PRIVATE delayimp)
 endif()
-target_link_libraries(AWJ PRIVATE
-    awj_core
-    awj_update
-    Slint::Slint)
+target_link_libraries(AWJ PRIVATE awj_update Slint::Slint)
+if(WIN32)
+    target_link_libraries(AWJ PRIVATE awj_shared)
+else()
+    target_link_libraries(AWJ PRIVATE awj_core)
+endif()
 if(TARGET slint_cpp)
     add_dependencies(AWJ slint_cpp)
 endif()
@@ -1506,7 +1528,7 @@ if(BUILD_TESTING)
             FILE_SET studio_state_modules TYPE CXX_MODULES FILES src/ui/studio_defaults.ixx)
         avif_enable_common_options(awj_studio_state_tests)
         target_include_directories(awj_studio_state_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-        target_link_libraries(awj_studio_state_tests PRIVATE awj_core Slint::Slint psapi)
+        target_link_libraries(awj_studio_state_tests PRIVATE awj_shared Slint::Slint psapi)
         add_dependencies(awj_studio_state_tests AWJ)
         awj_set_runtime_directory(awj_studio_state_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/studio-state-contract")
         add_test(NAME studio_state_contract COMMAND awj_studio_state_tests)
@@ -1590,11 +1612,23 @@ if(BUILD_TESTING)
 endif()
 
 if(WIN32)
-    add_executable(AWJ-com src/cli/shim_main.cpp)
+    add_executable(AWJ-com src/cli/shim_main.cpp src/cli/main.cpp src/ui/AWJ.rc)
     avif_enable_common_options(AWJ-com)
+    target_compile_definitions(AWJ-com PRIVATE AWJ_UNIFIED_EXE=1)
+    target_link_libraries(AWJ-com PRIVATE awj_core)
     set_target_properties(AWJ-com PROPERTIES
         OUTPUT_NAME "AWJ"
         SUFFIX ".com"
         PDB_NAME "AWJ-com")
     awj_add_sha256_post_build(AWJ-com)
+    add_dependencies(AWJ AWJ-com)
+    if(BUILD_TESTING)
+        find_program(AWJ_PWSH NAMES pwsh REQUIRED)
+        add_test(NAME cli_independence COMMAND "${AWJ_PWSH}" -NoProfile -File
+            "${CMAKE_CURRENT_SOURCE_DIR}/tests/cli_independence.ps1"
+            -Cli $<TARGET_FILE:AWJ-com> -Gui $<TARGET_FILE:AWJ>
+            -InputImage "${CMAKE_CURRENT_SOURCE_DIR}/tests/slint_runtime_images/pixel.jpg"
+            -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}/cli-independence")
+        set_tests_properties(cli_independence PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+    endif()
 endif()

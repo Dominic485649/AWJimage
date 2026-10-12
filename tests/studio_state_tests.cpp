@@ -72,6 +72,9 @@ void config_check() {
   check(!path.empty() && !fs::exists(path), "test config path must be isolated and empty");
   auto current = StudioConfigSnapshot{};
   const auto defaults = current;
+  check(current.only_show_changelog_after_update, "new changelog option must default on");
+  current.show_update_changelog = false;
+  current.only_show_changelog_after_update = false;
   current.language_index = 1;
   current.last_verified_manifest_v2_sequence = 42;
   current.update_manifest_v2_raw = "signed v2 bytes";
@@ -82,7 +85,7 @@ void config_check() {
   current.menu_params[0].chroma_index = 4;
   {
     std::ofstream old(path);
-    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature"})";
+    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false})";
   }
   check(write_studio_config_file(current, defaults).has_value(), "config write failed");
   const auto first = read(path);
@@ -94,7 +97,9 @@ void config_check() {
         parsed->at("menu_preset_description").string == current.menu_preset_description &&
         parsed->at("menu_avif_chroma_index").integer == 4,
         "whitelist lost current config or v2 state");
-  for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature"})
+  check(!parsed->at("show_update_changelog").boolean &&
+        !parsed->at("only_show_changelog_after_update").boolean, "changelog preferences were not preserved");
+  for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature", "hide_update_changelog_after_exit", "show_update_changelog_after_update"})
     check(!parsed->contains(key), "legacy UI cache was persisted");
   check(!parsed->contains("menu_avif_avif_animation_tune_index") &&
         !parsed->contains("menu_avif_avif_animation_keyframe"), "CLI-only animation options persisted in UI config");

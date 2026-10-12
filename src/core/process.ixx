@@ -1097,7 +1097,7 @@ std::string output_format_name(OutputFormat format) {
     case OutputFormat::jxl:
       return "JXL";
     case OutputFormat::jpgli:
-      return "JPGLI";
+      return "JPG";
   }
   return "AVIF";
 }

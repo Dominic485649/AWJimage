@@ -593,12 +593,20 @@ export component NavItem inherits Rectangle {
         animate height, y { duration: 180ms; easing: ease-out; }
     }
 
+    Rectangle {
+        width: 0px;
+        height: 0px;
+        visible: false;
+        label-measure := Text { text: root.label; font-size: 16px; font-weight: 700; }
+    }
     Text {
         text: root.label;
         color: root.selected ? root.selected-text : root.normal-text;
-        font-size: 16px;
+        font-size: 16px * min(1, (root.width - 32px) / max(1px, label-measure.preferred-width));
         font-weight: 700;
-        x: (parent.width - self.width) / 2 + (root.selected ? 6px : (root.has-hover ? 4px : 0px));
+        x: 16px;
+        width: parent.width - 32px;
+        horizontal-alignment: center;
         vertical-alignment: center;
         animate x, color { duration: 150ms; easing: ease-out; }
     }

@@ -47,6 +47,8 @@ module;
 
 export module awj.pipeline;
 
+export import awj.batch_protocol;
+
 import awj.avif_aom_codec;
 import awj.animation_decoder;
 import awj.avif_registry;
@@ -61,12 +63,6 @@ import awj.visual_quality;
 import awj.native_backend;
 
 export namespace awj {
-
-struct BatchLargeImageItem {
-  ImageFile file{};
-  ImageDimensions dimensions{};
-  LargeImageDecision decision{};
-};
 
 namespace pipeline_detail {
 
@@ -106,7 +102,6 @@ struct ClassifiedImageFile {
 
 struct ClassifiedWork {
   std::vector<ClassifiedImageFile> ordinary{};
-  std::vector<ClassifiedImageFile> deferred_tail{};
   std::vector<ClassifiedImageFile> memory_rejected{};
   std::vector<BatchLargeImageItem> large_mode{};
 };
@@ -198,9 +193,16 @@ bool avif_capability_available_for_large_mode(
 }
 
 std::uint64_t estimated_regular_working_set_bytes(
-    ImageDimensions dimensions, const AppConfig& cfg) noexcept {
+    ImageDimensions dimensions, const AppConfig& cfg,
+    std::uint64_t compressed_bytes = 0) noexcept {
   if (cfg.output_format == OutputFormat::avif) {
-    const auto encoding = avif_encode_working_set_bytes_for_dimensions(dimensions);
+    const bool opaque_sdr_420 = dimensions.opaque_sdr8_yuv420 &&
+        cfg.quality < 100 && !cfg.visual_quality && cfg.alpha_policy != AlphaModePolicy::force &&
+        !cfg.color_primaries && !cfg.transfer_characteristics && !cfg.matrix_coefficients && !cfg.color_range &&
+        cfg.avif_color_representation != AvifColorRepresentation::rgb_identity &&
+        cfg.bit_depth.value_or(10) <= 10 &&
+        (cfg.chroma_mode == ChromaMode::auto_keep || cfg.chroma_mode == ChromaMode::yuv420);
+    const auto encoding = avif_encode_working_set_bytes_for_dimensions(dimensions, compressed_bytes, opaque_sdr_420);
     if (!cfg.visual_quality) return encoding;
     const auto metrics = visual_quality_working_set_bytes_for_dimensions(dimensions);
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
@@ -221,7 +223,8 @@ std::uint64_t estimated_regular_working_set_bytes(
 }
 
 std::expected<ClassifiedWork, std::string> classify_work_for_avif(
-    const AppConfig& cfg, const std::vector<ImageFile>& files) {
+    const AppConfig& cfg, const std::vector<ImageFile>& files,
+    std::uint64_t memory_limit) {
   try {
     WicFallbackComApartment com{cfg.allow_wic_fallback};
     const bool allow_wic_fallback = cfg.allow_wic_fallback && com.usable();
@@ -232,12 +235,14 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
       DecoderRegistryOptions decoder_options{.allow_wic_fallback =
                                                  allow_wic_fallback};
       for (const auto& image : files) {
-        auto estimated_bytes = static_cast<std::uint64_t>(
+        // Unknown decoded dimensions must not admit several compressed-small
+        // images together. Reserve the whole budget until decode completes.
+        auto estimated_bytes = std::max<std::uint64_t>(memory_limit,
             std::max<std::uintmax_t>(1, image.bytes));
         if (auto dimensions =
                 probe_image_dimensions_for_path(image.path, decoder_options)) {
           estimated_bytes =
-              estimated_regular_working_set_bytes(*dimensions, cfg);
+              estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes);
         }
         classified.ordinary.push_back(ClassifiedImageFile{
             .file = image, .estimated_bytes = estimated_bytes});
@@ -260,29 +265,22 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
       if (!dimensions) {
         classified.ordinary.push_back(ClassifiedImageFile{
             .file = image,
-            .estimated_bytes = static_cast<std::uint64_t>(
+            .estimated_bytes = std::max<std::uint64_t>(memory_limit,
                 std::max<std::uintmax_t>(1, image.bytes))});
         continue;
       }
-      bool input_grid_available = grid_available;
-      if (input_grid_available) {
+      auto decision = classify_large_image(*dimensions, grid_available);
+      if (decision.klass == LargeImageClass::large_mode_required && grid_available) {
         auto animated = input_uses_animation_reader(image.path);
         if (!animated) return std::unexpected{animated.error()};
-        input_grid_available = !*animated;
+        if (*animated) decision = classify_large_image(*dimensions, false);
       }
-      auto decision = classify_large_image(*dimensions, input_grid_available);
       switch (decision.klass) {
         case LargeImageClass::ordinary:
           classified.ordinary.push_back(ClassifiedImageFile{
               .file = image,
               .estimated_bytes =
-                  estimated_regular_working_set_bytes(*dimensions, cfg)});
-          break;
-        case LargeImageClass::ordinary_deferred_tail:
-          classified.deferred_tail.push_back(ClassifiedImageFile{
-              .file = image,
-              .estimated_bytes =
-                  estimated_regular_working_set_bytes(*dimensions, cfg)});
+                  estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes)});
           break;
         case LargeImageClass::large_mode_required:
           classified.large_mode.push_back(
@@ -364,7 +362,6 @@ std::expected<void, std::string> reject_over_memory_budget(
   if (auto result = reject_from(classified.ordinary); !result) {
     return result;
   }
-  if (auto result = reject_from(classified.deferred_tail); !result) return result;
   try {
     std::vector<BatchLargeImageItem> retained;
     retained.reserve(classified.large_mode.size());
@@ -424,7 +421,7 @@ std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
 
 std::uint64_t estimated_large_working_set_bytes(
     const BatchLargeImageItem& item) noexcept {
-  return avif_encode_working_set_bytes_for_dimensions(item.dimensions);
+  return avif_encode_working_set_bytes_for_dimensions(item.dimensions, item.file.bytes);
 }
 
 std::uint64_t largest_large_mode_working_set(
@@ -534,423 +531,6 @@ std::string format_result_line(const EncodeResult& result) {
 }
 
 }  // namespace pipeline_detail
-
-enum class BatchEventKind {
-  message,
-  warning,
-  item_started,
-  item_finished,
-  large_image_queued,
-  summary
-};
-
-struct BatchSummary {
-  int ok_count{};
-  int failed_count{};
-  int canceled_count{};
-  int large_image_deferred_count{};
-  int large_image_queued_count{};
-  std::uintmax_t original_total{};
-  std::uintmax_t output_total{};
-  bool canceled{};
-  int exit_code{};
-};
-
-struct BatchProgress {
-  BatchEventKind kind{BatchEventKind::message};
-  std::size_t completed{};
-  std::size_t total{};
-  EncodeResult result{};
-  BatchLargeImageItem large_image{};
-  BatchSummary summary{};
-  std::string text{};
-};
-
-struct StudioQueueManifest {
-  std::vector<ImageFile> files{};
-};
-
-namespace pipeline_detail {
-
-constexpr std::array<unsigned char, 8> studio_queue_manifest_magic{
-    'A', 'W', 'J', 'S', 'Q', 'M', 'F', 0};
-constexpr std::uint32_t studio_queue_manifest_version = 1;
-constexpr std::uintmax_t max_studio_queue_manifest_bytes =
-    64ull * 1024ull * 1024ull;
-constexpr std::uint64_t max_studio_queue_manifest_files = 1'000'000;
-constexpr std::uint32_t max_studio_queue_manifest_text_bytes = 1024 * 1024;
-constexpr std::uintmax_t studio_queue_manifest_header_bytes = 8 + 4 + 8;
-constexpr std::uintmax_t studio_queue_manifest_record_min_bytes =
-    8 + 8 + 4 + 11 * 4;
-
-void manifest_write_u32(std::ostream& output, std::uint32_t value) {
-  for (int shift = 0; shift < 32; shift += 8) {
-    output.put(static_cast<char>((value >> shift) & 0xffu));
-  }
-}
-
-void manifest_write_u64(std::ostream& output, std::uint64_t value) {
-  for (int shift = 0; shift < 64; shift += 8) {
-    output.put(static_cast<char>((value >> shift) & 0xffu));
-  }
-}
-
-bool manifest_read_u32(std::istream& input, std::uint32_t& value) {
-  value = 0;
-  for (int shift = 0; shift < 32; shift += 8) {
-    const auto byte = input.get();
-    if (byte == std::char_traits<char>::eof()) {
-      return false;
-    }
-    value |= static_cast<std::uint32_t>(static_cast<unsigned char>(byte))
-             << shift;
-  }
-  return true;
-}
-
-bool manifest_read_u64(std::istream& input, std::uint64_t& value) {
-  value = 0;
-  for (int shift = 0; shift < 64; shift += 8) {
-    const auto byte = input.get();
-    if (byte == std::char_traits<char>::eof()) {
-      return false;
-    }
-    value |= static_cast<std::uint64_t>(static_cast<unsigned char>(byte))
-             << shift;
-  }
-  return true;
-}
-
-std::expected<void, std::string> manifest_write_text(
-    std::ostream& output, std::string_view value) {
-  if (value.size() > max_studio_queue_manifest_text_bytes ||
-      value.find('\0') != std::string_view::npos) {
-    return std::unexpected{"Studio 队列 manifest 字段无效或过长。"};
-  }
-  manifest_write_u32(output, static_cast<std::uint32_t>(value.size()));
-  output.write(value.data(), static_cast<std::streamsize>(value.size()));
-  if (!output) {
-    return std::unexpected{"写入 Studio 队列 manifest 失败。"};
-  }
-  return {};
-}
-
-std::expected<std::string, std::string> manifest_read_text(
-    std::istream& input) {
-  std::uint32_t size = 0;
-  if (!manifest_read_u32(input, size) ||
-      size > max_studio_queue_manifest_text_bytes) {
-    return std::unexpected{"Studio 队列 manifest 字段长度无效。"};
-  }
-  std::string value(size, '\0');
-  input.read(value.data(), static_cast<std::streamsize>(value.size()));
-  if (input.gcount() != static_cast<std::streamsize>(value.size()) ||
-      value.find('\0') != std::string::npos) {
-    return std::unexpected{"Studio 队列 manifest 字段不完整或无效。"};
-  }
-  return value;
-}
-
-std::expected<std::wstring, std::string> manifest_wide_from_utf8(
-    std::string_view value) {
-#ifdef _WIN32
-  if (value.empty()) {
-    return std::wstring{};
-  }
-  if (value.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
-    return std::unexpected{"Studio 队列 manifest UTF-8 字段过长。"};
-  }
-  const int size = static_cast<int>(value.size());
-  const int required = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS,
-                                           value.data(), size, nullptr, 0);
-  if (required <= 0) {
-    return std::unexpected{"Studio 队列 manifest 包含无效 UTF-8。"};
-  }
-  std::wstring result(static_cast<std::size_t>(required), L'\0');
-  if (MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, value.data(), size,
-                          result.data(), required) != required) {
-    return std::unexpected{"Studio 队列 manifest UTF-8 转换失败。"};
-  }
-  return result;
-#else
-  return wide_from_utf8(value);
-#endif
-}
-
-std::expected<fs::path, std::string> manifest_path_from_utf8(
-    std::string_view value) {
-#ifdef _WIN32
-  auto wide = manifest_wide_from_utf8(value);
-  if (!wide) {
-    return std::unexpected{wide.error()};
-  }
-  return fs::path{std::move(*wide)};
-#else
-  return fs::path{std::string{value}};
-#endif
-}
-
-bool safe_manifest_relative_path(const fs::path& path) {
-  if (path.is_absolute() || path.has_root_name() || path.has_root_directory()) {
-    return false;
-  }
-  return std::ranges::none_of(path, [](const fs::path& part) {
-    return part == fs::path{".."};
-  });
-}
-
-std::expected<void, std::string> validate_manifest_paths_for_config(
-    const AppConfig& cfg, std::span<const ImageFile> files) {
-  std::error_code ec;
-  const auto output_root = fs::weakly_canonical(output_dir_for(cfg), ec);
-  if (ec || output_root.empty()) {
-    return std::unexpected{"Studio 队列 manifest 输出目录无效。"};
-  }
-
-  std::unordered_set<PathText> input_keys;
-  input_keys.reserve(files.size());
-  for (const auto& file : files) {
-    const auto input = fs::weakly_canonical(file.path, ec);
-    if (ec || input.empty()) {
-      return std::unexpected{"Studio 队列 manifest 输入路径无效。"};
-    }
-    input_keys.insert(normalized_lower_path_key(input));
-  }
-  const auto expected_extension =
-      normalized_lower_path_key(fs::path{output_extension_for(cfg)});
-
-  for (const auto& file : files) {
-    if (!file.path.is_absolute() ||
-        !safe_manifest_relative_path(file.relative_dir)) {
-      return std::unexpected{"Studio 队列 manifest 输入或相对路径无效。"};
-    }
-    const auto expected_disambiguator = source_extension_disambiguator(file.path);
-    if ((file.extension_disambiguated &&
-         file.source_extension_disambiguator != expected_disambiguator) ||
-        (!file.extension_disambiguated &&
-         !file.source_extension_disambiguator.empty()) ||
-        (!file.output_path_resolved && !file.resolved_output_path.empty())) {
-      return std::unexpected{"Studio 队列 manifest 输出命名字段无效。"};
-    }
-    ec.clear();
-    const auto output = fs::weakly_canonical(output_path_for(cfg, file), ec);
-    if (ec || output.empty()) {
-      return std::unexpected{"Studio 队列 manifest 输出路径无效。"};
-    }
-    const auto relative = output.lexically_relative(output_root);
-    if (relative.empty() || relative == fs::path{"."} ||
-        !safe_manifest_relative_path(relative) ||
-        input_keys.contains(normalized_lower_path_key(output)) ||
-        !normalized_lower_path_key(output.filename())
-             .ends_with(expected_extension)) {
-      return std::unexpected{
-          "Studio 队列 manifest 输出路径越界、扩展名无效或会覆盖输入。"};
-    }
-  }
-  return {};
-}
-
-}  // namespace pipeline_detail
-
-std::expected<void, std::string> write_studio_queue_manifest(
-    const fs::path& path, std::span<const ImageFile> files) {
-  try {
-    if (files.empty() ||
-        files.size() > pipeline_detail::max_studio_queue_manifest_files) {
-      return std::unexpected{"Studio 队列 manifest 图片数量无效。"};
-    }
-    std::ofstream output{path, std::ios::binary | std::ios::trunc};
-    if (!output) {
-      return std::unexpected{"无法创建 Studio 队列 manifest。"};
-    }
-    output.write(reinterpret_cast<const char*>(
-                     pipeline_detail::studio_queue_manifest_magic.data()),
-                 static_cast<std::streamsize>(
-                     pipeline_detail::studio_queue_manifest_magic.size()));
-    pipeline_detail::manifest_write_u32(
-        output, pipeline_detail::studio_queue_manifest_version);
-    pipeline_detail::manifest_write_u64(output,
-                                        static_cast<std::uint64_t>(files.size()));
-
-    std::uintmax_t manifest_bytes =
-        pipeline_detail::studio_queue_manifest_header_bytes;
-    for (std::size_t index = 0; index < files.size(); ++index) {
-      const auto& file = files[index];
-      if (file.index != index || !file.path.is_absolute() ||
-          !pipeline_detail::safe_manifest_relative_path(file.relative_dir) ||
-          file.bytes > encoding_defaults::effective_max_input_file_bytes() ||
-          (file.output_path_resolved &&
-           !file.resolved_output_path.is_absolute()) ||
-          (!file.output_path_resolved &&
-           !file.resolved_output_path.empty())) {
-        return std::unexpected{"Studio 队列 manifest 图片记录无效。"};
-      }
-      if (manifest_bytes >
-          pipeline_detail::max_studio_queue_manifest_bytes -
-              pipeline_detail::studio_queue_manifest_record_min_bytes) {
-        return std::unexpected{"Studio 队列 manifest 超过 64 MiB。"};
-      }
-      manifest_bytes += pipeline_detail::studio_queue_manifest_record_min_bytes;
-      pipeline_detail::manifest_write_u64(output, file.index);
-      pipeline_detail::manifest_write_u64(output, file.bytes);
-      const std::uint32_t flags =
-          (file.extension_disambiguated ? 1u : 0u) |
-          (file.output_path_resolved ? 2u : 0u);
-      pipeline_detail::manifest_write_u32(output, flags);
-      const std::array<std::string, 11> fields{
-          path_to_utf8(file.path),
-          path_to_utf8(file.relative_dir),
-          utf8_from_wide(file.source_extension_disambiguator),
-          utf8_from_wide(file.date_token),
-          utf8_from_wide(file.time_token),
-          utf8_from_wide(file.datetime_token),
-          utf8_from_wide(file.unix_token),
-          utf8_from_wide(file.random_token),
-          utf8_from_wide(file.hash_token),
-          utf8_from_wide(file.sha256_token),
-          path_to_utf8(file.resolved_output_path)};
-      for (const auto& field : fields) {
-        if (field.size() >
-            pipeline_detail::max_studio_queue_manifest_bytes -
-                manifest_bytes) {
-          return std::unexpected{"Studio 队列 manifest 超过 64 MiB。"};
-        }
-        manifest_bytes += field.size();
-        if (auto written = pipeline_detail::manifest_write_text(output, field);
-            !written) {
-          return written;
-        }
-      }
-    }
-    output.flush();
-    const auto size = output.tellp();
-    if (!output || size < 0 ||
-        static_cast<std::uintmax_t>(size) >
-            pipeline_detail::max_studio_queue_manifest_bytes) {
-      return std::unexpected{"Studio 队列 manifest 写入失败或超过 64 MiB。"};
-    }
-    return {};
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"Studio 队列 manifest 内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"Studio 队列 manifest 数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"Studio 队列 manifest 文件系统访问失败。"};
-  }
-}
-
-std::expected<StudioQueueManifest, std::string> read_studio_queue_manifest(
-    const fs::path& path) {
-  try {
-    std::error_code ec;
-    const auto manifest_bytes = fs::file_size(path, ec);
-    if (ec ||
-        manifest_bytes < pipeline_detail::studio_queue_manifest_header_bytes ||
-        manifest_bytes > pipeline_detail::max_studio_queue_manifest_bytes) {
-      return std::unexpected{"Studio 队列 manifest 不存在、为空或超过 64 MiB。"};
-    }
-    std::ifstream input{path, std::ios::binary};
-    if (!input) {
-      return std::unexpected{"无法读取 Studio 队列 manifest。"};
-    }
-    std::array<unsigned char, 8> magic{};
-    input.read(reinterpret_cast<char*>(magic.data()),
-               static_cast<std::streamsize>(magic.size()));
-    std::uint32_t version = 0;
-    std::uint64_t file_count = 0;
-    if (magic != pipeline_detail::studio_queue_manifest_magic ||
-        !pipeline_detail::manifest_read_u32(input, version) ||
-        version != pipeline_detail::studio_queue_manifest_version ||
-        !pipeline_detail::manifest_read_u64(input, file_count) ||
-        file_count == 0 ||
-        file_count > pipeline_detail::max_studio_queue_manifest_files) {
-      return std::unexpected{"Studio 队列 manifest 头部或版本无效。"};
-    }
-    const auto max_records_by_size =
-        (manifest_bytes - pipeline_detail::studio_queue_manifest_header_bytes) /
-        pipeline_detail::studio_queue_manifest_record_min_bytes;
-    if (file_count > max_records_by_size) {
-      return std::unexpected{"Studio 队列 manifest 记录数量与文件大小不符。"};
-    }
-
-    StudioQueueManifest manifest;
-    for (std::uint64_t index = 0; index < file_count; ++index) {
-      std::uint64_t stored_index = 0;
-      std::uint64_t bytes = 0;
-      std::uint32_t flags = 0;
-      if (!pipeline_detail::manifest_read_u64(input, stored_index) ||
-          stored_index != index ||
-          !pipeline_detail::manifest_read_u64(input, bytes) ||
-          bytes > encoding_defaults::effective_max_input_file_bytes() ||
-          !pipeline_detail::manifest_read_u32(input, flags) ||
-          (flags & ~3u) != 0) {
-        return std::unexpected{"Studio 队列 manifest 图片记录头无效。"};
-      }
-      std::array<std::string, 11> fields;
-      for (auto& field : fields) {
-        auto read = pipeline_detail::manifest_read_text(input);
-        if (!read) {
-          return std::unexpected{read.error()};
-        }
-        field = std::move(*read);
-      }
-      auto input_path = pipeline_detail::manifest_path_from_utf8(fields[0]);
-      auto relative_dir = pipeline_detail::manifest_path_from_utf8(fields[1]);
-      auto resolved_output = pipeline_detail::manifest_path_from_utf8(fields[10]);
-      if (!input_path || !relative_dir || !resolved_output ||
-          !input_path->is_absolute() ||
-          !pipeline_detail::safe_manifest_relative_path(*relative_dir) ||
-          ((flags & 2u) != 0 && !resolved_output->is_absolute()) ||
-          ((flags & 2u) == 0 && !resolved_output->empty())) {
-        return std::unexpected{"Studio 队列 manifest 图片路径无效。"};
-      }
-      std::array<std::wstring, 8> wide_fields;
-      for (std::size_t field = 0; field < wide_fields.size(); ++field) {
-        auto converted =
-            pipeline_detail::manifest_wide_from_utf8(fields[field + 2]);
-        if (!converted) {
-          return std::unexpected{converted.error()};
-        }
-        wide_fields[field] = std::move(*converted);
-      }
-      const bool extension_disambiguated = (flags & 1u) != 0;
-      if ((extension_disambiguated &&
-           wide_fields[0] != source_extension_disambiguator(*input_path)) ||
-          (!extension_disambiguated && !wide_fields[0].empty())) {
-        return std::unexpected{
-            "Studio 队列 manifest 源扩展名消歧字段无效。"};
-      }
-      manifest.files.push_back(ImageFile{
-          .index = static_cast<std::size_t>(stored_index),
-          .path = std::move(*input_path),
-          .relative_dir = std::move(*relative_dir),
-          .source_extension_disambiguator = std::move(wide_fields[0]),
-          .bytes = static_cast<std::uintmax_t>(bytes),
-          .date_token = std::move(wide_fields[1]),
-          .time_token = std::move(wide_fields[2]),
-          .datetime_token = std::move(wide_fields[3]),
-          .unix_token = std::move(wide_fields[4]),
-          .random_token = std::move(wide_fields[5]),
-          .hash_token = std::move(wide_fields[6]),
-          .sha256_token = std::move(wide_fields[7]),
-          .extension_disambiguated = extension_disambiguated,
-          .resolved_output_path = std::move(*resolved_output),
-          .output_path_resolved = (flags & 2u) != 0});
-    }
-    if (input.peek() != std::char_traits<char>::eof()) {
-      return std::unexpected{"Studio 队列 manifest 包含多余数据。"};
-    }
-    return manifest;
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"读取 Studio 队列 manifest 时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"Studio 队列 manifest 数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"读取 Studio 队列 manifest 时文件系统访问失败。"};
-  }
-}
-
-using ProgressCallback = std::function<void(const BatchProgress&)>;
 
 void emit_progress(const ProgressCallback& progress,
                    const BatchProgress& event);
@@ -1588,9 +1168,9 @@ std::expected<BatchSummary, std::string> run_batch(
               .file_count = 1,
               .memory_limit_bytes = configured_memory_limit,
               .estimated_bytes_per_file =
-                  avif_encode_working_set_bytes_for_dimensions(item.dimensions)}),
+                  pipeline_detail::estimated_large_working_set_bytes(item)}),
           1,
-          avif_encode_working_set_bytes_for_dimensions(item.dimensions));
+          pipeline_detail::estimated_large_working_set_bytes(item));
       pipeline_detail::emit_item_started_noexcept(
           cfg, item.file, 0, 1, progress);
       auto result = pipeline_detail::encode_large_mode_item(
@@ -1608,7 +1188,6 @@ std::expected<BatchSummary, std::string> run_batch(
       const BatchSummary summary{.ok_count = ok ? 1 : 0,
                                  .failed_count = !ok && !canceled ? 1 : 0,
                                  .canceled_count = canceled ? 1 : 0,
-                                 .large_image_deferred_count = 0,
                                  .large_image_queued_count = 0,
                                  .original_total = result.original_bytes,
                                  .output_total = ok ? result.output_bytes : 0,
@@ -1700,14 +1279,14 @@ std::expected<BatchSummary, std::string> run_batch(
       });
     }
 
-    auto classified = pipeline_detail::classify_work_for_avif(cfg, files);
-    if (!classified) {
-      return std::unexpected{classified.error()};
-    }
     const auto configured_memory_limit =
         cfg.memory_limit_bytes == 0
             ? automatic_memory_limit(current_memory_status())
             : cfg.memory_limit_bytes;
+    auto classified = pipeline_detail::classify_work_for_avif(cfg, files, configured_memory_limit);
+    if (!classified) {
+      return std::unexpected{classified.error()};
+    }
     if (auto memory_filter = pipeline_detail::reject_over_memory_budget(
             *classified, configured_memory_limit);
         !memory_filter) {
@@ -1717,11 +1296,6 @@ std::expected<BatchSummary, std::string> run_batch(
         pipeline_detail::build_work_groups(cfg, classified->ordinary);
     if (!ordinary_work) {
       return std::unexpected{ordinary_work.error()};
-    }
-    auto deferred_work =
-        pipeline_detail::build_work_groups(cfg, classified->deferred_tail);
-    if (!deferred_work) {
-      return std::unexpected{deferred_work.error()};
     }
     auto large_work =
         pipeline_detail::build_large_work_groups(cfg, classified->large_mode);
@@ -1733,21 +1307,12 @@ std::expected<BatchSummary, std::string> run_batch(
     // 内存准入单独限制，不会同时进入。
     const auto ordinary_estimated_bytes_per_file =
         pipeline_detail::typical_decoded_bytes_per_file(classified->ordinary);
-    const auto deferred_estimated_bytes_per_file =
-        pipeline_detail::typical_decoded_bytes_per_file(
-            classified->deferred_tail);
     const auto resource_plan = plan_resources(ResourcePlanRequest{
         .automatic_thread_budget = cfg.max_jobs,
         .file_count = pipeline_detail::count_to_int_saturated(
             std::max<std::size_t>(1, ordinary_work->size())),
         .memory_limit_bytes = configured_memory_limit,
         .estimated_bytes_per_file = ordinary_estimated_bytes_per_file});
-    const auto deferred_resource_plan = plan_resources(ResourcePlanRequest{
-        .automatic_thread_budget = cfg.max_jobs,
-        .file_count = pipeline_detail::count_to_int_saturated(
-            std::max<std::size_t>(1, deferred_work->size())),
-        .memory_limit_bytes = configured_memory_limit,
-        .estimated_bytes_per_file = deferred_estimated_bytes_per_file});
     const auto large_largest_working_set =
         pipeline_detail::largest_large_mode_working_set(classified->large_mode);
     const auto large_base_resource_plan = plan_resources(ResourcePlanRequest{
@@ -1768,13 +1333,6 @@ std::expected<BatchSummary, std::string> run_batch(
                                     resource_plan.memory_file_parallelism,
                                     pipeline_detail::count_to_int_saturated(
                                         ordinary_work->size())}));
-    const int deferred_jobs =
-        deferred_work->empty()
-            ? 0
-            : std::max(1, std::min({deferred_resource_plan.file_parallelism,
-                                    deferred_resource_plan.memory_file_parallelism,
-                                    pipeline_detail::count_to_int_saturated(
-                                        deferred_work->size())}));
     const int large_jobs =
         large_work->empty()
             ? 0
@@ -1789,16 +1347,14 @@ std::expected<BatchSummary, std::string> run_batch(
               .kind = BatchEventKind::message,
               .total = files.size(),
               .text = std::format(
-                  "共 {} 个文件；普通 {}，尾部延后 {}，内存超限 {}，大图模式 "
-                  "{}。普通并发 {}，延后并发 {}，大图并发 {}，编码器线程/文件 "
-                  "{}/{}/{}，内存限制 {}。",
+                  "共 {} 个文件；普通 {}，内存超限 {}，Grid "
+                  "{}。普通并发 {}，Grid 并发 {}，编码器线程/文件 "
+                  "{}/{}，内存限制 {}。",
                   files.size(), classified->ordinary.size(),
-                  classified->deferred_tail.size(),
                   classified->memory_rejected.size(),
-                  classified->large_mode.size(), ordinary_jobs, deferred_jobs,
+                  classified->large_mode.size(), ordinary_jobs,
                   large_jobs,
                   resource_plan.encoder_threads_per_file,
-                  deferred_resource_plan.encoder_threads_per_file,
                   large_resource_plan.encoder_threads_per_file,
                   resource_plan.memory_limit_bytes == 0
                       ? std::string{"未限制"}
@@ -1871,26 +1427,6 @@ std::expected<BatchSummary, std::string> run_batch(
         cfg, logger, resource_plan, *ordinary_work, files.size(), completed,
         results, progress, stop_token);
     worker_failures += ordinary_execution.worker_failures;
-
-    if (!stop_token.stop_requested() && !deferred_work->empty()) {
-      pipeline_detail::best_effort([&] {
-        emit_progress(
-            progress,
-            BatchProgress{
-                .kind = BatchEventKind::message,
-                .completed = completed.load(),
-                .total = files.size(),
-                .text = std::format(
-                    "开始处理 AVIF 尾部延后队列：{} 个文件，并发 "
-                    "{}，编码器线程/文件 {}。",
-                    classified->deferred_tail.size(), deferred_jobs,
-                    deferred_resource_plan.encoder_threads_per_file)});
-      });
-      const auto deferred_execution = pipeline_detail::encode_work_groups(
-          cfg, logger, deferred_resource_plan, *deferred_work, files.size(),
-          completed, results, progress, stop_token);
-      worker_failures += deferred_execution.worker_failures;
-    }
 
     if (!stop_token.stop_requested() && !classified->large_mode.empty()) {
       pipeline_detail::best_effort([&] {
@@ -1999,8 +1535,6 @@ std::expected<BatchSummary, std::string> run_batch(
         .failed_count = pipeline_detail::count_to_int_saturated(failed_count),
         .canceled_count =
             pipeline_detail::count_to_int_saturated(canceled_count),
-        .large_image_deferred_count = pipeline_detail::count_to_int_saturated(
-            classified->deferred_tail.size()),
         .large_image_queued_count = 0,
         .original_total = original_total,
         .output_total = output_total,
@@ -2070,7 +1604,7 @@ int run_pipeline(const AppConfig& cfg,
     // Bound worker event volume for long animations while retaining first/last progress.
     if (completed != 1 && completed != total && completed % 16 != 0) return;
     std::scoped_lock lock{print_mutex};
-    if (!cfg.studio_queue_manifest.empty()) {
+    if ((!cfg.studio_queue_manifest.empty() || !cfg.studio_cancel_event_name.empty())) {
       print_line(std::format("@AWJ-STUDIO/1 FRAME {} {} {}", item, completed, total));
     } else {
       print_line(std::format("动画 {}: 帧 {}/{}", item + 1, completed, total));
@@ -2081,7 +1615,7 @@ int run_pipeline(const AppConfig& cfg,
       runtime_cfg,
       [&](const BatchProgress& event) {
         std::scoped_lock lock{print_mutex};
-        if (!cfg.studio_queue_manifest.empty() &&
+        if ((!cfg.studio_queue_manifest.empty() || !cfg.studio_cancel_event_name.empty()) &&
             (event.kind == BatchEventKind::item_started ||
              event.kind == BatchEventKind::item_finished)) {
           const char status =
@@ -2114,7 +1648,7 @@ int run_pipeline(const AppConfig& cfg,
         if (event.kind == BatchEventKind::summary) {
           print_line("");
         }
-        if (cfg.studio_queue_manifest.empty() &&
+        if (cfg.studio_queue_manifest.empty() && cfg.studio_cancel_event_name.empty() &&
             event.kind == BatchEventKind::item_finished && event.result.ok &&
             !event.result.skipped && !event.result.message.empty() &&
             event.result.message != "OK") {

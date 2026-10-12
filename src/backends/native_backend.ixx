@@ -43,6 +43,7 @@ import awj.decoder_registry;
 import awj.encoding_defaults;
 import awj.hdr_tonemap;
 import awj.image;
+import awj.pixel_conversion;
 #if AWJ_HAS_JPEGLI
 import awj.jpegli_codec;
 import awj.jpeg_hdr_codec;
@@ -658,100 +659,9 @@ bool sdr_only_format_conversion_needed(OutputFormat format, const ImageBuffer& i
          hdr_transfer || (image.source_info && image.source_info->has_hdr_metadata);
 }
 
-std::uint8_t rgba_sample_to_u8(const std::byte* row, std::size_t sample,
-                                int bit_depth) noexcept {
-  if (bit_depth > 8) {
-    std::uint16_t value{};
-    std::memcpy(&value, row + sample * sizeof(value), sizeof(value));
-    return static_cast<std::uint8_t>((static_cast<std::uint32_t>(value) + 128u) / 257u);
-  }
-  return std::to_integer<std::uint8_t>(row[sample]);
-}
-
-struct SdrImageConversion {
-  ImageBuffer image{};
-  bool hdr_tone_mapped{};
-};
-
-std::expected<SdrImageConversion, std::string> rgba_to_rgba8_for_sdr_only_format(
-    const ImageBuffer& image, std::stop_token stop = {}) {
-  if (image.pixel_format != PixelFormat::rgba ||
-      (image.bit_depth != 8 && image.bit_depth != 16) || image.planes.empty()) {
-    return std::unexpected{"HDR/高位深 -> SDR fallback 需要 RGBA ImageBuffer。"};
-  }
-  auto hdr_signal = hdr::has_explicit_hdr_signal(image);
-  if (!hdr_signal) {
-    return std::unexpected{hdr_signal.error()};
-  }
-  if (*hdr_signal) {
-    auto tone_mapped = hdr::tone_map_to_sdr_srgb(image, 8, stop);
-    if (!tone_mapped) {
-      return std::unexpected{tone_mapped.error()};
-    }
-    return SdrImageConversion{.image = std::move(*tone_mapped), .hdr_tone_mapped = true};
-  }
-  if (image.sample_representation != SampleRepresentation::unorm) {
-    return std::unexpected{"无法将缺少 HDR 标记的浮点 RGBA 当作 SDR 处理。"};
-  }
-  const auto& plane = image.planes.front();
-  const auto stride = decoder_common::checked_rgba_stride(image.width, "HDR -> SDR fallback");
-  if (!stride) {
-    return std::unexpected{stride.error()};
-  }
-  const auto bytes = decoder_common::checked_image_bytes(*stride, image.height,
-                                                         "HDR -> SDR fallback");
-  if (!bytes) {
-    return std::unexpected{bytes.error()};
-  }
-  auto rgba8 = decoder_common::make_byte_buffer(*bytes, "HDR -> SDR fallback");
-  if (!rgba8) {
-    return std::unexpected{rgba8.error()};
-  }
-
-  auto* out = reinterpret_cast<std::uint8_t*>(rgba8->data());
-  const std::size_t input_sample_stride = image.bit_depth > 8 ? sizeof(std::uint16_t) : 1;
-  const auto expected_input_stride = decoder_common::checked_rgba_stride(
-      image.width, "HDR -> SDR fallback", input_sample_stride);
-  if (!expected_input_stride) {
-    return std::unexpected{expected_input_stride.error()};
-  }
-  if (plane.stride < *expected_input_stride) {
-    return std::unexpected{"HDR -> SDR fallback 输入 stride 无效。"};
-  }
-
-  for (std::size_t y = 0; y < image.height; ++y) {
-    const auto* src = plane.bytes.data() + y * plane.stride;
-    auto* dst = out + y * *stride;
-    for (std::size_t x = 0; x < image.width; ++x) {
-      const std::size_t sample = x * 4;
-      dst[sample + 0] = rgba_sample_to_u8(src, sample + 0, image.bit_depth);
-      dst[sample + 1] = rgba_sample_to_u8(src, sample + 1, image.bit_depth);
-      dst[sample + 2] = rgba_sample_to_u8(src, sample + 2, image.bit_depth);
-      dst[sample + 3] = rgba_sample_to_u8(src, sample + 3, image.bit_depth);
-    }
-  }
-
-  ImageSourceInfo source_info{.pixel_format = PixelFormat::rgba,
-                              .bit_depth = 8,
-                              .color_primaries = 1,
-                              .transfer_characteristics = 13,
-                               .matrix_coefficients = 0,
-                               .color_range = 1,
-                               .has_hdr_metadata = false,
-                               .color_metadata_source = "high-bit-depth-sdr"};
-  auto fallback = decoder_common::make_rgba_image(
-      image.width, image.height, std::move(*rgba8), image.alpha_mode,
-      "HDR -> SDR fallback", source_info, 8);
-  if (!fallback) {
-    return std::unexpected{fallback.error()};
-  }
-  fallback->metadata = image.metadata;
-  return SdrImageConversion{.image = std::move(*fallback), .hdr_tone_mapped = false};
-}
-
-
 std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
     const ImageBuffer& image, std::size_t new_width, std::size_t new_height) {
+  if (is_yuv_format(image.pixel_format)) return resize_native_pixels(image, new_width, new_height);
   if (image.pixel_format != PixelFormat::rgba || image.planes.empty() ||
       (image.bit_depth != 8 && image.bit_depth != 16)) {
     return std::unexpected{"图片尺寸限制当前只支持 8/16-bit RGBA buffer。"};
@@ -796,6 +706,13 @@ std::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decod
                                                        const AppConfig& cfg) {
   const auto dims = limited_dimensions(decoded.image.width, decoded.image.height, cfg);
   if (!dims) {
+    return {};
+  }
+  if (!cfg.visual_quality) {
+    if (!decoded.image.geometry) decoded.image.geometry = ImageGeometry{
+        .stored_width = decoded.image.width, .stored_height = decoded.image.height,
+        .crop_width = decoded.image.width, .crop_height = decoded.image.height};
+    decoded.image.width = dims->first; decoded.image.height = dims->second;
     return {};
   }
   auto resized = resize_rgba_image_nearest(decoded.image, dims->first, dims->second);
@@ -2080,7 +1997,8 @@ class NativeBackend final {
         image.path,
         DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback,
                                .decode_threads = resources_.encoder_threads_per_file,
-                               .stop_token = stop_token});
+                               .stop_token = stop_token,
+                               .native_pixels = !cfg_.visual_quality});
     if (!decoded) {
       return std::unexpected{redact_path_for_user(decoded.error(), image.path)};
     }
@@ -2392,17 +2310,21 @@ class NativeBackend final {
               chroma_mode_name(prepared.settings.requested_chroma_mode);
           prepared.settings.bit_depth = 8;
           prepared.settings.bit_depth_reason =
-              cfg_.bit_depth ? "用户明确请求 JPGLI 8-bit 输出"
-                             : "JPGLI 输出 JPEG 兼容 8-bit precision";
+              cfg_.bit_depth ? "用户明确请求 JPG 8-bit 输出"
+                             : "JPG 输出 JPEG 兼容 8-bit precision";
           prepared.settings.chroma_mode =
               cfg_.chroma_mode == ChromaMode::auto_keep && !cfg_.jpegli_xyb
-                  ? ChromaMode::yuv444
+                  ? ChromaMode::yuv420
                   : cfg_.chroma_mode;
+          if (!cfg_.jpegli_xyb) {
+            prepared.settings.applied_matrix_coefficients = 6;
+            prepared.settings.applied_color_range = 1;
+          }
           prepared.settings.chroma_reason =
               cfg_.chroma_mode == ChromaMode::auto_keep
                   ? (cfg_.jpegli_xyb ? "XYB 模式使用 Jpegli 默认 RGB/XYB 采样"
-                                     : "JPGLI auto 使用 Jpegli 默认无色度降采样")
-                  : "用户请求 JPGLI chroma";
+                                     : "JPG 默认使用 YCbCr 4:2:0")
+                  : "用户请求 JPG 色度采样";
           if (cfg_.jpegli_xyb && !cfg_.strip_metadata) {
             prepared.settings.applied_icc =
                 prepared.settings.source_has_icc ? "stripped-xyb" : "none";
@@ -2428,11 +2350,12 @@ class NativeBackend final {
   }
 
   [[nodiscard]] std::expected<NativeEncodeResult, std::string> execute_encode(
-      const ImageDecodeResult& decoded,
+      ImageDecodeResult& decoded,
       ImageEncoder* encoder,
       const NativeEncodeSettings& settings,
       const fs::path& output_path,
       std::stop_token stop_token) const {
+    const bool source_has_gain_map = decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
     const auto encode_started = native_backend_detail::Clock::now();
     if (stop_token.stop_requested()) {
       return std::unexpected{"任务已取消。"};
@@ -2445,32 +2368,32 @@ class NativeBackend final {
         return std::unexpected{"--jpeg-hdr hdr 需要具有明确色彩语义的 HDR 输入。"};
 #if AWJ_HAS_JPEGLI
       if (*signal && cfg_.jpeg_hdr != JpegHdrMode::sdr) {
-        auto result = encode_hdr_jpeg(decoded.image, settings, stop_token);
+        std::optional<ImageBuffer> rgb;
+        if (is_yuv_format(decoded.image.pixel_format)) {
+          auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{.format = PixelFormat::rgba,
+              .bit_depth = decoded.image.bit_depth > 8 ? 16 : 8, .preserve_alpha = false}, stop_token);
+          if (!converted) return std::unexpected{converted.error()};
+          rgb = std::move(*converted);
+        } else if (decoded.image.geometry) {
+          auto transformed = resize_native_pixels(decoded.image, decoded.image.width, decoded.image.height, stop_token);
+          if (!transformed) return std::unexpected{transformed.error()};
+          rgb = std::move(*transformed);
+        }
+        auto result = encode_hdr_jpeg(rgb ? *rgb : decoded.image, settings, stop_token);
         if (result) result->diagnostics.timing.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
         return result;
       }
 #endif
     }
     const ImageBuffer* effective_image = &decoded.image;
-    std::optional<native_backend_detail::SdrImageConversion> sdr_fallback;
-    std::optional<ImageBuffer> materialized_scrgb_hdr;
-    if (native_backend_detail::sdr_only_format_conversion_needed(cfg_.output_format,
-                                                                 decoded.image)) {
-      const bool enhanced_png = cfg_.output_format == OutputFormat::png &&
-          decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
-      auto converted = [&]() -> std::expected<native_backend_detail::SdrImageConversion, std::string> {
-        if (!enhanced_png) return native_backend_detail::rgba_to_rgba8_for_sdr_only_format(decoded.image, stop_token);
-        auto mapped = hdr::tone_map_to_sdr_srgb(decoded.image, settings.bit_depth.value_or(8), stop_token);
-        if (!mapped) return std::unexpected{mapped.error()};
-        return native_backend_detail::SdrImageConversion{.image = std::move(*mapped), .hdr_tone_mapped = true};
-      }();
-      if (!converted) {
-        return std::unexpected{converted.error()};
-      }
-      sdr_fallback = std::move(*converted);
-      effective_image = &sdr_fallback->image;
-      effective_settings.bit_depth = effective_image->bit_depth;
-      if (sdr_fallback->hdr_tone_mapped) {
+    std::optional<ImageBuffer> search_reference;
+    if (native_backend_detail::sdr_only_format_conversion_needed(cfg_.output_format, decoded.image)) {
+      auto signal = hdr::has_explicit_hdr_signal(decoded.image);
+      if (!signal) return std::unexpected{signal.error()};
+      effective_settings.tone_map_to_sdr_pixels = *signal;
+      if (cfg_.output_format != OutputFormat::png) effective_settings.bit_depth = 8;
+      else effective_settings.bit_depth = settings.bit_depth.value_or(8);
+      if (*signal) {
         effective_settings.applied_color_primaries = 1;
         effective_settings.applied_transfer_characteristics = 13;
         effective_settings.applied_matrix_coefficients = 0;
@@ -2480,31 +2403,9 @@ class NativeBackend final {
         effective_settings.color_metadata_source = "hdr-sdr-srgb";
         effective_settings.encoder_fallback_reason = "HDR -> SDR tone-map";
         effective_settings.color_reason = "目标格式不支持 HDR，已转换为 SDR sRGB";
-      } else {
-        effective_settings.bit_depth_reason = "目标格式只支持 8-bit，已按 SDR 缩减位深";
-        if (effective_settings.source_has_hdr_metadata) {
-          effective_settings.applied_hdr_metadata = "sdr-fallback";
-          effective_settings.encoder_fallback_reason = "HDR -> SDR fallback";
-          effective_settings.color_reason =
-              "目标格式不支持源 HDR 元数据，已按 SDR 缩减位深";
-        }
-      }
+      } else effective_settings.bit_depth_reason = "目标格式只支持 8-bit，已按 SDR 缩减位深";
     } else if (decoded.image.sample_representation == SampleRepresentation::ieee_half_float) {
-      auto materialized = hdr::materialize_scrgb_as_hdr10(decoded.image);
-      if (!materialized) {
-        return std::unexpected{materialized.error()};
-      }
-      materialized_scrgb_hdr = std::move(*materialized);
-      effective_image = &*materialized_scrgb_hdr;
-      // materialize_scrgb_as_hdr10() produces a 16-bit UNORM RGB container for
-      // libavif/JXL input conversion. For AVIF, the target bitstream depth was
-      // already selected during prepare_encode() (for example 16-bit source ->
-      // AOM 12-bit). Do not overwrite that encoder decision with the container
-      // storage depth. Other HDR-capable formats still inherit the materialized
-      // buffer depth as before.
-      if (cfg_.output_format != OutputFormat::avif) {
-        effective_settings.bit_depth = materialized_scrgb_hdr->bit_depth;
-      }
+      if (cfg_.output_format != OutputFormat::avif) effective_settings.bit_depth = 16;
       effective_settings.applied_color_primaries = 9;
       effective_settings.applied_transfer_characteristics = 16;
       effective_settings.applied_matrix_coefficients = 9;
@@ -2512,12 +2413,22 @@ class NativeBackend final {
       effective_settings.applied_icc = "stripped-scrgb-hdr";
       effective_settings.applied_hdr_metadata = "scrgb-to-hdr";
       effective_settings.color_metadata_source = "scrgb-linear-to-bt2020-pq";
-      const bool enhanced = decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
-      effective_settings.encoder_fallback_reason = enhanced ? "Gain Map linear HDR -> BT.2020/PQ" : "scRGB -> BT.2020/PQ";
-      effective_settings.color_reason = enhanced ? "Gain Map 合成的线性 FP16 转换为 BT.2020/PQ" : "scRGB FP16 仅在 HDR 输出阶段转换为 BT.2020/PQ";
+      effective_settings.encoder_fallback_reason = source_has_gain_map ? "Gain Map linear HDR -> BT.2020/PQ" : "scRGB -> BT.2020/PQ";
+      effective_settings.color_reason = "线性 FP16 直接转换为目标 BT.2020/PQ 像素";
+    }
+    // Visual search needs one stable RGB reference; candidates share its samples.
+    if (cfg_.visual_quality && (effective_settings.tone_map_to_sdr_pixels ||
+        decoded.image.sample_representation == SampleRepresentation::ieee_half_float)) {
+      auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{.format = PixelFormat::rgba,
+          .bit_depth = effective_settings.tone_map_to_sdr_pixels ? 8 : 16,
+          .preserve_alpha = effective_settings.applied_alpha == "kept",
+          .tone_map_to_sdr = effective_settings.tone_map_to_sdr_pixels}, stop_token);
+      if (!converted) return std::unexpected{converted.error()};
+      search_reference = std::move(*converted); effective_image = &*search_reference;
+      effective_settings.tone_map_to_sdr_pixels = false;
     }
     if (cfg_.output_format == OutputFormat::avif &&
-        decoded.image.source_info && decoded.image.source_info->source_has_gain_map) {
+        source_has_gain_map) {
       if ((cfg_.color_primaries && *cfg_.color_primaries != 9) ||
           (cfg_.transfer_characteristics && *cfg_.transfer_characteristics != 16))
         return std::unexpected{"Gain Map: HDR 重建输出使用 BT.2020/PQ，不能仅通过 CICP 覆盖为其他原色或传递函数。"};

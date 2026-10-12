@@ -29,6 +29,7 @@ export module awj.gain_map;
 import awj.decoder_common;
 import awj.hdr_tonemap;
 import awj.image;
+import awj.large_image_plan;
 
 export namespace awj {
 
@@ -364,19 +365,24 @@ std::expected<ImageBuffer, std::string> compose_apple_gain_map(
   return image;
 }
 
-// A recognized but invalid map is an error, not an ordinary JPEG fallback.
-std::expected<std::optional<ImageDecodeResult>, std::string> decode_jpeg_gain_map(
-    const fs::path& path, std::stop_token stop = {}, int decode_threads = 1) {
+namespace gain_map_detail {
+
+using Decoder = std::unique_ptr<uhdr_codec_private_t, decltype(&uhdr_release_decoder)>;
+struct ProbedJpeg {
+  Decoder decoder{nullptr, &uhdr_release_decoder};
+  ImageDimensions dimensions;
+};
+
+// uhdr_dec_set_image owns a compressed copy; release our read buffer after probe.
+std::expected<std::optional<ProbedJpeg>, std::string> probe_jpeg(
+    const fs::path& path, std::stop_token stop) {
   const auto ext = decoder_common::lower_extension(path);
-  if (ext != L".jpg" && ext != L".jpeg" && ext != L".jpe" && ext != L".jfif") return std::optional<ImageDecodeResult>{};
-  if (!jpeg_may_contain_gain_map(path)) return std::optional<ImageDecodeResult>{};
+  if (ext != L".jpg" && ext != L".jpeg" && ext != L".jpe" && ext != L".jfif") return std::optional<ProbedJpeg>{};
+  if (!jpeg_may_contain_gain_map(path)) return std::optional<ProbedJpeg>{};
   auto bytes = decoder_common::read_file_bytes(path, "Ultra HDR");
   if (!bytes) return std::unexpected{bytes.error()};
-  if (!gain_map_detail::jpeg_has_gain_map_marker(*bytes)) return std::optional<ImageDecodeResult>{};
+  if (!jpeg_has_gain_map_marker(*bytes)) return std::optional<ProbedJpeg>{};
   if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-  const auto previous_threads = awjUhdrThreadLimit(static_cast<unsigned int>(std::max(1, decode_threads)));
-  struct ThreadBudget { unsigned int previous; ~ThreadBudget() { awjUhdrThreadLimit(previous); } } thread_budget{previous_threads};
-  using Decoder = std::unique_ptr<uhdr_codec_private_t, decltype(&uhdr_release_decoder)>;
   Decoder decoder{uhdr_create_decoder(), &uhdr_release_decoder};
   if (!decoder) return std::unexpected{"Gain Map: 无法创建 libultrahdr decoder。"};
   uhdr_compressed_image_t input{.data = bytes->data(), .data_sz = bytes->size(),
@@ -399,9 +405,44 @@ std::expected<std::optional<ImageDecodeResult>, std::string> decode_jpeg_gain_ma
   const auto height = uhdr_dec_get_image_height(decoder.get());
   auto dimensions = decoder_common::make_image_dimensions_checked(width, height, "Ultra HDR");
   if (!dimensions) return std::unexpected{dimensions.error()};
+  return std::optional<ProbedJpeg>{ProbedJpeg{std::move(decoder), *dimensions}};
+}
+
+} // namespace gain_map_detail
+
+std::expected<std::optional<ImageDimensions>, std::string> probe_jpeg_gain_map_dimensions(
+    const fs::path& path, std::stop_token stop = {}) {
+  auto probed = gain_map_detail::probe_jpeg(path, stop);
+  if (!probed) return std::unexpected{probed.error()};
+  if (!*probed) return std::optional<ImageDimensions>{};
+  auto dimensions = (**probed).dimensions;
+  if (auto* exif = uhdr_dec_get_exif((**probed).decoder.get()); exif && exif->data && exif->data_sz) {
+    auto* begin = static_cast<const std::uint8_t*>(exif->data);
+    auto size = exif->data_sz;
+    if (size >= 6 && std::memcmp(begin, "Exif\0\0", 6) == 0) { begin += 6; size -= 6; }
+    std::size_t offset{};
+    if (avifGetExifOrientationOffset(begin, size, &offset) == AVIF_RESULT_OK && offset < size) {
+      const auto orientation = begin[offset];
+      if (orientation < 1 || orientation > 8) return std::unexpected{"Gain Map: Exif orientation 无效。"};
+      if (orientation >= 5) std::swap(dimensions.width, dimensions.height);
+    }
+  }
+  return std::optional<ImageDimensions>{dimensions};
+}
+
+// A recognized but invalid map is an error, not an ordinary JPEG fallback.
+std::expected<std::optional<ImageDecodeResult>, std::string> decode_jpeg_gain_map(
+    const fs::path& path, std::stop_token stop = {}, int decode_threads = 1) {
+  auto probed = gain_map_detail::probe_jpeg(path, stop);
+  if (!probed) return std::unexpected{probed.error()};
+  if (!*probed) return std::optional<ImageDecodeResult>{};
+  const auto previous_threads = awjUhdrThreadLimit(static_cast<unsigned int>(std::max(1, decode_threads)));
+  struct ThreadBudget { unsigned int previous; ~ThreadBudget() { awjUhdrThreadLimit(previous); } } thread_budget{previous_threads};
+  auto& decoder = (**probed).decoder;
+  auto* dimensions = &(**probed).dimensions;
   auto pixels = hdr::hdr_detail::make_rgba_bytes(dimensions->width, dimensions->height, 2, "Ultra HDR");
   if (!pixels) return std::unexpected{pixels.error()};
-  error = uhdr_decode(decoder.get());
+  auto error = uhdr_decode(decoder.get());
   if (error.error_code != UHDR_CODEC_OK) return std::unexpected{gain_map_detail::uhdr_error(error)};
   if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
   auto* raw = uhdr_get_decoded_image(decoder.get());

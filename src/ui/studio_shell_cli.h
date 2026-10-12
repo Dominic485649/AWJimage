@@ -46,7 +46,10 @@ std::optional<std::string> shell_context_menu_warning(
     const std::array<MenuFormatParams, 5>& menu_params);
 
 std::expected<std::shared_ptr<StudioChildProcess>, std::string>
-start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id);
+start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
+                        std::span<const std::wstring> query_args = {});
+std::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
+    const std::filesystem::path& path, bool allow_wic_fallback);
 
 void cleanup_studio_queue_manifest(
     const std::shared_ptr<StudioChildProcess>& child) noexcept;

@@ -84,9 +84,25 @@ struct ComApartment {
   bool should_uninitialize{};
 };
 
-struct ProbeFrameResult {
+struct ThreadFactory {
   ComApartment com{};
   ComPtr<IWICImagingFactory> factory{};
+  HRESULT status{};
+  ThreadFactory() {
+    status = com.init;
+    if (SUCCEEDED(com.init)) {
+      IWICImagingFactory* value = nullptr;
+      status = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+                                CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&value));
+      factory.reset(value);
+    }
+  }
+};
+
+struct ProbeFrameResult {
+  std::optional<ComApartment> borrowed_com{};
+  ComPtr<IWICImagingFactory> owned_factory{};
+  IWICImagingFactory* factory{};
   ComPtr<IWICBitmapDecoder> decoder{};
   ComPtr<IWICBitmapFrameDecode> frame{};
 };
@@ -115,17 +131,26 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
   }
 
   ProbeFrameResult result{};
-  if (!result.com.usable()) {
-    return std::unexpected{std::format("WIC COM 初始化失败: {}", hresult_message(result.com.init))};
+  thread_local ThreadFactory cached;
+  if (cached.com.init == RPC_E_CHANGED_MODE) {
+    // An externally owned STA may end before this thread. Keep its factory
+    // scoped to the frame rather than retaining an apartment-bound pointer.
+    result.borrowed_com.emplace();
+    if (!result.borrowed_com->usable())
+      return std::unexpected{std::format("WIC COM 初始化失败: {}",
+                                         hresult_message(result.borrowed_com->init))};
+    IWICImagingFactory* value = nullptr;
+    const HRESULT status = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
+        CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&value));
+    result.owned_factory.reset(value);
+    if (FAILED(status)) return std::unexpected{std::format("WIC 不可用: {}", hresult_message(status))};
+    result.factory = result.owned_factory.get();
+  } else if (!cached.factory) {
+    return std::unexpected{std::format("WIC 不可用: {}", hresult_message(cached.status))};
+  } else {
+    result.factory = cached.factory.get();
   }
-
-  IWICImagingFactory* raw_factory = nullptr;
-  HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER,
-                                IID_PPV_ARGS(&raw_factory));
-  if (FAILED(hr)) {
-    return std::unexpected{std::format("创建 WIC factory 失败: {}", hresult_message(hr))};
-  }
-  result.factory.reset(raw_factory);
+  HRESULT hr{};
 
   IWICBitmapDecoder* raw_decoder = nullptr;
   hr = result.factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,

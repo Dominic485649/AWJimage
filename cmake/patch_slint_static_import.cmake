@@ -38,6 +38,25 @@ awj_slint_replace(${adapter}
 awj_slint_replace(${adapter}
     "            cursor_pos: Default::default(),"
     "            cursor_pos: Default::default(),\n            pending_native_file_drops: Default::default(),")
+# External Windows resizers can change the native client area before queued
+# resize events reach Slint. Render the current size and present each resize
+# without waiting for the animation frame timer.
+awj_slint_replace(${adapter}
+    "            if self.pending_resize_event_after_show.take() {"
+    [=[            // AWJ_WINDOWS_RESIZE_SYNC
+            if self.pending_resize_event_after_show.take()
+                || (cfg!(target_os = "windows")
+                    && physical_size_to_slint(&winit_window.surface_size()) != self.size.get())
+            {]=])
+awj_slint_replace(${adapter}
+    "                resized?;\n            }\n            WinitWindowEvent::CloseRequested => {"
+    [=[                resized?;
+                #[cfg(target_os = "windows")]
+                if size.width > 0 && size.height > 0 {
+                    self.draw()?; // AWJ_WINDOWS_RESIZE_SYNC
+                }
+            }
+            WinitWindowEvent::CloseRequested => {]=])
 awj_slint_replace(${adapter}
     "            WinitWindowEvent::CursorMoved { position, .. } => {"
     "            WinitWindowEvent::DroppedFile(path) => {\n                self.pending_native_file_drops.borrow_mut().push(path);\n            }\n            WinitWindowEvent::CursorMoved { position, .. } => {")

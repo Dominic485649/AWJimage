@@ -138,7 +138,7 @@ bool output_format_uses_rgb8_cache(OutputFormat format) noexcept {
 }
 
 std::string_view rgb8_cache_context(OutputFormat format) noexcept {
-  return format == OutputFormat::jpgli ? "JPGLI visual_quality RGB"
+  return format == OutputFormat::jpgli ? "JPG visual_quality RGB"
                                        : "JXL visual_quality RGB";
 }
 
@@ -289,6 +289,7 @@ struct EvaluatedVisualQualityCandidate {
 std::expected<EvaluatedVisualQualityCandidate, std::string>
 evaluate_visual_quality_candidate(
     std::optional<LumaImage>& reference_luma,
+    CpuVisualMetricWorkspace& cpu_workspace,
     const ImageBuffer& reference_image, const ImageEncoder& encoder,
     const ImageDecoder& decoder, NativeEncodeSettings settings, int quality,
     const fs::path& candidate_path,
@@ -384,7 +385,7 @@ evaluate_visual_quality_candidate(
     if (settings.visual_quality_gpu && !metric_session_failed) {
       return make_luma_image_accelerated(decoded->image);
     }
-    return make_luma_image(decoded->image);
+    return make_luma_image(decoded->image, std::move(cpu_workspace.candidate_luma));
   }();
   decoded->image = ImageBuffer{};
   timing.visual_quality_luma_seconds +=
@@ -471,7 +472,7 @@ evaluate_visual_quality_candidate(
           started);
     }
     return record_ms_ssim_metric(
-        compute_ms_ssim(**current_reference_luma, *candidate_luma), started);
+        compute_ms_ssim_cached(**current_reference_luma, *candidate_luma, cpu_workspace), started);
   }();
   if (!ms_ssim) {
     return std::unexpected{ms_ssim.error()};
@@ -482,6 +483,7 @@ evaluate_visual_quality_candidate(
 
   started = native_visual_search_detail::Clock::now();
   const auto metrics = make_visual_metric_result(*gmsd, *ms_ssim);
+  cpu_workspace.candidate_luma = std::move(*candidate_luma);
   timing.visual_quality_metric_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
   const auto encoded_bytes = encoded->encoded.bytes.size();
@@ -584,6 +586,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     }
   }
   std::optional<LumaImage> reference_luma;
+  CpuVisualMetricWorkspace cpu_workspace;
 
   std::optional<EvaluatedVisualQualityCandidate> closest_candidate_result;
   std::optional<EvaluatedVisualQualityCandidate> smallest_passing_result;
@@ -667,7 +670,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       candidate_settings.jpegli_rgb8_input = *rgb8_input;
     }
     auto candidate = evaluate_visual_quality_candidate(
-        reference_luma, reference_image, encoder, decoder, candidate_settings,
+        reference_luma, cpu_workspace, reference_image, encoder, decoder, candidate_settings,
         quality, candidate_path, metric_session ? &*metric_session : nullptr,
         stop_token);
     if (!candidate) {

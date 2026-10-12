@@ -27,10 +27,6 @@ inline constexpr std::string_view archive_manifest_v2_url =
     "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-archive.json";
 inline constexpr std::string_view archive_manifest_v2_signature_url =
     "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-archive.json.sig";
-inline constexpr std::string_view legacy_archive_manifest_v2_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest-v2.json";
-inline constexpr std::string_view legacy_archive_manifest_v2_signature_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-manifest-v2.json.sig";
 inline constexpr std::uint32_t supported_archive_manifest_v2_schema = 2;
 
 struct ArchiveManifestV2 {
@@ -330,9 +326,9 @@ std::expected<ArchiveManifestV2, std::string> parse_archive_manifest_v2_json(
     }
     return manifest;
   } catch (const nlohmann::json::exception& error) {
-    return std::unexpected{std::format("解析 update-manifest-v2.json 失败：{}", error.what())};
+    return std::unexpected{std::format("解析 update-archive.json 失败：{}", error.what())};
   } catch (const std::exception& error) {
-    return std::unexpected{std::format("读取 update-manifest-v2.json 失败：{}", error.what())};
+    return std::unexpected{std::format("读取 update-archive.json 失败：{}", error.what())};
   }
 }
 

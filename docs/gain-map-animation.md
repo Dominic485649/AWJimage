@@ -27,7 +27,7 @@
 | --- | --- |
 | AVIF | 增强图默认 10-bit；重建输出为 BT.2020/PQ，写入适用的 CICP/CLLI；可显式选择 8/10/12-bit |
 | JXL | 使用现有 BT.2020/PQ 高位深像素编码，不携带 Gain Map bundle |
-| JPGLI | 默认 auto：SDR 普通 JPEGli，HDR 生成 8-bit SDR base + JPEGli Gain Map，封装 ISO 21496-1 + MPF；CLI sdr 强制 tone mapping |
+| JPG | 默认 auto：SDR 默认 8-bit YCbCr 4:2:0，可选 4:2:2 / 4:4:4；HDR 生成 8-bit SDR base + 8-bit JPEG Gain Map，封装 ISO 21496-1 + MPF；CLI sdr 强制 tone mapping |
 | WebP | 通过现有 libplacebo spline + perceptual gamut mapping 转为 100-nit SDR sRGB、8-bit |
 | PNG | 增强图默认 SDR sRGB 8-bit；可指定 `--bit-depth 16`，在浮点色调映射后直接量化为 16-bit；普通非 Gain Map PNG 维持现有位深规则 |
 

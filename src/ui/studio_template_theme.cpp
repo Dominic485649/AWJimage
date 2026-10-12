@@ -5,9 +5,11 @@
 #endif
 
 #include <dwmapi.h>
+#include <delayimp.h>
 #include <windows.h>
 
 #include <cstdint>
+#include <cstring>
 #include <format>
 #include <fstream>
 #include <string>
@@ -21,7 +23,39 @@ import awj.core;
 import awj.encoding_defaults;
 import awj.studio_defaults;
 
+namespace {
+struct DwmApi {
+  HMODULE module = LoadLibraryExW(L"dwmapi.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
+  decltype(&DwmSetWindowAttribute) set_attribute = module
+      ? reinterpret_cast<decltype(set_attribute)>(GetProcAddress(module, "DwmSetWindowAttribute")) : nullptr;
+  FARPROC color = module ? GetProcAddress(module, "DwmGetColorizationColor") : nullptr;
+  FARPROC blur = module ? GetProcAddress(module, "DwmEnableBlurBehindWindow") : nullptr;
+};
+const DwmApi& dwm_api() { static const DwmApi api; return api; }
+HRESULT WINAPI unavailable_attribute(HWND, DWORD, LPCVOID, DWORD) { return E_NOTIMPL; }
+HRESULT WINAPI unavailable_color(DWORD*, BOOL*) { return E_NOTIMPL; }
+HRESULT WINAPI unavailable_blur(HWND, const DWM_BLURBEHIND*) { return E_NOTIMPL; }
+
+// Slint/winit also imports these optional effects. Resolve them from System32
+// before the delay loader runs, and return a failed HRESULT when unavailable.
+FARPROC WINAPI optional_dwm_import(unsigned notification, PDelayLoadInfo info) {
+  if (notification != dliStartProcessing || std::strcmp(info->szDll, "dwmapi.dll") != 0 ||
+      !info->dlp.fImportByName) return nullptr;
+  const auto& api = dwm_api();
+  const auto name = info->dlp.szProcName;
+  if (std::strcmp(name, "DwmSetWindowAttribute") == 0)
+    return api.set_attribute ? reinterpret_cast<FARPROC>(api.set_attribute) : reinterpret_cast<FARPROC>(unavailable_attribute);
+  if (std::strcmp(name, "DwmGetColorizationColor") == 0)
+    return api.color ? api.color : reinterpret_cast<FARPROC>(unavailable_color);
+  if (std::strcmp(name, "DwmEnableBlurBehindWindow") == 0)
+    return api.blur ? api.blur : reinterpret_cast<FARPROC>(unavailable_blur);
+  return nullptr;
+}
+}
+extern "C" const PfnDliHook __pfnDliNotifyHook2 = optional_dwm_import;
 namespace awj::studio {
+bool windows_caption_effects_available() noexcept { return dwm_api().set_attribute != nullptr; }
+
 
 bool template_contains_token(std::string_view text, std::string_view token) {
   return text.find(token) != std::string_view::npos;
@@ -131,13 +165,38 @@ void apply_title_bar_theme(slint::Window& window, bool dark_mode) noexcept {
     if (hwnd == nullptr) {
       return;
     }
+    const int dpi = GetDpiForWindow(hwnd);
+    DWORD system_use_light_theme = 1;
+    DWORD value_size = sizeof(system_use_light_theme);
+    RegGetValueW(HKEY_CURRENT_USER,
+        L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+        L"SystemUsesLightTheme", RRF_RT_REG_DWORD, nullptr,
+        &system_use_light_theme, &value_size);
+    const bool taskbar_dark = system_use_light_theme == 0;
+    const int app_icon_size = MulDiv(32, dpi, 96);
+    const auto app_icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(taskbar_dark ? 2 : 1), IMAGE_ICON,
+        app_icon_size, app_icon_size, LR_SHARED));
+    if (app_icon) {
+      SendMessageW(hwnd, WM_SETICON, ICON_BIG, reinterpret_cast<LPARAM>(app_icon));
+    }
+    const int size = MulDiv(16, dpi, 96);
+    const auto icon = static_cast<HICON>(LoadImageW(GetModuleHandleW(nullptr),
+        MAKEINTRESOURCEW(dark_mode ? 2 : 1), IMAGE_ICON, size, size, LR_SHARED));
+    if (icon) {
+      SendMessageW(hwnd, WM_SETICON, ICON_SMALL, reinterpret_cast<LPARAM>(icon));
+    }
+    const auto set_attribute = dwm_api().set_attribute;
+    if (!set_attribute) return;
     const BOOL use_dark_mode = dark_mode ? TRUE : FALSE;
-    DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode,
+    set_attribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &use_dark_mode,
                           sizeof(use_dark_mode));
-    // Keep the native caption in sync with StudioTheme.nav-bg.
-    const COLORREF caption_color = dark_mode ? RGB(36, 36, 36) : RGB(248, 251, 255);
-    DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color,
+    // Caption matches navigation; the taskbar icon uses Windows' own scheme.
+    const COLORREF caption_color = dark_mode ? RGB(36, 36, 36) : RGB(238, 244, 251);
+    set_attribute(hwnd, DWMWA_CAPTION_COLOR, &caption_color,
                           sizeof(caption_color));
+    const COLORREF text_color = dark_mode ? RGB(245, 245, 245) : RGB(17, 24, 39);
+    set_attribute(hwnd, DWMWA_TEXT_COLOR, &text_color, sizeof(text_color));
   } catch (...) {
   }
 }

@@ -32,6 +32,7 @@
 import awj.config;
 import awj.core;
 import awj.pipeline;
+import awj.decoder_registry;
 import awj.preset;
 #ifdef _WIN32
 import awj.raw_image_io;
@@ -249,22 +250,22 @@ int run_cli_args(std::vector<std::wstring> args) {
   }
 #else
   std::signal(SIGINT, signal_handler);
-  std::jthread signal_watcher{[](std::stop_token token) {
-    while (!token.stop_requested()) {
-      if (g_cli_signal_seen != 0) {
-        if (!g_cli_stop_requested.exchange(true)) {
-          g_cli_stop_source.request_stop();
-        }
-        return;
-      }
-      std::this_thread::sleep_for(std::chrono::milliseconds{50});
-    }
-  }};
 #endif
 
   try {
     if (args.empty()) {
       awj::print_help();
+      return 0;
+    }
+    if (!args.empty() && args.front() == L"--studio-probe-image") {
+      if (args.size() != 3 || (args[2] != L"wic" && args[2] != L"native")) {
+        print_line("图片尺寸探测参数无效。");
+        return 1;
+      }
+      auto dimensions = awj::probe_image_dimensions_for_path(
+          std::filesystem::path{args[1]}, awj::DecoderRegistryOptions{.allow_wic_fallback = args[2] == L"wic"});
+      if (!dimensions) { print_line(dimensions.error()); return 1; }
+      print_line(std::format("{} {}", dimensions->width, dimensions->height));
       return 0;
     }
     if (args.size() == 1 && args.front() == L"--list-presets") {
@@ -290,6 +291,25 @@ int run_cli_args(std::vector<std::wstring> args) {
     if (parsed->should_exit) {
       return parsed->exit_code;
     }
+    if (auto affinity = awj::apply_cpu_affinity(parsed->config.cpu_affinity); !affinity) {
+      print_line(std::format("[FAIL] {}", affinity.error()));
+      return 1;
+    }
+    if (!parsed->config.cpu_affinity.empty()) {
+      print_line(std::format("[INFO] CPU affinity: {} logical CPUs; thread budget {}.",
+          parsed->config.cpu_affinity.size(), parsed->config.max_jobs));
+    }
+#ifndef _WIN32
+    std::jthread signal_watcher{[](std::stop_token token) {
+      while (!token.stop_requested()) {
+        if (g_cli_signal_seen != 0) {
+          if (!g_cli_stop_requested.exchange(true)) g_cli_stop_source.request_stop();
+          return;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{50});
+      }
+    }};
+#endif
 #ifdef _WIN32
     std::unique_ptr<WgcStdinTemporary> wgc_temporary;
     if (*wgc_stdin) {

@@ -11,12 +11,13 @@ import { StudioTheme } from "studio_theme.slint";
 export { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption }
 
 export component AwjStudio inherits Window {
-    title: "AWJ Studio";
-    icon: @image-url("logo.png");
+    title: "AWJ";
+    in property <bool> native-window-icons: false;
+    icon: !root.native-window-icons && root.dark-mode ? @image-url("logo-dark.png") : @image-url("logo-light.png");
     default-font-family: root.ui-font-family;
-    preferred-width: 1220px;
+    preferred-width: 1171px;
     preferred-height: 800px;
-    min-width: 796px;
+    min-width: 747px;
     min-height: 560px;
 
     in-out property <string> input-path: "";
@@ -98,8 +99,7 @@ export component AwjStudio inherits Window {
     in-out property <int> update-channel-index: 0;
     in-out property <bool> show-update-changelog-enabled: true;
     in-out property <bool> show-update-changelog: true;
-    in-out property <bool> hide-update-changelog-after-exit: true;
-    in-out property <bool> show-update-changelog-after-update: true;
+    in-out property <bool> only-show-changelog-after-update: true;
     in-out property <bool> update-checking: false;
     in-out property <bool> update-available: false;
     in-out property <string> update-version: "";
@@ -193,9 +193,8 @@ export component AwjStudio inherits Window {
     property <length> control-button-height: 38px;
     // 命名 token 中英语 "Params" 最宽；68px 包含 SoftButton 左右各 8px 的文本内边距，
     // 六个 token 共用该宽度，保证中英文在单行/双行布局中都不会因标签长度产生宽度差异。
-    property <length> template-token-button-width: 68px;
     property <length> page-gap: 10px;
-    property <length> nav-width: 196px;
+    property <length> nav-width: 147px;
     // 队列列宽由 QueuePage 内的拖拽手柄改写，这里用 in-out 双向绑定保留会话内状态。
     in-out property <length> queue-filename-width: 170px;
     in-out property <length> queue-size-width: 72px;
@@ -209,9 +208,8 @@ export component AwjStudio inherits Window {
     in-out property <int> selected-page: 1;
     property <bool> dark-mode: root.theme-index == 2 || (root.theme-index == 0 && root.system-dark-mode);
     property <bool> pending-theme-dark-mode: root.pending-theme-index == 2 || (root.pending-theme-index == 0 && root.system-dark-mode);
-    property <color> pending-theme-page-bg: StudioTheme.page-bg(root.pending-theme-dark-mode);
-    property <color> page-bg: StudioTheme.page-bg(root.dark-mode);
-    property <color> mica-tint: StudioTheme.mica-tint(root.dark-mode);
+    property <color> pending-theme-page-bg: StudioTheme.nav-bg(root.pending-theme-dark-mode);
+    property <color> page-bg: StudioTheme.nav-bg(root.dark-mode);
     property <color> nav-bg: StudioTheme.nav-bg(root.dark-mode);
     property <color> chrome-bg: StudioTheme.chrome-bg(root.dark-mode);
     property <color> panel-bg: StudioTheme.panel-bg(root.dark-mode);
@@ -286,9 +284,9 @@ export component AwjStudio inherits Window {
     callback settings-page-opened();
     callback update-channel-selection-requested(int);
     callback check-update-requested();
+    callback open-url(string);
     callback show-update-changelog-requested(bool);
-    callback hide-update-changelog-after-exit-requested(bool);
-    callback show-update-changelog-after-update-requested(bool);
+    callback only-show-changelog-after-update-requested(bool);
     callback version-clicked();
     callback browse-large-image-file();
     callback browse-large-image-folder();
@@ -398,31 +396,8 @@ export component AwjStudio inherits Window {
             animate background { duration: 180ms; easing: ease-out; }
         }
 
-        Rectangle {
-            x: root.nav-width;
-            y: 0px;
-            width: 1px;
-            height: parent.height;
-            background: root.panel-border;
-            animate background { duration: 180ms; easing: ease-out; }
-        }
-
-        Rectangle {
-            x: root.nav-width + root.page-gap;
-            y: root.page-gap;
-            width: parent.width - root.nav-width - root.page-gap * 2;
-            height: parent.height - root.page-gap * 2;
-            border-radius: 8px;
-            background: root.mica-tint;
-            opacity: 0.56;
-            animate background { duration: 180ms; easing: ease-out; }
-        }
-
         HorizontalLayout {
-            padding-top: root.page-gap;
-            padding-bottom: root.page-gap;
-            padding-right: root.page-gap;
-            spacing: root.page-gap;
+            spacing: 0px;
 
             Rectangle {
                 width: root.nav-width;
@@ -440,10 +415,10 @@ export component AwjStudio inherits Window {
                         VerticalLayout {
                             spacing: 4px;
                             cross-axis-alignment: center;
-                            Text { text: "AWJ Studio"; color: root.text-strong; font-size: 24px; font-weight: 900; letter-spacing: 0px; }
+                            Text { text: "AWJ"; color: StudioTheme.text-strong(root.dark-mode); font-size: 24px; font-weight: 900; letter-spacing: 0px; horizontal-alignment: center; }
                             Rectangle {
-                                // 标题本身保持居中；版本组合单独向左移 16px。
-                                width: 88px;
+                                // Branding and version controls share the navigation centre.
+                                width: 56px;
                                 height: 3px;
                                 background: transparent;
                                 Rectangle {
@@ -454,14 +429,14 @@ export component AwjStudio inherits Window {
                                 }
                             }
                             version-control := Rectangle {
-                                width: 88px;
+                                width: 56px;
                                 height: 25px;
                                 background: transparent;
                                 version-hit := Rectangle {
                                 width: 56px;
                                 height: parent.height;
                                 border-radius: 5px;
-                                background: version-touch.has-hover ? root.accent-soft : transparent;
+                                background: version-touch.has-hover ? StudioTheme.accent-soft(root.dark-mode) : transparent;
                                 accessible-role: button;
                                 accessible-label: @tr("当前版本 ") + root.current-version;
                                 accessible-action-default => { root.version-clicked(); }
@@ -469,7 +444,8 @@ export component AwjStudio inherits Window {
                                     x: 7px;
                                     width: parent.width - 14px;
                                     text: "v" + root.current-version;
-                                    color: root.accent-strong;
+                                    horizontal-alignment: center;
+                                    color: StudioTheme.accent-strong(root.dark-mode);
                                     font-size: 12px;
                                     font-weight: 700;
                                     vertical-alignment: center;
@@ -502,7 +478,7 @@ export component AwjStudio inherits Window {
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
                         selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
+                        normal-text: StudioTheme.text-body(root.dark-mode);
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 1; }
                         navigate(action) => {
@@ -518,7 +494,7 @@ export component AwjStudio inherits Window {
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
                         selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
+                        normal-text: StudioTheme.text-body(root.dark-mode);
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 0; }
                         navigate(action) => {
@@ -536,7 +512,7 @@ export component AwjStudio inherits Window {
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
                         selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
+                        normal-text: StudioTheme.text-body(root.dark-mode);
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 4; }
                         navigate(action) => {
@@ -554,7 +530,7 @@ export component AwjStudio inherits Window {
                         normal-background: transparent;
                         hover-background: root.dark-mode ? #202b3a : #eef6ff;
                         selected-background: root.dark-mode ? #188697 : #0f7c8c;
-                        normal-text: root.text-body;
+                        normal-text: StudioTheme.text-body(root.dark-mode);
                         selected-text: #ffffff;
                         clicked => { root.selected-page = 2; }
                         navigate(action) => {
@@ -569,7 +545,24 @@ export component AwjStudio inherits Window {
             Rectangle {
                 horizontal-stretch: 1;
                 vertical-stretch: 1;
-                background: transparent;
+                clip: true;
+                background: root.page-bg;
+                content-viewport := Rectangle {
+                    x: root.page-gap;
+                    y: root.page-gap;
+                    width: parent.width - root.page-gap;
+                    height: parent.height - root.page-gap;
+                    border-radius: 8px;
+                    clip: true;
+                    background: transparent;
+                    // Put the right/bottom panel strokes outside the client area.
+                    // The native window owns those edges; the viewport owns its corners.
+                    Rectangle {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width + 1px;
+                        height: parent.height + 1px;
+                        background: transparent;
 
                 if root.selected-page == 0 && root.parameter-preset-index != 1: ParameterPage {
     alpha-policy-index <=> root.alpha-policy-index;
@@ -587,7 +580,7 @@ export component AwjStudio inherits Window {
     combo-popup-finished() => { root.combo-popup-finished(); }
     combo-popup-requested() => { root.combo-popup-requested(); }
     combo-selected-bg : root.combo-selected-bg;
-    dark-mode : root.dark-mode;
+    dark-mode: root.dark-mode;
     format-index <=> root.format-index;
     window-height : root.height;
     hint-blue : root.hint-blue;
@@ -665,7 +658,7 @@ export component AwjStudio inherits Window {
     combo-selected-bg : root.combo-selected-bg;
     context-menu-warning <=> root.context-menu-warning;
     context-menu-warning-clicked() => { root.context-menu-warning-clicked(); }
-    dark-mode : root.dark-mode;
+    dark-mode: root.dark-mode;
     window-height : root.height;
     install-context-menu-requested() => { root.install-context-menu-requested(); }
     menu-allow-wic-fallback <=> root.menu-allow-wic-fallback;
@@ -709,6 +702,7 @@ export component AwjStudio inherits Window {
     png-suffix-toggled(checked) => { root.png-suffix-toggled(checked); }
 }
                 if root.selected-page == 1: QueuePage {
+    right-frame-inset: root.page-gap + 1px;
     language-index: root.language-index;
     init => { root.drop-regions = self.drop-regions; }
     changed drop-regions => { root.drop-regions = self.drop-regions; }
@@ -731,7 +725,7 @@ export component AwjStudio inherits Window {
     combo-selected-bg : root.combo-selected-bg;
     control-button-height : root.control-button-height;
     control-button-width : root.control-button-width;
-    dark-mode : root.dark-mode;
+    dark-mode: root.dark-mode;
     field-bg : root.field-bg;
     field-border : root.field-border;
     force-terminate-supported <=> root.force-terminate-supported;
@@ -790,7 +784,6 @@ export component AwjStudio inherits Window {
     template-sha2568-selected <=> root.template-sha2568-selected;
     template-text <=> root.template-text;
     template-time-selected <=> root.template-time-selected;
-    template-token-button-width : root.template-token-button-width;
     text-body : root.text-body;
     text-muted : root.text-muted;
     text-soft : root.text-soft;
@@ -803,17 +796,16 @@ export component AwjStudio inherits Window {
     write-summary <=> root.write-summary;
 }
 
-                if root.selected-page == 4 && root.show-update-changelog: ScrollView {
+                if root.selected-page == 4 && root.show-update-changelog: Rectangle {
                     horizontal-stretch: 1;
                     vertical-stretch: 1;
-                    viewport-width: parent.width;
-                    viewport-height: max(parent.height, changelog-content.preferred-height + 48px);
-                    Rectangle {
-                        border-radius: 8px;
-                        background: root.panel-bg;
-                        border-color: root.panel-border;
-                        border-width: 1px;
-                        height: max(parent.height, changelog-content.preferred-height + 48px);
+                    border-radius: 8px;
+                    clip: true;
+                    background: root.panel-bg;
+                    border-color: root.panel-border;
+                    border-width: 1px;
+                    ScrollView {
+                        viewport-width: self.width;
                         changelog-content := VerticalLayout {
                             padding: 24px;
                             spacing: 14px;
@@ -822,20 +814,16 @@ export component AwjStudio inherits Window {
                                 spacing: 14px;
                                 Text { text: @tr("更新日志"); color: root.text-strong; font-size: 22px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; }
                                 CheckBox {
-                                    text: @tr("退出后隐藏更新日志");
-                                    checked <=> root.hide-update-changelog-after-exit;
-                                    toggled => { root.hide-update-changelog-after-exit-requested(self.checked); }
+                                    text: @tr("仅在更新后显示更新日志");
+                                    checked <=> root.only-show-changelog-after-update;
+                                    toggled => { root.only-show-changelog-after-update-requested(self.checked); }
                                 }
-                                CheckBox {
-                                    text: @tr("更新后显示更新日志");
-                                    checked <=> root.show-update-changelog-after-update;
-                                    toggled => { root.show-update-changelog-after-update-requested(self.checked); }
-                                }
+
                             }
                             for entry in root.update-history: Rectangle {
                                 border-radius: 8px;
                                 background: root.panel-bg-soft;
-                                border-color: root.panel-border;
+                                border-color: transparent;
                                 border-width: 1px;
                                 height: self.preferred-height;
                                 VerticalLayout {
@@ -882,16 +870,14 @@ export component AwjStudio inherits Window {
     combo-selected-bg : root.combo-selected-bg;
     control-button-height : root.control-button-height;
     window-height : root.height;
-    hide-update-changelog-after-exit <=> root.hide-update-changelog-after-exit;
-    hide-update-changelog-after-exit-requested(a0) => { root.hide-update-changelog-after-exit-requested(a0); }
+    only-show-changelog-after-update <=> root.only-show-changelog-after-update;
+    only-show-changelog-after-update-requested(a0) => { root.only-show-changelog-after-update-requested(a0); }
     language-index <=> root.language-index;
     language-selection-requested(a0) => { root.language-selection-requested(a0); }
     page-gap : root.page-gap;
     panel-bg : root.panel-bg;
     panel-border : root.panel-border;
     running <=> root.running;
-    show-update-changelog-after-update <=> root.show-update-changelog-after-update;
-    show-update-changelog-after-update-requested(a0) => { root.show-update-changelog-after-update-requested(a0); }
     show-update-changelog-enabled <=> root.show-update-changelog-enabled;
     show-update-changelog-requested(a0) => { root.show-update-changelog-requested(a0); }
     text-body : root.text-body;
@@ -906,6 +892,7 @@ export component AwjStudio inherits Window {
     update-channel-index <=> root.update-channel-index;
     update-channel-selection-requested(a0) => { root.update-channel-selection-requested(a0); }
     check-update-requested => { root.check-update-requested(); }
+    open-url(url) => { root.open-url(url); }
     update-checking <=> root.update-checking;
     update-last-successful-check <=> root.update-last-successful-check;
     update-status <=> root.update-status;
@@ -914,6 +901,13 @@ export component AwjStudio inherits Window {
     visual-quality-gpu-help-text <=> root.visual-quality-gpu-help-text;
     wic-ui-visible <=> root.wic-ui-visible;
 }
+                    }
+                    // Software clipping ignores the radius; these covers stay fixed while scrolling.
+                    Path { x: 0px; y: 0px; width: 8px; height: 8px; commands: "M0 0 H8 A8 8 0 0 0 0 8 Z"; fill: root.page-bg; }
+                    Path { x: parent.width - 8px; y: 0px; width: 8px; height: 8px; commands: "M8 0 H0 A8 8 0 0 1 8 8 Z"; fill: root.page-bg; }
+                    Path { x: 0px; y: parent.height - 8px; width: 8px; height: 8px; commands: "M0 8 V0 A8 8 0 0 0 8 8 Z"; fill: root.page-bg; }
+                    Path { x: parent.width - 8px; y: parent.height - 8px; width: 8px; height: 8px; commands: "M8 8 H0 A8 8 0 0 0 8 0 Z"; fill: root.page-bg; }
+                }
             }
         }
 
@@ -947,7 +941,7 @@ export component AwjStudio inherits Window {
     shell-menu-injection-supported: root.shell-menu-injection-supported;
     delete-parameter-preset => { root.delete-parameter-preset(); }
     cancel-preset-editor() => { root.cancel-preset-editor(); }
-    dark-mode : root.dark-mode;
+    dark-mode: root.dark-mode;
     window-height : root.height;
     panel-bg : root.panel-bg;
     panel-border : root.panel-border;
@@ -1071,7 +1065,7 @@ export component AwjStudio inherits Window {
                 border-radius: 6px;
                 border-width: 1px;
                 border-color: root.panel-border;
-                background: root.dark-mode ? #17202c : #ffffff;
+                background: #ffffff;
                 clip: true;
                 accessible-role: list;
                 accessible-label: @tr("队列操作");

@@ -428,6 +428,11 @@ int wmain(int argc, wchar_t** argv) try {
   if (ec || !std::filesystem::copy_file(awj_exe, test_exe, ec) || ec)
     return fail("failed to copy the test executable into its isolated profile");
   auto params = make_params(true);
+  auto cli = awj_exe;
+  cli.replace_extension(L".com");
+  ec.clear();
+  if (!std::filesystem::copy_file(cli, executable_dir / L"AWJ.com", ec) || ec)
+    return fail("Cannot copy the independent CLI for the Shell fixture.");
   auto installed = install(test_exe, params);
   if (!installed) return fail(installed.error());
 

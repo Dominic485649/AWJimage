@@ -10,6 +10,9 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <charconv>
+#include <chrono>
+#include <thread>
 #include <cwctype>
 #include <format>
 #include <limits>
@@ -46,7 +49,7 @@ std::wstring cli_output_format_arg(awj::OutputFormat format) {
     case awj::OutputFormat::jxl:
       return L"jxl";
     case awj::OutputFormat::jpgli:
-      return L"jpgli";
+      return L"jpg";
     case awj::OutputFormat::avif:
     default:
       return L"avif";
@@ -108,6 +111,14 @@ std::vector<std::wstring> cli_arguments_from_config(
   push_cli_option(args, L"--format", cli_output_format_arg(cfg.output_format));
   push_cli_option(args, L"--template", cfg.output_template);
   push_cli_option(args, L"--threads", std::to_wstring(cfg.max_jobs));
+  if (!cfg.cpu_affinity.empty()) {
+    std::wstring cpus;
+    for (const auto cpu : cfg.cpu_affinity) {
+      if (!cpus.empty()) cpus += L',';
+      cpus += std::to_wstring(cpu);
+    }
+    push_cli_option(args, L"--cpu-affinity", cpus);
+  }
   push_cli_option(args, L"--memory-limit", bytes_argument(cfg.memory_limit_bytes));
   switch (cfg.image_size_limit.mode) {
     case awj::ImageSizeLimitMode::none:
@@ -183,13 +194,13 @@ std::vector<std::wstring> cli_arguments_from_config(
   }
   if (cfg.output_format == awj::OutputFormat::jpgli) {
     push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
-    push_cli_option(args, L"--jpegli-progressive-level",
+    push_cli_option(args, L"--jpeg-progressive-level",
                     std::to_wstring(cfg.jpegli_progressive_level));
     args.push_back(cfg.jpegli_optimize_huffman
-                       ? L"--jpegli-optimize-huffman"
-                       : L"--no-jpegli-optimize-huffman");
+                       ? L"--jpeg-optimize-huffman"
+                       : L"--no-jpeg-optimize-huffman");
     if (cfg.jpegli_xyb) {
-      args.push_back(L"--jpegli-xyb");
+      args.push_back(L"--jpeg-xyb");
     }
   }
 
@@ -528,11 +539,13 @@ std::optional<std::string> shell_context_menu_warning(
 }
 
 std::expected<std::shared_ptr<StudioChildProcess>, std::string>
-start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
+start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
+                        std::span<const std::wstring> query_args) {
   auto exe_path = awj::executable_path();
   if (!exe_path) {
     return std::unexpected{exe_path.error()};
   }
+  exe_path->replace_extension(L".com");
   std::error_code ec;
   if (!std::filesystem::is_regular_file(*exe_path, ec) || ec) {
     return std::unexpected{std::format("找不到 Studio 编码 worker: {}。",
@@ -551,7 +564,11 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
                                        awj::win32_error_message(GetLastError()))};
   }
 
-  auto args = cli_arguments_from_config(cfg, event_name);
+  auto args = query_args.empty() ? cli_arguments_from_config(cfg, event_name)
+                                 : std::vector<std::wstring>{query_args.begin(), query_args.end()};
+  if (!query_args.empty() && query_args.front() != L"--studio-probe-image") {
+    args.insert(args.begin(), {L"--studio-cancel-event", event_name});
+  }
   args.insert(args.begin(), exe_path->native());
   auto command_line = command_line_from_args(args);
   if (command_line.size() >= 32767) {
@@ -630,6 +647,59 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id) {
         awj::win32_error_message(error))};
   }
   return child;
+}
+
+std::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
+    const std::filesystem::path& path, bool allow_wic_fallback) {
+  const std::array<std::wstring, 3> args{
+      L"--studio-probe-image", path.native(), allow_wic_fallback ? L"wic" : L"native"};
+  auto started = start_studio_cli_worker(awj::AppConfig{}, GetTickCount64(), args);
+  if (!started) return std::unexpected{started.error()};
+  const auto child = *started;
+  std::string output;
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+  for (;;) {
+    DWORD available{};
+    while (PeekNamedPipe(child->output_read.get(), nullptr, 0, nullptr, &available, nullptr) && available) {
+      std::array<char, 4096> buffer{};
+      DWORD count{};
+      if (!ReadFile(child->output_read.get(), buffer.data(), std::min<DWORD>(available, buffer.size()), &count, nullptr) || !count) break;
+      output.append(buffer.data(), count);
+      if (output.size() > 65536) {
+        child->terminate();
+        return std::unexpected{"图片尺寸探测输出超过限制。"};
+      }
+    }
+    if (WaitForSingleObject(child->process.get(), 20) == WAIT_OBJECT_0) {
+      DWORD code{};
+      GetExitCodeProcess(child->process.get(), &code);
+      // Drain the final response after process exit.
+      std::array<char, 4096> buffer{};
+      DWORD count{};
+      while (ReadFile(child->output_read.get(), buffer.data(), buffer.size(), &count, nullptr) && count) {
+        output.append(buffer.data(), count);
+        if (output.size() > 65536) return std::unexpected{"图片尺寸探测输出超过限制。"};
+      }
+      if (code != 0) return std::unexpected{output.empty() ? "CLI 图片尺寸探测失败。" : output};
+      awj::ImageDimensions dimensions{};
+      const auto split = output.find(' ');
+      if (split == std::string::npos) return std::unexpected{"CLI 图片尺寸响应无效。"};
+      const auto width = std::from_chars(output.data(), output.data() + split, dimensions.width);
+      const auto end = output.find_first_of("\r\n", split + 1);
+      const auto limit = output.data() + (end == std::string::npos ? output.size() : end);
+      const auto height = std::from_chars(output.data() + split + 1, limit, dimensions.height);
+      if (width.ec != std::errc{} || width.ptr != output.data() + split ||
+          height.ec != std::errc{} || height.ptr != limit || !dimensions.width || !dimensions.height ||
+          dimensions.width > std::numeric_limits<std::uint64_t>::max() / dimensions.height)
+        return std::unexpected{"CLI 图片尺寸响应无效。"};
+      dimensions.pixel_count = static_cast<std::uint64_t>(dimensions.width) * dimensions.height;
+      return dimensions;
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      child->terminate();
+      return std::unexpected{"CLI 图片尺寸探测超时。"};
+    }
+  }
 }
 
 void cleanup_studio_queue_manifest(

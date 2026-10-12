@@ -17,6 +17,7 @@ void apply_ui_language(int language_index) noexcept;
 bool effective_studio_dark_mode(const AwjStudio& app);
 void apply_title_bar_theme(slint::Window& window, bool dark_mode) noexcept;
 bool windows_prefers_dark_mode();
+bool windows_caption_effects_available() noexcept;
 bool shell_window_dark_mode();
 
 }  // namespace awj::studio

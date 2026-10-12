@@ -78,6 +78,7 @@ export component MenuParameterPage inherits Rectangle {
     horizontal-stretch: 1;
     vertical-stretch: 1;
     border-radius: 8px;
+    clip: true;
     background: root.panel-bg;
     border-color: root.panel-border;
     border-width: 1px;
@@ -86,7 +87,7 @@ export component MenuParameterPage inherits Rectangle {
         vertical-stretch: 1;
         viewport-width: parent.width;
         VerticalLayout {
-            padding: 22px;
+            padding: 16px;
             spacing: 10px;
             ParameterForm {
                 available-width: root.width;

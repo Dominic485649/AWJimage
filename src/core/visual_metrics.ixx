@@ -43,7 +43,8 @@ struct VisualMetricResult {
 namespace visual_metrics_detail {
 
 std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pixel_count,
-                                                                 std::string_view context) {
+                                                                 std::string_view context,
+                                                                 std::vector<float> buffer = {}) {
   if (pixel_count == 0) {
     return std::unexpected{std::format("{} 输入为空。", context)};
   }
@@ -54,7 +55,6 @@ std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pix
   if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
     return std::unexpected{std::format("{} luma buffer 超过当前运行时上限。", context)};
   }
-  std::vector<float> buffer;
   try {
     buffer.resize(pixel_count);
   } catch (const std::bad_alloc&) {
@@ -68,7 +68,7 @@ std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pix
 }  // namespace visual_metrics_detail
 
 std::expected<LumaImage, std::string> make_luma_image(
-    const ImageBuffer& image) {
+    const ImageBuffer& image, LumaImage recycled = {}) {
   if (image.width == 0 || image.height == 0 || image.planes.empty()) {
     return std::unexpected{"输入图像为空，无法计算视觉指标。"};
   }
@@ -82,7 +82,8 @@ std::expected<LumaImage, std::string> make_luma_image(
   }
 
   const auto pixel_count = image.width * image.height;
-  auto pixels = visual_metrics_detail::make_float_buffer(pixel_count, "视觉指标");
+  auto pixels = visual_metrics_detail::make_float_buffer(pixel_count, "视觉指标",
+                                                        std::move(recycled.pixels));
   if (!pixels) {
     return std::unexpected{pixels.error()};
   }
@@ -172,23 +173,8 @@ std::expected<void, std::string> validate_same_shape(const LumaImage& reference,
   return {};
 }
 
-double pixel_at_clamped(const LumaImage& image, std::size_t x, std::size_t y) noexcept {
-  x = std::min(x, image.width - 1);
-  y = std::min(y, image.height - 1);
-  return image.pixels[y * image.width + x];
-}
-
-double gradient_magnitude(const LumaImage& image, std::size_t x, std::size_t y) noexcept {
-  const auto left = x == 0 ? x : x - 1;
-  const auto right = std::min(x + 1, image.width - 1);
-  const auto top = y == 0 ? y : y - 1;
-  const auto bottom = std::min(y + 1, image.height - 1);
-  const double dx = pixel_at_clamped(image, right, y) - pixel_at_clamped(image, left, y);
-  const double dy = pixel_at_clamped(image, x, bottom) - pixel_at_clamped(image, x, top);
-  return std::sqrt(dx * dx + dy * dy);
-}
-
-std::expected<LumaImage, std::string> downsample_2x(const LumaImage& source) {
+std::expected<LumaImage, std::string> downsample_2x(const LumaImage& source,
+                                                  LumaImage recycled = {}) {
   LumaImage result{.width = (source.width + 1) / 2,
                    .height = (source.height + 1) / 2};
   if (result.width == source.width && result.height == source.height) {
@@ -197,7 +183,8 @@ std::expected<LumaImage, std::string> downsample_2x(const LumaImage& source) {
   if (result.width > std::numeric_limits<std::size_t>::max() / result.height) {
     return std::unexpected{"视觉指标降采样尺寸过大。"};
   }
-  auto pixels = make_float_buffer(result.width * result.height, "视觉指标降采样");
+  auto pixels = make_float_buffer(result.width * result.height, "视觉指标降采样",
+                                  std::move(recycled.pixels));
   if (!pixels) {
     return std::unexpected{pixels.error()};
   }
@@ -273,9 +260,19 @@ std::expected<double, std::string> compute_gmsd(
   double mean = 0.0;
   double m2 = 0.0;
   for (std::size_t y = 0; y < reference.height; ++y) {
+    const auto top = (y == 0 ? y : y - 1) * reference.width;
+    const auto bottom = std::min(y + 1, reference.height - 1) * reference.width;
+    const auto row = y * reference.width;
     for (std::size_t x = 0; x < reference.width; ++x) {
-      const double ref_grad = visual_metrics_detail::gradient_magnitude(reference, x, y);
-      const double candidate_grad = visual_metrics_detail::gradient_magnitude(candidate, x, y);
+      const auto left = row + (x == 0 ? x : x - 1);
+      const auto right = row + std::min(x + 1, reference.width - 1);
+      const auto gradient = [&](const LumaImage& image) {
+        const double dx = double(image.pixels[right]) - double(image.pixels[left]);
+        const double dy = double(image.pixels[bottom + x]) - double(image.pixels[top + x]);
+        return std::sqrt(dx * dx + dy * dy);
+      };
+      const double ref_grad = gradient(reference);
+      const double candidate_grad = gradient(candidate);
       const double similarity = (2.0 * ref_grad * candidate_grad + c) /
                                 (ref_grad * ref_grad + candidate_grad * candidate_grad + c);
       ++count;
@@ -320,6 +317,79 @@ std::expected<double, std::string> compute_ms_ssim(
       candidate_owned = std::move(*next_candidate);
       ref_level = &ref_owned;
       candidate_level = &candidate_owned;
+    }
+  }
+  return std::clamp(value, 0.0, 1.0);
+}
+
+// One workspace per visual search. Reference statistics/pyramids are immutable;
+// candidate storage is reused and never shared between worker threads.
+struct CpuVisualMetricWorkspace {
+  struct Statistics { double mean{}, variance{}; };
+  std::array<LumaImage, 4> reference_levels{}, candidate_levels{};
+  std::array<Statistics, 5> reference_statistics{};
+  LumaImage candidate_luma{};
+  bool reference_ready{};
+};
+
+std::expected<double, std::string> compute_ms_ssim_cached(
+    const LumaImage& reference, const LumaImage& candidate,
+    CpuVisualMetricWorkspace& workspace) {
+  if (auto valid = visual_metrics_detail::validate_same_shape(reference, candidate); !valid)
+    return std::unexpected{valid.error()};
+  constexpr std::array<double, 5> weights{0.0448, 0.2856, 0.3001, 0.2363, 0.1333};
+  if (!workspace.reference_ready) {
+    const LumaImage* image = &reference;
+    for (std::size_t level = 0; level < weights.size(); ++level) {
+      auto& stats = workspace.reference_statistics[level];
+      const double count = static_cast<double>(image->pixels.size());
+      stats = {};
+      for (float pixel : image->pixels) stats.mean += pixel;
+      stats.mean /= count;
+      for (float pixel : image->pixels) {
+        const double delta = pixel - stats.mean;
+        stats.variance += delta * delta;
+      }
+      stats.variance /= count;
+      if (level + 1 < weights.size() && image->width > 1 && image->height > 1) {
+        auto next = visual_metrics_detail::downsample_2x(*image);
+        if (!next) return std::unexpected{next.error()};
+        workspace.reference_levels[level] = std::move(*next);
+        image = &workspace.reference_levels[level];
+      }
+    }
+    workspace.reference_ready = true;
+  }
+  const LumaImage* ref_level = &reference;
+  const LumaImage* candidate_level = &candidate;
+  double value = 1.0;
+  for (std::size_t level = 0; level < weights.size(); ++level) {
+    const auto stats = workspace.reference_statistics[level];
+    const double count = static_cast<double>(candidate_level->pixels.size());
+    double mean = 0.0;
+    for (float pixel : candidate_level->pixels) mean += pixel;
+    mean /= count;
+    double variance = 0.0, covariance = 0.0;
+    for (std::size_t i = 0; i < candidate_level->pixels.size(); ++i) {
+      const double delta = candidate_level->pixels[i] - mean;
+      variance += delta * delta;
+      covariance += (ref_level->pixels[i] - stats.mean) * delta;
+    }
+    variance /= count;
+    covariance /= count;
+    constexpr double c1 = 0.01 * 0.01, c2 = 0.03 * 0.03;
+    const double numerator = (2.0 * stats.mean * mean + c1) * (2.0 * covariance + c2);
+    const double denominator = (stats.mean * stats.mean + mean * mean + c1) *
+                                (stats.variance + variance + c2);
+    const double ssim = denominator <= 0.0 ? 1.0 : std::clamp(numerator / denominator, 0.0, 1.0);
+    value *= std::pow(std::clamp(ssim, 1e-9, 1.0), weights[level]);
+    if (level + 1 < weights.size() && ref_level->width > 1 && ref_level->height > 1) {
+      auto next = visual_metrics_detail::downsample_2x(
+          *candidate_level, std::move(workspace.candidate_levels[level]));
+      if (!next) return std::unexpected{next.error()};
+      workspace.candidate_levels[level] = std::move(*next);
+      ref_level = &workspace.reference_levels[level];
+      candidate_level = &workspace.candidate_levels[level];
     }
   }
   return std::clamp(value, 0.0, 1.0);

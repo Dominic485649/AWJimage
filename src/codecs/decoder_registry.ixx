@@ -51,6 +51,7 @@ struct DecoderRegistryOptions {
   bool allow_wic_fallback{true};
   int decode_threads{1};
   std::stop_token stop_token{};
+  bool native_pixels{};
 };
 
 struct DecoderSelection {
@@ -195,7 +196,7 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
       return std::unexpected{selected.error()};
     }
 
-    auto decoded = selected->decoder->decode(path);
+    auto decoded = selected->decoder->decode(path, DecodeOptions{.native_pixels = options.native_pixels});
     if (decoded) {
       decoded->used_fallback = decoded->used_fallback || selected->fallback;
       return decoded;
@@ -253,6 +254,9 @@ std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
+    auto enhanced = probe_jpeg_gain_map_dimensions(path, options.stop_token);
+    if (!enhanced) return std::unexpected{enhanced.error()};
+    if (*enhanced) return **enhanced;
     auto selected = select_decoder_for_path(path, options);
     if (!selected) {
       return std::unexpected{selected.error()};

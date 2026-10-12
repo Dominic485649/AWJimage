@@ -179,12 +179,9 @@ std::expected<void, std::string> write_studio_config_file(
              defaults.update_channel);
   add_bool("show_update_changelog", current.show_update_changelog,
            defaults.show_update_changelog);
-  add_bool("hide_update_changelog_after_exit",
-           current.hide_update_changelog_after_exit,
-           defaults.hide_update_changelog_after_exit);
-  add_bool("show_update_changelog_after_update",
-           current.show_update_changelog_after_update,
-           defaults.show_update_changelog_after_update);
+  add_bool("only_show_changelog_after_update",
+           current.only_show_changelog_after_update,
+           defaults.only_show_changelog_after_update);
   add_string("last_changelog_exit_version", current.last_changelog_exit_version,
              defaults.last_changelog_exit_version);
   add_int64("last_successful_update_check_at",

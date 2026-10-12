@@ -38,6 +38,7 @@ import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
 import awj.image;
+import awj.pixel_conversion;
 import awj.large_image_plan;
 
 export namespace awj {
@@ -852,6 +853,16 @@ class PngImageEncoder final : public ImageEncoder {
       const NativeEncodeSettings& settings,
       std::stop_token stop_token = {}) const override {
     try {
+      if (image.geometry || image.pixel_format != PixelFormat::rgba || image.sample_representation == SampleRepresentation::ieee_half_float ||
+          settings.tone_map_to_sdr_pixels) {
+        const int depth = settings.bit_depth.value_or(image.bit_depth > 8 ? 16 : 8);
+        auto converted = convert_image_pixels(image, PixelConversionRequest{.format = PixelFormat::rgba,
+            .bit_depth = depth, .preserve_alpha = settings.applied_alpha == "kept",
+            .tone_map_to_sdr = settings.tone_map_to_sdr_pixels}, stop_token);
+        if (!converted) return std::unexpected{converted.error()};
+        auto normalized = settings; normalized.tone_map_to_sdr_pixels = false;
+        return encode(*converted, normalized, stop_token);
+      }
       if (stop_token.stop_requested()) {
         return std::unexpected{"任务已取消。"};
       }

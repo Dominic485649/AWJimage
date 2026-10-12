@@ -26,7 +26,7 @@
 
 import awj.core;
 import awj.encoding_defaults;
-import awj.pipeline;
+import awj.batch_protocol;
 import awj.studio_defaults;
 
 namespace awj::studio {

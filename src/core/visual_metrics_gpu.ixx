@@ -242,10 +242,17 @@ std::expected<ComPtr<ID3D11ComputeShader>, std::string> create_compute_shader_fr
 }
 
 std::expected<std::unique_ptr<D3D11MetricContext>, std::string> create_metric_context() {
+  // Retained for the process lifetime, as are the cached device and shaders.
+  static const HMODULE library = LoadLibraryExW(L"d3d11.dll", nullptr,
+                                                LOAD_LIBRARY_SEARCH_SYSTEM32);
+  if (!library) return std::unexpected{"系统未提供 Direct3D 11，使用 CPU 指标。"};
+  const auto create_device = reinterpret_cast<decltype(&D3D11CreateDevice)>(
+      GetProcAddress(library, "D3D11CreateDevice"));
+  if (!create_device) return std::unexpected{"Direct3D 11 入口不可用，使用 CPU 指标。"};
   auto context = std::make_unique<D3D11MetricContext>();
   D3D_FEATURE_LEVEL feature_level{};
   constexpr D3D_FEATURE_LEVEL feature_levels[]{D3D_FEATURE_LEVEL_11_0};
-  const HRESULT device_result = D3D11CreateDevice(nullptr,
+  const HRESULT device_result = create_device(nullptr,
                                                   D3D_DRIVER_TYPE_HARDWARE,
                                                   nullptr,
                                                   0,

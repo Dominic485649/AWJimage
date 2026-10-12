@@ -1,4 +1,7 @@
 #include <cstddef>
+#include <bit>
+#include <cmath>
+#include <limits>
 #include <cstdint>
 #include <cstring>
 #include <iostream>
@@ -50,6 +53,17 @@ awj::ImageBuffer make_scrgb_image() {
 }  // namespace
 
 int main() {
+  for (std::uint32_t bits = 0; bits <= 65535; ++bits) {
+    const auto exponent = (bits >> 10) & 31u;
+    const auto mantissa = bits & 1023u;
+    const auto sign = (bits & 0x8000u) ? -1.0f : 1.0f;
+    const float reference = exponent == 0 ? sign * std::ldexp(static_cast<float>(mantissa), -24)
+        : exponent == 31 ? (mantissa ? std::numeric_limits<float>::quiet_NaN() : sign * std::numeric_limits<float>::infinity())
+        : sign * std::ldexp(1.0f + mantissa / 1024.0f, static_cast<int>(exponent) - 15);
+    const auto value = awj::hdr::hdr_detail::binary16_to_float(static_cast<std::uint16_t>(bits));
+    if (std::isnan(reference) ? !std::isnan(value) : std::bit_cast<std::uint32_t>(reference) != std::bit_cast<std::uint32_t>(value))
+      return fail("FP16 conversion differs from the original formula.");
+  }
   auto source = make_scrgb_image();
   std::stop_source canceled;
   canceled.request_stop();
@@ -83,6 +97,14 @@ int main() {
                       : hdr10.error());
   }
 
+  auto owned = make_scrgb_image();
+  const auto* storage = owned.planes.front().bytes.data();
+  auto inplace = awj::hdr::materialize_scrgb_as_hdr10(std::move(owned));
+  if (!inplace || inplace->planes.front().bytes.data() != storage ||
+      inplace->planes.front().bytes != hdr10->planes.front().bytes)
+    return fail("HDR conversion did not reuse input storage or changed samples.");
+  if (awj::hdr::materialize_scrgb_as_hdr10(make_scrgb_image(), canceled.get_token()))
+    return fail("HDR conversion ignored cancellation.");
   auto ambiguous = source;
   ambiguous.source_info->color_metadata_source.clear();
   if (awj::hdr::has_explicit_hdr_signal(ambiguous)) {

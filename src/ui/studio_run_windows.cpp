@@ -72,16 +72,13 @@
 #include "studio_worker_control.h"
 #include "studio_worker_events.h"
 
-import awj.avif_aom_codec;
 import awj.avif_registry;
 import awj.codec;
 import awj.config;
 import awj.core;
-import awj.decoder_registry;
 import awj.encoding_defaults;
 import awj.large_image_plan;
-import awj.native_backend;
-import awj.pipeline;
+import awj.batch_protocol;
 import awj.preset;
 import awj.resource_planner;
 import awj.studio_defaults;
@@ -287,11 +284,18 @@ namespace awj::studio {
 
 void ensure_slint_backend() {
   // Respect an explicit user override.
-  if (GetEnvironmentVariableA("SLINT_BACKEND", nullptr, 0) > 0) {
+  char backend_override[2]{};
+  if (GetEnvironmentVariableA("SLINT_BACKEND", backend_override, sizeof(backend_override)) > 0) {
     return;
   }
 
-  HMODULE gl = LoadLibraryW(L"opengl32.dll");
+  static std::once_flag probe_once;
+  std::call_once(probe_once, [] {
+  if (!awj::studio::windows_caption_effects_available()) {
+    SetEnvironmentVariableA("SLINT_BACKEND", "software");
+    return;
+  }
+  HMODULE gl = LoadLibraryExW(L"opengl32.dll", nullptr, LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (gl == nullptr) {
     SetEnvironmentVariableA("SLINT_BACKEND", "software");
     return;
@@ -306,7 +310,7 @@ void ensure_slint_backend() {
 
   HWND tmp = CreateWindowExW(0, wc.lpszClassName, L"", 0, 0, 0, 1, 1, nullptr,
                              nullptr, wc.hInstance, nullptr);
-  HDC dc = GetDC(tmp);
+  HDC dc = tmp ? GetDC(tmp) : nullptr;
 
   PIXELFORMATDESCRIPTOR pfd{};
   pfd.nSize = sizeof(pfd);
@@ -314,16 +318,19 @@ void ensure_slint_backend() {
   pfd.dwFlags = PFD_SUPPORT_OPENGL | PFD_DOUBLEBUFFER;
   pfd.iPixelType = PFD_TYPE_RGBA;
   pfd.cColorBits = 32;
-  SetPixelFormat(dc, ChoosePixelFormat(dc, &pfd), &pfd);
+  const int pixel_format = dc ? ChoosePixelFormat(dc, &pfd) : 0;
+  const bool pixel_format_ok = pixel_format != 0 && SetPixelFormat(dc, pixel_format, &pfd);
 
   using WglCreateCtx = HGLRC(__stdcall*)(HDC);
   auto wglCreateContext =
       reinterpret_cast<WglCreateCtx>(GetProcAddress(gl, "wglCreateContext"));
-  HGLRC ctx = wglCreateContext != nullptr ? wglCreateContext(dc) : nullptr;
+  const auto make_current = reinterpret_cast<decltype(&wglMakeCurrent)>(GetProcAddress(gl, "wglMakeCurrent"));
+  const auto delete_context = reinterpret_cast<decltype(&wglDeleteContext)>(GetProcAddress(gl, "wglDeleteContext"));
+  HGLRC ctx = pixel_format_ok && wglCreateContext && make_current && delete_context ? wglCreateContext(dc) : nullptr;
 
   bool driver_ok = false;
   if (ctx != nullptr) {
-    wglMakeCurrent(dc, ctx);
+    const bool current_ok = make_current(dc, ctx);
 
     // glCreateShader lives in the ICD; opengl32.dll itself only forwards the
     // request via wglGetProcAddress, which requires a current context.
@@ -331,20 +338,23 @@ void ensure_slint_backend() {
     auto wglGetProcAddress = reinterpret_cast<WglGetProc>(
         GetProcAddress(gl, "wglGetProcAddress"));
     driver_ok =
-        wglGetProcAddress != nullptr && wglGetProcAddress("glCreateShader");
+        current_ok && wglGetProcAddress != nullptr &&
+        reinterpret_cast<std::uintptr_t>(wglGetProcAddress("glCreateShader")) > 3 &&
+        wglGetProcAddress("glCreateShader") != reinterpret_cast<void*>(-1);
 
-    wglMakeCurrent(nullptr, nullptr);
-    wglDeleteContext(ctx);
+    make_current(nullptr, nullptr);
+    delete_context(ctx);
   }
 
-  ReleaseDC(tmp, dc);
-  DestroyWindow(tmp);
+  if (dc) ReleaseDC(tmp, dc);
+  if (tmp) DestroyWindow(tmp);
   UnregisterClassW(wc.lpszClassName, wc.hInstance);
   FreeLibrary(gl);
 
   if (!driver_ok) {
     SetEnvironmentVariableA("SLINT_BACKEND", "software");
   }
+  });
 }
 
 int run_studio_ui(const wchar_t* health_event,
@@ -352,6 +362,7 @@ int run_studio_ui(const wchar_t* health_event,
   try {
     ensure_slint_backend();
     auto app = AwjStudio::create();
+    app->set_native_window_icons(true);
     auto state = std::make_shared<UiState>();
     state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
     state->large_image_rows =
@@ -479,7 +490,10 @@ int run_studio_ui(const wchar_t* health_event,
         auto app = weak.lock();
         if (!app) return;
         const bool previous = state->show_update_changelog;
+        const bool previous_manual = state->changelog_opened_manually;
         state->show_update_changelog = visible;
+        state->changelog_opened_manually = visible;
+        if (visible) (*app)->set_selected_page(4);
         sync_update_ui(**app, *state);
         if (!changelog_visible_for_current_session(*state) &&
             (*app)->get_selected_page() == 4) {
@@ -488,6 +502,7 @@ int run_studio_ui(const wchar_t* health_event,
         if (auto saved = persist_studio_config_if_changed(**app, *state);
             !saved) {
           state->show_update_changelog = previous;
+          state->changelog_opened_manually = previous_manual;
           sync_update_ui(**app, *state);
           (*app)->set_update_status(to_shared(
               std::format("保存更新日志设置失败：{}", saved.error())));
@@ -495,17 +510,17 @@ int run_studio_ui(const wchar_t* health_event,
       });
     });
 
-    app->on_hide_update_changelog_after_exit_requested(
+    app->on_only_show_changelog_after_update_requested(
         [weak, state](bool enabled) {
           run_ui_callback(weak, "保存更新日志退出设置失败", [&] {
             auto app = weak.lock();
             if (!app) return;
-            const bool previous = state->hide_update_changelog_after_exit;
-            state->hide_update_changelog_after_exit = enabled;
+            const bool previous = state->only_show_changelog_after_update;
+            state->only_show_changelog_after_update = enabled;
             sync_update_ui(**app, *state);
             if (auto saved = persist_studio_config_if_changed(**app, *state);
                 !saved) {
-              state->hide_update_changelog_after_exit = previous;
+              state->only_show_changelog_after_update = previous;
               sync_update_ui(**app, *state);
               (*app)->set_update_status(to_shared(
                   std::format("保存更新日志设置失败：{}", saved.error())));
@@ -513,24 +528,17 @@ int run_studio_ui(const wchar_t* health_event,
           });
         });
 
-    app->on_show_update_changelog_after_update_requested(
-        [weak, state](bool enabled) {
-          run_ui_callback(weak, "保存更新日志更新设置失败", [&] {
-            auto app = weak.lock();
-            if (!app) return;
-            const bool previous = state->show_update_changelog_after_update;
-            state->show_update_changelog_after_update = enabled;
-            sync_update_ui(**app, *state);
-            if (auto saved = persist_studio_config_if_changed(**app, *state);
-                !saved) {
-              state->show_update_changelog_after_update = previous;
-              sync_update_ui(**app, *state);
-              (*app)->set_update_status(to_shared(
-                  std::format("保存更新日志设置失败：{}", saved.error())));
-            }
-          });
-        });
-
+    app->on_open_url([weak](slint::SharedString url) {
+      if (auto app = weak.lock()) {
+        const auto text = shared_to_string(url);
+        if (text != "https://github.com/Dominic485649/AWJimage" &&
+            text != "https://qm.qq.com/q/Wt4Ssh1igi") return;
+        const auto wide = awj::wide_from_utf8(text);
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", wide.c_str(),
+                                                    nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+          (*app)->set_update_status(to_shared("无法打开链接。"));
+      }
+    });
     app->on_version_clicked([weak, state] {
       run_ui_callback(weak, "处理版本操作失败", [&] {
         auto app = weak.lock();
@@ -541,13 +549,9 @@ int run_studio_ui(const wchar_t* health_event,
               nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
         };
         if (!pending_update_is_newer(*state)) {
-          const auto url = std::format(
-              "https://github.com/Dominic485649/AWJimage/releases/tag/{}",
-              AWJ_BUILD_VERSION);
-          if (const auto result = open_release(url); result <= 32) {
-            (*app)->set_update_status(to_shared(std::format(
-                "打开版本页面失败；ShellExecuteW 返回码 {}。", result)));
-          }
+          state->changelog_opened_manually = true;
+          sync_update_ui(**app, *state);
+          (*app)->set_selected_page(4);
           return;
         }
         if (worker_active(state) || (*app)->get_running()) {
@@ -931,6 +935,7 @@ int run_studio_ui(const wchar_t* health_event,
           run_ui_callback(weak, "更新主题状态失败", [&] {
             if (auto app = weak.lock()) {
               (*app)->set_system_dark_mode(windows_prefers_dark_mode());
+              apply_title_bar_theme((*app)->window(), effective_studio_dark_mode(**app));
             }
           });
         });
@@ -1455,90 +1460,127 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
       append_log_row(rows, scanned.error());
     }
     auto weak = slint::ComponentWeakHandle(app);
-    std::stop_source stop_source;
     std::atomic_bool running{true};
     const auto output_dir = awj::output_dir_for(parsed->config);
-
-    app->on_cancel_requested([weak, &stop_source, &running] {
+    // Preserve shell multi-directory output policy and all original options.
+    for (const auto& input : parsed->shell_inputs) args.push_back(input.native());
+    auto started = start_studio_cli_worker(parsed->config, GetTickCount64(), args);
+    if (!started) {
+      MessageBoxW(nullptr, awj::wide_from_utf8(started.error()).c_str(), L"AWJ", MB_OK | MB_ICONERROR);
+      return 1;
+    }
+    const auto child = *started;
+    app->on_cancel_requested([weak, child, &running] {
       if (running.load(std::memory_order_acquire)) {
-        stop_source.request_stop();
-        if (auto app = weak.lock()) {
-          (*app)->set_status_text(to_shared("正在停止任务…"));
-        }
-      } else if (auto app = weak.lock()) {
-        (*app)->window().hide();
-      }
+        child->request_cancel();
+        if (auto app = weak.lock()) (*app)->set_status_text(to_shared("正在停止任务…"));
+      } else if (auto app = weak.lock()) (*app)->window().hide();
     });
-    app->on_force_terminate_requested([] {
-      TerminateProcess(GetCurrentProcess(),
-                       awj::studio_defaults::worker_force_stop_exit_code);
-    });
+    app->on_force_terminate_requested([child] { child->terminate(); });
     app->on_open_output_requested([output_dir] {
-      if (!output_dir.empty()) {
-        ShellExecuteW(nullptr, L"open", output_dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-      }
+      if (!output_dir.empty()) ShellExecuteW(nullptr, L"open", output_dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     });
 
-    auto cfg = parsed->config;
-    auto shell_inputs = parsed->shell_inputs;
-    std::jthread worker{[weak, rows, cfg = std::move(cfg), shell_inputs = std::move(shell_inputs), token = stop_source.get_token(), &running]() mutable {
-      const auto summary = awj::run_batch(
-          cfg,
-          [weak, rows](const awj::BatchProgress& event) {
-            slint::invoke_from_event_loop([weak, rows, event] {
-              if (auto app = weak.lock()) {
-                if (event.kind == awj::BatchEventKind::item_started) {
-                  mark_task_row_running(rows, event.result);
-                } else if (event.kind == awj::BatchEventKind::item_finished) {
-                  const auto row = task_row_from_result(event.result);
-                  if (event.result.index < rows->row_count()) {
-                    rows->set_row_data(event.result.index, row);
-                  } else {
-                    add_task_row(rows, event.result);
-                  }
-                } else if (event.kind == awj::BatchEventKind::large_image_queued) {
-                  add_large_image_task_row(rows, event.large_image);
-                } else if (event.kind == awj::BatchEventKind::warning) {
-                  append_log_row(rows, event.text);
-                }
-                if (event.total > 0) {
-                  (*app)->set_progress(static_cast<float>(event.completed) /
-                                      static_cast<float>(event.total));
-                }
-                if (event.kind == awj::BatchEventKind::warning ||
-                    event.kind == awj::BatchEventKind::large_image_queued) {
-                  (*app)->set_status_text(to_shared(event.text));
-                } else if (event.total > 0) {
-                  (*app)->set_status_text(to_shared(std::format(
-                      "处理中：{} / {}", event.completed, event.total)));
-                } else if (!event.text.empty()) {
-                  (*app)->set_status_text(to_shared(event.text));
-                }
+    std::jthread worker{[weak, rows, child, close_on_finish = parsed->config.shell_close_on_finish, &running](std::stop_token token) {
+      try {
+      std::string pending;
+      std::optional<std::size_t> pending_item;
+      auto publish_line = [&](std::string line) {
+        if (!line.empty() && line.back() == '\r') line.pop_back();
+        if (line.empty()) return;
+        if (auto event = parse_studio_worker_item_event(line)) {
+          if (event->status != 'R') pending_item = event->index;
+          slint::invoke_from_event_loop([weak, rows, event = *event] {
+            if (auto app = weak.lock()) {
+              if (auto row = rows->row_data(event.index)) {
+                row->status = to_shared(event.status == 'R' ? "正在转码" : event.status == 'D' ? "成功" : event.status == 'S' ? "跳过" : event.status == 'C' ? "已取消" : "失败");
+                row->state = event.status == 'R' ? 1 : (event.status == 'D' || event.status == 'S') ? 2 : event.status == 'C' ? 4 : 3;
+                rows->set_row_data(event.index, *row);
               }
-            });
-          },
-          token,
-          shell_inputs);
-      slint::invoke_from_event_loop([weak, rows, summary, close_on_finish = cfg.shell_close_on_finish, &running] {
-        running.store(false, std::memory_order_release);
-        if (auto app = weak.lock()) {
-          (*app)->set_running(false);
-          (*app)->set_progress(1.0f);
-          if (summary) {
-            (*app)->set_status_text(to_shared(std::format("完成：成功 {}，失败 {}，取消 {}。",
-                                                          summary->ok_count,
-                                                          summary->failed_count,
-                                                          summary->canceled_count)));
-            if (close_on_finish && summary->failed_count == 0 &&
-                summary->canceled_count == 0) {
-              (*app)->window().hide();
+              (*app)->set_progress(static_cast<float>(event.completed) / event.total);
+              (*app)->set_status_text(to_shared(std::format("处理中：{} / {}", event.completed, event.total)));
             }
-          } else {
-            append_log_row(rows, summary.error());
-            (*app)->set_status_text(to_shared(summary.error()));
+          });
+          return;
+        }
+        if (auto detail = parse_studio_worker_detail_event(line)) {
+          slint::invoke_from_event_loop([weak, rows, detail = *detail] {
+            if (weak.lock()) if (auto row = rows->row_data(detail.index)) {
+              row->encoder = to_shared(detail.encoder_id);
+              row->threads = to_shared(std::to_string(detail.encoder_threads));
+              row->stage_timings = to_shared(stage_timings_text(detail.decode_microseconds / 1e6, detail.prepare_microseconds / 1e6, detail.encode_microseconds / 1e6, detail.write_microseconds / 1e6));
+              rows->set_row_data(detail.index, *row);
+            }
+          });
+          return;
+        }
+        if (parse_studio_worker_frame_event(line)) return;
+        auto item = std::exchange(pending_item, std::nullopt);
+        slint::invoke_from_event_loop([weak, rows, item, line = std::move(line)] {
+          if (auto app = weak.lock()) {
+            if (item) if (auto row = rows->row_data(*item)) {
+              row->log = to_shared(line);
+              row->warning = line.find("未达标") != std::string::npos;
+              rows->set_row_data(*item, *row);
+            }
+            (*app)->set_status_text(to_shared(line));
+          }
+        });
+      };
+      auto consume = [&] {
+        DWORD available{};
+        while (PeekNamedPipe(child->output_read.get(), nullptr, 0, nullptr, &available, nullptr) && available) {
+          std::array<char, 4096> bytes{};
+          DWORD count{};
+          if (!ReadFile(child->output_read.get(), bytes.data(), std::min<DWORD>(available, bytes.size()), &count, nullptr) || !count) break;
+          pending.append(bytes.data(), count);
+          for (auto end = pending.find('\n'); end != std::string::npos; end = pending.find('\n')) {
+            publish_line(pending.substr(0, end));
+            pending.erase(0, end + 1);
           }
         }
+      };
+      while (WaitForSingleObject(child->process.get(), 80) == WAIT_TIMEOUT) {
+        consume();
+        if (token.stop_requested()) child->terminate();
+      }
+      consume();
+      if (!pending.empty()) publish_line(std::move(pending));
+      DWORD code = 1;
+      GetExitCodeProcess(child->process.get(), &code);
+      if (child->was_force_terminated()) cleanup_forced_worker_temp_files(child);
+      slint::invoke_from_event_loop([weak, rows, code, close_on_finish, &running] {
+        running.store(false, std::memory_order_release);
+        if (auto app = weak.lock()) {
+          std::size_t ok{}, failed{}, canceled{};
+          for (std::size_t i = 0; i < rows->row_count(); ++i) if (auto row = rows->row_data(i)) {
+            if (row->state == 2) ++ok;
+            else if (row->state == 4) ++canceled;
+            else {
+              row->state = code == awj::studio_defaults::worker_force_stop_exit_code ? 4 : 3;
+              row->status = to_shared(row->state == 4 ? "已取消" : "失败");
+              if (row->state == 4) ++canceled; else ++failed;
+              rows->set_row_data(i, *row);
+            }
+          }
+          (*app)->set_running(false);
+          (*app)->set_progress(code == 0 ? 1.0f : 0.0f);
+          (*app)->set_status_text(to_shared(std::format("完成：成功 {}，失败 {}，取消 {}。", ok, failed, canceled)));
+          if (close_on_finish && code == 0 && !failed && !canceled) (*app)->window().hide();
+        }
       });
+      } catch (...) {
+        child->terminate();
+        running.store(false, std::memory_order_release);
+        try {
+          slint::invoke_from_event_loop([weak] {
+            if (auto app = weak.lock()) {
+              (*app)->set_running(false);
+              (*app)->set_status_text(to_shared("编码 worker 监控失败，请重试。"));
+            }
+          });
+        } catch (...) {}
+      }
     }};
 
     app->show();
@@ -1546,24 +1588,15 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
     constrain_window_to_work_area(app->window());
     // 同上：事件循环里的回调不能让异常逃回 Rust 栈帧。这里的调用本身都不分配，
     // 但加一层 catch-all 之后，将来往里加代码也不会把整个进程带走。
-    app->window().on_close_requested([&stop_source, &running]() noexcept {
-      try {
-        if (running.load(std::memory_order_acquire)) {
-          stop_source.request_stop();
-          TerminateProcess(GetCurrentProcess(),
-                           awj::studio_defaults::worker_force_stop_exit_code);
-        }
-      } catch (...) {
-      }
+    app->window().on_close_requested([child, &running]() noexcept {
+      if (running.load(std::memory_order_acquire)) child->terminate();
       return slint::CloseRequestResponse::HideWindow;
     });
     slint::run_event_loop();
-    const int rc = 0;
-    stop_source.request_stop();
+    if (running.load(std::memory_order_acquire)) child->terminate();
     worker.request_stop();
-    if (worker.joinable()) {
-      worker.join();
-    }
+    if (worker.joinable()) worker.join();
+    const int rc = 0;
     return rc;
   } catch (const std::exception&) {
     MessageBoxW(nullptr, L"右键转换窗口启动失败。", L"AWJimage", MB_OK | MB_ICONERROR);

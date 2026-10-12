@@ -57,18 +57,13 @@ inline std::uint64_t effective_max_input_file_bytes() noexcept {
              : max_input_file_bytes;
 }
 
-inline constexpr std::uint64_t ordinary_large_defer_min_pixels = 10'000'000ull;
 inline constexpr std::uint32_t avif_single_image_max_dimension = 65'536u;
 inline constexpr std::uint64_t avif_single_image_max_pixels = 1ull << 30;
-inline constexpr std::uint64_t ordinary_large_safe_max_pixels =
-    avif_single_image_max_pixels;
 inline constexpr std::uint32_t grid_auto_tile_width = 16'384u;
 inline constexpr std::uint32_t grid_auto_tile_height = 8'704u;
 inline constexpr std::uint32_t grid_max_cols = 256u;
 inline constexpr std::uint32_t grid_max_rows = 256u;
 inline constexpr bool default_experimental_clamped_grid_padding = true;
-inline constexpr std::uint64_t large_image_threshold_pixels =
-    ordinary_large_safe_max_pixels;
 inline constexpr int default_grid_overlap_pixels = 0;
 inline constexpr int max_automatic_thread_budget = 128;
 

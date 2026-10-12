@@ -17,9 +17,6 @@ if (-not $VcpkgRoot) {
     if ($env:VCPKG_ROOT) {
         $VcpkgRoot = $env:VCPKG_ROOT
     }
-    elseif (Test-Path "D:\Scoop\apps\vcpkg\current") {
-        $VcpkgRoot = "D:\Scoop\apps\vcpkg\current"
-    }
 }
 
 function Ensure-VcpkgPackage([string]$Root, [string]$Triplet, [string]$Port, [string]$PackageShareName, [bool]$NoInstall) {

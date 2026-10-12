@@ -18,10 +18,11 @@ struct ImageDimensions {
   std::uint32_t width{};
   std::uint32_t height{};
   std::uint64_t pixel_count{};
+  bool opaque_sdr8_yuv420{};
 };
 
-enum class LargeImageClass { ordinary, ordinary_deferred_tail, large_mode_required };
-enum class LargeImageReason { none, medium_pixels, pixel_limit_exceeded, dimension_limit_exceeded };
+enum class LargeImageClass { ordinary, large_mode_required };
+enum class LargeImageReason { none, pixel_limit_exceeded, dimension_limit_exceeded };
 
 struct LargeImageDecision {
   LargeImageClass klass{LargeImageClass::ordinary};
@@ -88,7 +89,8 @@ std::uint64_t decoded_rgba_bytes_for_dimensions(ImageDimensions dimensions) noex
 
 std::uint64_t visual_quality_working_set_bytes_for_dimensions(
     ImageDimensions dimensions) noexcept {
-  constexpr std::uint64_t multiplier = 7;
+  // Includes the reusable CPU reference/candidate metric pyramids.
+  constexpr std::uint64_t multiplier = 8;
   const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
   const auto max_value = std::numeric_limits<std::uint64_t>::max();
   if (decoded_rgba_bytes > max_value / multiplier) {
@@ -98,19 +100,22 @@ std::uint64_t visual_quality_working_set_bytes_for_dimensions(
 }
 
 std::uint64_t avif_encode_working_set_bytes_for_dimensions(
-    ImageDimensions dimensions) noexcept {
-  // ponytail: dimension-only upper estimate, not an allocator limit. Measured
-  // 4096x4096 AOM 10-bit 444 used ~1.1 GiB/file; allow 128 B/pixel plus
-  // fixed overhead for high-depth/alpha and encoder buffers. Refine from
-  // broader codec measurements before allowing more concurrency.
-  constexpr std::uint64_t multiplier = 32;
+    ImageDimensions dimensions, std::uint64_t compressed_bytes = 0,
+    bool opaque_sdr_420 = false) noexcept {
+  // shortcut: AOM scratch uses measured headroom, not an allocator limit;
+  // recalibrate before admitting more HDR/alpha or very large images concurrently.
+  const std::uint64_t bytes_per_pixel = opaque_sdr_420 ? 80 : 128;
   constexpr std::uint64_t overhead = 32ull * 1024 * 1024;
-  const auto decoded_rgba_bytes = decoded_rgba_bytes_for_dimensions(dimensions);
-  const auto max_value = std::numeric_limits<std::uint64_t>::max();
-  if (decoded_rgba_bytes > (max_value - overhead) / multiplier) {
-    return max_value;
-  }
-  return decoded_rgba_bytes * multiplier + overhead;
+  constexpr auto maximum = std::numeric_limits<std::uint64_t>::max();
+  // Codec block padding matters for narrow and odd dimensions.
+  const auto width = (static_cast<std::uint64_t>(dimensions.width) + 63) & ~63ull;
+  const auto height = (static_cast<std::uint64_t>(dimensions.height) + 63) & ~63ull;
+  if (!width || !height || width > maximum / height ||
+      compressed_bytes > (maximum - overhead) / 2) return maximum;
+  const auto pixels = width * height;
+  const auto fixed = overhead + compressed_bytes * 2;
+  if (pixels > (maximum - fixed) / bytes_per_pixel) return maximum;
+  return pixels * bytes_per_pixel + fixed;
 }
 
 LargeImageDecision classify_large_image(ImageDimensions dimensions,
@@ -139,23 +144,12 @@ LargeImageDecision classify_large_image(ImageDimensions dimensions,
         dimensions.pixel_count, limits.encoder_name, limits.max_pixels);
     return decision;
   }
-  if (dimensions.pixel_count > encoding_defaults::ordinary_large_defer_min_pixels) {
-    decision.klass = LargeImageClass::ordinary_deferred_tail;
-    decision.reason = LargeImageReason::medium_pixels;
-    decision.reason_text = std::format(
-        "输入像素数 {} 大于 {} 且未超过 AVIF 单图上限 {}，将延后到普通队列末尾编码。",
-        dimensions.pixel_count, encoding_defaults::ordinary_large_defer_min_pixels,
-        limits.max_pixels);
-    return decision;
-  }
   decision.reason_text = "普通图片按原队列编码。";
   return decision;
 }
 
 std::string large_image_reason_name(LargeImageReason reason) {
   switch (reason) {
-    case LargeImageReason::medium_pixels:
-      return "medium_pixels";
     case LargeImageReason::pixel_limit_exceeded:
       return "pixel_limit_exceeded";
     case LargeImageReason::dimension_limit_exceeded:

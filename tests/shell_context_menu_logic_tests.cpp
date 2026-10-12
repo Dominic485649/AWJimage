@@ -175,7 +175,7 @@ int main() {
       contains(jpgli_command, L"--no-jpegli-optimize-huffman") ||
       !contains(jpgli_command, L"--jpegli-xyb") ||
       contains(jpgli_command, L"--speed")) {
-    return fail("JPGLI shell command format-specific options changed");
+    return fail("JPG shell command format-specific options changed");
   }
 
   for (int count : {0, 1, 10}) {

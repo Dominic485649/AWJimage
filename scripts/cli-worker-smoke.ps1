@@ -1,9 +1,10 @@
-﻿#requires -Version 7.4
+#requires -Version 7.4
 
 [CmdletBinding()]
 param(
-    [string]$Executable = (Join-Path $PSScriptRoot '..\bin\x64\Release\AWJ.exe'),
-    [string]$InputDirectory = 'D:\图片\benchmark\test',
+    [string]$Executable = (Join-Path $PSScriptRoot '..\bin\x64\Release\AWJ.com'),
+    [Parameter(Mandatory)] [string]$InputDirectory,
+    [Parameter(Mandatory)] [string]$WorkDirectory,
     [ValidateRange(1, 600)]
     [int]$TimeoutSeconds = 90,
     [ValidateRange(100, 10000)]
@@ -18,11 +19,11 @@ if (-not $IsWindows) {
 
 $exePath = [IO.Path]::GetFullPath($Executable)
 $inputPath = [IO.Path]::GetFullPath($InputDirectory)
-$repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$workRoot = [IO.Path]::GetFullPath((Join-Path $repoRoot 'build\cli-worker-smoke'))
-if (-not $workRoot.StartsWith($repoRoot + [IO.Path]::DirectorySeparatorChar,
-        [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refusing to use a work directory outside the repository: $workRoot"
+$workRoot = [IO.Path]::GetFullPath($WorkDirectory)
+$corpusRoot = [IO.Path]::GetDirectoryName($inputPath.TrimEnd('\')) + '\'
+if (-not $workRoot.StartsWith($corpusRoot, [StringComparison]::OrdinalIgnoreCase) -or
+    $workRoot.StartsWith($inputPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'Worker outputs must stay in the corpus workspace, outside inputs.'
 }
 if (-not (Test-Path -LiteralPath $exePath -PathType Leaf)) {
     throw "CLI executable not found: $exePath"
@@ -38,16 +39,9 @@ $supportedExtensions = @(
 $inputs = @(Get-ChildItem -LiteralPath $inputPath -File -Recurse |
     Where-Object { $_.Extension.ToLowerInvariant() -in $supportedExtensions } |
     Sort-Object FullName)
-if ($inputs.Count -ne 613) {
-    throw "The fixed worker smoke requires exactly 613 supported images; found $($inputs.Count)."
-}
-$validInput = $inputs | Where-Object Length -gt 0 | Sort-Object Length, FullName |
-    Select-Object -First 1
-$failedInput = $inputs | Where-Object Length -eq 0 | Select-Object -First 1
-if ($null -eq $validInput -or $null -eq $failedInput) {
-    throw 'The fixed input must contain both a valid image and the known empty failure case.'
-}
-
+if (-not $inputs.Count) { throw 'No supported images.' }
+$validInput = $inputs | Where-Object Length -gt 0 | Sort-Object Length, FullName | Select-Object -First 1
+if ($null -eq $validInput) { throw 'A valid image is required.' }
 Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
@@ -478,9 +472,7 @@ $forcedJob = $null
 $cancelEvent = $null
 
 try {
-    if (Test-Path -LiteralPath $workRoot) {
-        Remove-Item -LiteralPath $workRoot -Recurse -Force
-    }
+    if (Test-Path -LiteralPath $workRoot) { throw "Worker output must be fresh: $workRoot" }
     New-Item -ItemType Directory -Path $workRoot | Out-Null
 
     $protocolOutput = Join-Path $workRoot 'protocol-output'
@@ -496,6 +488,9 @@ try {
     }
     $protocolDetail = Assert-StudioProtocol $protocolResult.Stdout 'D'
 
+    $failedPath = Join-Path $workRoot 'invalid.png'
+    [IO.File]::WriteAllBytes($failedPath,[byte[]]::new(0))
+    $failedInput = Get-Item -LiteralPath $failedPath
     $retryOutput = Join-Path $workRoot 'retry-output'
     New-Item -ItemType Directory -Path $retryOutput | Out-Null
     $retryManifest = Join-Path $workRoot 'retry.awjq'
@@ -589,8 +584,5 @@ finally {
         if ($null -ne $capture) {
             $capture.Process.Dispose()
         }
-    }
-    if (Test-Path -LiteralPath $workRoot) {
-        Remove-Item -LiteralPath $workRoot -Recurse -Force
     }
 }

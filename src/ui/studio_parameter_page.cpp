@@ -10,7 +10,6 @@
 
 #include "studio_fields.h"
 
-import awj.avif_aom_codec;
 import awj.avif_registry;
 import awj.core;
 import awj.encoding_defaults;
@@ -177,7 +176,7 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
 
 std::expected<void, std::string> validate_menu_params(
     const std::array<MenuFormatParams, 5>& params) {
-  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPGLI", "PNG"};
+  constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   for (std::size_t i = 0; i < params.size(); ++i) {
     if (auto cfg = config_from_menu_params(output_format_from_index(static_cast<int>(i)), params[i]); !cfg) {
       return std::unexpected{std::format("{} 菜单参数错误：{}", labels[i], cfg.error())};
@@ -327,7 +326,7 @@ void store_current_parameter_params(AwjStudio& app, UiState& state) {
 
 std::vector<ComboOption> avif_encoder_options() {
   return {combo_option("自动"), combo_option("aom",
-      awj::avif_libavif_encoder_available(awj::AvifEncoderMode::aom))};
+      true)};
 }
 
 void refresh_avif_encoder_options(AwjStudio& app) {

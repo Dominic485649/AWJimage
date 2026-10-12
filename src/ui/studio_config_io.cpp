@@ -68,10 +68,8 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
   if (state != nullptr) {
     snapshot.update_channel = state->update_channel;
     snapshot.show_update_changelog = state->show_update_changelog;
-    snapshot.hide_update_changelog_after_exit =
-        state->hide_update_changelog_after_exit;
-    snapshot.show_update_changelog_after_update =
-        state->show_update_changelog_after_update;
+    snapshot.only_show_changelog_after_update =
+        state->only_show_changelog_after_update;
     snapshot.last_changelog_exit_version = state->last_changelog_exit_version;
     snapshot.last_successful_update_check_at =
         state->last_successful_update_check_at;
@@ -362,10 +360,8 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       return std::unexpected{"配置 update_channel 只能是 stable 或 prerelease。"};
     }
     if (auto r = load_bool("show_update_changelog", state.show_update_changelog); !r) return r;
-    if (auto r = load_bool("hide_update_changelog_after_exit",
-                           state.hide_update_changelog_after_exit); !r) return r;
-    if (auto r = load_bool("show_update_changelog_after_update",
-                           state.show_update_changelog_after_update); !r) return r;
+    if (auto r = load_bool("only_show_changelog_after_update",
+                           state.only_show_changelog_after_update); !r) return r;
     if (auto r = load_string("last_changelog_exit_version",
                              state.last_changelog_exit_version); !r) return r;
     if (auto r = load_int64("last_successful_update_check_at", 0,
@@ -393,10 +389,8 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   }
 
   app.set_update_channel_index(state.update_channel == "prerelease" ? 1 : 0);
-  app.set_hide_update_changelog_after_exit(
-      state.hide_update_changelog_after_exit);
-  app.set_show_update_changelog_after_update(
-      state.show_update_changelog_after_update);
+  app.set_only_show_changelog_after_update(
+      state.only_show_changelog_after_update);
   load_menu_params_for_index(app, state, app.get_menu_format_index());
   return {};
 }

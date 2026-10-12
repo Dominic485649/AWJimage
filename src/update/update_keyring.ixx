@@ -35,10 +35,6 @@ inline constexpr std::string_view update_keyring_url =
     "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring.json";
 inline constexpr std::string_view update_keyring_signature_url =
     "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring.json.sig";
-inline constexpr std::string_view legacy_update_keyring_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring-v1.json";
-inline constexpr std::string_view legacy_update_keyring_signature_url =
-    "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-keyring-v1.json.sig";
 inline constexpr std::uint32_t supported_update_keyring_schema = 1;
 
 struct UpdateReleaseKey {
@@ -150,7 +146,7 @@ std::expected<void, std::string> verify_root_signature_envelope(
       used[index] = true;
       if (auto verified = verify_detached_ed25519_signature(
               raw_bytes, *signature, root->public_key_hex,
-              "update-keyring-v1.json signature");
+              "update-keyring.json signature");
           !verified) {
         return std::unexpected{verified.error()};
       }
@@ -251,7 +247,7 @@ std::expected<UpdateKeyring, std::string> parse_update_keyring_json(
     }
     return keyring;
   } catch (const nlohmann::json::exception& error) {
-    return std::unexpected{std::format("解析 update-keyring-v1.json 失败：{}", error.what())};
+    return std::unexpected{std::format("解析 update-keyring.json 失败：{}", error.what())};
   }
 }
 
@@ -302,24 +298,5 @@ std::expected<std::string, std::string> verify_manifest_signature_with_keyring(
   return matched_key_id;
 }
 
-std::expected<Manifest, std::string> verify_and_parse_manifest_with_keyring(
-    std::string_view raw_bytes, std::string_view signature_base64,
-    const UpdateKeyring& keyring) {
-  auto signing_key = verify_manifest_signature_with_keyring(raw_bytes,
-                                                            signature_base64,
-                                                            keyring);
-  if (!signing_key) return std::unexpected{signing_key.error()};
-  auto manifest = parse_manifest_json(raw_bytes);
-  if (!manifest) return std::unexpected{manifest.error()};
-  if (manifest->key_id != *signing_key) {
-    return std::unexpected{"manifest key_id 与实际验签发布密钥不一致。"};
-  }
-  if (auto valid = validate_signed_update_document_window(
-          manifest->issued_at, manifest->expires_at);
-      !valid) {
-    return std::unexpected{valid.error()};
-  }
-  return manifest;
-}
 
 }  // namespace awj::update

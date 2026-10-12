@@ -11,6 +11,7 @@
 #include <stop_token>
 #include <string_view>
 #include <utility>
+#include <vector>
 #ifdef _WIN32
 #include <windows.h>
 #endif
@@ -21,6 +22,7 @@ import awj.image;
 import awj.jpegli_codec;
 import awj.jpeg_hdr_codec;
 import awj.gain_map;
+import awj.decoder_registry;
 import awj.hdr_tonemap;
 import awj.resource_planner;
 
@@ -105,13 +107,33 @@ int main() {
     return fail(encoded.error());
   }
   if (encoded->encoded.bytes.empty() || encoded->encoded.codec_name != "jpegli") {
-    return fail("JPGLI encode result invalid.");
+    return fail("JPG encode result invalid.");
   }
+  for (const auto chroma : {awj::ChromaMode::auto_keep, awj::ChromaMode::yuv420, awj::ChromaMode::yuv422, awj::ChromaMode::yuv444}) {
+    auto settings = jpegli_settings(90, true);
+    settings.chroma_mode = chroma;
+    auto jpeg = encoder.encode(make_test_image(false), settings);
+    if (!jpeg) return fail(jpeg.error());
+    awj::JpegliImageDecoder decoder;
+    auto decoded = decoder.decode_memory(jpeg->encoded.bytes, "JPG sampling");
+    const auto expected = chroma == awj::ChromaMode::yuv444 ? awj::PixelFormat::yuv444 : chroma == awj::ChromaMode::yuv422 ? awj::PixelFormat::yuv422 : awj::PixelFormat::yuv420;
+    if (!decoded || !decoded->image.source_info || decoded->image.source_info->bit_depth != 8 ||
+        decoded->image.source_info->pixel_format != expected || jpeg->diagnostics.applied_matrix_coefficients != 6)
+      return fail("JPG SOF sampling, precision or YCbCr diagnostics are invalid.");
+    auto image = make_test_image(false);
+    auto rgb = awj::jpegli_detail::make_rgb_buffer(image.planes.front(), image.width, image.height);
+    if (!rgb) return fail(rgb.error());
+    settings.jpegli_rgb8_input = *rgb;
+    auto cached = encoder.encode(image, settings);
+    if (!cached || cached->encoded.bytes != jpeg->encoded.bytes) return fail("JPG scanline conversion differs from cached RGB input.");
+  }
+  for (const auto name : {L"jpg", L"jpeg", L"jpgli", L"jpegli"})
+    if (awj::config_detail::parse_output_format(name) != awj::OutputFormat::jpgli) return fail("JPG CLI alias is incompatible.");
   if (encoded->final_quality != 42 ||
       encoded->diagnostics.encoder_id != "jpegli" ||
       !encoded->diagnostics.speed_mapping.codec_key.empty() ||
       encoded->diagnostics.speed_mapping.codec_value != 0) {
-    return fail("JPGLI quality or diagnostics invalid.");
+    return fail("JPG quality or diagnostics invalid.");
   }
 
   awj::JpegliImageDecoder decoder;
@@ -125,12 +147,12 @@ int main() {
       memory_decoded->image.height != 3 ||
       memory_decoded->image.pixel_format != awj::PixelFormat::rgba ||
       memory_decoded->image.planes.empty()) {
-    return fail("JPGLI decode_memory result invalid.");
+    return fail("JPG decode_memory result invalid.");
   }
   if (!has_metadata_kind(memory_decoded->image, awj::MetadataKind::icc) ||
       !has_metadata_kind(memory_decoded->image, awj::MetadataKind::exif) ||
       !has_metadata_kind(memory_decoded->image, awj::MetadataKind::xmp)) {
-    return fail("JPGLI metadata was not preserved.");
+    return fail("JPG metadata was not preserved.");
   }
 
   const auto path = std::filesystem::temp_directory_path() /
@@ -142,30 +164,40 @@ int main() {
   }
 
   auto dimensions = decoder.probe_dimensions(path);
-  if (!dimensions || dimensions->width != 3 || dimensions->height != 3) {
+  if (!dimensions || dimensions->width != 3 || dimensions->height != 3 ||
+      dimensions->opaque_sdr8_yuv420) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
-    return fail(dimensions ? "JPGLI probe dimensions invalid." : dimensions.error());
+    return fail(dimensions ? "JPG probe dimensions invalid." : dimensions.error());
   }
 
   auto file_decoded = decoder.decode(path);
   std::error_code ec;
   std::filesystem::remove(path, ec);
   if (!file_decoded || file_decoded->decoder_id != "jpegli") {
-    return fail(file_decoded ? "JPGLI file decode id invalid." : file_decoded.error());
+    return fail(file_decoded ? "JPG file decode id invalid." : file_decoded.error());
   }
 
   auto stripped = encoder.encode(make_test_image(true), jpegli_settings(90, true));
   if (!stripped) {
     return fail(stripped.error());
   }
+  {
+    std::ofstream output{path, std::ios::binary};
+    output.write(reinterpret_cast<const char*>(stripped->encoded.bytes.data()),
+                 static_cast<std::streamsize>(stripped->encoded.bytes.size()));
+  }
+  const auto sdr_dimensions = decoder.probe_dimensions(path);
+  std::filesystem::remove(path, ec);
+  if (!sdr_dimensions || !sdr_dimensions->opaque_sdr8_yuv420)
+    return fail("Plain SDR420 JPG was not recognized by the memory preflight.");
   auto stripped_decoded = decoder.decode_memory(
       std::span<const std::byte>{stripped->encoded.bytes}, "jpglI-strip-test");
   if (!stripped_decoded) {
     return fail(stripped_decoded.error());
   }
   if (!stripped_decoded->image.metadata.empty()) {
-    return fail("JPGLI strip metadata did not remove APP/ICC metadata.");
+    return fail("JPG strip metadata did not remove APP/ICC metadata.");
   }
 
   auto advanced_settings = jpegli_settings(80, true);
@@ -183,7 +215,7 @@ int main() {
       std::span<const std::byte>{advanced->encoded.bytes}, "jpglI-advanced-test");
   if (!advanced_decoded || advanced_decoded->image.width != 3 ||
       advanced_decoded->image.height != 3) {
-    return fail(advanced_decoded ? "JPGLI advanced decode dimensions invalid."
+    return fail(advanced_decoded ? "JPG advanced decode dimensions invalid."
                                  : advanced_decoded.error());
   }
 
@@ -193,7 +225,7 @@ int main() {
   auto invalid = encoder.encode(make_test_image(false), invalid_settings);
   if (invalid ||
       invalid.error().find("渐进 JPEG 需要优化哈夫曼表") == std::string::npos) {
-    return fail("JPGLI invalid progressive/fixed Huffman combination was not rejected.");
+    return fail("JPG invalid progressive/fixed Huffman combination was not rejected.");
   }
 
   for (const auto size : {std::size_t{1}, std::size_t{3}, std::size_t{65}}) {
@@ -218,10 +250,39 @@ int main() {
     const auto fixture = std::filesystem::temp_directory_path() / "awj-hdr-jpeg-roundtrip.jpg";
     { std::ofstream file(fixture, std::ios::binary); file.write(reinterpret_cast<const char*>(enhanced->encoded.bytes.data()), enhanced->encoded.bytes.size()); }
     auto reconstructed = awj::decode_jpeg_gain_map(fixture, {}, 1);
+    auto dimensions = awj::probe_image_dimensions_for_path(fixture, {.allow_wic_fallback = false});
     std::filesystem::remove(fixture, ec);
     if (!reconstructed || !*reconstructed || (**reconstructed).image.width != size ||
         !(**reconstructed).image.source_info->source_has_gain_map)
       return fail(reconstructed ? "HDR JPEG did not reconstruct a gain map." : reconstructed.error());
+    if (!dimensions || dimensions->width != (**reconstructed).image.width ||
+        dimensions->height != (**reconstructed).image.height)
+      return fail(dimensions ? "Gain Map dimension probe disagrees with decode." : dimensions.error());
+    if (size == 3) {
+      auto portrait = hdr;
+      portrait.height = 5;
+      portrait.planes[0].bytes.resize(portrait.planes[0].stride * portrait.height);
+      for (std::size_t y = 3; y < 5; ++y)
+        std::memcpy(portrait.planes[0].bytes.data() + y * portrait.planes[0].stride,
+                    portrait.planes[0].bytes.data(), portrait.planes[0].stride);
+      const unsigned char tiff[]{0x49,0x49,0x2a,0,8,0,0,0,1,0,
+          0x12,1,3,0,1,0,0,0,6,0,0,0,0,0,0,0};
+      awj::MetadataBlock exif{.kind = awj::MetadataKind::exif};
+      for (auto value : tiff) exif.bytes.push_back(std::byte{value});
+      portrait.metadata.push_back(std::move(exif));
+      auto orientation_settings = opts;
+      orientation_settings.strip_metadata = false;
+      auto rotated = awj::encode_hdr_jpeg(portrait, orientation_settings);
+      if (!rotated) return fail(rotated.error());
+      { std::ofstream file(fixture, std::ios::binary); file.write(
+          reinterpret_cast<const char*>(rotated->encoded.bytes.data()), rotated->encoded.bytes.size()); }
+      auto probed = awj::probe_image_dimensions_for_path(fixture, {.allow_wic_fallback = false});
+      auto decoded = awj::decode_jpeg_gain_map(fixture);
+      std::filesystem::remove(fixture, ec);
+      if (!probed || !decoded || !*decoded || probed->width != 5 || probed->height != 3 ||
+          (**decoded).image.width != probed->width || (**decoded).image.height != probed->height)
+        return fail("Gain Map probe lost portrait Exif rotation");
+    }
     const auto& result = (**reconstructed).image;
     double relative_error = 0;
     const float reference[]{1.5F, 2.F, 3.F};

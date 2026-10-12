@@ -4,21 +4,21 @@ This is the AWJ 1.0.6+ release procedure. Archives, manifests, keyrings, and tem
 
 ## Private-key custody
 
-The current legacy Ed25519 seed is kept locally at:
+Store signing seeds in a protected external directory; supply their paths through environment variables or arguments:
 
 ```text
-C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex
+<external-key-directory>\update-ed25519-seed.hex
 ```
 
 That location is outside the repository. `.gitignore` also ignores `**/*update-ed25519-seed*.hex` and `**/*update-ed25519*.seed`, but ignore rules are not custody: never copy a seed into the repository, `build/`, `bin/`, release assets, logs, CI output, or chat. Keep the legacy, both recovery-root, and every release seed in independent encrypted offline backups. Treat loss or suspected disclosure as a rotation event.
 
-## Trust chain and replay defense
+## Trust chain and replay protection
 
-The client verifies raw UTF-8 bytes before parsing JSON. From 1.0.13, the public canonical names are `update-keyring.json` / `update-keyring.json.sig`; packaging also keeps byte-identical `update-keyring-v1.json` / `update-keyring-v1.json.sig` compatibility aliases. At least two different compiled roots out of three must sign the keyring, and its signature envelope contains detached Ed25519 signatures with `key_id`. The client falls back to the legacy pair only when the canonical document or signature returns 404; other network failures, signature/parse failures, and replay-defense failures remain fail-closed. The keyring has its own increasing `sequence`, `issued_at`, and `expires_at`, and delegates release keys with a `key_id`, public key, validity window, and `revoked` flag.
+The only network endpoints are `update-keyring.json` / `.sig` and `update-archive.json` / `.sig`. Verify the original UTF-8 bytes before JSON parsing. Missing files, network errors, invalid signatures, parsing errors and replay failures reject the update. Version 1.2.1 retires legacy endpoints; 1.0.12 and earlier require a manual upgrade. Existing transaction recovery remains supported.
 
-Both v1 and v2 manifests carry signed `key_id`, `issued_at`, and `expires_at`. Their lifetime is capped at 180 days; expired or implausibly future-dated documents are rejected to prevent a valid signature being replayed indefinitely. The client persists each of the v1, v2, and keyring last-verified sequence plus raw SHA-256 in executable-adjacent `.awj-update-security-state.json`, using an inter-process exclusive lock, same-directory temporary write, flush, and atomic replace. Lower sequences, different bytes at the same sequence, and a damaged state file fail closed across restart; legacy `AWJ.jsonc` counters are only migration floors.
+At least two of the three compiled root keys sign a keyring that delegates time-bounded, revocable release keys. Both documents carry increasing sequences and validity windows of at most 180 days. Expired and implausibly future documents are rejected.
 
-No app-local mechanism can resist an attacker with equal local write access that can delete/replace both the application and its state file. Network authority still keeps the URL allow-list, verify-before-parse order, archive/member size and SHA-256 checks, safe extraction, helper re-verification, same-volume staging, health check, and rollback.
+The application stores accepted sequence and raw SHA-256 values in `.awj-update-security-state.json`, using a cross-process lock, flushed temporary file and atomic replacement. Lower sequences, different content at the same sequence and damaged state fail closed. Retain old-state migration, URL allowlists, member hashes, safe extraction, helper verification, health checks and rollback. This cannot protect against a local attacker who can replace application files and replay state.
 
 ## Release and rotation
 
@@ -29,8 +29,8 @@ No app-local mechanism can resist an attacker with equal local write access that
    .\scripts\sign-update-keyring.ps1 `
      -KeyringPath .\update-keyring.json `
      -RootSeedFiles @{
-       'root-legacy-2026' = 'C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-seed.hex'
-       'root-recovery-a-2026' = 'C:\Users\ROG\Documents\AWJimage-secrets\update-ed25519-root-recovery-a-2026.hex'
+       'root-legacy-2026' = '<external-key-directory>\update-ed25519-seed.hex'
+       'root-recovery-a-2026' = '<external-key-directory>\update-ed25519-root-recovery-a-2026.hex'
      } `
      -SignerPath .\bin\x64\Release\awj_update_manifest_sign.exe
    ```

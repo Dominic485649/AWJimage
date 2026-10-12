@@ -17,9 +17,8 @@
 #include "studio_ui_util.h"
 #include "studio_worker_control.h"
 
-import awj.avif_aom_codec;
+import awj.avif_registry;
 import awj.core;
-import awj.decoder_registry;
 import awj.encoding_defaults;
 
 namespace awj::studio {
@@ -56,9 +55,7 @@ std::expected<void, std::string> add_manual_large_image_path(
                                          awj::display_path_for_user(path),
                                          ec.message())};
     }
-    const auto dimensions = awj::probe_image_dimensions_for_path(
-        path,
-        awj::DecoderRegistryOptions{.allow_wic_fallback = allow_wic_fallback});
+    const auto dimensions = probe_studio_image_dimensions(path, allow_wic_fallback);
     if (!dimensions) {
       return std::unexpected{dimensions.error()};
     }
@@ -96,7 +93,7 @@ void set_input_path_preserving_output(AwjStudio& app,
 
 LargeImageManualAvailability large_image_manual_availability() {
   const auto capabilities =
-      awj::avif_encoder_capabilities_for_current_build();
+      awj::avif_encoder_capabilities_for_build(true);
   LargeImageManualAvailability result{};
   for (const auto& capability : capabilities) {
     const bool enabled = capability.enabled;
