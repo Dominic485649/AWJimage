@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 12,
+  "sequence": 13,
   "key_id": "release-2026",
-  "issued_at": "2026-10-06T16:49:39Z",
-  "expires_at": "2027-02-03T16:49:39Z",
+  "issued_at": "2026-10-12T11:27:15Z",
+  "expires_at": "2027-02-17T00:00:00Z",
   "entries": [
     {
-      "version": "1.2.0",
+      "version": "1.2.1",
       "channel": "stable",
-      "published_at": "2026-10-06T16:49:39Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.0",
-      "minimum_updater_version": "1.0.4",
+      "published_at": "2026-10-12T11:27:15Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.1",
+      "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
-            "size": 11934920,
-            "sha256": "6b97c5699b584d7eb632bb36337f8d359ff3fdd1ae9a93e7635507a9cebffb21"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
+            "size": 13176448,
+            "sha256": "4b4431afc8f3b54a164a697fabe3589bf93bbb4388321a9459f0be0a40196fca"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
-              "size": 450048,
-              "sha256": "4a71f0c99cf35b79f7084fc3dddc6ec2651b3e5b899793eefe813305c7a3ace3"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
+              "size": 24498176,
+              "sha256": "1a25351630d289ad3e1473727557df068a7961e464a5e3179677b3153d6e83bf"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
-              "size": 42322432,
-              "sha256": "ae2bd8cfdd8a63c66112beda58f2426ca05c44091ca22efc09a6eb57fbc729b1"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
+              "size": 20453376,
+              "sha256": "06a6a8062f9df7cdae1de5fd13d11043819837d33db2c02c54414facf62d6084"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Win.7z",
-              "size": 142168,
-              "sha256": "fe068ded1d9ac895da6b741500d228b0d598bfade14bcf9f7a1f4eb807ca012d"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
+              "size": 142866,
+              "sha256": "ae604ed7ad5da675cd1c5f23bc566dc79a33eb1a58cc5aac26c174342a0a5200"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
-            "size": 19455350,
-            "sha256": "dde97141f9bf111a7c6bc072f3a212369c6017349eb210d335f89757232c8985"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
+            "size": 20378932,
+            "sha256": "94fd495e73c51306d387779630cdd803a743e1dc7261ca0480e6f1e7a4d9d5e7"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
-              "size": 67516784,
-              "sha256": "2db767160c05569d168619e9441ef6167b82c07ab2a45299246847c85dce094c"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
+              "size": 68561232,
+              "sha256": "c74cc0f63fbe08c614697d2d8503027c55cd3211050d9fbead5c409f80e56d55"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
               "size": 34523,
               "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.0/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
               "size": 139580,
-              "sha256": "ae5ede84a8a9f464113986e3353b39b9f7b166a26d2e540d29d6fb69729b58cb"
+              "sha256": "8c85a729be69abdd7d79aca903b0edeff078c1409567f93aaf77224499062621"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "- 自动识别 JPEG、AVIF、HEIC/HEIF 的受支持 Gain Map，在线性光空间重建增强图像；无 Gain Map 时正常转换，损坏或不支持的增益图明确报错。\n- JPEG 自动区分 SDR 与 HDR。SDR 使用普通 JPEGli；HDR 使用线性 FP16 生成 Gain Map，由 JPEGli 分别编码 8-bit SDR 主图和多通道增益图，再封装为 ISO 21496-1 / MPF HDR JPEG。CLI 提供 `--jpeg-hdr auto|sdr|hdr`，界面和右键固定 auto。HDR JPEG 不支持视觉质量搜索，q100 不声明无损。\n- GIF、APNG、WebP 和 AVIF 序列转 AVIF 时自动保留动画，合成完整画布后顺序编码，保留 VFR、循环和透明。UI、预设和右键默认自动；动画 tune（auto/ssim/psnr）及最大关键帧间隔（默认 0 自动）仅在 CLI 提供；多帧不强制静态 IQ 或 Grid。\n- AVIF YUV + auto 对齐 avifenc：保留源 420/422/444，灰度及灰度加 alpha 使用 400，RGB/RGBA 和未知源使用 444；新增 AVIF 400 强制灰度选项，保留 alpha；无损和 444 不会自动改为 Identity。\n- Windows 正常和兼容右键菜单移除强制顶部/底部位置，重新安装时清除旧 Position，采用 Explorer 普通排序。\n- 新增 libultrahdr 2.0.2；升级 libaom 至 3.15.1、libheif 至 1.23.6、libpng 至 1.6.59、Slint 至 1.18.1，并锁定完整 revision、源码及本地补丁哈希。每个 AWJ 新版本重新审核当时最新稳定版，历史构建使用对应锁定记录。\n- 修正空 PNG chunk 的 CRC 计算；依赖归档更新采用新提取时间，避免旧对象混入升级后的编解码器。HDR 色调映射增加逐行取消检查。",
-        "en": "- Reconstruct supported JPEG, AVIF and HEIC/HEIF gain maps into enhanced pixels in linear light. Ordinary images use the normal conversion path; recognized invalid or unsupported gain maps fail explicitly.\n- JPEG automatically preserves HDR: JPEGli encodes the 8-bit SDR base and generated multichannel gain map, with FP16 HDR processing and ISO 21496-1 / MPF packaging. CLI supports `--jpeg-hdr auto|sdr|hdr`; Studio and context menus always use auto. HDR JPEG rejects visual-quality search, and q100 does not imply lossless JPEG.\n- Automatically preserve GIF, APNG, WebP and AVIF sequences when converting to AVIF. Composite full canvases before encoding, retain VFR timing, loops and alpha, with automatic tuning and keyframes in Studio, presets and context menus. Animation tune (auto/ssim/psnr) and maximum keyframe interval (0 by default) are CLI-only. Sequences do not force still-image IQ or Grid.\n- Match avifenc YUV + auto: retain source 420/422/444; use 400 for grayscale with or without alpha; use 444 for RGB/RGBA and unknown sources. Add forced monochrome AVIF 400 output while retaining alpha. Lossless and 444 do not implicitly select Identity.\n- Remove forced top/bottom placement from normal and compatibility Windows context menus; reinstalling clears the old Position value and uses ordinary Explorer ordering.\n- Add libultrahdr 2.0.2 and update libaom to 3.15.1, libheif to 1.23.6, libpng to 1.6.59 and Slint to 1.18.1. Lock dependency revisions, source archives and local patch hashes per AWJ version; review the latest stable dependencies when preparing each new version.\n- Fix CRC calculation for empty PNG chunks, use fresh extraction timestamps to prevent stale codec objects after dependency updates, and check cancellation between HDR tone-mapping rows."
+        "zh-CN": "### 优化\n\n- 统一目标像素转换阶段：AVIF、HEIF、JPG 和有损 WebP 优先保留原生 YUV；兼容布局直接复用，矩阵、位深、色度、HDR 与裁剪、旋转、镜像、缩放合并生成目标像素。AVIF、JPG 和有损 WebP 可直接编码 YUV，PNG、JXL 与无损 WebP 按需转换为 RGB。\n- Grid 单元使用转换后的平面视图；删除旧的整图 RGBA 位深转换缓冲。保留色调映射的亮度分析、Gain Map 重建、动画合成和视觉搜索的参考图准备。\n- Windows 转换核心完全放入 AWJ.com，可独立运行；AWJ.exe 保留界面、右键菜单与更新，主队列和右键转换均使用 COM 子进程。保留旧 EXE 命令转发、退出码与取消。\n- 普通大图直接进入普通编码队列，删除按像素数延后的分支；Grid 保留单独调度。普通图片跳过无关的动画/Grid 探测。\n- 自动线程数遵循进程 CPU 亲和性；单线程 AOM 关闭 row-mt，多线程保留。\n- CLI 新增 `--cpu-affinity`，按逻辑 CPU 编号限定执行；auto 从允许的 CPU 数扣除桌面预留，显式 `--threads N` 使用完整预算，参数顺序不影响结果。\n- FP16 读取使用逐值等价的位运算；普通 HDR 输出在目标像素阶段完成映射并支持取消，删除额外的整图 RGBA16 副本。\n- 格式名称统一为 JPG，默认输出 8-bit YCbCr 4:2:0，保留 4:2:2、4:4:4 和 HDR Gain Map。按扫描行转换 RGB，减少整图缓冲；保留旧格式与参数别名。\n- DX11 和 Linux Vulkan 指标按需加载，设备初始化结果在进程内复用；小图与关闭加速的转换跳过 GPU 初始化，搜索过程中 GPU 指标出错后，其余候选使用 CPU。\n- CPU 视觉搜索复用参考图金字塔、统计量和候选缓冲；减少 GMSD 边界计算，将 HDR 固定矩阵移出像素循环，新增内存计入预算。\n- WIC 工厂按需创建并按线程复用，保留 JXR；GUI 复用 OpenGL 检查结果，缺少可选图形功能时继续使用软件渲染和普通窗口。\n- 大图内存预检支持 Gain Map JPEG 尺寸及旋转；计入压缩输入缓冲与编码块对齐；明确的普通 8-bit 4:2:0 JPEG 使用独立预留，HDR、透明与未知输入保留保守预算。尺寸未知的任务独占预算。\n\n### 界面\n\n- 侧栏缩至 147px，标题改为居中的 AWJ；参数页顶部统一为 16px，设置页按内容高度从顶部排列，剩余空间留在页面底部。\n- 合并更新日志选项为默认勾选的“仅在更新后显示更新日志”，与日志页同步；保留总开关、版本记录和手动打开入口。\n- 更新选项、检查按钮和提示保持同一行，提示省略溢出文字并提供悬停全文。\n- 关于页改为仓库和 Q 群链接；替换深浅主题图标，使用原始 PNG 裁剪的深浅图标，标题栏小图标随应用主题，运行中的任务栏图标随 Windows 系统主题。\n- 默认宽度调整为 1171px，最小宽度为 747px；命名按钮和格式/预设下拉框保持最小窗口下的固定宽度，六个复选框按最宽项等宽排列并按内容宽度换行。窗口底色、侧栏和原生标题栏同色，浅色底色稍加深；右侧恢复独立分组卡片与 8px 圆角，深色主题同步切换内容和控件配色。更新日志卡片的浅蓝色保持不变。\n\n- 滚动区域固定圆角裁切，右、下侧内层描边由原生窗口边框覆盖；关于说明文字与可点击链接分开显示。Windows 连续缩放时按当前客户区尺寸立即更新绘制。\n\n### 维护\n\n- 重构中英文 README，开发与验证命令移入贡献指南，清理过时文档和个人路径。\n- 退役旧更新清单和密钥环兼容入口，保留当前归档更新、验签、防重放与事务恢复。1.0.12 及更早版本需手动升级。",
+        "en": "### Optimization\n\n- Unify target-pixel conversion. Prefer native YUV when decoding AVIF, HEIF, JPG and lossy WebP; reuse compatible layouts and combine matrix, depth, sampling, HDR, crop, rotation, mirroring and resizing into the target pixels. AVIF, JPG and lossy WebP can encode YUV directly; PNG, JXL and lossless WebP convert to RGB as needed.\n- Use prepared plane views for Grid cells and remove the old full-image RGBA depth-conversion buffer. Retain luminance analysis for tone mapping, gain-map reconstruction, animation compositing and visual-search reference preparation.\n- Add CLI `--cpu-affinity` for logical CPU selection. Auto reserves desktop capacity from the allowed CPUs; explicit `--threads N` uses the full budget, regardless of argument order.\n- Move the Windows conversion core entirely into standalone AWJ.com. AWJ.exe contains the GUI, context menus and updater; both GUI conversion paths use COM workers. Preserve legacy EXE forwarding, exit codes and cancellation.\n- Encode ordinary large images in the normal queue, removing the pixel-count deferral; keep Grid scheduling separate. Skip unrelated animation/Grid probes for ordinary images.\n- Honor process CPU affinity when selecting automatic threads. Disable AOM row-mt for single-thread encoding and retain it for multiple threads.\n- Use exactly equivalent bit operations for FP16 reads. Map ordinary HDR output directly into destination pixels with cancellation support, eliminating the extra full-image RGBA16 copy.\n- Use JPG as the format name, defaulting to 8-bit YCbCr 4:2:0 with 4:2:2, 4:4:4 and HDR Gain Maps retained. Convert RGB scanlines without a full-image copy and preserve previous format/option aliases.\n- Load DX11 and Linux Vulkan metrics on demand and cache device initialization results. Small images and disabled acceleration skip GPU initialization; GPU metric failures switch remaining search candidates to the CPU.\n- Reuse CPU reference pyramids, statistics and candidate buffers, reduce GMSD boundary calculations, and move fixed HDR matrices outside pixel loops. Include additional buffers in memory budgets.\n- Create WIC factories on demand and reuse them per thread, preserving JXR. Cache GUI OpenGL probes and retain software rendering and ordinary windows when optional graphics features are unavailable.\n- Include Gain Map JPEG dimensions and orientation in memory preflight, account for compressed buffers and codec block padding, and use a separate reservation for clearly identified ordinary 8-bit 4:2:0 JPEG. Retain conservative HDR/alpha/unknown estimates and exclusive admission for unknown dimensions.\n\n### Interface\n\n- Reduce the sidebar to 147px, center the AWJ title, and use 16px parameter-page top padding. Keep settings cards at their natural height, with spare space below the content.\n- Merge changelog preferences into the default-enabled “Only show changelog after updates”, synchronized with the changelog page. Keep the main switch, version history and manual entry.\n- Keep update controls and status on one row; truncate status with an ellipsis and show full text on hover.\n- Add repository and QQ links to About. Crop light/dark icons from the original PNG. Caption icons follow the app theme; running taskbar icons follow the Windows system theme.\n- Use a 1171px default width and 747px minimum, keep naming buttons and format/preset selectors at their minimum-window widths, and give all six checkboxes the widest localized width before wrapping. Match the canvas, sidebar and native caption, with a slightly deeper light background. Restore separate section cards with 8px corners and matching dark content and controls. Keep the light-blue changelog cards unchanged.\n\n- Keep viewport corners rounded while scrolling, let the native frame cover the right/bottom panel strokes, and separate About descriptions from clickable URLs. Update Windows rendering immediately at the current client size during continuous resizing.\n\n### Maintenance\n\n- Rebuild both READMEs, move development and validation commands to the contribution guide, and remove outdated documents and personal paths.\n- Retire legacy update documents and keyring aliases, preserving archive updates, signature verification, replay protection and transaction recovery. Versions 1.0.12 and earlier require a manual upgrade."
       }
     }
   ]
