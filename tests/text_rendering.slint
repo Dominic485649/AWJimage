@@ -1,0 +1,121 @@
+// 各区域的文字锚点一致，区域间距在所有测试缩放下均为整数物理像素。
+component GlyphSample inherits Rectangle {
+    in property <string> family;
+    width: 320px;
+    height: 96px;
+    background: transparent;
+
+    Text {
+        x: 16px;
+        y: 16px;
+        width: 288px;
+        height: 24px;
+        text: "待处理 0 · 处理中 0 · 成功 0 · 失败 0";
+        font-family: root.family;
+        font-size: 12px;
+        font-weight: 400;
+        color: #202020;
+        vertical-alignment: top;
+    }
+    Text {
+        x: 16px;
+        y: 44px;
+        width: 288px;
+        height: 24px;
+        text: "Pending 0 · Running 0 · Success 0 · Failed 0";
+        font-family: root.family;
+        font-size: 12px;
+        font-weight: 400;
+        color: #202020;
+        vertical-alignment: top;
+    }
+}
+
+export component TextRenderingFixture inherits Window {
+    title: "AWJ 字体像素回归测试";
+    width: 704px;
+    height: 256px;
+    background: #ffffff;
+    in property <string> family: "Microsoft YaHei";
+    in property <length> offset-x;
+    in property <length> offset-y;
+    in property <length> inner-offset-x;
+    in property <length> inner-offset-y;
+
+    // 左上直接绘制，右上使用矩形裁剪。
+    GlyphSample {
+        x: 16px + root.offset-x;
+        y: 16px + root.offset-y;
+        family: root.family;
+    }
+    Rectangle {
+        x: 368px + root.offset-x;
+        y: 16px + root.offset-y;
+        width: 320px;
+        height: 96px;
+        background: transparent;
+        clip: true;
+        GlyphSample { family: root.family; }
+    }
+
+    // 左下使用圆角裁剪，右下嵌套两层圆角裁剪。
+    Rectangle {
+        x: 16px + root.offset-x;
+        y: 144px + root.offset-y;
+        width: 320px;
+        height: 96px;
+        border-radius: 8px;
+        background: transparent;
+        clip: true;
+        GlyphSample { family: root.family; }
+    }
+    Rectangle {
+        x: 368px + root.offset-x;
+        y: 144px + root.offset-y;
+        width: 320px;
+        height: 96px;
+        border-radius: 8px;
+        background: transparent;
+        clip: true;
+        Rectangle {
+            x: 4px + root.inner-offset-x;
+            y: 4px + root.inner-offset-y;
+            width: 312px;
+            height: 88px;
+            border-radius: 8px;
+            background: transparent;
+            clip: true;
+            // 只移动裁剪边界，补偿子元素位置以保持文字锚点不变。
+            GlyphSample {
+                x: -4px - root.inner-offset-x;
+                y: -4px - root.inner-offset-y;
+                family: root.family;
+            }
+        }
+    }
+
+    // 子内容从分数坐标开始，开启父缓存前后都不能把输出移到原裁剪矩形外。
+    Rectangle {
+        x: 10px + root.offset-x;
+        y: 244px + root.offset-y;
+        width: 80px;
+        height: 8px;
+        border-radius: 2px;
+        clip: true;
+        Rectangle { x: 0.5px; width: 80px; height: 8px; background: #e02020; }
+    }
+    Rectangle {
+        x: 110px + root.offset-x;
+        y: 244px + root.offset-y;
+        width: 80px;
+        height: 8px;
+        cache-rendering-hint: true;
+        Rectangle {
+            width: 80px;
+            height: 8px;
+            border-radius: 2px;
+            clip: true;
+            Rectangle { x: 0.5px; width: 80px; height: 8px; background: #e02020; }
+        }
+    }
+}

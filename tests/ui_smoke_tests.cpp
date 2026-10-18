@@ -7,6 +7,8 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <format>
@@ -18,6 +20,13 @@
 #include <thread>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #include "awj_studio_ui_smoke.h"
 #include "focus_reentrancy.h"
@@ -32,6 +41,161 @@ int fail(std::string_view message) {
   std::fwrite(message.data(), 1, message.size(), stderr);
   std::fputc('\n', stderr);
   return 1;
+}
+
+bool write_snapshot_ppm(const std::filesystem::path& path, const auto& snapshot) {
+  std::ofstream file{path, std::ios::binary};
+  file << "P6\n" << snapshot.width() << ' ' << snapshot.height() << "\n255\n";
+  for (const auto& pixel : snapshot) {
+    file.put(static_cast<char>(pixel.r));
+    file.put(static_cast<char>(pixel.g));
+    file.put(static_cast<char>(pixel.b));
+  }
+  return static_cast<bool>(file);
+}
+
+std::string ui_snapshot_font_family() {
+#ifdef _WIN32
+  const auto* family = _wgetenv(L"AWJ_UI_TEST_FONT");
+  if (!family || !*family) return {};
+  const int size = WideCharToMultiByte(CP_UTF8, 0, family, -1, nullptr, 0, nullptr, nullptr);
+  if (size <= 1) return {};
+  std::string utf8(static_cast<std::size_t>(size), '\0');
+  if (!WideCharToMultiByte(CP_UTF8, 0, family, -1, utf8.data(), size, nullptr, nullptr)) return {};
+  utf8.pop_back();
+  return utf8;
+#else
+  const auto* family = std::getenv("AWJ_UI_TEST_FONT");
+  return family ? family : "";
+#endif
+}
+
+int verify_font_rendering_snapshots(const std::filesystem::path& directory, float scale) {
+  if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 1.75f && scale != 2)
+    return fail("字体截图缩放必须为 1、1.25、1.5、1.75 或 2");
+  if (!std::filesystem::create_directory(directory)) return fail("字体截图目录必须为新目录");
+  auto app = AwjStudio::create();
+  const auto family = ui_snapshot_font_family();
+  std::vector<ComboOption> fonts{{.text = "系统默认字体", .enabled = true}};
+  if (!family.empty()) fonts.push_back(ComboOption{.text = slint::SharedString{family}, .enabled = true});
+  app->set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(fonts)));
+  app->set_ui_font_index(family.empty() ? 0 : 1);
+  app->set_ui_font_family(slint::SharedString{family});
+  app->set_current_version("1.2.2");
+  app->set_selected_page(1);
+  app->set_theme_index(1);
+  slint::select_bundled_translation("");
+  app->window().window_handle().set_const_scale_factor(scale);
+  const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround(1171 * scale)),
+                                  static_cast<std::uint32_t>(std::lround(800 * scale))}};
+  bool saw_opengl = false;
+  if (app->window().set_rendering_notifier([&](slint::RenderingState, slint::GraphicsAPI api) {
+        saw_opengl = saw_opengl || api == slint::GraphicsAPI::NativeOpenGL;
+      })) return fail("正式界面截图必须使用可核对的原生 GPU 渲染器");
+  const auto click_navigation = [&](std::string_view id) {
+    const auto elements = slint::testing::ElementHandle::find_by_element_id(app, id);
+    if (elements.size() != 1) return false;
+    const auto position = elements[0].absolute_position();
+    const auto extent = elements[0].size();
+    const slint::LogicalPosition point{{position.x + extent.width / 2, position.y + extent.height / 2}};
+    app->window().dispatch_pointer_press_event(point, slint::PointerEventButton::Left);
+    app->window().dispatch_pointer_release_event(point, slint::PointerEventButton::Left);
+    return true;
+  };
+  std::optional<std::string> error;
+  int theme = 1;
+  int captured = 0;
+  int frame_attempts = 0;
+  bool size_requested = false;
+  bool navigation_checked = false;
+  auto changed_at = std::chrono::steady_clock::now();
+  const auto finish = [&](std::string message) {
+    if (!message.empty()) error = std::move(message);
+    app->hide();
+    slint::quit_event_loop();
+  };
+  slint::Timer frames;
+  // Winit 在原生事件循环中恢复渲染表面，不能在 show 后直接假定首帧已经存在。
+  frames.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50}, [&] {
+    try {
+      if (!size_requested) {
+        app->window().set_size(size);
+        size_requested = true;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
+      const auto snapshot = app->window().take_snapshot();
+      const auto actual_size = app->window().size();
+      if (!snapshot || snapshot->width() != size.width || snapshot->height() != size.height ||
+          actual_size.width != size.width || actual_size.height != size.height || !saw_opengl) {
+        if (++frame_attempts < 60) return;
+        std::fprintf(stderr,
+            "font-rendering frame requested=%ux%u window=%ux%u snapshot=%ux%u opengl=%s\n",
+            size.width, size.height, actual_size.width, actual_size.height,
+            snapshot ? snapshot->width() : 0, snapshot ? snapshot->height() : 0,
+            saw_opengl ? "yes" : "no");
+        finish("原生窗口未生成请求尺寸的 GPU 帧");
+        return;
+      }
+      frame_attempts = 0;
+      if (std::fabs(app->window().scale_factor() - scale) > 0.001f) {
+        finish("原生窗口没有使用指定的字体截图缩放比例");
+        return;
+      }
+#ifdef _WIN32
+      if (!app->window().win32_hwnd()) {
+        finish("正式界面截图缺少真实 Win32 窗口");
+        return;
+      }
+#endif
+      if (!navigation_checked) {
+        if (!click_navigation("AwjStudio::settings-nav") || app->get_selected_page() == 1 ||
+            !click_navigation("AwjStudio::queue-nav") || app->get_selected_page() != 1 ||
+            std::string_view{app->get_ui_font_family()} != family) {
+          finish("原生界面的导航点击或字体一致性检查失败");
+          return;
+        }
+        navigation_checked = true;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
+      if (std::chrono::steady_clock::now() - changed_at < std::chrono::milliseconds{250}) return;
+      if (!write_snapshot_ppm(directory / std::format("queue-theme{}.ppm", theme), *snapshot)) {
+        finish("无法写入正式界面原始 GPU 帧");
+        return;
+      }
+      std::printf("font-rendering frame theme=%d size=%ux%u scale=%.3f api=NativeOpenGL\n",
+                  theme, snapshot->width(), snapshot->height(), double(app->window().scale_factor()));
+      ++captured;
+      if (theme == 1) {
+        theme = 2;
+        app->set_theme_index(theme);
+        changed_at = std::chrono::steady_clock::now();
+      } else {
+        finish({});
+      }
+    } catch (const std::exception& exception) {
+      finish(exception.what());
+    }
+  });
+  app->window().on_close_requested([&] {
+    error = "正式界面截图窗口在完成前关闭";
+    slint::quit_event_loop();
+    return slint::CloseRequestResponse::HideWindow;
+  });
+  slint::Timer timeout;
+  timeout.start(slint::TimerMode::SingleShot, std::chrono::seconds{30}, [&] {
+    finish("等待正式界面原生 GPU 截图超时");
+  });
+  app->show();
+  slint::run_event_loop();
+  frames.stop();
+  timeout.stop();
+  if (error) return fail(*error);
+  if (captured != 2 || !navigation_checked || !saw_opengl) return fail("正式界面截图没有完成全部检查");
+  std::printf("font-rendering snapshots scale=%.2f family=%s navigation=pass api=NativeOpenGL\n",
+              scale, family.c_str());
+  return 0;
 }
 
 // 1.0.14 回归：Studio「开始转换」时队列重置循环崩在 strlen(nullptr)。
@@ -679,6 +843,8 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     }
   }
   app->window().window_handle().set_const_scale_factor(scale_factor);
+  if (std::fabs(app->window().scale_factor() - scale_factor) > 0.001f)
+    return fail("UI 回归没有使用请求的实际缩放比例");
   app->window().set_size(slint::LogicalSize({820.0f, 560.0f}));
   app->set_ui_font_options(font_options());
   awj::ui::bind_queue_model(*app, task_rows());
@@ -1271,6 +1437,9 @@ int main(int argc, char** argv) {
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
   }
+  if (argc == 4 && std::string_view{argv[1]} == "--font-rendering-snapshots") {
+    return verify_font_rendering_snapshots(std::filesystem::path{argv[2]}, std::stof(argv[3]));
+  }
   if ((argc == 2 || argc == 3) && std::string_view{argv[1]} == "--resize-window") {
     auto app = AwjStudio::create();
     app->set_theme_index(argc == 3 ? std::stoi(argv[2]) : 1);
@@ -1483,14 +1652,8 @@ int main(int argc, char** argv) {
               return fail("snapshot did not use the requested pixel size and scale");
             const auto name = std::format("lang{}-theme{}-page{}-format{}", language, theme, page, format) +
                 (scrolling ? std::format("-scroll{}.ppm", stage) : ".ppm");
-            std::ofstream file{directory / name, std::ios::binary};
-            file << "P6\n" << snapshot->width() << ' ' << snapshot->height() << "\n255\n";
-            for (const auto& pixel : *snapshot) {
-              file.put(static_cast<char>(pixel.r));
-              file.put(static_cast<char>(pixel.g));
-              file.put(static_cast<char>(pixel.b));
-            }
-            if (!file) return fail("could not write the renderer snapshot");
+            if (!write_snapshot_ppm(directory / name, *snapshot))
+              return fail("could not write the renderer snapshot");
             }
           }
         }
@@ -1512,15 +1675,15 @@ int main(int argc, char** argv) {
     }
     focus->hide();
   }
-  auto app = AwjStudio::create();
-  if (app->get_speed_text() != "5" || app->get_menu_speed_text() != "5")
-    return fail("initial AVIF speed is not 5");
-  app->show();
+  // Slint 的 const scale setter 只接受首次设置，各比例必须使用新窗口。
   for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
-    if (const int result = run_scale(app, scale); result != 0) {
-      return result;
-    }
+    auto app = AwjStudio::create();
+    if (app->get_speed_text() != "5" || app->get_menu_speed_text() != "5")
+      return fail("initial AVIF speed is not 5");
+    app->show();
+    const int result = run_scale(app, scale);
+    app->hide();
+    if (result != 0) return result;
   }
-  app->hide();
   return 0;
 }

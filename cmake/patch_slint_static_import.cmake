@@ -116,6 +116,37 @@ awj_slint_replace(${models}
     [=[        // Source indices also change when only rejected rows are removed.
         target_model.notify_reset();]=])
 
+# 圆角裁剪的离屏纹理也需对齐物理像素，避免分数 DPI 下文字再次被线性采样。
+# 裁剪路径、纹理和覆盖区同步对齐，不能只平移纹理而额外截掉贴边内容。
+awj_slint_replace(internal/renderers/femtovg/itemrenderer.rs
+    [=[                    canvas.intersect_scissor(
+                        layer_origin.x,
+                        layer_origin.y,
+                        layer_image_width,
+                        layer_image_height,
+                    );
+                    canvas.fill_path(&layer_path, &layer_image_paint);]=]
+    [=[                    // AWJ_ROUNDED_CLIP_PIXEL_ALIGNMENT
+                    // 对齐后的圆角仍受原矩形约束，不能越出父图层缓存的逻辑边界。
+                    let clip_bounds = clip_rect * self.scale_factor;
+                    canvas.intersect_scissor(
+                        clip_bounds.origin.x,
+                        clip_bounds.origin.y,
+                        clip_bounds.size.width,
+                        clip_bounds.size.height,
+                    );
+                    let restore_transform = Self::pixel_align_origin(canvas, layer_origin);
+                    canvas.intersect_scissor(
+                        layer_origin.x,
+                        layer_origin.y,
+                        layer_image_width,
+                        layer_image_height,
+                    );
+                    canvas.fill_path(&layer_path, &layer_image_paint);
+                    if restore_transform {
+                        canvas.restore();
+                    }]=])
+
 # Runtime PNG/JPEG remain enabled by workspace image features; SVG stays explicit.
 # The host slint-compiler retains image-default-formats for build-time resources.
 awj_slint_replace(api/cpp/Cargo.toml

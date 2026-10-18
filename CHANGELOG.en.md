@@ -1,6 +1,26 @@
 # Changelog
 
 
+## 1.2.2 - 2026-10-18
+
+### Fixes
+
+- Fix blurry text caused by resampling at fractional physical coordinates inside rounded Windows UI regions, including scaling factors such as 150% and some 200% layouts. Align the Slint/FemtoVG rounded offscreen layer's texture, clipping path and coverage rectangle to the physical pixel grid together.
+- Preserve the original logical clip's physical bounds before alignment so output cannot extend beyond the parent layer's cached area. Keep font families, sizes, weights, corner radii and application DPI awareness unchanged.
+
+### Maintenance
+
+- Reapply the idempotent Slint patches during CMake configuration so cached FetchContent sources receive changes to the patch script. Patch contract checks cover initial application, repeat application and rejection of mismatched anchors.
+- Add real Winit/FemtoVG pixel regressions comparing direct text, rectangular clips, rounded clips and nested rounded clips. Cover Chinese and Latin text, fractional positions and edge content with and without a parent cache, checking interior coverage and no output outside the original bounds.
+- Fix UI tests that repeatedly tried to change one window's constant scale factor. Use a new window for each scale and assert the actual value. Capture the production UI component through a native event loop, wait for a valid GPU frame, and check fonts, dimensions, scaling, light/dark themes and navigation.
+- Register native glyph checks requiring a desktop and OpenGL only when explicitly enabled in CTest. Slint remains pinned to 1.18.1, codec dependency versions are unchanged, and the local patch hash is updated.
+
+### Validation scope
+
+- Native Windows glyph checks cover 100%, 125%, 150% and 200%. Production UI component captures with HarmonyOS Sans SC and Microsoft YaHei UI cover light/dark themes and navigation at 150% and 200%, asserting a real Win32 window and NativeOpenGL.
+- The original application reproduced the blur without MacType, while patched native glyph tests passed with MacType modules loaded. This fix does not require disabling MacType or changing its configuration or Windows display settings. It does not claim coverage of every MacType configuration.
+- Automated checks use per-process Slint content scaling and do not establish coverage of actual system-DPI changes or moving windows between monitors.
+
 ## 1.2.1 - 2026-10-12
 
 ### Optimization

@@ -24,6 +24,7 @@ option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.d
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
 option(AVIF_ENABLE_RELEASE_IPO "Enable interprocedural optimization for Release builds when the compiler supports it" OFF)
 option(AWJ_ENABLE_STRICT_MSVC_CHECKS "Enable MSVC /W4 and /sdl for project targets" ON)
+option(AWJ_ENABLE_NATIVE_RENDERER_TESTS "注册需要桌面与 OpenGL 的真实 Winit/FemtoVG 回归" OFF)
 option(AWJ_ENABLE_X64_V3 "Enable x64-v3/AVX2 code generation for project targets in Release builds" OFF)
 option(AWJ_ENABLE_JPEGLI "Build Google Jpegli JPGLI codec support into AWJ" ON)
 option(AWJ_PATCH_LIBAVIF_PARALLEL_GRID "Patch pinned libavif to encode simple still color grids in parallel" ON)
@@ -753,6 +754,10 @@ if(FETCHCONTENT_SOURCE_DIR_SLINT)
         COMMAND_ERROR_IS_FATAL ANY)
 endif()
 FetchContent_MakeAvailable(Slint)
+# 已缓存的 FetchContent 源码不会因脚本内容变化而重跑 PATCH_COMMAND。
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${slint_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake"
+    COMMAND_ERROR_IS_FATAL ANY)
 if(AVIF_STATIC_SLINT)
     target_compile_definitions(Slint INTERFACE SLINT_STATIC=1)
 endif()
@@ -1567,6 +1572,32 @@ if(BUILD_TESTING)
         add_test(NAME file_drop_win32_core COMMAND awj_file_drop_win32_tests)
     endif()
 
+    # 字形像素回归必须使用真实 Winit/FemtoVG，不能由仅验证布局的 testing 后端代替。
+    # 运行需要可用桌面和 OpenGL，因此只在显式启用时注册到 CTest。
+    add_executable(awj_text_rendering_tests tests/text_rendering_tests.cpp)
+    avif_enable_common_options(awj_text_rendering_tests)
+    avif_add_slint_sources(awj_text_rendering_tests tests/text_rendering.slint)
+    target_link_libraries(awj_text_rendering_tests PRIVATE Slint::Slint)
+    if(TARGET slint_cpp)
+        add_dependencies(awj_text_rendering_tests slint_cpp)
+    endif()
+    if(WIN32)
+        target_sources(awj_text_rendering_tests PRIVATE src/ui/AWJ.manifest)
+        target_link_libraries(awj_text_rendering_tests PRIVATE
+            dwmapi gdi32 ole32 shell32 uxtheme imm32 opengl32)
+    endif()
+    awj_set_runtime_directory(awj_text_rendering_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    if(AWJ_ENABLE_NATIVE_RENDERER_TESTS)
+        foreach(awj_text_scale 1 1.25 1.5 2)
+            string(REPLACE "." "_" awj_text_scale_suffix "${awj_text_scale}")
+            add_test(NAME text_rendering_pixels_${awj_text_scale_suffix}
+                COMMAND awj_text_rendering_tests --scale "${awj_text_scale}")
+            set_tests_properties(text_rendering_pixels_${awj_text_scale_suffix} PROPERTIES
+                TIMEOUT 90 LABELS "ui;renderer;gpu" RESOURCE_LOCK awj_gpu_renderer
+                ENVIRONMENT "SLINT_BACKEND=winit-femtovg")
+        endforeach()
+    endif()
+
     add_executable(awj_ui_smoke_tests
         tests/ui_smoke_tests.cpp)
     avif_enable_common_options(awj_ui_smoke_tests)
@@ -1585,6 +1616,7 @@ if(BUILD_TESTING)
         add_dependencies(awj_ui_smoke_tests slint_cpp)
     endif()
     if(WIN32)
+        target_sources(awj_ui_smoke_tests PRIVATE src/ui/AWJ.manifest)
         target_link_libraries(awj_ui_smoke_tests PRIVATE
             dwmapi
             gdi32

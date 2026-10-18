@@ -50,6 +50,22 @@ ctest --test-dir build/linux-x64-release --output-on-failure
 
 `scripts/check-window-resize.ps1 -Executable <test-dir>\awj_ui_smoke_tests.exe -OutputDirectory <benchmark-dir>\window-resize` 使用与 AltSnap 相同的窗口缩放调用，检查 GPU/软件渲染及深浅主题下的画面尺寸、边缘和正常关闭。脚本从渲染器回读画面，记录原始帧检查及哈希；实际 Alt+右键手势和 DWM 屏幕合成仍需桌面验收。输出目录必须为新目录。
 
+字体像素回归使用真实 Winit/FemtoVG 窗口，需可用桌面和 OpenGL；默认不注册到无桌面测试。启用后，各缩放比例使用独立进程，对照直接绘制、矩形裁剪、圆角裁剪与嵌套裁剪，并检查贴边色块的内部覆盖与外部边界，不依赖跨机器字体截图基线。
+
+```bash
+cmake -S . -B build/validation -DAWJ_ENABLE_NATIVE_RENDERER_TESTS=ON
+```
+
+```bash
+cmake --build build/validation --config Release --target awj_text_rendering_tests
+```
+
+```bash
+ctest --test-dir build/validation -C Release -R "^text_rendering_pixels_" -j 1 --output-on-failure
+```
+
+可通过进程环境变量 `AWJ_TEXT_TEST_FONT` 指定像素回归的字体。正式 Studio 组件的独立截图入口为测试程序的 `--font-rendering-snapshots <全新目录> <缩放比例>`；它读取 `AWJ_UI_TEST_FONT`，检查导航点击、实际渲染尺寸与缩放，并输出深浅主题 PPM，不加载正式配置或同步资源管理器菜单。上述环境变量仅用于测试程序，不改变应用默认字体或系统设置。
+
 ## 基准复现 / Benchmarks
 
 `scripts/prepare-benchmark.py` 使用 Pillow，从来源目录只读拷贝并校验 SHA-256。固定样本为 86 张 JXR、258 张 PixPin 图片及 256 张补充静态图片，共 600 张；数据、输出和原始测量仅保存在指定工作目录，私有路径及原图不提交。

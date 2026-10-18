@@ -5,7 +5,7 @@ endif()
 find_package(Git REQUIRED)
 set(files api/cpp/Cargo.toml api/cpp/include/private/slint_config.h internal/core/window.rs
     internal/backends/winit/winitwindowadapter.rs internal/backends/winit/event_loop.rs
-    api/cpp/include/private/slint_models.h)
+    api/cpp/include/private/slint_models.h internal/renderers/femtovg/itemrenderer.rs)
 file(MAKE_DIRECTORY "${TEST_DIR}")
 foreach(path IN LISTS files)
     get_filename_component(parent "${TEST_DIR}/${path}" DIRECTORY)
@@ -33,11 +33,15 @@ endforeach()
 if(NOT before STREQUAL after)
     message(FATAL_ERROR "Slint patches are not idempotent")
 endif()
-# An incompatible Winit source must fail closed, including on an otherwise patched tree.
-file(WRITE "${TEST_DIR}/internal/backends/winit/event_loop.rs" "// incompatible source\n")
-execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${TEST_DIR}" -P "${CMAKE_CURRENT_LIST_DIR}/../cmake/patch_slint_static_import.cmake"
-    RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
-if(result EQUAL 0 OR NOT error MATCHES "patch anchor missing")
-    message(FATAL_ERROR "Slint patch accepted a missing Winit anchor: ${output}${error}")
-endif()
+# 已打过补丁的树也必须拒绝不兼容的 Winit 或字体合成源码。
+foreach(path IN ITEMS internal/backends/winit/event_loop.rs internal/renderers/femtovg/itemrenderer.rs)
+    file(READ "${TEST_DIR}/${path}" saved)
+    file(WRITE "${TEST_DIR}/${path}" "// incompatible source\n")
+    execute_process(COMMAND "${CMAKE_COMMAND}" "-DSOURCE_DIR=${TEST_DIR}" -P "${patches}"
+        RESULT_VARIABLE result OUTPUT_VARIABLE output ERROR_VARIABLE error)
+    file(WRITE "${TEST_DIR}/${path}" "${saved}")
+    if(result EQUAL 0 OR NOT error MATCHES "patch anchor missing")
+        message(FATAL_ERROR "Slint patch accepted a missing anchor in ${path}: ${output}${error}")
+    endif()
+endforeach()
 message(STATUS "Slint patches: pristine, idempotent, mismatched-anchor rejection passed")
