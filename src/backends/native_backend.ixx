@@ -2294,16 +2294,17 @@ class NativeBackend final {
         }
         if (cfg_.output_format == OutputFormat::png) {
           const bool enhanced = decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
-          if (cfg_.bit_depth && (enhanced ? (*cfg_.bit_depth != 8 && *cfg_.bit_depth != 16) : *cfg_.bit_depth != decoded.image.bit_depth)) {
+          const int png_storage_depth = decoded.image.bit_depth > 8 ? 16 : 8;
+          if (cfg_.bit_depth && (enhanced ? (*cfg_.bit_depth != 8 && *cfg_.bit_depth != 16) : *cfg_.bit_depth != png_storage_depth)) {
             return prepare_failed(
-                std::format("PNG 当前按解码 RGBA buffer 写入 {}-bit；请留空 bit-depth，或使用匹配的 {}。",
-                            decoded.image.bit_depth, decoded.image.bit_depth),
+                std::format("PNG 当前按 {}-bit 存储位深写入；请留空 bit-depth，或使用匹配的 {}。",
+                            png_storage_depth, png_storage_depth),
                 prepared.settings);
           }
-          prepared.settings.bit_depth = enhanced ? cfg_.bit_depth.value_or(8) : decoded.image.bit_depth;
+          prepared.settings.bit_depth = enhanced ? cfg_.bit_depth.value_or(8) : png_storage_depth;
           prepared.settings.bit_depth_reason = cfg_.bit_depth
-                                                   ? "用户明确请求 PNG 源图匹配 bit-depth"
-                                                   : "PNG 继承解码 RGBA buffer bit-depth";
+                                                   ? "用户明确请求 PNG 8/16-bit 存储位深"
+                                                   : "PNG 使用源精度匹配的 8/16-bit 存储位深";
         }
         if (cfg_.output_format == OutputFormat::jpgli) {
           prepared.settings.user_chroma =

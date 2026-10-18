@@ -7,6 +7,7 @@
 
 - Fix blurry text caused by resampling at fractional physical coordinates inside rounded Windows UI regions, including scaling factors such as 150% and some 200% layouts. Align the Slint/FemtoVG rounded offscreen layer's texture, clipping path and coverage rectangle to the physical pixel grid together.
 - Preserve the original logical clip's physical bounds before alignment so output cannot extend beyond the parent layer's cached area. Keep font families, sizes, weights, corner radii and application DPI awareness unchanged.
+- Fix PNG conversion failures for native high-bit-depth AVIF inputs. Normalize PNG storage depth to 8/16-bit and convert 10/12-bit source precision to 16-bit PNG through the existing pixel converter instead of requesting an unsupported PNG depth.
 
 ### Maintenance
 
@@ -14,6 +15,7 @@
 - Add the rounded renderer file to the Windows release cache whitelist. Make `-NoVcpkgInstall` explicitly disable manifest installation during configuration so cache ABI differences cannot reinstall approved dependencies, with regression coverage for both switch states.
 - Include copyright notices and complete license texts for optional statically linked C++ runtimes in Clang/Linux builds, and append them to the release NOTICE.
 - Add a Linux/libc++ iterator compatibility patch to pinned scnlib 4.0.1, preserving the upstream source archive and existing fast-float patch without upgrading the dependency.
+- Include the public standard headers required by native codec modules and let CMake select the Linux update module, fixing standard-module build compatibility with Clang/libc++.
 - Add real Winit/FemtoVG pixel regressions comparing direct text, rectangular clips, rounded clips and nested rounded clips. Cover Chinese and Latin text, fractional positions and edge content with and without a parent cache, checking interior coverage and no output outside the original bounds.
 - Fix UI tests that repeatedly tried to change one window's constant scale factor. Use a new window for each scale and assert the actual value. Capture the production UI component through a native event loop, wait for a valid GPU frame, and check fonts, dimensions, scaling, light/dark themes and navigation.
 - Register native glyph checks requiring a desktop and OpenGL only when explicitly enabled in CTest. Slint remains pinned to 1.18.1, codec dependency versions are unchanged, and the local patch hash is updated.

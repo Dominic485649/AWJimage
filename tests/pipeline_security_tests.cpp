@@ -23,6 +23,7 @@ import awj.config;
 import awj.core;
 import awj.image;
 import awj.large_image_plan;
+import awj.native_backend;
 import awj.pipeline;
 import awj.resource_planner;
 import awj.webp_codec;
@@ -117,6 +118,67 @@ int main() {
   std::filesystem::create_directories(root, ec);
   if (ec) {
     return fail("failed to create temp root.");
+  }
+  {
+    const auto source = make_test_image();
+    const awj::ResourcePlan resources{.file_parallelism = 1,
+                                      .encoder_threads_per_file = 1,
+                                      .global_thread_budget = 1};
+    auto encoder = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom);
+    auto decoder = awj::make_avif_image_decoder(1);
+    if (!encoder || !decoder) return fail("AVIF depth fixture codecs are unavailable");
+    awj::FileLogger logger{root, false};
+    for (const int depth : {8, 10, 12}) {
+      const auto context = std::format("{}-bit AVIF to auto PNG", depth);
+      auto encoded = encoder->encode(source, awj::NativeEncodeSettings{
+          .output_format = awj::OutputFormat::avif,
+          .quality = 80,
+          .speed = 10,
+          .bit_depth = depth,
+          .bit_depth_explicit = true,
+          .chroma_mode = awj::ChromaMode::yuv420,
+          .avif_encoder = awj::AvifEncoderMode::aom,
+          .resources = resources});
+      if (!encoded) return fail(context + ": " + encoded.error());
+      const auto input = root / std::format("backend-png-depth-{}.avif", depth);
+      {
+        std::ofstream stream{input, std::ios::binary};
+        stream.write(reinterpret_cast<const char*>(encoded->encoded.bytes.data()),
+                     static_cast<std::streamsize>(encoded->encoded.bytes.size()));
+        if (!stream) return fail(context + ": could not write AVIF fixture");
+      }
+      auto fixture = decoder->decode(input, awj::DecodeOptions{.native_pixels = true});
+      if (!fixture) return fail(context + ": " + fixture.error());
+      if (fixture->image.width != source.width || fixture->image.height != source.height ||
+          fixture->image.bit_depth != depth || !fixture->image.source_info ||
+          fixture->image.source_info->bit_depth != depth)
+        return fail(context + ": AVIF fixture did not retain its explicit depth");
+
+      auto cfg = awj::default_app_config();
+      cfg.input_path = input;
+      cfg.output_dir = root / std::format("backend-png-depth-{}-out", depth);
+      cfg.output_format = awj::OutputFormat::png;
+      cfg.quality = 100;
+      cfg.max_jobs = 1;
+      // 保持 PNG 自动位深；这里强制 16 会掩盖后端位深回归。
+      cfg.bit_depth.reset();
+      std::filesystem::create_directories(cfg.output_dir, ec);
+      if (ec) return fail(context + ": could not create PNG output directory");
+      awj::NativeBackend backend{cfg, logger, resources};
+      const auto result = backend.encode(awj::ImageFile{
+          .index = 0, .path = input,
+          .bytes = static_cast<std::uint64_t>(encoded->encoded.bytes.size())});
+      if (!result.ok || result.skipped || result.canceled)
+        return fail(context + ": backend conversion failed: " + result.message);
+      auto restored = awj::PngImageDecoder{}.decode(result.output_path);
+      if (!restored) return fail(context + ": " + restored.error());
+      const int storage_depth = depth > 8 ? 16 : 8;
+      const auto png_bytes = read_text(result.output_path);
+      if (restored->image.width != source.width || restored->image.height != source.height ||
+          restored->image.bit_depth != storage_depth || png_bytes.size() < 25 ||
+          static_cast<unsigned char>(png_bytes[24]) != storage_depth)
+        return fail(context + ": PNG dimensions or IHDR storage depth changed");
+    }
   }
   {
     auto cfg = awj::default_app_config();

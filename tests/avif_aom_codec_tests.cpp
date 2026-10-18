@@ -5,9 +5,11 @@
 #include <cstdio>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
