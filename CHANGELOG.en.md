@@ -8,6 +8,7 @@
 - Fix blurry text caused by resampling at fractional physical coordinates inside rounded Windows UI regions, including scaling factors such as 150% and some 200% layouts. Align the Slint/FemtoVG rounded offscreen layer's texture, clipping path and coverage rectangle to the physical pixel grid together.
 - Preserve the original logical clip's physical bounds before alignment so output cannot extend beyond the parent layer's cached area. Keep font families, sizes, weights, corner radii and application DPI awareness unchanged.
 - Fix PNG conversion failures for native high-bit-depth AVIF inputs. Normalize PNG storage depth to 8/16-bit and convert 10/12-bit source precision to 16-bit PNG through the existing pixel converter instead of requesting an unsupported PNG depth.
+- Fixed native Linux paths throwing on non-UTF-8 filename bytes with libc++, preserving the existing lossless byte fallback.
 
 ### Maintenance
 

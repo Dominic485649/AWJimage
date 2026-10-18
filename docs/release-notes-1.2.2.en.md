@@ -1,6 +1,6 @@
 # AWJimage 1.2.2
 
-This update fixes blurry text inside rounded regions of the Windows interface, improves small-text clarity at high DPI, and strengthens native-rendering and scaling regressions. It also fixes PNG conversion from high-bit-depth AVIF inputs and improves Linux build compatibility. Codec dependency versions and platform requirements remain unchanged.
+This update fixes blurry text inside rounded regions of the Windows interface, improves small-text clarity at high DPI, and strengthens native-rendering and scaling regressions. It also fixes PNG conversion from high-bit-depth AVIF inputs and improves Linux build and native-path compatibility. Codec dependency versions and platform requirements remain unchanged.
 
 ## Fixes
 
@@ -8,6 +8,7 @@ This update fixes blurry text inside rounded regions of the Windows interface, i
 - Preserve the original clipping bounds so aligned content cannot extend beyond the parent layer's cached area. Keep font families, sizes, weights, corner radii and application DPI awareness unchanged.
 - The issue was reproducible without MacType. Patched native glyph checks also passed with MacType modules loaded. This fix does not require disabling MacType or changing its configuration.
 - Fix PNG conversion failures for native high-bit-depth AVIF inputs. Normalize PNG storage depth to 8/16-bit and convert 10/12-bit source precision to 16-bit PNG through the existing pixel converter instead of requesting an unsupported PNG depth.
+- Fixed native Linux paths throwing on non-UTF-8 filename bytes with libc++, preserving the existing lossless byte fallback.
 
 ## Maintenance and validation
 

@@ -309,7 +309,7 @@ std::wstring argument_text_from_native(std::string_view value) {
     if (std::ranges::none_of(unicode, [](char32_t ch) {
           return ch >= 0xd800 && ch <= 0xdfff;
         })) return {unicode.begin(), unicode.end()};
-  } catch (const std::filesystem::filesystem_error&) {
+  } catch (const std::runtime_error&) {
   }
   std::wstring text;
   text.reserve(value.size());
