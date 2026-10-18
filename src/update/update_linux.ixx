@@ -1,7 +1,5 @@
 module;
 
-#ifndef _WIN32
-
 #include <fcntl.h>
 #include <signal.h>
 #include <sys/stat.h>
@@ -515,5 +513,3 @@ bool launch_linux_update_recovery_if_needed() noexcept {
 }
 
 }  // namespace awj::update
-
-#endif
