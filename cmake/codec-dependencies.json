@@ -162,7 +162,11 @@
     "vcpkg-overlays/libpng/portfile.cmake": "06b17efcb5b7f8700780de9272e63c90046ebce016dba5f874ee44d080a5d890",
     "vcpkg-overlays/libpng/usage": "78d7cf48b6a62ad52b10cb5f2134b2f6b61128c08802e10092020e28fb992542",
     "vcpkg-overlays/libpng/vcpkg-cmake-wrapper.cmake": "4267e69abf185f2228a4cc012e3fe87d5de21a187c75950b5a7615f41c3f6371",
-    "vcpkg-overlays/libpng/vcpkg.json": "ec34dfb1f223ac006bb72361edfb2c80ec4dd2067bcc5fa31152f9f7232e2376"
+    "vcpkg-overlays/libpng/vcpkg.json": "ec34dfb1f223ac006bb72361edfb2c80ec4dd2067bcc5fa31152f9f7232e2376",
+    "vcpkg-overlays/scnlib/portfile.cmake": "e4dec963cddba84306f55c88a35d3a734224211f91fe717654f257f70900b138",
+    "vcpkg-overlays/scnlib/vcpkg.json": "6d8fc99f26c1256e719011fea1e0322d9c74e8097faf993f7a3db1378d852ccd",
+    "vcpkg-overlays/scnlib/scnlib-pr-136.patch": "3821a7c3f18e90c4c68d3ed2fddc7018e2a9c8fcc81cf02a901969dcd2e5dac7",
+    "vcpkg-overlays/scnlib/libcxx-wrap-iter.patch": "a7496a9101e0e5b942fbffdccfc07e5cfb4e03b2ceced0afbbec5a82ed65f67f"
   },
   "local_build_hash_normalization": "UTF-8 text, CRLF normalized to LF; source archives retain byte-exact hashes"
 }

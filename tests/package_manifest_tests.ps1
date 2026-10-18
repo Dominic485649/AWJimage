@@ -32,4 +32,31 @@ if (@(Get-CurrentArchiveEntries @() $New).Count -ne 1) { throw 'First release se
 $Rejected = $false
 try { Get-CurrentArchiveEntries $History $History[0] | Out-Null } catch { $Rejected = $true }
 if (-not $Rejected) { throw 'Duplicate version accepted' }
-Write-Output 'package manifest selection passed'
+
+# 只求值参数拼装语句，不执行发行脚本、安装依赖或访问签名密钥。
+$BuilderPath = Join-Path $PSScriptRoot '../release.ps1'
+$BuilderTokens = $null
+$BuilderErrors = $null
+$BuilderAst = [Management.Automation.Language.Parser]::ParseFile($BuilderPath, [ref]$BuilderTokens, [ref]$BuilderErrors)
+if ($BuilderErrors.Count) { throw "Windows builder has parse errors: $BuilderErrors" }
+$InstallFlagNodes = @($BuilderAst.FindAll({
+    param($Node)
+    $Node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $Node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+        $Node.Left.VariablePath.UserPath -eq 'ConfigureArgs' -and
+        $Node.Right.Extent.Text.Contains('-DVCPKG_MANIFEST_INSTALL=')
+}, $true))
+if ($InstallFlagNodes.Count -ne 1) { throw 'Windows builder must explicitly set the vcpkg manifest-install option once' }
+function Test-BuilderInstallSwitch([bool]$SkipInstall) {
+    $NoVcpkgInstall = $SkipInstall
+    $ConfigureArgs = @()
+    . ([scriptblock]::Create($InstallFlagNodes[0].Extent.Text))
+    $InstallFlags = @($ConfigureArgs | Where-Object { $_.StartsWith('-DVCPKG_MANIFEST_INSTALL=') })
+    $Expected = if ($SkipInstall) { '-DVCPKG_MANIFEST_INSTALL=OFF' } else { '-DVCPKG_MANIFEST_INSTALL=ON' }
+    if ($InstallFlags.Count -ne 1 -or $InstallFlags[0] -cne $Expected) {
+        throw "Windows builder ignored NoVcpkgInstall=$SkipInstall"
+    }
+}
+Test-BuilderInstallSwitch $true
+Test-BuilderInstallSwitch $false
+Write-Output 'package manifest selection and Windows builder install-switch contract passed'

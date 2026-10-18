@@ -56,6 +56,7 @@
 
 # Unified diffs encode empty context lines with a single leading space.
 vcpkg-overlays/**/*.diff whitespace=-trailing-space
+vcpkg-overlays/**/*.patch whitespace=-trailing-space
 
 ###############################################################################
 # diff behavior for common document formats

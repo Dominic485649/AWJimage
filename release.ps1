@@ -199,7 +199,8 @@ $PinnedFetchContentPatchedFiles = @{
         " M api/cpp/include/private/slint_models.h",
         " M internal/backends/winit/event_loop.rs",
         " M internal/backends/winit/winitwindowadapter.rs",
-        " M internal/core/window.rs"
+        " M internal/core/window.rs",
+        " M internal/renderers/femtovg/itemrenderer.rs"
     )
 }
 $FetchContentSourceOverrides = @()
@@ -278,6 +279,8 @@ if ($VcpkgRoot) {
 $ConfigureArgs += "-DAWJ_VCPKG_LIBRARY_CONFIG=Release"
 $ConfigureArgs += "-DVCPKG_OVERLAY_PORTS=$OverlayPorts"
 $ConfigureArgs += "-DVCPKG_INSTALLED_DIR=$(Join-Path $BuildDir 'vcpkg_installed')"
+# NoVcpkgInstall 同时约束配置阶段，不能让工具链因缓存 ABI 差异重新安装依赖。
+$ConfigureArgs += "-DVCPKG_MANIFEST_INSTALL=$(if ($NoVcpkgInstall) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=$DependencyBuildtrees;--x-packages-root=$DependencyPackages"
 $ConfigureArgs += "-DBUILD_TESTING=OFF"
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"

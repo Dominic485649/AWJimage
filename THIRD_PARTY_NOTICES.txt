@@ -1106,5 +1106,20 @@ The source identity and local integration are locked per AWJ version in
 cmake/codec-dependencies.json.
 
 -------------------------------------------------------------------------------
+31. LLVM C++ runtime libraries (toolchain-dependent)
+-------------------------------------------------------------------------------
+
+Website:   https://llvm.org/
+Source:    https://github.com/llvm/llvm-project
+License:   Apache License 2.0 with LLVM exceptions, plus component notices
+
+Linux builds using the Clang/libc++ toolchain may statically incorporate
+libc++, libc++abi, and libunwind. The selected runtime package versions and
+copyright notices, the LLVM exceptions, and complete referenced license
+texts are retained in licenses/llvm-runtime-LICENSE.txt and appended to the
+release NOTICE. This entry is conditional on the actual build toolchain;
+it does not imply that the Windows/MSVC build includes these C++ runtimes.
+
+-------------------------------------------------------------------------------
 END OF THIRD-PARTY NOTICES
 -------------------------------------------------------------------------------

@@ -11,6 +11,9 @@
 ### Maintenance
 
 - Reapply the idempotent Slint patches during CMake configuration so cached FetchContent sources receive changes to the patch script. Patch contract checks cover initial application, repeat application and rejection of mismatched anchors.
+- Add the rounded renderer file to the Windows release cache whitelist. Make `-NoVcpkgInstall` explicitly disable manifest installation during configuration so cache ABI differences cannot reinstall approved dependencies, with regression coverage for both switch states.
+- Include copyright notices and complete license texts for optional statically linked C++ runtimes in Clang/Linux builds, and append them to the release NOTICE.
+- Add a Linux/libc++ iterator compatibility patch to pinned scnlib 4.0.1, preserving the upstream source archive and existing fast-float patch without upgrading the dependency.
 - Add real Winit/FemtoVG pixel regressions comparing direct text, rectangular clips, rounded clips and nested rounded clips. Cover Chinese and Latin text, fractional positions and edge content with and without a parent cache, checking interior coverage and no output outside the original bounds.
 - Fix UI tests that repeatedly tried to change one window's constant scale factor. Use a new window for each scale and assert the actual value. Capture the production UI component through a native event loop, wait for a valid GPU frame, and check fonts, dimensions, scaling, light/dark themes and navigation.
 - Register native glyph checks requiring a desktop and OpenGL only when explicitly enabled in CTest. Slint remains pinned to 1.18.1, codec dependency versions are unchanged, and the local patch hash is updated.

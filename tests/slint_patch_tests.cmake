@@ -6,6 +6,15 @@ find_package(Git REQUIRED)
 set(files api/cpp/Cargo.toml api/cpp/include/private/slint_config.h internal/core/window.rs
     internal/backends/winit/winitwindowadapter.rs internal/backends/winit/event_loop.rs
     api/cpp/include/private/slint_models.h internal/renderers/femtovg/itemrenderer.rs)
+# Windows 发行脚本必须认可全部已知补丁文件，不能在下次构建时丢弃有效缓存。
+file(READ "${CMAKE_CURRENT_LIST_DIR}/../release.ps1" windows_release_script)
+string(REGEX MATCH "\"slint\"[ \t]+=[ \t]+@\\([^)]*\\)" windows_slint_cache "${windows_release_script}")
+foreach(path IN LISTS files)
+    string(FIND "${windows_slint_cache}" "\" M ${path}\"" cache_entry)
+    if(cache_entry EQUAL -1)
+        message(FATAL_ERROR "Windows release cache whitelist omits patched Slint file: ${path}")
+    endif()
+endforeach()
 file(MAKE_DIRECTORY "${TEST_DIR}")
 foreach(path IN LISTS files)
     get_filename_component(parent "${TEST_DIR}/${path}" DIRECTORY)
