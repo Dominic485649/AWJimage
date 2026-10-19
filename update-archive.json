@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 13,
+  "sequence": 14,
   "key_id": "release-2026",
-  "issued_at": "2026-10-12T11:27:15Z",
-  "expires_at": "2027-02-17T00:00:00Z",
+  "issued_at": "2026-10-19T05:37:45Z",
+  "expires_at": "2027-02-16T05:37:45Z",
   "entries": [
     {
-      "version": "1.2.1",
+      "version": "1.2.2",
       "channel": "stable",
-      "published_at": "2026-10-12T11:27:15Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.1",
+      "published_at": "2026-10-19T05:37:45Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.2",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
-            "size": 13176448,
-            "sha256": "4b4431afc8f3b54a164a697fabe3589bf93bbb4388321a9459f0be0a40196fca"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Win.7z",
+            "size": 13175803,
+            "sha256": "0abadc1e78ba82931276172ac4adb68b92beba0efad6880bfd06226fe809f1a3"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
-              "size": 24498176,
-              "sha256": "1a25351630d289ad3e1473727557df068a7961e464a5e3179677b3153d6e83bf"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Win.7z",
+              "size": 24499200,
+              "sha256": "457136bed0819b9e9c26d594a91a8b51a9813238ac0a683730e772df03c47802"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
-              "size": 20453376,
-              "sha256": "06a6a8062f9df7cdae1de5fd13d11043819837d33db2c02c54414facf62d6084"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Win.7z",
+              "size": 20503552,
+              "sha256": "0c284ee7239aef723d8da64400e6c1e1bc4b702fab8bcd2ee9da23ef7549beb0"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Win.7z",
-              "size": 142866,
-              "sha256": "ae604ed7ad5da675cd1c5f23bc566dc79a33eb1a58cc5aac26c174342a0a5200"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Win.7z",
+              "size": 166293,
+              "sha256": "a9b6005ecb2148d8664726066274c280ede1f916a7f63582ab6ab87dcfaea540"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
-            "size": 20378932,
-            "sha256": "94fd495e73c51306d387779630cdd803a743e1dc7261ca0480e6f1e7a4d9d5e7"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Linux.7z",
+            "size": 18306442,
+            "sha256": "7c5d91d0c6a10ac965feb04b1a9c01c0d2fc975adf52b4a1a88c9e44c3b51ba2"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
-              "size": 68561232,
-              "sha256": "c74cc0f63fbe08c614697d2d8503027c55cd3211050d9fbead5c409f80e56d55"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Linux.7z",
+              "size": 66121456,
+              "sha256": "632f29fbe8a3c2e6c65e1cf9fd2ac5c7e690b350426ef69cf57b65a9d83b4f31"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Linux.7z",
               "size": 34523,
               "sha256": "8486a10c4393cee1c25392769ddd3b2d6c242d6ec7928e1414efff7dfb2f07ef"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.1/AWJ_Linux.7z",
-              "size": 139580,
-              "sha256": "8c85a729be69abdd7d79aca903b0edeff078c1409567f93aaf77224499062621"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.2/AWJ_Linux.7z",
+              "size": 163007,
+              "sha256": "5a7d258f258de725366eb6f69b52fda1a3b51fef459072cd7b9cbd829865b203"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 优化\n\n- 统一目标像素转换阶段：AVIF、HEIF、JPG 和有损 WebP 优先保留原生 YUV；兼容布局直接复用，矩阵、位深、色度、HDR 与裁剪、旋转、镜像、缩放合并生成目标像素。AVIF、JPG 和有损 WebP 可直接编码 YUV，PNG、JXL 与无损 WebP 按需转换为 RGB。\n- Grid 单元使用转换后的平面视图；删除旧的整图 RGBA 位深转换缓冲。保留色调映射的亮度分析、Gain Map 重建、动画合成和视觉搜索的参考图准备。\n- Windows 转换核心完全放入 AWJ.com，可独立运行；AWJ.exe 保留界面、右键菜单与更新，主队列和右键转换均使用 COM 子进程。保留旧 EXE 命令转发、退出码与取消。\n- 普通大图直接进入普通编码队列，删除按像素数延后的分支；Grid 保留单独调度。普通图片跳过无关的动画/Grid 探测。\n- 自动线程数遵循进程 CPU 亲和性；单线程 AOM 关闭 row-mt，多线程保留。\n- CLI 新增 `--cpu-affinity`，按逻辑 CPU 编号限定执行；auto 从允许的 CPU 数扣除桌面预留，显式 `--threads N` 使用完整预算，参数顺序不影响结果。\n- FP16 读取使用逐值等价的位运算；普通 HDR 输出在目标像素阶段完成映射并支持取消，删除额外的整图 RGBA16 副本。\n- 格式名称统一为 JPG，默认输出 8-bit YCbCr 4:2:0，保留 4:2:2、4:4:4 和 HDR Gain Map。按扫描行转换 RGB，减少整图缓冲；保留旧格式与参数别名。\n- DX11 和 Linux Vulkan 指标按需加载，设备初始化结果在进程内复用；小图与关闭加速的转换跳过 GPU 初始化，搜索过程中 GPU 指标出错后，其余候选使用 CPU。\n- CPU 视觉搜索复用参考图金字塔、统计量和候选缓冲；减少 GMSD 边界计算，将 HDR 固定矩阵移出像素循环，新增内存计入预算。\n- WIC 工厂按需创建并按线程复用，保留 JXR；GUI 复用 OpenGL 检查结果，缺少可选图形功能时继续使用软件渲染和普通窗口。\n- 大图内存预检支持 Gain Map JPEG 尺寸及旋转；计入压缩输入缓冲与编码块对齐；明确的普通 8-bit 4:2:0 JPEG 使用独立预留，HDR、透明与未知输入保留保守预算。尺寸未知的任务独占预算。\n\n### 界面\n\n- 侧栏缩至 147px，标题改为居中的 AWJ；参数页顶部统一为 16px，设置页按内容高度从顶部排列，剩余空间留在页面底部。\n- 合并更新日志选项为默认勾选的“仅在更新后显示更新日志”，与日志页同步；保留总开关、版本记录和手动打开入口。\n- 更新选项、检查按钮和提示保持同一行，提示省略溢出文字并提供悬停全文。\n- 关于页改为仓库和 Q 群链接；替换深浅主题图标，使用原始 PNG 裁剪的深浅图标，标题栏小图标随应用主题，运行中的任务栏图标随 Windows 系统主题。\n- 默认宽度调整为 1171px，最小宽度为 747px；命名按钮和格式/预设下拉框保持最小窗口下的固定宽度，六个复选框按最宽项等宽排列并按内容宽度换行。窗口底色、侧栏和原生标题栏同色，浅色底色稍加深；右侧恢复独立分组卡片与 8px 圆角，深色主题同步切换内容和控件配色。更新日志卡片的浅蓝色保持不变。\n\n- 滚动区域固定圆角裁切，右、下侧内层描边由原生窗口边框覆盖；关于说明文字与可点击链接分开显示。Windows 连续缩放时按当前客户区尺寸立即更新绘制。\n\n### 维护\n\n- 重构中英文 README，开发与验证命令移入贡献指南，清理过时文档和个人路径。\n- 退役旧更新清单和密钥环兼容入口，保留当前归档更新、验签、防重放与事务恢复。1.0.12 及更早版本需手动升级。",
-        "en": "### Optimization\n\n- Unify target-pixel conversion. Prefer native YUV when decoding AVIF, HEIF, JPG and lossy WebP; reuse compatible layouts and combine matrix, depth, sampling, HDR, crop, rotation, mirroring and resizing into the target pixels. AVIF, JPG and lossy WebP can encode YUV directly; PNG, JXL and lossless WebP convert to RGB as needed.\n- Use prepared plane views for Grid cells and remove the old full-image RGBA depth-conversion buffer. Retain luminance analysis for tone mapping, gain-map reconstruction, animation compositing and visual-search reference preparation.\n- Add CLI `--cpu-affinity` for logical CPU selection. Auto reserves desktop capacity from the allowed CPUs; explicit `--threads N` uses the full budget, regardless of argument order.\n- Move the Windows conversion core entirely into standalone AWJ.com. AWJ.exe contains the GUI, context menus and updater; both GUI conversion paths use COM workers. Preserve legacy EXE forwarding, exit codes and cancellation.\n- Encode ordinary large images in the normal queue, removing the pixel-count deferral; keep Grid scheduling separate. Skip unrelated animation/Grid probes for ordinary images.\n- Honor process CPU affinity when selecting automatic threads. Disable AOM row-mt for single-thread encoding and retain it for multiple threads.\n- Use exactly equivalent bit operations for FP16 reads. Map ordinary HDR output directly into destination pixels with cancellation support, eliminating the extra full-image RGBA16 copy.\n- Use JPG as the format name, defaulting to 8-bit YCbCr 4:2:0 with 4:2:2, 4:4:4 and HDR Gain Maps retained. Convert RGB scanlines without a full-image copy and preserve previous format/option aliases.\n- Load DX11 and Linux Vulkan metrics on demand and cache device initialization results. Small images and disabled acceleration skip GPU initialization; GPU metric failures switch remaining search candidates to the CPU.\n- Reuse CPU reference pyramids, statistics and candidate buffers, reduce GMSD boundary calculations, and move fixed HDR matrices outside pixel loops. Include additional buffers in memory budgets.\n- Create WIC factories on demand and reuse them per thread, preserving JXR. Cache GUI OpenGL probes and retain software rendering and ordinary windows when optional graphics features are unavailable.\n- Include Gain Map JPEG dimensions and orientation in memory preflight, account for compressed buffers and codec block padding, and use a separate reservation for clearly identified ordinary 8-bit 4:2:0 JPEG. Retain conservative HDR/alpha/unknown estimates and exclusive admission for unknown dimensions.\n\n### Interface\n\n- Reduce the sidebar to 147px, center the AWJ title, and use 16px parameter-page top padding. Keep settings cards at their natural height, with spare space below the content.\n- Merge changelog preferences into the default-enabled “Only show changelog after updates”, synchronized with the changelog page. Keep the main switch, version history and manual entry.\n- Keep update controls and status on one row; truncate status with an ellipsis and show full text on hover.\n- Add repository and QQ links to About. Crop light/dark icons from the original PNG. Caption icons follow the app theme; running taskbar icons follow the Windows system theme.\n- Use a 1171px default width and 747px minimum, keep naming buttons and format/preset selectors at their minimum-window widths, and give all six checkboxes the widest localized width before wrapping. Match the canvas, sidebar and native caption, with a slightly deeper light background. Restore separate section cards with 8px corners and matching dark content and controls. Keep the light-blue changelog cards unchanged.\n\n- Keep viewport corners rounded while scrolling, let the native frame cover the right/bottom panel strokes, and separate About descriptions from clickable URLs. Update Windows rendering immediately at the current client size during continuous resizing.\n\n### Maintenance\n\n- Rebuild both READMEs, move development and validation commands to the contribution guide, and remove outdated documents and personal paths.\n- Retire legacy update documents and keyring aliases, preserving archive updates, signature verification, replay protection and transaction recovery. Versions 1.0.12 and earlier require a manual upgrade."
+        "zh-CN": "### 修复\n\n- 修复 Windows 圆角区域内的文字在分数物理坐标上再次采样而模糊的问题，包括 150% 等缩放比例和部分 200% 布局。Slint/FemtoVG 圆角离屏层的纹理、裁剪路径和覆盖区同步对齐物理像素。\n- 对齐前保留原逻辑裁剪矩形的物理边界，防止输出越过父图层缓存范围。字体、字号、字重、圆角和应用的高 DPI 感知方式保持不变。\n- 修复原生高位深 AVIF 转 PNG 失败的问题。PNG 目标存储位深规范为 8/16-bit，10/12-bit 源图经现有像素转换器写入 16-bit PNG，不再请求 PNG 不支持的位深。\n- 修复 Linux 原生路径在 libc++ 下遇到非 UTF-8 文件名字节时的异常，使已有的无损字节回退正常生效。\n\n### 维护\n\n- CMake 配置时重新应用幂等 Slint 补丁，避免 FetchContent 已缓存的源码因补丁脚本更新而漏打修复。补丁契约检查覆盖首次应用、重复应用及错误锚点拒绝。\n- Windows 发行脚本的缓存白名单补齐圆角渲染文件；`-NoVcpkgInstall` 显式关闭配置阶段的 manifest 安装，避免已批准依赖因缓存 ABI 差异重新安装，并补充开关契约回归。\n- 补齐 Clang/Linux 可选静态 C++ 运行库的版权及完整许可，统一纳入发行 NOTICE。\n- 为固定版本 scnlib 4.0.1 补充 Linux/libc++ 迭代器兼容补丁，保留上游源码归档和原有 fast-float 补丁，不升级依赖版本。\n- 补齐原生编解码模块的公共标准头，并由 CMake 单独选择 Linux 更新模块，修复 Clang/libc++ 的标准模块编译兼容性。\n- 新增真实 Winit/FemtoVG 字形像素回归，对照直接绘制、矩形裁剪、圆角裁剪和嵌套圆角；覆盖中英文、分数位置及有父缓存和无父缓存的贴边内容，检查内部覆盖与原边界之外不出像。\n- 修正界面回归中重复设置同一窗口常量缩放的覆盖缺口，各比例使用新窗口并断言实际缩放。正式界面组件截图运行原生事件循环，等待有效 GPU 帧，并检查字体、尺寸、比例、深浅主题与导航。\n- 需要桌面和 OpenGL 的原生字形检查仅在显式启用时注册到 CTest。Slint 仍固定为 1.18.1，编解码器依赖版本不变，更新本地补丁锁定哈希。\n\n### 验证说明\n\n- Windows 原生字形检查覆盖 100%、125%、150%、200%；鸿蒙黑体和微软雅黑 UI 在 150%、200% 下完成正式界面组件深浅主题截图及导航检查，断言真实 Win32 窗口与 NativeOpenGL。\n- 未加载 MacType 的原有实例仍可复现模糊，修复后的原生字形测试在 MacType 模块保持加载时通过。本次不要求关闭 MacType，不修改其配置或 Windows 全局缩放，也不宣称覆盖所有 MacType 配置。\n- 自动检查使用进程级 Slint 内容缩放，不代表真实系统 DPI 切换或跨显示器移动已经验收。",
+        "en": "### Fixes\n\n- Fix blurry text caused by resampling at fractional physical coordinates inside rounded Windows UI regions, including scaling factors such as 150% and some 200% layouts. Align the Slint/FemtoVG rounded offscreen layer's texture, clipping path and coverage rectangle to the physical pixel grid together.\n- Preserve the original logical clip's physical bounds before alignment so output cannot extend beyond the parent layer's cached area. Keep font families, sizes, weights, corner radii and application DPI awareness unchanged.\n- Fix PNG conversion failures for native high-bit-depth AVIF inputs. Normalize PNG storage depth to 8/16-bit and convert 10/12-bit source precision to 16-bit PNG through the existing pixel converter instead of requesting an unsupported PNG depth.\n- Fixed native Linux paths throwing on non-UTF-8 filename bytes with libc++, preserving the existing lossless byte fallback.\n\n### Maintenance\n\n- Reapply the idempotent Slint patches during CMake configuration so cached FetchContent sources receive changes to the patch script. Patch contract checks cover initial application, repeat application and rejection of mismatched anchors.\n- Add the rounded renderer file to the Windows release cache whitelist. Make `-NoVcpkgInstall` explicitly disable manifest installation during configuration so cache ABI differences cannot reinstall approved dependencies, with regression coverage for both switch states.\n- Include copyright notices and complete license texts for optional statically linked C++ runtimes in Clang/Linux builds, and append them to the release NOTICE.\n- Add a Linux/libc++ iterator compatibility patch to pinned scnlib 4.0.1, preserving the upstream source archive and existing fast-float patch without upgrading the dependency.\n- Include the public standard headers required by native codec modules and let CMake select the Linux update module, fixing standard-module build compatibility with Clang/libc++.\n- Add real Winit/FemtoVG pixel regressions comparing direct text, rectangular clips, rounded clips and nested rounded clips. Cover Chinese and Latin text, fractional positions and edge content with and without a parent cache, checking interior coverage and no output outside the original bounds.\n- Fix UI tests that repeatedly tried to change one window's constant scale factor. Use a new window for each scale and assert the actual value. Capture the production UI component through a native event loop, wait for a valid GPU frame, and check fonts, dimensions, scaling, light/dark themes and navigation.\n- Register native glyph checks requiring a desktop and OpenGL only when explicitly enabled in CTest. Slint remains pinned to 1.18.1, codec dependency versions are unchanged, and the local patch hash is updated.\n\n### Validation scope\n\n- Native Windows glyph checks cover 100%, 125%, 150% and 200%. Production UI component captures with HarmonyOS Sans SC and Microsoft YaHei UI cover light/dark themes and navigation at 150% and 200%, asserting a real Win32 window and NativeOpenGL.\n- The original application reproduced the blur without MacType, while patched native glyph tests passed with MacType modules loaded. This fix does not require disabling MacType or changing its configuration or Windows display settings. It does not claim coverage of every MacType configuration.\n- Automated checks use per-process Slint content scaling and do not establish coverage of actual system-DPI changes or moving windows between monitors."
       }
     }
   ]
