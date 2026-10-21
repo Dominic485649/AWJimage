@@ -23,6 +23,7 @@
 #include <utility>
 
 #include "studio_fields.h"
+#include "studio_parameter_page.h"
 #include "studio_ui_util.h"
 #include "studio_worker_control.h"
 
@@ -186,6 +187,9 @@ std::vector<std::wstring> cli_arguments_from_config(
   if (cfg.output_format == awj::OutputFormat::avif) {
     push_cli_option(args, L"--avif-encoder",
                     cli_avif_encoder_arg(cfg.avif_encoder));
+    push_cli_option(args, L"--avif-color-representation",
+                    awj::wide_from_utf8(awj::avif_color_representation_name(
+                        cfg.avif_color_representation)));
     push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
     push_cli_option(args, L"--alpha", cli_alpha_arg(cfg.alpha_policy));
   }
@@ -335,6 +339,9 @@ awj::shell_context_menu::MenuParams shell_menu_params(
   awj::shell_context_menu::MenuParams converted{};
   for (std::size_t i = 0; i < menu_params.size(); ++i) {
     converted[i] = shell_format_params(menu_params[i]);
+    converted[i].chroma_index = normalized_parameter_chroma_index(
+        static_cast<int>(i), menu_params[i].chroma_index,
+        menu_params[i].avif_color_representation_index);
   }
   return converted;
 }

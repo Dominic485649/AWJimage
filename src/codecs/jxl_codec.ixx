@@ -1115,7 +1115,7 @@ class JXLImageEncoder final : public ImageEncoder {
           settings.tone_map_to_sdr_pixels) {
         auto converted = convert_image_pixels(image, PixelConversionRequest{.format = PixelFormat::rgba,
             .bit_depth = image.bit_depth > 8 ? 16 : 8, .preserve_alpha = settings.applied_alpha == "kept",
-            .tone_map_to_sdr = settings.tone_map_to_sdr_pixels}, stop_token);
+            .tone_map_to_sdr = settings.tone_map_to_sdr_pixels}, stop_token, settings.resources);
         if (!converted) return std::unexpected{converted.error()};
         auto normalized = settings; normalized.tone_map_to_sdr_pixels = false;
         return encode(*converted, normalized, stop_token);

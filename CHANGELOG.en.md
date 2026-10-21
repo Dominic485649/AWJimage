@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.3 - 2026-10-20
+
+### Fixes and optimization
+
+- Correct the IPT/PQ operation order when preparing SDR bases from HDR input. Precompute the PQ-domain tone curve and use bounded gamut batches instead of per-pixel perceptual setup, with a safe in-gamut fast path and validation for negative and extended colors and cancellation.
+- Derive HDR JPEG display headroom from the actual canonical content peak instead of the theoretical peak of linear input. Keep a serializable positive capacity range for low-luminance content.
+- Align JPG auto chroma with AVIF: preserve known source 420/422/444 and use 444 for RGB, RGBA and unknown sources. Grayscale JPG auto uses three-component 444; explicit 400 remains unsupported.
+- Omit unsupported chroma choices from the dropdown instead of showing a disabled 400 entry. Normalize unsupported restored values while retaining independent per-format settings.
+- Fix saving AVIF 400 presets that could not subsequently be loaded.
+
+### Protocol and packaging
+
+- Support ISO 21496-1 gain maps only. Remove legacy Adobe, Google and Apple gain-map decoding and disable the compute library's XMP decoding fallback, while preserving ordinary XMP, EXIF, ICC and required MPF data.
+- Retain the pinned libultrahdr version as the internal ISO compute engine and keep its license. SDR bases retain correct sRGB and 8-bit labels.
+- Stage versioned candidates under bin/VERSION without changing the manually managed bin/x64 directory. Separate local candidates from formal release gates, record source and asset fingerprints, and check references and back up user state before version cleanup.
+- Fix metadata reads when backing up hidden Windows configuration and update-security state files. Preserve source attributes and timestamps, reuse matching backups idempotently, and keep conflicting content in hash-addressed history without activating old configuration or merging security state.
 
 ## 1.2.2 - 2026-10-18
 

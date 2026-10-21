@@ -34,6 +34,8 @@ void refresh_avif_encoder_options(AwjStudio& app);
 awj::OutputFormat output_format_from_index(int index);
 int parameter_index_from_output_format(awj::OutputFormat format) noexcept;
 int parameter_editor_format_index(int index) noexcept;
+int normalized_parameter_chroma_index(int format_index, int chroma_index,
+                                      int avif_color_representation_index) noexcept;
 
 std::expected<awj::AppConfig, std::string> config_from_menu_params(
     awj::OutputFormat format, const MenuFormatParams& params);

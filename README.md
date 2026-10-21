@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前源码版本：**1.2.2**。
+AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前源码版本：**1.2.3**。
 
 ## 格式支持
 
@@ -13,7 +13,7 @@ AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形�
 | 动画 | GIF、APNG、WebP、AVIF 转 AVIF 时保留帧时序、循环和透明度 |
 | HDR | 支持 HDR 图像和受支持的 Gain Map；JPEG 输出可生成 HDR Gain Map |
 
-默认输出 AVIF，质量 70、速度 5。JPG 默认为 8-bit YCbCr 4:2:0，可选择 4:2:2 或 4:4:4；HDR JPG 使用 SDR 主图和 Gain Map 保存增强信息。质量 100 的无损行为取决于格式；JPEG 支持无损转封装为 JXL。[Gain Map 与动画说明](docs/gain-map-animation.md)。
+默认输出 AVIF，质量 70、速度 5。JPG 默认输出 8-bit YCbCr，auto 与 AVIF 一样跟随源采样：保留已知 4:2:0 / 4:2:2 / 4:4:4，RGB、RGBA 和未知源使用 4:4:4；JPG 灰度源在 auto 下使用三分量 4:4:4，不支持显式 4:0:0。HDR JPG 使用 SDR 主图与 ISO 21496-1 Gain Map，仅接受 ISO 增益图协议，不再兼容旧 Adobe／Google／Apple 增益图。质量 100 的无损行为取决于格式；JPEG 支持无损转封装为 JXL。[Gain Map 与动画说明](docs/gain-map-animation.md)。
 
 各格式使用统一的目标像素转换阶段。兼容的 YUV 布局直接复用，色彩矩阵、位深、采样及几何调整合并处理，减少整图中间缓冲。HDR 亮度分析、Gain Map 重建和动画合成按格式要求执行。
 

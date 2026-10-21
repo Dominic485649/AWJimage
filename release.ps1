@@ -9,6 +9,11 @@ param(
     [ValidateRange(1, 64)] [int]$BuildParallelism = 2,
     [switch]$CleanDependencies,
     [string]$DependencyCacheRoot = "",
+    [string]$BuildDirectory = "",
+    [string]$RuntimeOutputRoot = "",
+    [string]$VcpkgInstalledDirectory = "",
+    [string]$DependencySourceRoot = "",
+    [switch]$LocalCandidate,
     [string]$UpdatePublicKeyHex = $env:AWJ_UPDATE_PUBLIC_KEY_HEX,
     [switch]$SkipUpdateManifest
 )
@@ -23,12 +28,22 @@ $env:GIT_TERMINAL_PROMPT = "0"
 $env:GIT_CONFIG_COUNT = "1"
 $env:GIT_CONFIG_KEY_0 = "http.version"
 $env:GIT_CONFIG_VALUE_0 = "HTTP/1.1"
-$BuildDir = Join-Path $Repo "build\x64\Release"
-$OutputDir = Join-Path $Repo "bin\x64\Release"
-$OverlayPorts = Join-Path $Repo "vcpkg-overlays"
-$ReleaseFiles = @("AWJ.exe", "AWJ.com", "LICENSE", "NOTICE.txt", "awj_update_manifest_sign.exe")
-$Version = (Get-Content (Join-Path $Repo "VERSION") -Raw).Trim()
-$VcpkgConfiguration = Get-Content (Join-Path $Repo "vcpkg-configuration.json") -Raw | ConvertFrom-Json
+Import-Module (Join-Path $Repo 'scripts/release-safety.psm1') -Force
+$Profile = if ($VcpkgTriplet) { $VcpkgTriplet } elseif ($DynamicRuntime) { 'x64-windows' } else { 'x64-windows-static' }
+if ($Profile -notmatch '^[A-Za-z0-9-]+$') { throw 'vcpkg triplet 不能包含路径或特殊字符。' }
+if (-not $BuildDirectory) { $BuildDirectory = Join-Path $Repo "build/current/$Profile-release" }
+if (-not $RuntimeOutputRoot) { $RuntimeOutputRoot = Join-Path $Repo "build/current/$Profile-runtime" }
+$BuildDir = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $BuildDirectory
+$RuntimeOutputRoot = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $RuntimeOutputRoot
+$OutputDir = Assert-AwjBuildPath -RepositoryRoot $Repo -Path (Join-Path $RuntimeOutputRoot 'Release')
+$null = Assert-AwjBuildPath -RepositoryRoot $Repo -Path (Join-Path $RuntimeOutputRoot 'Debug')
+$null = Assert-AwjBuildPath -RepositoryRoot $Repo -Path (Join-Path $RuntimeOutputRoot 'RelWithDebInfo')
+$null = Assert-AwjBuildPath -RepositoryRoot $Repo -Path (Join-Path $RuntimeOutputRoot 'MinSizeRel')
+$OverlayPorts = Join-Path $Repo 'vcpkg-overlays'
+$ReleaseFiles = @('AWJ.exe', 'AWJ.com', 'LICENSE', 'NOTICE.txt', 'awj_update_manifest_sign.exe', 'build-evidence.json')
+foreach ($Name in $ReleaseFiles) { $null = Resolve-AwjRepoPath -RepositoryRoot $Repo -Path (Join-Path $OutputDir $Name) }
+$Version = (Get-Content (Join-Path $Repo 'VERSION') -Raw).Trim()
+$VcpkgConfiguration = Get-Content (Join-Path $Repo 'vcpkg-configuration.json') -Raw | ConvertFrom-Json
 $VcpkgBaseline = $VcpkgConfiguration.'default-registry'.baseline
 
 # 1.0.4+ updates are signed archive manifests, not a Windows-only raw asset
@@ -38,52 +53,39 @@ if (-not $SkipUpdateManifest) {
     throw "release.ps1 只构建 Windows 资产；请使用 scripts\\package-release.ps1 生成并签名归档 manifest。"
 }
 
-function Remove-RepoDirectory([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) {
-        return
-    }
-    $ResolvedRepo = [IO.Path]::GetFullPath($Repo).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
-    $ResolvedPath = [IO.Path]::GetFullPath($Path)
-    if (-not $ResolvedPath.StartsWith($ResolvedRepo, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "拒绝清理仓库外目录: $ResolvedPath"
-    }
-    Remove-Item -LiteralPath $ResolvedPath -Recurse -Force
-}
 
 if (-not $DependencyCacheRoot) {
-    $DependencyCacheRoot = Join-Path $Repo "build\dependency-cache\$Version"
+    $DependencyCacheRoot = Join-Path $Repo "build/dependency-cache/$Profile"
 }
-$DependencyCacheRoot = [IO.Path]::GetFullPath($DependencyCacheRoot, $Repo)
+$DependencyCacheRoot = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $DependencyCacheRoot
+if (-not $VcpkgInstalledDirectory) { $VcpkgInstalledDirectory = Join-Path $DependencyCacheRoot 'installed' }
+$InstalledDir = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $VcpkgInstalledDirectory
+if (-not $DependencySourceRoot) { $DependencySourceRoot = Join-Path $DependencyCacheRoot 'sources' }
+$DependencySourceRoot = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $DependencySourceRoot
 if ($CleanDependencies) {
-    Remove-RepoDirectory $BuildDir
-    Remove-RepoDirectory (Join-Path $Repo "vcpkg_installed")
-    Remove-RepoDirectory $DependencyCacheRoot
+    throw '构建入口不直接删除缓存。请先生成项目限定清理清单，并取得实际删除权限。'
 }
 $DependencyBinaryCache = Join-Path $DependencyCacheRoot "binary-cache"
 $DependencyBuildtrees = Join-Path $DependencyCacheRoot "buildtrees"
 $DependencyPackages = Join-Path $DependencyCacheRoot "packages"
 New-Item -ItemType Directory -Path $DependencyBinaryCache, $DependencyBuildtrees, $DependencyPackages -Force | Out-Null
 $env:VCPKG_DEFAULT_BINARY_CACHE = $DependencyBinaryCache
-$GitCommit = (git -C $Repo rev-parse HEAD).Trim()
-$GitStatus = @(git -C $Repo status --porcelain=v1 --untracked-files=all)
-$GitDirty = @($GitStatus | Where-Object {
-    $Path = $_.Substring(3).Trim('"').Replace('\', '/')
-    $ReleaseOutput = $Path.StartsWith('bin/x64/Release/') -and
-        [IO.Path]::GetFileName($Path) -in $ReleaseFiles
-    -not $ReleaseOutput
-}).Count -gt 0
-try {
-    $GitTag = (git -C $Repo describe --tags --exact-match HEAD 2>$null).Trim()
-} catch {
-    $GitTag = ""
+$GitHead = (git -C $Repo rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $GitHead -notmatch '^[0-9a-f]{40}$') { throw '无法读取源码 HEAD。' }
+$TrackedChanges = @(git -C $Repo status --porcelain=v1 --untracked-files=no)
+if ($LASTEXITCODE -ne 0) { throw '无法读取源码状态。' }
+$UntrackedSources = @(git -C $Repo ls-files --others --exclude-standard -- src ui cmake tests scripts docs licenses vcpkg-overlays)
+if ($LASTEXITCODE -ne 0) { throw '无法核对未跟踪源码。' }
+$GitDirty = $TrackedChanges.Count -gt 0 -or $UntrackedSources.Count -gt 0
+$GitTag = ''
+try { $GitTag = (git -C $Repo describe --tags --exact-match HEAD 2>$null).Trim() } catch {}
+if (-not $LocalCandidate -and ($GitDirty -or $GitTag -cne $Version)) {
+    throw '正式构建要求干净源码和匹配 VERSION 的 tag。脏工作区必须显式使用 -LocalCandidate。'
 }
-if ($GitDirty) {
-    $GitCommit += "-dirty"
-    $GitTag = ""
-}
-elseif ($GitTag -ne $Version) {
-    $GitTag = ""
-}
+$BuildMode = if ($LocalCandidate) { 'local-candidate' } else { 'formal' }
+$GitCommit = $GitHead + $(if ($GitDirty) { '-dirty' } else { '' })
+if ($LocalCandidate -or $GitTag -cne $Version) { $GitTag = '' }
+$SourceFingerprint = Get-AwjSourceFingerprint -RepositoryRoot $Repo
 
 if (-not $VcpkgRoot) {
     if ($env:VCPKG_ROOT) {
@@ -98,7 +100,7 @@ function Ensure-VcpkgManifestPackages([string]$Root, [string]$Triplet, [string[]
 
     $Missing = @()
     foreach ($PackageShareName in $PackageShareNames) {
-        $BuildManifestInstalled = Join-Path $BuildDir "vcpkg_installed\$Triplet\share\$PackageShareName"
+        $BuildManifestInstalled = Join-Path $InstalledDir "$Triplet/share/$PackageShareName"
         if (Test-Path -LiteralPath $BuildManifestInstalled -PathType Container) {
             continue
         }
@@ -123,7 +125,7 @@ function Ensure-VcpkgManifestPackages([string]$Root, [string]$Triplet, [string[]
     try {
         & $VcpkgExe install --triplet $Triplet `
             "--overlay-ports=$OverlayPorts" `
-            "--x-install-root=$(Join-Path $BuildDir 'vcpkg_installed')" `
+            "--x-install-root=$InstalledDir" `
             "--x-buildtrees-root=$DependencyBuildtrees" `
             "--x-packages-root=$DependencyPackages"
         if ($LASTEXITCODE -ne 0) {
@@ -136,7 +138,7 @@ function Ensure-VcpkgManifestPackages([string]$Root, [string]$Triplet, [string[]
 }
 
 function Get-VcpkgPackageVersion([string]$Root, [string]$Triplet, [string]$Package) {
-    $InfoDirs = @((Join-Path $BuildDir "vcpkg_installed\vcpkg\info"))
+    $InfoDirs = @((Join-Path $InstalledDir 'vcpkg/info'))
     foreach ($InfoDir in $InfoDirs) {
         $File = Get-ChildItem -LiteralPath $InfoDir -Filter "${Package}_*_${Triplet}.list" -ErrorAction SilentlyContinue |
             Select-Object -First 1
@@ -204,55 +206,38 @@ $PinnedFetchContentPatchedFiles = @{
     )
 }
 $FetchContentSourceOverrides = @()
-$ExistingCache = if (Test-Path (Join-Path $BuildDir 'CMakeCache.txt')) {
-    Get-Content (Join-Path $BuildDir 'CMakeCache.txt')
+$ExistingCache = if (Test-Path -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt')) {
+    Get-Content -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt')
 } else { @() }
-foreach ($FetchContentName in @("libavif", "jpegli", "slint")) {
-    $SourceDir = Join-Path $BuildDir "_deps\$FetchContentName-src"
+$CachedHome = @($ExistingCache | Where-Object { $_ -match '^CMAKE_HOME_DIRECTORY:INTERNAL=' })
+if ($CachedHome.Count -eq 1 -and [IO.Path]::GetFullPath($CachedHome[0].Split('=', 2)[1]) -ne [IO.Path]::GetFullPath($Repo)) {
+    throw '该 CMake 缓存属于其他源码目录，请选择全新的 BuildDirectory；不会自动删除旧缓存。'
+}
+foreach ($FetchContentName in @('libavif', 'jpegli', 'slint')) {
+    $SourceDir = Join-Path $BuildDir "_deps/$FetchContentName-src"
     $Override = @($ExistingCache | Where-Object { $_ -match "^FETCHCONTENT_SOURCE_DIR_$($FetchContentName.ToUpperInvariant()):PATH=.+$" })
     if ($Override.Count -eq 1) { $SourceDir = $Override[0].Substring($Override[0].IndexOf('=') + 1) }
+    $StableSource = Join-Path $DependencySourceRoot "$FetchContentName-src"
+    if (Test-Path -LiteralPath $StableSource) { $SourceDir = $StableSource }
+    $SourceDir = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $SourceDir
+    if (-not (Test-Path -LiteralPath $SourceDir)) { continue }
     $ExpectedCommit = $PinnedFetchContentCommits[$FetchContentName]
-    $KeepSource = $ExpectedCommit -and
-        (Test-Path -LiteralPath (Join-Path $SourceDir ".git"))
-    if ($KeepSource) {
-        $ResolvedCommit = (& git -C $SourceDir rev-parse HEAD).Trim()
-        $SourceStatus = @(git -C $SourceDir status --porcelain --untracked-files=all)
-        $ExpectedPatchedFiles = @($PinnedFetchContentPatchedFiles[$FetchContentName])
-        $StatusMatches = if ($SourceStatus.Count -eq 0) {
-            $true
-        }
-        elseif ($ExpectedPatchedFiles.Count -gt 0 -and
-                $SourceStatus.Count -eq $ExpectedPatchedFiles.Count) {
-            @(Compare-Object -ReferenceObject ($ExpectedPatchedFiles | Sort-Object) `
-                             -DifferenceObject ($SourceStatus | Sort-Object)).Count -eq 0
-        }
-        else {
-            $false
-        }
-        $KeepSource = $LASTEXITCODE -eq 0 -and $ResolvedCommit -eq $ExpectedCommit -and
-            $StatusMatches
+    if (-not $ExpectedCommit -or -not (Test-Path -LiteralPath (Join-Path $SourceDir '.git'))) {
+        throw "现有依赖源码缺少可验证 pin：$SourceDir。请指定新缓存路径，不会自动删除。"
     }
-    if (-not $KeepSource) {
-        Remove-RepoDirectory $SourceDir
+    $ResolvedCommit = (& git -C $SourceDir rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0 -or $ResolvedCommit -cne $ExpectedCommit) { throw "依赖源码 commit 与锁不符：$SourceDir" }
+    $SourceStatus = @(git -C $SourceDir status --porcelain --untracked-files=all)
+    if ($LASTEXITCODE -ne 0) { throw "无法验证依赖源码状态：$SourceDir" }
+    $ExpectedPatchedFiles = @($PinnedFetchContentPatchedFiles[$FetchContentName])
+    $StatusMatches = $SourceStatus.Count -eq 0
+    if (-not $StatusMatches -and $ExpectedPatchedFiles.Count -gt 0 -and $SourceStatus.Count -eq $ExpectedPatchedFiles.Count) {
+        $StatusMatches = @(Compare-Object ($ExpectedPatchedFiles | Sort-Object) ($SourceStatus | Sort-Object)).Count -eq 0
     }
-    else {
-        if ($FetchContentName -eq "slint") {
-            cmake "-DSOURCE_DIR=$SourceDir" -P (Join-Path $Repo "cmake\patch_slint_static_import.cmake")
-            if ($LASTEXITCODE -ne 0) {
-                throw "无法修补缓存 Slint 源码，退出码 $LASTEXITCODE。"
-            }
-        }
-        $FetchContentSourceOverrides +=
-            "-DFETCHCONTENT_SOURCE_DIR_$($FetchContentName.ToUpperInvariant())=$SourceDir"
-    }
-    foreach ($FetchContentSuffix in @("build", "tmp")) {
-        Remove-RepoDirectory (Join-Path $BuildDir "_deps\$FetchContentName-$FetchContentSuffix")
-    }
+    if (-not $StatusMatches) { throw "依赖源码含非预期修改，保留不动：$SourceDir" }
+    $FetchContentSourceOverrides += "-DFETCHCONTENT_SOURCE_DIR_$($FetchContentName.ToUpperInvariant())=$SourceDir"
 }
-if (Test-Path -LiteralPath (Join-Path $BuildDir "CMakeCache.txt")) {
-    Remove-Item -LiteralPath (Join-Path $BuildDir "CMakeCache.txt") -Force
-}
-Remove-RepoDirectory (Join-Path $BuildDir "CMakeFiles")
+# 由 CMake 增量更新本次构建树，不清除已有源码、缓存或其他 build。
 
 $ConfigureArgs = @(
     "-U", "scn_DIR",
@@ -278,7 +263,8 @@ if ($VcpkgRoot) {
 }
 $ConfigureArgs += "-DAWJ_VCPKG_LIBRARY_CONFIG=Release"
 $ConfigureArgs += "-DVCPKG_OVERLAY_PORTS=$OverlayPorts"
-$ConfigureArgs += "-DVCPKG_INSTALLED_DIR=$(Join-Path $BuildDir 'vcpkg_installed')"
+$ConfigureArgs += "-DVCPKG_INSTALLED_DIR=$InstalledDir"
+$ConfigureArgs += "-DAWJ_RUNTIME_OUTPUT_ROOT=$RuntimeOutputRoot"
 # NoVcpkgInstall 同时约束配置阶段，不能让工具链因缓存 ABI 差异重新安装依赖。
 $ConfigureArgs += "-DVCPKG_MANIFEST_INSTALL=$(if ($NoVcpkgInstall) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=$DependencyBuildtrees;--x-packages-root=$DependencyPackages"
@@ -294,14 +280,23 @@ $ConfigureArgs += $FetchContentSourceOverrides
 
 
 cmake @ConfigureArgs
-if ($LASTEXITCODE -ne 0) {
-    throw "CMake 配置失败，退出码 $LASTEXITCODE。"
-}
+if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败，退出码 $LASTEXITCODE。" }
+$ConfiguredRuntime = @(Get-Content -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt') | Where-Object { $_ -match '^AWJ_RUNTIME_OUTPUT_ROOT:PATH=' })
+if ($ConfiguredRuntime.Count -ne 1) { throw 'CMake 未记录显式 runtime 输出路径，拒绝构建。' }
+$ActualRuntimeRoot = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $ConfiguredRuntime[0].Split('=', 2)[1]
+if ($ActualRuntimeRoot -ne $RuntimeOutputRoot) { throw '实际 runtime 路径与本次隔离目录不一致。' }
+$OutputDir = Assert-AwjBuildPath -RepositoryRoot $Repo -Path (Join-Path $ActualRuntimeRoot 'Release')
+foreach ($Name in $ReleaseFiles) { $null = Resolve-AwjRepoPath -RepositoryRoot $Repo -Path (Join-Path $OutputDir $Name) }
+if ((Get-AwjSourceFingerprint -RepositoryRoot $Repo) -cne $SourceFingerprint) { throw '源码在配置期间变化，请稳定后重新构建。' }
+$BuildProvenance = Initialize-AwjBuildProvenance -RepositoryRoot $Repo -BuildDirectory $BuildDir -SourceFingerprint $SourceFingerprint -BinaryPaths @((Join-Path $OutputDir 'AWJ.exe'), (Join-Path $OutputDir 'AWJ.com'))
 cmake --build $BuildDir --config Release --target AWJ AWJ-com awj_update_manifest_sign --parallel $BuildParallelism
-
-if ($LASTEXITCODE -ne 0) {
-    throw "Release 构建失败，退出码 $LASTEXITCODE。"
+if ($LASTEXITCODE -ne 0) { throw "Release 构建失败，退出码 $LASTEXITCODE。" }
+if ((Get-AwjSourceFingerprint -RepositoryRoot $Repo) -cne $SourceFingerprint -or (git -C $Repo rev-parse HEAD).Trim() -cne $GitHead) {
+    throw '源码在编译期间变化，不能为该产物写入通过证据。'
 }
+Complete-AwjBuildProvenance -State $BuildProvenance
+$ActualVersion = (& (Join-Path $OutputDir 'AWJ.com') --version | Out-String).Trim()
+if ($LASTEXITCODE -ne 0 -or $ActualVersion -cne "AWJimage $Version") { throw "构建二进制版本不匹配：$ActualVersion" }
 
 # --- Generate NOTICE.txt ---
 $BuildDate = (Get-Date).ToString("yyyy-MM-ddTHH:mm:sszzz")
@@ -341,6 +336,8 @@ $BuildInfoContent = @"
 AWJimage $Version
 Build Date: $BuildDate
 Build Type: Release
+Build Mode: $BuildMode
+Source Fingerprint: $SourceFingerprint
 Git Commit: $GitCommit
 $GitTagLine
 Architecture: x64
@@ -415,6 +412,20 @@ if ($NoticeWriteError) {
 Write-Host "  $NoticePath"
 Copy-Item -LiteralPath (Join-Path $Repo "LICENSE") -Destination (Join-Path $OutputDir "LICENSE") -Force
 
+$BinaryEvidence = foreach ($Name in @('AWJ.exe', 'AWJ.com')) {
+    $Path = Join-Path $OutputDir $Name
+    [ordered]@{path=$Name; size=[UInt64](Get-Item -LiteralPath $Path).Length; sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
+}
+$LockText = (Get-Content -LiteralPath (Join-Path $Repo 'cmake/codec-dependencies.json') -Raw).Replace("`r`n", "`n")
+$LockHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($LockText))).ToLowerInvariant()
+[ordered]@{
+    schema=1; mode=$BuildMode; platform='windows-x64'; version=$Version
+    source_fingerprint_algorithm='sha256/git-normalized-source-v1'; source_fingerprint=$SourceFingerprint
+    git_head=$GitHead; source_dirty=[bool]$GitDirty; dependency_lock_sha256=$LockHash
+    profile=[ordered]@{build_type='Release'; minimum_cpu='AVX2'; ipo=[bool]$EnableLto; static_runtime=[bool]$UseStaticRuntime; triplet=$VcpkgTriplet}
+    runtime_output_root=$RuntimeOutputRoot; build_directory=$BuildDir; binaries=@($BinaryEvidence)
+    verification=[ordered]@{compiled_source_verified=$true; binary_version=$true}
+} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputDir 'build-evidence.json') -Encoding utf8
 Write-Host ""
 Write-Host "Release 输出:"
 Write-Host "  $OutputDir\AWJ.exe"

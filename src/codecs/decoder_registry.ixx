@@ -271,7 +271,8 @@ std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
       return std::unexpected{dimensions.error()};
     }
 
-    if (decoder_registry_detail::is_unsupported_multi_image_error(dimensions.error())) {
+    if (dimensions.error().starts_with("Gain Map:") ||
+        decoder_registry_detail::is_unsupported_multi_image_error(dimensions.error())) {
       return std::unexpected{dimensions.error()};
     }
 

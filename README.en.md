@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.2**.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.3**.
 
 ## Formats
 
@@ -13,7 +13,7 @@ AWJimage is a batch image converter for Windows and Linux, with a desktop interf
 | Animation | GIF, APNG, WebP and AVIF retain frame timing, loops and transparency when converted to AVIF |
 | HDR | HDR images and supported Gain Maps; JPEG output can include an HDR Gain Map |
 
-Defaults: AVIF, quality 70, speed 5. JPG defaults to 8-bit YCbCr 4:2:0, with 4:2:2 and 4:4:4 available. HDR JPG stores an SDR base image and a gain map. Lossless behavior at quality 100 depends on the format. JPEG can be losslessly repackaged as JXL. See [Gain Map and animation details](docs/gain-map-animation.md).
+Defaults: AVIF, quality 70, speed 5. JPG uses 8-bit YCbCr and follows source sampling in auto mode, like AVIF: known 4:2:0, 4:2:2 and 4:4:4 are preserved; RGB, RGBA and unknown sources use 4:4:4. Grayscale JPG sources use three-component 4:4:4 in auto mode; explicit 4:0:0 is unsupported. HDR JPG stores an SDR base image and an ISO 21496-1 gain map. Only ISO gain-map metadata is accepted; legacy Adobe, Google and Apple gain-map protocols are no longer supported. Lossless behavior at quality 100 depends on the format. JPEG can be losslessly repackaged as JXL. See [Gain Map and animation details](docs/gain-map-animation.md).
 
 Formats share one target-pixel conversion stage. Compatible YUV layouts are reused directly; matrix, depth, sampling and geometry changes are combined to reduce full-image intermediate buffers. HDR luminance analysis, gain-map reconstruction and animation compositing follow each format's requirements.
 

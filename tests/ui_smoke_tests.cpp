@@ -56,12 +56,15 @@ bool write_snapshot_ppm(const std::filesystem::path& path, const auto& snapshot)
 
 std::string ui_snapshot_font_family() {
 #ifdef _WIN32
-  const auto* family = _wgetenv(L"AWJ_UI_TEST_FONT");
+  wchar_t* raw_family = nullptr;
+  std::size_t length = 0;
+  if (_wdupenv_s(&raw_family, &length, L"AWJ_UI_TEST_FONT") != 0) return {};
+  const std::unique_ptr<wchar_t, decltype(&std::free)> family{raw_family, &std::free};
   if (!family || !*family) return {};
-  const int size = WideCharToMultiByte(CP_UTF8, 0, family, -1, nullptr, 0, nullptr, nullptr);
+  const int size = WideCharToMultiByte(CP_UTF8, 0, family.get(), -1, nullptr, 0, nullptr, nullptr);
   if (size <= 1) return {};
   std::string utf8(static_cast<std::size_t>(size), '\0');
-  if (!WideCharToMultiByte(CP_UTF8, 0, family, -1, utf8.data(), size, nullptr, nullptr)) return {};
+  if (!WideCharToMultiByte(CP_UTF8, 0, family.get(), -1, utf8.data(), size, nullptr, nullptr)) return {};
   utf8.pop_back();
   return utf8;
 #else
@@ -502,6 +505,76 @@ std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows() {
   return std::make_shared<slint::VectorModel<UpdateHistoryRow>>(std::move(rows));
 }
 
+template<class T>
+void settle_combo_popup(const slint::ComponentHandle<T>& app) {
+  const auto popups = slint::testing::ElementHandle::find_by_element_id(app, "SoftComboBox::popup-container");
+  for (const auto& popup : popups) (void)popup.size();
+  // running 的 change handler 先注册 Timer，再触发开场动画并求值几何。
+  slint::private_api::testing::mock_elapsed_time(1);
+  slint::private_api::testing::mock_elapsed_time(60);
+  for (const auto& popup : popups) (void)popup.size();
+  slint::private_api::testing::mock_elapsed_time(300);
+}
+
+int verify_chroma_popup(const slint::ComponentHandle<AwjStudio>& app,
+                        int format, bool menu, bool english) {
+  using Role = slint::language::AccessibleRole;
+  const auto set_chroma = [&](int index) {
+    if (menu) app->set_menu_chroma_index(index); else app->set_chroma_index(index);
+  };
+  const auto chroma_index = [&] {
+    return menu ? app->get_menu_chroma_index() : app->get_chroma_index();
+  };
+  const auto set_representation = [&](int index) {
+    if (menu) app->set_menu_avif_color_representation_index(index);
+    else app->set_avif_color_representation_index(index);
+  };
+  slint::cbindgen_private::slint_testing_use_native_popup(&app->window().window_handle(), false);
+  for (const int representation : {0, 1, 2}) {
+    if (format == 3 && representation != 0) continue;
+    set_representation(0);
+    set_chroma(4); // Valid AVIF 400, or a restored obsolete JPG 400 UI selection.
+    set_representation(representation);
+    slint::private_api::testing::mock_elapsed_time(1);
+    const int rows = format == 3 ? 4 : representation == 2 ? 2 : 5;
+    if (representation == 2 && chroma_index() != 0)
+      return fail("forcing AVIF Identity did not normalize an unsupported chroma selection to auto");
+    const auto combo = find_one(app, english ? "Chroma subsampling" : "色度采样", Role::Combobox);
+    if (!combo) return fail("chroma combobox is missing from a supported format");
+    combo->invoke_accessible_default_action();
+    settle_combo_popup(app);
+    if (slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) != 1)
+      return fail("chroma popup did not expand");
+    const bool has_400 = slint::testing::ElementHandle::find_by_accessible_label(app, "400").size() > 0;
+    if (has_400 != (rows == 5) ||
+        (rows == 2 && (slint::testing::ElementHandle::find_by_accessible_label(app, "422").size() > 0 ||
+                       slint::testing::ElementHandle::find_by_accessible_label(app, "420").size() > 0)))
+      return fail("unsupported chroma was still present in expanded popup items");
+    int visible_popups = 0;
+    for (const auto& popup : slint::testing::ElementHandle::find_by_element_id(app, "SoftComboBox::popup-container")) {
+      if (popup.size().height < 1 || popup.size().width < 1) continue;
+      ++visible_popups;
+      if (std::fabs(popup.size().height - (rows * 36.0f + 8.0f)) > 1.0f)
+        return fail("filtered chroma model retained an unsupported or blank popup row");
+    }
+    if (visible_popups != 1) return fail(std::format(
+        "chroma popup row geometry is unavailable: format={} menu={} english={} representation={} rows={} visible={} matches={}",
+        format, menu, english, representation, rows, visible_popups,
+        slint::testing::ElementHandle::find_by_element_id(app, "SoftComboBox::popup-container").size()));
+    send_key(app, slint::platform::key_codes::End);
+    send_key(app, slint::platform::key_codes::Return);
+    if (chroma_index() != rows - 1)
+      return fail("filtered chroma dropdown changed persisted auto/444/422/420/400 values");
+    combo->invoke_accessible_default_action();
+    send_key(app, slint::platform::key_codes::Home);
+    send_key(app, slint::platform::key_codes::Return);
+    if (chroma_index() != 0) return fail("chroma Home selection did not retain stored auto=0");
+  }
+  set_representation(0);
+  set_chroma(0);
+  return 0;
+}
+
 int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
   using Role = slint::language::AccessibleRole;
   app->window().set_size(slint::LogicalSize({1220.0f, 2000.0f}));
@@ -541,6 +614,7 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
               check("色度采样", "Chroma subsampling", Role::Combobox, format == 0 || format == 3) ||
               check("JPG 渐进级别", "JPG progressive level", Role::Combobox, format == 3) ||
               check("启用 XYB", "Enable XYB", Role::Checkbox, format == 3)) return 1;
+          if ((format == 0 || format == 3) && verify_chroma_popup(app, format, page == 1, language == 1)) return 1;
           if (theme == 1 && format == 0) {
             for (const float width : {1220.0f, 1800.0f}) {
               app->window().set_size(slint::LogicalSize({width, 2000.0f}));
@@ -607,7 +681,7 @@ int verify_font_hover_stability() {
   if (combo.size() != 1) return fail("font hover fixture combobox is missing");
   combo[0].invoke_accessible_default_action();
   if (!app->get_popup_open()) return fail("long font popup did not open");
-  slint::private_api::testing::mock_elapsed_time(300);
+  settle_combo_popup(app);
   const float initial_scroll = app->get_scroll_y();
   if (initial_scroll >= -1.0f) return fail("long font list did not initially scroll to selected item");
   // Enter the list, traverse rows, then return to the selected font repeatedly.
@@ -631,8 +705,11 @@ int verify_font_hover_stability() {
   const float popup_x = position.x + 60.0f;
   const float popup_y = position.y + 40.0f + 8.0f + 4.0f + 18.0f;
   app->window().dispatch_pointer_scroll_event(slint::LogicalPosition({popup_x, popup_y}), 0.0f, 36.0f);
+  // Flickable 的滚轮平滑滚动依赖动画时钟，读取结果前完成这一帧的动画。
+  slint::private_api::testing::mock_elapsed_time(300);
   if (app->get_scroll_y() <= initial_scroll + 1.0f || app->get_selected_index() != 8)
-    return fail("font popup mouse wheel did not scroll independently of selection");
+    return fail(std::format("font popup mouse wheel did not scroll independently of selection: before={} after={} selected={}",
+        initial_scroll, float(app->get_scroll_y()), app->get_selected_index()));
   const auto key = [&](std::u8string_view value) {
     const slint::SharedString text{value};
     app->window().dispatch_key_press_event(text);
@@ -648,6 +725,7 @@ int verify_font_hover_stability() {
   if (app->get_selected_index() != 24 || app->get_popup_open())
     return fail("font Enter did not commit keyboard selection");
   combo[0].invoke_accessible_default_action();
+  settle_combo_popup(app);
   app->window().dispatch_pointer_move_event(slint::LogicalPosition({popup_x, popup_y}));
   app->window().dispatch_pointer_press_event(slint::LogicalPosition({popup_x, popup_y}), slint::PointerEventButton::Left);
   app->window().dispatch_pointer_release_event(slint::LogicalPosition({popup_x, popup_y}), slint::PointerEventButton::Left);
@@ -1509,7 +1587,6 @@ int main(int argc, char** argv) {
 #endif
     auto app = AwjStudio::create();
     if (const int result = verify_runtime_images(); result != 0) return result;
-    if (const int result = verify_font_hover_stability(); result != 0) return result;
     awj::ui::bind_queue_model(*app, task_rows());
     app->show();
     int tick = 0;
@@ -1664,6 +1741,8 @@ int main(int argc, char** argv) {
   }
   slint::testing::init();
   if (const int result = verify_runtime_images(); result != 0) return result;
+  // 指针和弹出窗口回归使用 testing-only hooks，不能放进真实 renderer 分支。
+  if (const int result = verify_font_hover_stability(); result != 0) return result;
   {
     auto focus = awj_focus_test::FocusReentrancy::create();
     focus->show();

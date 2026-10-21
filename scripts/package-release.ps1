@@ -15,11 +15,33 @@ param(
     [string]$UpdateKeyringPath = "",
     [string]$ExistingManifestPublicKeyHex = "",
     [string]$SignerPath = "",
+    [string]$WindowsEvidencePath = "",
+    [string]$LinuxEvidencePath = "",
+    [Parameter(Mandatory)] [string]$VerificationReportPath,
+    [switch]$LocalCandidate,
     [switch]$SkipManifests
 )
 
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+Import-Module (Join-Path $Repo 'scripts/release-safety.psm1') -Force
+$GitHead = (git -C $Repo rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0 -or $GitHead -notmatch '^[0-9a-f]{40}$') { throw '无法读取打包源码 HEAD。' }
+$TrackedChanges = @(git -C $Repo status --porcelain=v1 --untracked-files=no)
+if ($LASTEXITCODE -ne 0) { throw '无法读取源码状态。' }
+$UntrackedSources = @(git -C $Repo ls-files --others --exclude-standard -- src ui cmake tests scripts docs licenses vcpkg-overlays)
+if ($LASTEXITCODE -ne 0) { throw '无法核对未跟踪源码。' }
+if ($LocalCandidate) {
+    if ($Channel -eq 'stable' -or $UpdateSigningSeedFile -or $UpdatePublicKeyHex -or $ManifestKeyId -or $ManifestExpiresAtUtc -or $ArchiveManifestSequence -or $SignerPath -or $UpdateKeyringPath) {
+        throw '本地候选不得混用正式渠道或签名参数。'
+    }
+    $SkipManifests = $true
+} elseif ($SkipManifests) {
+    throw 'SkipManifests 仅用于显式 LocalCandidate，正式交付不可跳过受信签名与递增 sequence。'
+} elseif ($TrackedChanges.Count -gt 0 -or $UntrackedSources.Count -gt 0) {
+    throw '正式打包要求干净源码，SkipManifests 不能绕过；本地工作区须显式使用 LocalCandidate。'
+}
+$SourceFingerprint = Get-AwjSourceFingerprint -RepositoryRoot $Repo
 if (-not $Version) { $Version = (Get-Content -LiteralPath (Join-Path $Repo "VERSION") -Raw).Trim() }
 if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
     throw "VERSION 必须是 MAJOR.MINOR.PATCH。"
@@ -41,7 +63,7 @@ function Parse-UtcStamp([string]$Value, [string]$Name) {
 }
 
 function Get-RepoPath([string]$Path) {
-    return [IO.Path]::GetFullPath($Path)
+    return Resolve-AwjRepoPath -RepositoryRoot $Repo -Path $Path
 }
 
 function Assert-File([string]$Path, [string]$Label) {
@@ -81,14 +103,104 @@ function Assert-BinaryVersion([string]$Path) {
     } finally { $Process.Dispose() }
 }
 
-function Remove-OnlyInsideRepo([string]$Path) {
-    if (-not (Test-Path -LiteralPath $Path)) { return }
-    $Root = (Get-RepoPath $Repo).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
-    $Resolved = Get-RepoPath $Path
-    if (-not $Resolved.StartsWith($Root, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "拒绝删除仓库外目录: $Resolved"
+function New-VerificationDirectory([string]$Prefix) {
+    $Path = Assert-AwjBuildPath -RepositoryRoot $Repo -Path (Join-Path $Repo "build/$Prefix-$([Guid]::NewGuid().ToString('N'))")
+    if (Test-Path -LiteralPath $Path) { throw '验证目录必须全新。' }
+    [void][IO.Directory]::CreateDirectory($Path)
+    return $Path
+}
+
+function Get-NormalizedLockHash {
+    $Text = (Get-Content -LiteralPath (Join-Path $Repo 'cmake/codec-dependencies.json') -Raw).Replace("`r`n", "`n")
+    return [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Text.Encoding]::UTF8.GetBytes($Text))).ToLowerInvariant()
+}
+
+function Assert-BuildEvidence([string]$Path, [string]$Platform, [string]$Directory, [string[]]$ExpectedBinaries) {
+    $Path = Assert-File $Path "$Platform build evidence"
+    $Proof = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    Assert-AwjJsonFields $Proof @('mode', 'platform', 'version', 'source_fingerprint_algorithm', 'source_fingerprint', 'git_head', 'dependency_lock_sha256') @('source_dirty')
+    Assert-AwjJsonFields $Proof.profile @('build_type', 'minimum_cpu') @('ipo')
+    Assert-AwjJsonFields $Proof.verification @() @('compiled_source_verified')
+    if ($Platform -ceq 'windows-x64') {
+        Assert-AwjJsonFields $Proof.profile @() @('static_runtime')
+        Assert-AwjJsonFields $Proof.verification @() @('binary_version')
+    } else {
+        Assert-AwjJsonFields $Proof.profile @('cxx_runtime')
+        Assert-AwjJsonFields $Proof.verification @() @('native_execution', 'executable_mode', 'archive_roundtrip')
     }
-    Remove-Item -LiteralPath $Resolved -Recurse -Force
+    if ($Proof.binaries -isnot [Array]) { throw '构建二进制清单必须是数组。' }
+    if (-not (Test-AwjJsonUnsignedInteger $Proof.schema) -or $Proof.schema -ne 1 -or $Proof.platform -cne $Platform -or $Proof.version -cne $Version -or
+        $Proof.source_fingerprint_algorithm -cne 'sha256/git-normalized-source-v1' -or
+        $Proof.source_fingerprint -cne $SourceFingerprint -or $Proof.git_head -notmatch '^[0-9a-f]{40}$' -or
+        $Proof.dependency_lock_sha256 -cne (Get-NormalizedLockHash) -or
+        $Proof.verification.compiled_source_verified -ne $true -or
+        $Proof.profile.build_type -cne 'Release' -or $Proof.profile.ipo -ne $true) {
+        throw "$Platform 缺少匹配源码、版本、依赖锁和优化配置的构建证据。"
+    }
+    if ($LocalCandidate) {
+        if ($Proof.mode -cne 'local-candidate') { throw "$Platform 不是明确的本地候选。" }
+    } elseif ($Proof.mode -cnotin @('formal', 'clean-candidate') -or $Proof.source_dirty -ne $false -or $Proof.git_head -cne $GitHead) {
+        throw "$Platform 正式构建证据必须来自相同干净 HEAD。"
+    }
+    if ($Platform -ceq 'windows-x64') {
+        if ($Proof.profile.minimum_cpu -cne 'AVX2' -or $Proof.profile.static_runtime -ne $true -or $Proof.verification.binary_version -ne $true) {
+            throw 'Windows 必须保留 AVX2、静态运行库并通过实际版本检查。'
+        }
+    } elseif ($Proof.profile.minimum_cpu -cne 'x86-64-v3' -or $Proof.profile.cxx_runtime -cne 'libc++' -or
+              $Proof.verification.native_execution -ne $true -or $Proof.verification.executable_mode -ne $true -or
+              $Proof.verification.archive_roundtrip -ne $true) {
+        throw 'Linux 缺少原生执行、可执行位、归档往返或既定工具链证据。'
+    }
+    $Names = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($Binary in @($Proof.binaries)) {
+        Assert-AwjJsonFields $Binary @('path', 'sha256')
+        if (-not (Test-AwjJsonUnsignedInteger $Binary.size)) { throw '二进制尺寸必须是非负整数。' }
+        $Name = [string]$Binary.path
+        if ($Name -cnotin $ExpectedBinaries -or -not $Names.Add($Name) -or $Binary.sha256 -notmatch '^[0-9a-f]{64}$') { throw '构建证据含未知或重复二进制。' }
+        $Actual = Assert-File (Join-Path $Directory $Name) "$Platform binary"
+        if ((Get-Item -LiteralPath $Actual).Length -ne [UInt64]$Binary.size -or
+            (Get-FileHash -LiteralPath $Actual -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Binary.sha256) { throw "二进制与构建证据不匹配：$Actual" }
+    }
+    if ($Names.Count -ne $ExpectedBinaries.Count) { throw '构建证据缺少二进制。' }
+    return $Proof
+}
+
+function Assert-VerificationReport([string]$Path, [Parameter(Mandatory)][object[]]$ExpectedArtifacts) {
+    $Path = Assert-File $Path 'verification report'
+    $Report = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json -AsHashtable
+    Assert-AwjJsonFields $Report @('version', 'source_fingerprint', 'status')
+    Assert-AwjJsonFields $Report.checks @('windows_tests', 'linux_tests', 'hdr_math', 'iso_protocol', 'sampling', 'ui', 'original_jxr')
+    if (-not (Test-AwjJsonUnsignedInteger $Report.schema) -or $Report.schema -ne 1 -or $Report.version -cne $Version -or $Report.source_fingerprint -cne $SourceFingerprint -or $Report.status -cne 'passed') {
+        throw '验收报告必须对应本次稳定源码和版本。'
+    }
+    foreach ($Name in @('windows_tests', 'linux_tests', 'hdr_math', 'iso_protocol', 'sampling', 'ui', 'original_jxr')) {
+        if ($Report.checks[$Name] -cne 'passed') { throw "验收报告缺少通过项：$Name" }
+    }
+    if ($Report.artifacts -isnot [Array] -or $Report.artifacts.Count -ne $ExpectedArtifacts.Count) { throw '验收报告必须绑定本次全部平台二进制。' }
+    $Seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($Artifact in $Report.artifacts) {
+        Assert-AwjJsonFields $Artifact @('platform', 'path', 'sha256')
+        if (-not (Test-AwjJsonUnsignedInteger $Artifact.size) -or $Artifact.sha256 -notmatch '^[0-9a-f]{64}$' -or
+            -not $Seen.Add($Artifact.platform + ':' + $Artifact.path)) { throw '验收产物记录非法或重复。' }
+    }
+    foreach ($Expected in $ExpectedArtifacts) {
+        $Found = @($Report.artifacts | Where-Object { $_.platform -ceq $Expected.platform -and $_.path -ceq $Expected.path })
+        if ($Found.Count -ne 1 -or $Found[0].sha256 -cne $Expected.sha256 -or $Found[0].size -ne $Expected.size) {
+            throw '验收报告对应的不是当前打包二进制，必须重新验收。'
+        }
+    }
+    return $Report
+}
+
+function Assert-ArchiveMemberList([string]$ArchivePath, [string[]]$ExpectedFiles) {
+    $Listing = @(& 7z.exe l -slt -ba -p- $ArchivePath)
+    if ($LASTEXITCODE -ne 0) { throw "无法读取归档成员：$ArchivePath" }
+    $Names = @($Listing | Where-Object { $_ -cmatch '^Path = ' } | ForEach-Object { $_.Substring(7) })
+    if ($Names.Count -ne $ExpectedFiles.Count -or @($Names | Where-Object { $_ -cnotin $ExpectedFiles }).Count -gt 0 -or
+        @($Names | Sort-Object -Unique).Count -ne $Names.Count -or
+        @($Listing | Where-Object { $_ -match '^(?:Folder|Encrypted) = \+|^(?:Symbolic Link|Hard Link|Alternate Stream) = .+' }).Count -gt 0) {
+        throw "归档含未知路径、目录、链接或加密成员：$ArchivePath"
+    }
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
@@ -178,9 +290,7 @@ function Assert-TrustedUpdateKeyring([string]$KeyringPath) {
         'root-recovery-a-2026' = Get-CmakePublicKey 'AWJ_UPDATE_ROOT_RECOVERY_A_PUBLIC_KEY_HEX'
         'root-recovery-b-2026' = Get-CmakePublicKey 'AWJ_UPDATE_ROOT_RECOVERY_B_PUBLIC_KEY_HEX'
     }
-    $TemporaryDirectory = Join-Path $Repo "build\keyring-verify-$PID"
-    Remove-OnlyInsideRepo $TemporaryDirectory
-    New-Item -ItemType Directory -Path $TemporaryDirectory -Force | Out-Null
+    $TemporaryDirectory = New-VerificationDirectory 'keyring-verify'
     try {
         $Seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
         foreach ($Item in @($Envelope.signatures)) {
@@ -199,7 +309,7 @@ function Assert-TrustedUpdateKeyring([string]$KeyringPath) {
             }
         }
     } finally {
-        Remove-OnlyInsideRepo $TemporaryDirectory
+        # 保留本次新建的验证证据，不触碰未知目录或旧缓存。
     }
 }
 
@@ -266,21 +376,23 @@ function Assert-ExactPackage([string]$Directory, [string[]]$ExpectedFiles) {
         $_.FullName.Substring($Directory.Length).TrimStart('\', '/').Replace('\', '/')
     } | Sort-Object)
     $Expected = @($ExpectedFiles | Sort-Object)
-    if ((Compare-Object $Expected $Actual).Count) {
+    if (@(Compare-Object $Expected $Actual).Count -gt 0) {
         throw "发行包成员不符合固定结构: $Directory; expected=$($Expected -join ','); actual=$($Actual -join ',')"
     }
 }
 
 function Assert-ArchiveRoundTrip([string]$ArchivePath, [string]$PackageDirectory, [string]$VerifyDirectory) {
-    Remove-OnlyInsideRepo $VerifyDirectory
-    New-Item -ItemType Directory -Path $VerifyDirectory -Force | Out-Null
-    & 7z.exe x $ArchivePath "-o$VerifyDirectory" -y | Out-Host
-    if ($LASTEXITCODE -ne 0) { throw "7z 解压验证失败: $ArchivePath" }
+    $VerifyDirectory = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $VerifyDirectory
+    if (Test-Path -LiteralPath $VerifyDirectory) { throw '归档验证目录必须全新。' }
     $OriginalFiles = @(Get-ChildItem -LiteralPath $PackageDirectory -File -Recurse)
+    Assert-ArchiveMemberList $ArchivePath @($OriginalFiles | ForEach-Object { $_.Name })
+    [void][IO.Directory]::CreateDirectory($VerifyDirectory)
+    & 7z.exe x $ArchivePath "-o$VerifyDirectory" -p- -y | Out-Host
+    if ($LASTEXITCODE -ne 0) { throw "7z 解压验证失败: $ArchivePath" }
     $ExtractedFiles = @(Get-ChildItem -LiteralPath $VerifyDirectory -File -Recurse)
     $OriginalNames = @($OriginalFiles | ForEach-Object { $_.FullName.Substring($PackageDirectory.Length).TrimStart('\', '/') } | Sort-Object)
     $ExtractedNames = @($ExtractedFiles | ForEach-Object { $_.FullName.Substring($VerifyDirectory.Length).TrimStart('\', '/') } | Sort-Object)
-    if ((Compare-Object $OriginalNames $ExtractedNames).Count) {
+    if (@(Compare-Object $OriginalNames $ExtractedNames).Count -gt 0) {
         throw "归档包含缺失或额外成员: $ArchivePath"
     }
     foreach ($Original in $OriginalFiles) {
@@ -299,7 +411,13 @@ $WindowsComPath = Assert-File $WindowsComPath "AWJ.com"
 if ($Version -cne (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()) {
     throw '打包版本与仓库 VERSION 不一致。'
 }
+if ((Split-Path -Parent $WindowsExePath) -ne (Split-Path -Parent $WindowsComPath)) { throw 'Windows EXE/COM 必须来自同一隔离构建目录。' }
 Assert-BinaryVersion $WindowsExePath
+Assert-BinaryVersion $WindowsComPath
+if (-not $LocalCandidate) {
+    $ActualTag = (git -C $Repo describe --exact-match --tags HEAD 2>$null | Out-String).Trim()
+    if ($LASTEXITCODE -ne 0 -or $ActualTag -cne $Version) { throw '正式打包必须位于匹配版本的 tag，SkipManifests 不能绕过。' }
+}
 $LinuxPackagePath = Assert-Directory $LinuxPackagePath "native Linux package"
 $LinuxArchivePath = Assert-File $LinuxArchivePath "native Linux archive"
 if (([IO.Path]::GetFileName($WindowsExePath) -ne "AWJ.exe") -or
@@ -310,6 +428,26 @@ if (-not (Test-Path -LiteralPath (Join-Path $LinuxPackagePath "AWJ") -PathType L
     throw "native Linux package 必须包含 AWJ。"
 }
 if (-not (Get-Command 7z.exe -ErrorAction SilentlyContinue)) { throw "未找到 7z.exe。" }
+$WindowsSourceDirectory = Split-Path -Parent $WindowsExePath
+if (-not $WindowsEvidencePath) { $WindowsEvidencePath = Join-Path $WindowsSourceDirectory 'build-evidence.json' }
+if (-not $LinuxEvidencePath) { $LinuxEvidencePath = Join-Path (Split-Path -Parent (Split-Path -Parent $LinuxPackagePath)) 'build-evidence.json' }
+$WindowsEvidencePath = Assert-File $WindowsEvidencePath 'Windows build evidence'
+$LinuxEvidencePath = Assert-File $LinuxEvidencePath 'Linux build evidence'
+$VerificationReportPath = Assert-File $VerificationReportPath 'verification report'
+$WindowsProof = Assert-BuildEvidence $WindowsEvidencePath 'windows-x64' $WindowsSourceDirectory @('AWJ.exe', 'AWJ.com')
+$LinuxProof = Assert-BuildEvidence $LinuxEvidencePath 'linux-x64' $LinuxPackagePath @('AWJ')
+Assert-AwjJsonFields $LinuxProof.archive @('path', 'sha256')
+if (-not (Test-AwjJsonUnsignedInteger $LinuxProof.archive.size)) { throw 'Linux 归档尺寸必须是非负整数。' }
+if ($LinuxProof.archive.path -cne 'AWJ_Linux.7z' -or $LinuxProof.archive.sha256 -notmatch '^[0-9a-f]{64}$' -or
+    (Get-Item -LiteralPath $LinuxArchivePath).Length -ne [UInt64]$LinuxProof.archive.size -or
+    (Get-FileHash -LiteralPath $LinuxArchivePath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $LinuxProof.archive.sha256) {
+    throw 'Linux 归档与原生验证证据不匹配。'
+}
+$ExpectedVerifiedArtifacts = @(
+    foreach ($Binary in $WindowsProof.binaries) { [ordered]@{platform='windows-x64'; path=$Binary.path; size=$Binary.size; sha256=$Binary.sha256} }
+    foreach ($Binary in $LinuxProof.binaries) { [ordered]@{platform='linux-x64'; path=$Binary.path; size=$Binary.size; sha256=$Binary.sha256} }
+)
+$TestReport = Assert-VerificationReport $VerificationReportPath $ExpectedVerifiedArtifacts
 if (-not $SkipManifests) {
     if (-not $UpdateKeyringPath) {
         $UpdateKeyringPath = Join-Path $Repo 'update-keyring.json'
@@ -335,12 +473,19 @@ if (-not $SkipManifests) {
     Copy-ExactAlias "$UpdateKeyringPath.sig" "$CanonicalKeyringPath.sig"
 }
 
-$Stage = Join-Path $Repo "build\release\$Version"
-Remove-OnlyInsideRepo $Stage
-$Assets = Join-Path $Stage "assets"
-$WinPackage = Join-Path $Stage "package\AWJ_Win"
-$LinuxPackage = $LinuxPackagePath
-New-Item -ItemType Directory -Path $Assets, $WinPackage -Force | Out-Null
+$Stage = New-AwjReleaseStage -RepositoryRoot $Repo -Version $Version
+$Assets = $Stage
+$WinPackage = Join-Path $Stage 'Windows'
+$LinuxPackage = Join-Path $Stage 'Linux'
+$Verification = Join-Path $Stage 'verification'
+New-Item -ItemType Directory -Path $WinPackage, $LinuxPackage, $Verification | Out-Null
+Assert-ExactPackage $LinuxPackagePath @('AWJ', 'LICENSE', 'NOTICE.txt')
+foreach ($Name in @('AWJ', 'LICENSE', 'NOTICE.txt')) {
+    Copy-Item -LiteralPath (Assert-File (Join-Path $LinuxPackagePath $Name) "Linux $Name") -Destination (Join-Path $LinuxPackage $Name)
+}
+Copy-Item -LiteralPath $WindowsEvidencePath -Destination (Join-Path $Verification 'windows-build.json')
+Copy-Item -LiteralPath $LinuxEvidencePath -Destination (Join-Path $Verification 'linux-build.json')
+Copy-Item -LiteralPath $VerificationReportPath -Destination (Join-Path $Verification 'tests.json')
 
 $WindowsSourceDirectory = Split-Path -Parent $WindowsExePath
 $WindowsLicensePath = Assert-File (Join-Path $WindowsSourceDirectory "LICENSE") "Windows LICENSE"
@@ -355,8 +500,9 @@ Add-Archive $WinPackage $WindowsArchive
 Copy-Item -LiteralPath $LinuxArchivePath -Destination $LinuxArchive -Force
 & 7z.exe t $LinuxArchive | Out-Host
 if ($LASTEXITCODE -ne 0) { throw "Linux 7z 完整性检查失败: $LinuxArchive" }
-$WinVerify = Join-Path $Stage "verify\AWJ_Win"
-$LinuxVerify = Join-Path $Stage "verify\AWJ_Linux"
+$VerifyWork = New-VerificationDirectory 'release-roundtrip'
+$WinVerify = Join-Path $VerifyWork 'Windows'
+$LinuxVerify = Join-Path $VerifyWork 'Linux'
 Assert-ArchiveRoundTrip $WindowsArchive $WinPackage $WinVerify
 Assert-BinaryVersion (Join-Path $WinVerify 'AWJ.exe')
 Assert-ArchiveRoundTrip $LinuxArchive $LinuxPackage $LinuxVerify
@@ -400,5 +546,30 @@ if (-not $SkipManifests) {
 
 }
 
-Get-ChildItem -LiteralPath $Assets -File | Select-Object Name, Length, @{n='SHA256'; e={(Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()}} | Format-Table -AutoSize
-Write-Host "Release stage: $Stage"
+if ((Get-AwjSourceFingerprint -RepositoryRoot $Repo) -cne $SourceFingerprint -or (git -C $Repo rev-parse HEAD).Trim() -cne $GitHead) {
+    throw '源码在打包期间变化，保留 staging，不投放、不清理旧版本。'
+}
+$HashFiles = @('Windows/AWJ.exe', 'Windows/AWJ.com', 'Windows/LICENSE', 'Windows/NOTICE.txt', 'Linux/AWJ', 'Linux/LICENSE', 'Linux/NOTICE.txt', 'AWJ_Win.7z', 'AWJ_Linux.7z')
+$HashLines = foreach ($Relative in $HashFiles) {
+    $Hash = (Get-FileHash -LiteralPath (Join-Path $Stage $Relative) -Algorithm SHA256).Hash.ToLowerInvariant()
+    "$Hash  $Relative"
+}
+Write-Utf8NoBom (Join-Path $Stage 'SHA256SUMS') (($HashLines -join "`n") + "`n")
+$Artifacts = foreach ($Relative in ($HashFiles + @('SHA256SUMS', '.awj-owned-stage.json', 'verification/windows-build.json', 'verification/linux-build.json', 'verification/tests.json'))) {
+    $Path = Join-Path $Stage $Relative
+    [ordered]@{path=$Relative; size=[UInt64](Get-Item -LiteralPath $Path).Length; sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
+}
+[ordered]@{
+    schema=1; version=$Version; status='passed'; mode=$(if ($LocalCandidate) { 'local-candidate' } else { 'formal' })
+    source_fingerprint=$SourceFingerprint; accepted_at=[DateTimeOffset]::UtcNow.ToString('o'); artifacts=@($Artifacts)
+} | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Verification 'acceptance.json') -Encoding utf8
+$Destination = Publish-AwjVersionStage -RepositoryRoot $Repo -Version $Version -Stage $Stage
+Assert-BinaryVersion (Join-Path $Destination 'Windows/AWJ.exe')
+Assert-BinaryVersion (Join-Path $Destination 'Windows/AWJ.com')
+$null = Test-AwjArtifactAcceptance -RepositoryRoot $Repo -Directory $Destination -Version $Version
+$CleanupPlan = New-AwjReleaseCleanupPlan -RepositoryRoot $Repo -Version $Version
+$CleanupPlan | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath (Join-Path $Destination 'verification/cleanup-plan.json') -Encoding utf8
+$BackupResults = @(Backup-AwjReleaseUserData -RepositoryRoot $Repo -Plan $CleanupPlan)
+[ordered]@{schema=1; mode='backup-only'; cleanup='not-executed'; files=@($BackupResults)} | ConvertTo-Json -Depth 8 |
+    Set-Content -LiteralPath (Join-Path $Destination 'verification/backup-results.json') -Encoding utf8
+[ordered]@{version=$Version; mode=$(if ($LocalCandidate) { 'local-candidate' } else { 'formal' }); directory=$Destination; source_fingerprint=$SourceFingerprint; cleanup='permission-required'} | ConvertTo-Json -Compress

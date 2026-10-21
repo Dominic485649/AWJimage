@@ -79,6 +79,21 @@ export component ParameterForm inherits VerticalLayout {
     property <length> warning-width: root.context-menu-warning.is-empty ? 0px : 160px;
     property <length> action-toolbar-width: root.install-button-width + root.remove-button-width + 10px + (root.warning-width > 0px ? root.warning-width + 10px : 0px);
     property <length> preset-toolbar-width: root.parameter-control-width + 212px;
+    // These filtered rows share stable stored values: 0 auto, 1 444, 2 422,
+    // 3 420, 4 400. No disabled/blank stand-ins for unsupported sampling.
+    property <bool> forced-avif-identity: root.format-index == 0 && root.avif-color-representation-index == 2;
+    property <[int]> chroma-selection-values: root.forced-avif-identity ? [0, 1]
+        : root.format-index == 3 ? [0, 1, 2, 3] : [0, 1, 2, 3, 4];
+    property <[ComboOption]> chroma-options: root.forced-avif-identity
+        ? [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }]
+        : root.format-index == 3
+            ? [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]
+            : [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }, { text: "400", enabled: true }];
+    changed avif-color-representation-index => {
+        if root.forced-avif-identity && (root.chroma-index < 0 || root.chroma-index > 1) {
+            root.chroma-index = 0;
+        }
+    }
     changed jpegli-progressive-index => {
         if root.jpegli-progressive-index > 0 { root.jpegli-optimize-huffman = true; }
     }
@@ -181,7 +196,7 @@ export component ParameterForm inherits VerticalLayout {
             lead-color: root.hint-orange;
             accent: @tr("极高压缩率 · 支持 HDR · 最高 12-bit");
             accent-color: root.hint-blue;
-            detail: @tr("AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，默认使用 YCbCr 4:2:0，支持 4:2:2、4:4:4 和 HDR Gain Map。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。");
+            detail: @tr("AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，自动按源选择 4:2:0 / 4:2:2 / 4:4:4，RGB、灰度与未知源使用三分量 4:4:4，并支持 ISO 21496-1 HDR Gain Map。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。");
             detail-color: root.text-muted;
         }
     }
@@ -377,13 +392,36 @@ export component ParameterForm inherits VerticalLayout {
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("色度采样"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        SoftComboBox { accessible-name: @tr("色度采样"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }, { text: "400", enabled: root.format-index == 0 }]; current-index <=> root.chroma-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        chroma-combo := SoftComboBox {
+            accessible-name: @tr("色度采样");
+            viewport-height: root.window-height;
+            close-generation: root.combo-close-generation;
+            popup-requested => { root.combo-popup-requested(); }
+            popup-finished => { root.combo-popup-finished(); }
+            model: root.chroma-options;
+            current-index: root.chroma-index >= 0 && root.chroma-index < root.chroma-selection-values.length ? root.chroma-index : 0;
+            defer-current-index: true;
+            selection-accepted(index, click-x, click-y) => { root.chroma-index = root.chroma-selection-values[index]; }
+            enabled: !root.running;
+            width: root.parameter-control-width;
+            height: root.parameter-control-height;
+            normal-background: root.combo-bg;
+            hover-background: root.combo-bg-hover;
+            disabled-background: root.combo-bg-disabled;
+            selected-background: root.combo-selected-bg;
+            normal-border: root.combo-border;
+            hover-border: root.combo-border-hover;
+            normal-text: root.text-body;
+            disabled-text: root.text-soft;
+            muted-text: root.text-muted;
+            selected-text: root.text-body;
+        }
         ParamHint {
             horizontal-stretch: 1;
             lead: @tr("自动 = 跟随源");
             lead-color: root.hint-blue;
             detail: root.format-index == 3
-                ? @tr("JPG 支持 444 / 422 / 420；自动使用 YCbCr 4:2:0。")
+                ? @tr("JPG 支持 444 / 422 / 420；自动保留源 420 / 422 / 444，RGB / RGBA、灰度与未知源使用三分量 444；不支持 400。")
                 : @tr("400 强制灰度并保留透明；YUV + 自动参考 avifenc：保留源 420 / 422 / 444，灰度使用 400，RGB / RGBA 与未知源使用 444；444 不等于 RGB Identity。");
             detail-color: root.text-muted;
         }

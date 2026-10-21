@@ -83,6 +83,7 @@ void config_check() {
   current.update_keyring_signature = "keyring signature";
   current.menu_preset_description = "menu preset regression description";
   current.menu_params[0].chroma_index = 4;
+  current.menu_params[3].chroma_index = 4; // Removed JPG 400 from an old UI cache.
   {
     std::ofstream old(path);
     old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false})";
@@ -97,12 +98,35 @@ void config_check() {
         parsed->at("menu_preset_description").string == current.menu_preset_description &&
         parsed->at("menu_avif_chroma_index").integer == 4,
         "whitelist lost current config or v2 state");
+  check(!parsed->contains("menu_jpgli_chroma_index") ||
+        parsed->at("menu_jpgli_chroma_index").integer == 0,
+        "old JPG 400 UI cache was persisted instead of normalizing to auto");
   check(!parsed->at("show_update_changelog").boolean &&
         !parsed->at("only_show_changelog_after_update").boolean, "changelog preferences were not preserved");
   for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature", "hide_update_changelog_after_exit", "show_update_changelog_after_update"})
     check(!parsed->contains(key), "legacy UI cache was persisted");
   check(!parsed->contains("menu_avif_avif_animation_tune_index") &&
         !parsed->contains("menu_avif_avif_animation_keyframe"), "CLI-only animation options persisted in UI config");
+  for (const int index : {0, 1, 2, 3}) {
+    auto value = current;
+    value.menu_params[3].chroma_index = index;
+    check(write_studio_config_file(value, defaults).has_value(), "legal JPG chroma write failed");
+    const auto reloaded = awj::studio_json::parse_jsonc_config(read(path));
+    check(reloaded && (index == 0 ? !reloaded->contains("menu_jpgli_chroma_index")
+                                 : reloaded->at("menu_jpgli_chroma_index").integer == index) &&
+          reloaded->at("menu_avif_chroma_index").integer == 4,
+          "format caches reinterpreted valid chroma values or leaked across formats");
+  }
+  for (const int representation : {1, 2}) {
+    auto value = current;
+    value.menu_params[0].avif_color_representation_index = representation;
+    check(write_studio_config_file(value, defaults).has_value(), "AVIF representation write failed");
+    const auto reloaded = awj::studio_json::parse_jsonc_config(read(path));
+    check(reloaded && (representation == 1
+              ? reloaded->at("menu_avif_chroma_index").integer == 4
+              : !reloaded->contains("menu_avif_chroma_index")),
+          "source-follow AVIF hid valid 400 or forced Identity retained invalid 400");
+  }
   check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
         "config rewrite was not idempotent");
   {

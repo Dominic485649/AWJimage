@@ -655,7 +655,8 @@ if(NOT AWJ_AVIF_ANIMATION_PATCH_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to apply libavif animation memory accounting patch")
 endif()
 
-# JPEG Ultra HDR only: share the existing JPEG dependency, with no nested codecs.
+# ISO 21496-1 JPEG, using the pinned libultrahdr numerical/container engine.
+# Write switches alone do not disable the upstream decoder's XMP fallback.
 set(UHDR_WRITE_XMP OFF CACHE BOOL "" FORCE)
 set(UHDR_WRITE_ISO ON CACHE BOOL "" FORCE)
 foreach(AWJ_UHDR_OPTION IN ITEMS BUILD_EXAMPLES BUILD_TESTS BUILD_BENCHMARK BUILD_FUZZERS
@@ -665,9 +666,21 @@ endforeach()
 FetchContent_Declare(libultrahdr
     URL ${AWJ_LIBULTRAHDR_URL}
     URL_HASH SHA256=${AWJ_LIBULTRAHDR_SHA256}
+    PATCH_COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=<SOURCE_DIR>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_iso_only.cmake"
+        COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=<SOURCE_DIR>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_threads.cmake"
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
 FetchContent_MakeAvailable(libultrahdr)
-execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libultrahdr_SOURCE_DIR}
+# Source overrides and populated FetchContent caches bypass PATCH_COMMAND.
+# Recheck the exact patched function on every configure on both platforms.
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${libultrahdr_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_iso_only.cmake"
+    RESULT_VARIABLE AWJ_UHDR_ISO_PATCH_RESULT)
+if(NOT AWJ_UHDR_ISO_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to enforce ISO 21496-1-only libultrahdr decoding")
+endif()
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${libultrahdr_SOURCE_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_threads.cmake"
     RESULT_VARIABLE AWJ_UHDR_THREADS_PATCH_RESULT)
 if(NOT AWJ_UHDR_THREADS_PATCH_RESULT EQUAL 0)
@@ -934,6 +947,9 @@ target_include_directories(awj_native_codecs PUBLIC
     "${libheif_SOURCE_DIR}/libheif/api"
     "${libheif_BINARY_DIR}")
 target_include_directories(awj_native_codecs PRIVATE "${libultrahdr_SOURCE_DIR}/lib/include")
+# JPEGli 导出 ABI-62 兼容头；普通 JPEG decoder 必须使用所链接的 libjpeg-turbo 头。
+target_compile_definitions(awj_native_codecs PRIVATE
+    AWJ_TURBO_JPEG_HEADER="${JPEG_INCLUDE_DIR}/jpeglib.h")
 target_link_libraries(awj_native_codecs PUBLIC "${JXL_LCMS_LIBRARY}")
 if(WIN32)
     target_link_libraries(awj_native_codecs PUBLIC ole32 windowscodecs)
@@ -1145,6 +1161,14 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_avif_aom_codec_tests)
     target_link_libraries(awj_avif_aom_codec_tests PRIVATE awj_avif_base_codec)
 
+    add_executable(awj_iso_gain_map_tests tests/iso_gain_map_tests.cpp)
+    avif_enable_common_options(awj_iso_gain_map_tests)
+    target_link_libraries(awj_iso_gain_map_tests PRIVATE awj_native_codecs)
+    target_compile_definitions(awj_iso_gain_map_tests PRIVATE
+        AWJ_TEST_TURBO_HEADER="${JPEG_INCLUDE_DIR}/jpeglib.h"
+        AWJ_ISO_TEST_HEIF_DATA="${libheif_SOURCE_DIR}/tests/data"
+        AWJ_ISO_TEST_AVIF_DATA="${libavif_SOURCE_DIR}/tests/data")
+
     add_executable(awj_avif_registry_tests tests/avif_registry_tests.cpp)
     avif_enable_common_options(awj_avif_registry_tests)
     target_link_libraries(awj_avif_registry_tests PRIVATE awj_native_codecs)
@@ -1168,6 +1192,11 @@ if(BUILD_TESTING)
         target_compile_definitions(awj_jpegli_codec_tests PRIVATE AWJ_TEST_TURBO_HEADER="${JPEG_INCLUDE_DIR}/jpeglib.h")
         avif_enable_common_options(awj_jpegli_codec_tests)
         target_link_libraries(awj_jpegli_codec_tests PRIVATE awj_native_codecs)
+
+        add_executable(awj_jpeg_hdr_iso_tests tests/jpeg_hdr_iso_tests.cpp)
+        avif_enable_common_options(awj_jpeg_hdr_iso_tests)
+        target_link_libraries(awj_jpeg_hdr_iso_tests PRIVATE awj_native_codecs)
+        target_include_directories(awj_jpeg_hdr_iso_tests PRIVATE "${libultrahdr_SOURCE_DIR}/lib/include")
     endif()
 
     add_executable(awj_native_visual_search_tests tests/native_visual_search_tests.cpp)
@@ -1232,6 +1261,7 @@ if(BUILD_TESTING)
         awj_webp_codec_tests
         awj_png_codec_tests
         awj_avif_aom_codec_tests
+        awj_iso_gain_map_tests
         awj_avif_registry_tests
         awj_jxl_codec_tests
         awj_bmp_codec_tests
@@ -1249,7 +1279,7 @@ if(BUILD_TESTING)
             awj_cli_native_avif_aom_tests)
     endif()
     if(AWJ_JPEGLI_AVAILABLE)
-        list(APPEND AWJ_TEST_TARGETS awj_jpegli_codec_tests)
+        list(APPEND AWJ_TEST_TARGETS awj_jpegli_codec_tests awj_jpeg_hdr_iso_tests)
     endif()
     foreach(test_target IN LISTS AWJ_TEST_TARGETS)
         awj_set_runtime_directory(${test_target} "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
@@ -1281,6 +1311,14 @@ if(BUILD_TESTING)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
     add_test(NAME png_codec_core COMMAND awj_png_codec_tests)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
+    add_test(NAME iso_gain_map_core COMMAND awj_iso_gain_map_tests)
+    add_test(NAME ultrahdr_iso_patch_contract COMMAND "${CMAKE_COMMAND}"
+        "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/ultrahdr-iso-patch-test"
+        "-DPATCH_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_iso_only.cmake"
+        "-DTHREAD_PATCH_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_threads.cmake"
+        "-DLIBULTRAHDR_SOURCE_DIR=${libultrahdr_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/ultrahdr_iso_patch_tests.cmake")
+    set_tests_properties(iso_gain_map_core ultrahdr_iso_patch_contract PROPERTIES TIMEOUT 120)
     add_test(NAME avif_registry_core COMMAND awj_avif_registry_tests)
     add_test(NAME jxl_codec_core COMMAND awj_jxl_codec_tests)
     add_test(NAME bmp_codec_core COMMAND awj_bmp_codec_tests)
@@ -1289,6 +1327,8 @@ if(BUILD_TESTING)
     endif()
     if(AWJ_JPEGLI_AVAILABLE)
         add_test(NAME jpegli_codec_core COMMAND awj_jpegli_codec_tests)
+        add_test(NAME jpeg_hdr_iso_core COMMAND awj_jpeg_hdr_iso_tests)
+        set_tests_properties(jpeg_hdr_iso_core PROPERTIES TIMEOUT 120)
     endif()
     add_test(NAME native_visual_search_core COMMAND awj_native_visual_search_tests)
     add_test(NAME decoder_registry_core COMMAND awj_decoder_registry_tests)
@@ -1542,6 +1582,12 @@ if(BUILD_TESTING)
         if(AWJ_PWSH_EXECUTABLE)
             add_test(NAME package_manifest_contract COMMAND "${AWJ_PWSH_EXECUTABLE}"
                 -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/package_manifest_tests.ps1")
+            add_test(NAME release_safety_contract COMMAND "${AWJ_PWSH_EXECUTABLE}"
+                -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_safety_tests.ps1")
+            set_tests_properties(release_safety_contract PROPERTIES TIMEOUT 120)
+            add_test(NAME release_layout_contract COMMAND "${AWJ_PWSH_EXECUTABLE}"
+                -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/release_layout_tests.ps1")
+            set_tests_properties(release_layout_contract PROPERTIES TIMEOUT 120)
         endif()
     endif()
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

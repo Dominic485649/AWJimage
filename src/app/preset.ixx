@@ -394,11 +394,11 @@ std::expected<ChromaMode, std::string> parse_chroma_value(
     return std::unexpected{valid.error()};
   }
   const auto text = value.get<std::string>();
-  if (text == "auto") return ChromaMode::auto_keep;
-  if (text == "444") return ChromaMode::yuv444;
-  if (text == "422") return ChromaMode::yuv422;
-  if (text == "420") return ChromaMode::yuv420;
-  return std::unexpected{"预设字段 chroma 只支持 auto/444/422/420。"};
+  if (std::ranges::all_of(text, [](unsigned char ch) { return ch < 0x80; })) {
+    if (const auto mode = config_detail::parse_chroma(
+            std::wstring{text.begin(), text.end()})) return *mode;
+  }
+  return std::unexpected{"预设字段 chroma 只支持 auto/444/422/420/400；400 仅可用于 AVIF。"};
 }
 
 std::expected<AvifColorRepresentation, std::string>

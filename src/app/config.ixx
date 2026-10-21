@@ -44,9 +44,38 @@ enum class OutputFormat { png, avif, webp, jxl, jpgli };
 enum class BackendMode { native };
 enum class OutputPolicy { normal, shell };
 enum class CollisionMode { overwrite, skip, suffix_time, suffix_random, suffix_number };
-enum class ChromaMode { auto_keep, yuv444, yuv422, yuv420, yuv400 };
+// Stable persisted selection values; never reinterpret them as filtered UI rows.
+enum class ChromaMode { auto_keep = 0, yuv444 = 1, yuv422 = 2, yuv420 = 3, yuv400 = 4 };
 // AVIF 的颜色表示与 YUV 4:2:0/4:2:2/4:4:4 采样是两件事。
 enum class AvifColorRepresentation { yuv, source, rgb_identity };
+
+// Format-level capability only: config must not depend on the codec module.
+constexpr bool supports_chroma_selection(OutputFormat format) noexcept {
+  return format == OutputFormat::avif || format == OutputFormat::jpgli;
+}
+
+constexpr bool supports_chroma_mode(
+    OutputFormat format, ChromaMode mode,
+    AvifColorRepresentation representation = AvifColorRepresentation::yuv) noexcept {
+  if (mode == ChromaMode::auto_keep) return true;
+  if (!supports_chroma_selection(format)) return false;
+  if (mode == ChromaMode::yuv444) return true;
+  if (format == OutputFormat::avif &&
+      representation == AvifColorRepresentation::rgb_identity) return false;
+  return mode == ChromaMode::yuv422 || mode == ChromaMode::yuv420 ||
+         (format == OutputFormat::avif && mode == ChromaMode::yuv400);
+}
+
+// UI/config-cache migration only. Explicit CLI and preset requests are validated,
+// not normalized, so an unsupported requested mode remains an error.
+constexpr int normalize_chroma_selection_index(
+    OutputFormat format, int index,
+    AvifColorRepresentation representation = AvifColorRepresentation::yuv) noexcept {
+  return index >= 0 && index <= 4 &&
+                 supports_chroma_mode(format, static_cast<ChromaMode>(index), representation)
+             ? index : 0;
+}
+
 enum class AvifEncoderMode { automatic, aom = 2 };
 enum class AlphaModePolicy { force, automatic, off };
 enum class JpegHdrMode { automatic, sdr, hdr };
@@ -873,7 +902,7 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       if (cfg.bit_depth && *cfg.bit_depth != 8 && *cfg.bit_depth != 16) {
         return std::unexpected{"PNG 输出仅支持 8-bit 或 16-bit RGBA；请把位深设为 8/16，或留空。"};
       }
-      if (cfg.chroma_mode != ChromaMode::auto_keep) {
+      if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode)) {
         return std::unexpected{"PNG 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
       }
       break;
@@ -889,8 +918,8 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
       }
       if (cfg.avif_color_representation ==
           AvifColorRepresentation::rgb_identity) {
-        if (cfg.chroma_mode != ChromaMode::auto_keep &&
-            cfg.chroma_mode != ChromaMode::yuv444) {
+        if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode,
+                                  cfg.avif_color_representation)) {
           return std::unexpected{
               "RGB(A)/GBR(A) Identity AVIF 必须使用 4:4:4；请使用 --chroma auto/444。"};
         }
@@ -912,20 +941,20 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
         return std::unexpected{
             "WebP bitstream 只支持 8-bit；请把位深设为 8，或留空保持原片。"};
       }
-      if (cfg.chroma_mode != ChromaMode::auto_keep) {
+      if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode)) {
         return std::unexpected{
             "WebP 不支持手动选择 444/422/420；有损 WebP 为 8-bit 4:2:0，"
             "无损 WebP 为 8-bit ARGB。"};
       }
       break;
     case OutputFormat::jxl:
-      if (cfg.chroma_mode != ChromaMode::auto_keep) {
+      if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode)) {
         return std::unexpected{
             "JXL 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
       }
       break;
     case OutputFormat::jpgli:
-      if (cfg.chroma_mode == ChromaMode::yuv400)
+      if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode))
         return std::unexpected{"400 强制灰度仅支持 AVIF；JPG 支持 auto/444/422/420。"};
       if (cfg.speed) {
         return std::unexpected{"JPG 不支持 --speed；请移除该参数。"};
@@ -1021,7 +1050,7 @@ std::string help_text() {
   --no-visual-quality-fallback visual_quality 搜索未达标时失败
 @WINDOWS_TIMESTAMP_OPTIONS@
   -d, --bit-depth <位深>      AVIF 支持 8/10/12；JXL 不填保持原片；WebP 固定 @WEBP_BIT_DEPTH@；JPG 输出 JPEG 兼容 8-bit precision
-  --chroma <auto|444|422|420|400> AVIF/JPG 色度采样；AVIF 400 强制灰度并保留 alpha；JPG 支持 auto/444/422/420；AVIF auto 参考 avifenc：保留 YUV 源的 420/422/444，灰度使用 400，RGB/RGBA 与未知源使用 444；JPG auto 使用 YCbCr 4:2:0；也可用 --444 / --422 / --420
+  --chroma <auto|444|422|420|400> AVIF/JPG 色度采样；AVIF 400 强制灰度并保留 alpha；JPG 支持 auto/444/422/420；AVIF auto 参考 avifenc：保留 YUV 源的 420/422/444，灰度使用 400，RGB/RGBA 与未知源使用 444；JPG auto 同样保留源 420/422/444，RGB/RGBA、灰度与未知源使用三分量 444；也可用 --444 / --422 / --420
   --avif-color-representation <yuv|source|rgb> AVIF 颜色表示；默认 yuv，source 跟随源的 YUV 或 RGB Identity，rgb 强制 RGB(A)/GBR(A) Identity 与 4:4:4（自动选择 AOM）
   --append-png-suffix        AVIF 输出额外添加 .png 后缀，实际字节仍为 AVIF
   --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：SDR 使用普通 JPG，HDR 输出 8-bit SDR base + ISO Gain Map；HDR 不支持 visual-quality

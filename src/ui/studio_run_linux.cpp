@@ -71,6 +71,15 @@ namespace {
 
 namespace fs = std::filesystem;
 
+awj::OutputFormat linux_output_format_from_index(int index) noexcept;
+
+int normalized_linux_chroma_index(int format_index, int chroma_index,
+                                  int representation_index) noexcept {
+  return awj::normalize_chroma_selection_index(
+      linux_output_format_from_index(format_index), chroma_index,
+      static_cast<awj::AvifColorRepresentation>(std::clamp(representation_index, 0, 2)));
+}
+
 struct LinuxMenuParams {
   std::string quality_text{};
   std::string bit_depth_text{};
@@ -171,14 +180,16 @@ struct LinuxUiState {
   std::string update_status_en{"Not checked yet"};
 };
 
-nlohmann::ordered_json linux_menu_params_json(const LinuxMenuParams& params) {
+nlohmann::ordered_json linux_menu_params_json(const LinuxMenuParams& params,
+                                               int format_index) {
   return {{"quality_text", params.quality_text},
           {"bit_depth_text", params.bit_depth_text},
           {"speed_text", params.speed_text},
           {"avif_encoder_index", params.avif_encoder_index},
           {"avif_color_representation_index",
            params.avif_color_representation_index},
-          {"chroma_index", params.chroma_index},
+          {"chroma_index", normalized_linux_chroma_index(
+              format_index, params.chroma_index, params.avif_color_representation_index)},
           {"alpha_policy_index", params.alpha_policy_index},
           {"jpegli_progressive_index", params.jpegli_progressive_index},
           {"jpegli_optimize_huffman", params.jpegli_optimize_huffman},
@@ -229,6 +240,8 @@ void load_linux_menu_params(const nlohmann::ordered_json& document,
     integer("avif_color_representation_index", 0, 2,
             params.avif_color_representation_index);
     integer("chroma_index", 0, 4, params.chroma_index);
+    params.chroma_index = normalized_linux_chroma_index(
+        static_cast<int>(index), params.chroma_index, params.avif_color_representation_index);
     integer("alpha_policy_index", 0, 2, params.alpha_policy_index);
     integer("jpegli_progressive_index", 0, 2, params.jpegli_progressive_index);
     boolean("jpegli_optimize_huffman", params.jpegli_optimize_huffman);
@@ -824,8 +837,9 @@ std::expected<void, std::string> persist_linux_update_config(
   document["update_keyring_raw"] = state.update_keyring_raw;
   document["update_keyring_signature"] = state.update_keyring_signature;
   document["menu_params"] = nlohmann::ordered_json::array();
-  for (const auto& params : state.menu_params) {
-    document["menu_params"].push_back(linux_menu_params_json(params));
+  for (std::size_t i = 0; i < state.menu_params.size(); ++i) {
+    document["menu_params"].push_back(linux_menu_params_json(
+        state.menu_params[i], static_cast<int>(i)));
   }
   auto bytes = document.dump(2);
   bytes.push_back('\n');
@@ -1001,7 +1015,9 @@ void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
   app.set_menu_avif_encoder_index(params.avif_encoder_index);
   app.set_menu_avif_color_representation_index(
       params.avif_color_representation_index);
-  app.set_menu_chroma_index(params.chroma_index);
+  app.set_menu_chroma_index(normalized_linux_chroma_index(
+      app.get_menu_format_index(), params.chroma_index,
+      params.avif_color_representation_index));
   app.set_menu_alpha_policy_index(params.alpha_policy_index);
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
@@ -1018,8 +1034,11 @@ void apply_linux_menu_params(AwjStudio& app, const LinuxMenuParams& params) {
 }
 
 void store_linux_menu_params(AwjStudio& app, LinuxUiState& state) {
-  state.menu_params[static_cast<std::size_t>(std::clamp(state.menu_format_index, 0, 4))] =
-      capture_linux_menu_params(app);
+  const int index = std::clamp(state.menu_format_index, 0, 4);
+  auto params = capture_linux_menu_params(app);
+  params.chroma_index = normalized_linux_chroma_index(
+      index, params.chroma_index, params.avif_color_representation_index);
+  state.menu_params[static_cast<std::size_t>(index)] = std::move(params);
 }
 
 LinuxMenuParams default_linux_menu_params(int format_index) {
@@ -1782,7 +1801,8 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_avif_encoder_index(params.avif_encoder_index);
   app.set_avif_color_representation_index(
       params.avif_color_representation_index);
-  app.set_chroma_index(params.chroma_index);
+  app.set_chroma_index(normalized_linux_chroma_index(
+      format_index, params.chroma_index, params.avif_color_representation_index));
   app.set_alpha_policy_index(params.alpha_policy_index);
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
@@ -1820,6 +1840,8 @@ const std::array<LinuxParameterParams, 5>& active_linux_parameter_params(
 void store_current_linux_parameter_params(AwjStudio& app, LinuxUiState& state) {
   const int index = linux_parameter_editor_format_index(state.last_format_index);
   auto params = capture_linux_parameter_params(app);
+  params.chroma_index = normalized_linux_chroma_index(
+      index, params.chroma_index, params.avif_color_representation_index);
   const auto format = linux_output_format_from_index(index);
   if (format == awj::OutputFormat::png) {
     params.visual_quality_text.clear();
@@ -1892,14 +1914,16 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
     push_option(args, L"--avif-color-representation",
                 avif_color_representation_arg(
                     params.avif_color_representation_index));
-    push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+    push_option(args, L"--chroma", chroma_arg(normalized_linux_chroma_index(
+          format_index, params.chroma_index, params.avif_color_representation_index)));
     push_option(args, L"--alpha", alpha_arg(params.alpha_policy_index));
   } else if (format_index == 2) {
     if (!params.jxl_jpeg_lossless) {
       args.push_back(L"--no-jxl-jpeg-lossless");
     }
   } else if (format_index == 3) {
-    push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+    push_option(args, L"--chroma", chroma_arg(normalized_linux_chroma_index(
+          format_index, params.chroma_index, params.avif_color_representation_index)));
     push_option(args, L"--jpegli-progressive-level",
                 std::to_wstring(params.jpegli_progressive_index));
     push_flag(args, params.jpegli_optimize_huffman,
@@ -2271,7 +2295,8 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
         awj::utf8_from_wide(avif_color_representation_arg(
             params.avif_color_representation_index)));
     append_linux_shell_option(command, "--chroma",
-                              awj::utf8_from_wide(chroma_arg(params.chroma_index)));
+                              awj::utf8_from_wide(chroma_arg(normalized_linux_chroma_index(
+          format_index, params.chroma_index, params.avif_color_representation_index))));
     append_linux_shell_option(command, "--alpha",
                               awj::utf8_from_wide(alpha_arg(params.alpha_policy_index)));
     if (append_png_suffix) {
@@ -2283,7 +2308,8 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
     }
   } else if (is_jpgli) {
     append_linux_shell_option(command, "--chroma",
-                              awj::utf8_from_wide(chroma_arg(params.chroma_index)));
+                              awj::utf8_from_wide(chroma_arg(normalized_linux_chroma_index(
+          format_index, params.chroma_index, params.avif_color_representation_index))));
     append_linux_shell_option(command, "--jpegli-progressive-level",
                               std::to_string(std::clamp(params.jpegli_progressive_index, 0, 2)));
     append_linux_shell_arg(command, params.jpegli_optimize_huffman
@@ -2327,14 +2353,16 @@ std::expected<void, std::string> validate_linux_menu_params(
       push_option(args, L"--avif-color-representation",
                   avif_color_representation_arg(
                       params.avif_color_representation_index));
-      push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+      push_option(args, L"--chroma", chroma_arg(normalized_linux_chroma_index(
+          format_index, params.chroma_index, params.avif_color_representation_index)));
       push_option(args, L"--alpha", alpha_arg(params.alpha_policy_index));
     } else if (is_jxl) {
       if (!params.jxl_jpeg_lossless) {
         args.push_back(L"--no-jxl-jpeg-lossless");
       }
     } else if (is_jpgli) {
-      push_option(args, L"--chroma", chroma_arg(params.chroma_index));
+      push_option(args, L"--chroma", chroma_arg(normalized_linux_chroma_index(
+          format_index, params.chroma_index, params.avif_color_representation_index)));
       push_option(args, L"--jpegli-progressive-level",
                   std::to_wstring(std::clamp(params.jpegli_progressive_index, 0, 2)));
       push_flag(args, params.jpegli_optimize_huffman, L"--jpegli-optimize-huffman",

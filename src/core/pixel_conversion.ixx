@@ -19,8 +19,7 @@ module;
 #include <avif/avif.h>
 #include <avif/internal.h>
 #include <libplacebo/colorspace.h>
-#include <libplacebo/gamut_mapping.h>
-#include <libplacebo/tone_mapping.h>
+#include "hdr_cost.h"
 
 export module awj.pixel_conversion;
 
@@ -28,6 +27,7 @@ import awj.decoder_common;
 import awj.encoding_defaults;
 import awj.hdr_tonemap;
 import awj.image;
+import awj.resource_planner;
 
 export namespace awj {
 
@@ -79,6 +79,24 @@ std::array<std::size_t, 2> plane_size(const ImageBuffer& image, std::size_t chan
   const auto factor = subsampling(image.pixel_format);
   return {(storage[0] + factor[0] - 1) / factor[0],
           (storage[1] + factor[1] - 1) / factor[1]};
+}
+
+std::uint64_t destination_pixel_bytes(std::size_t width, std::size_t height,
+    const PixelConversionRequest& request, AlphaMode source_alpha) noexcept {
+  const auto pixels = hdr_cost::multiply(width, height);
+  const auto sample_bytes = request.bit_depth > 8 ? 2u : 1u;
+  if (request.format == PixelFormat::rgba) return hdr_cost::multiply(pixels, 4 * sample_bytes);
+  if (!is_yuv_format(request.format)) return UINT64_MAX;
+  auto samples = pixels;
+  if (request.format != PixelFormat::gray) {
+    const auto factor = subsampling(request.format);
+    // Overflow-safe ceil division, including odd dimensions.
+    const auto chroma_width = width / factor[0] + (width % factor[0] != 0);
+    const auto chroma_height = height / factor[1] + (height % factor[1] != 0);
+    samples = hdr_cost::add(samples, hdr_cost::multiply(hdr_cost::multiply(chroma_width, chroma_height), 2));
+  }
+  if (request.preserve_alpha && source_alpha != AlphaMode::none) samples = hdr_cost::add(samples, pixels);
+  return hdr_cost::multiply(samples, sample_bytes);
 }
 
 std::expected<void, std::string> validate(const ImageBuffer& image) {
@@ -186,111 +204,49 @@ struct Reader {
       if (image.alpha_mode != AlphaMode::none) rgba[3] = sample(image, 3, x, y) / maximum;
     }
     if (image.alpha_mode == AlphaMode::premultiplied) {
+      // Do not hide a non-finite source component behind transparent alpha.
+      for (const auto value : rgba) if (!std::isfinite(value)) return rgba;
       for (std::size_t c = 0; c < 3; ++c) rgba[c] = rgba[3] > 0 ? rgba[c] / rgba[3] : 0;
     }
     return rgba;
   }
 };
 
-// Tone mapping needs luminance statistics, but never an intermediate RGB image.
+// Only linear FP16 -> HDR10 materialization remains local. SDR tone/gamut
+// processing below uses awj.hdr_tonemap's prepared, resource-bounded engine.
 struct HdrMap {
   hdr::hdr_detail::SourceTransform source{};
   pl_matrix3x3 matrix{};
-  pl_matrix3x3 luma{};
-  pl_matrix3x3 input_to_lms{};
-  pl_matrix3x3 output_to_rgb{};
-  pl_tone_map_params tone{};
-  pl_gamut_map_params gamut{};
   bool enabled{};
-  bool sdr{};
-  float reference_white{80};
-
-  std::array<float, 3> linear(std::array<float, 3> rgb) const noexcept {
-    if (source.kind == hdr::hdr_detail::SignalKind::scrgb) {
-      for (auto& value : rgb) value *= reference_white;
-    } else {
-      pl_color_linearize(&source.color_space, rgb.data());
-      for (auto& value : rgb) value = pl_hdr_rescale(PL_HDR_NORM, PL_HDR_NITS, value);
-    }
-    return rgb;
-  }
 
   std::expected<std::array<float, 4>, std::string> operator()(std::array<float, 4> rgba) const {
     for (float value : rgba) if (!std::isfinite(value)) return std::unexpected{"像素输入含非有限值。"};
     if (!enabled) return rgba;
-    auto rgb = linear({rgba[0], rgba[1], rgba[2]});
-    if (!sdr) {
-      pl_matrix3x3_apply(&matrix, rgb.data());
-      for (std::size_t c = 0; c < 3; ++c) rgba[c] = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, std::max(rgb[c], 0.0F));
-      return rgba;
+    auto rgb = hdr::hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, source);
+    if (!rgb) return std::unexpected{rgb.error()};
+    pl_matrix3x3_apply(&matrix, rgb->data());
+    if (!hdr::hdr_detail::finite_rgb(*rgb)) return std::unexpected{"HDR10 原色矩阵产生了非有限值。"};
+    for (std::size_t c = 0; c < 3; ++c) {
+      rgba[c] = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, (*rgb)[c]);
+      if (!std::isfinite(rgba[c])) return std::unexpected{"HDR10 PQ 编码产生了非有限值。"};
     }
-    const float source_luma = hdr::hdr_detail::luma_nits(rgb, luma);
-    if (source_luma > 0) {
-      const float scale = std::max(pl_tone_map_sample(source_luma, &tone), 0.0F) / source_luma;
-      for (auto& value : rgb) value *= scale;
-    }
-    for (auto& value : rgb) value = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, std::max(value, 0.0F));
-    pl_matrix3x3_apply(&input_to_lms, rgb.data());
-    pl_matrix3x3_apply(&pl_ipt_lms2ipt, rgb.data());
-    pl_gamut_map_sample(rgb.data(), &gamut);
-    pl_matrix3x3_apply(&pl_ipt_ipt2lms, rgb.data());
-    pl_matrix3x3_apply(&output_to_rgb, rgb.data());
-    for (std::size_t c = 0; c < 3; ++c)
-      rgba[c] = hdr::hdr_detail::srgb_encode(pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, std::max(rgb[c], 0.0F)) / 100.0F);
     return rgba;
   }
 };
 
-std::expected<HdrMap, std::string> hdr_map(const Reader& reader, bool sdr, std::stop_token stop) {
+std::expected<HdrMap, std::string> hdr_map(const Reader& reader, std::stop_token stop) {
+  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
   HdrMap result{};
-  if (!sdr && reader.image.sample_representation != SampleRepresentation::ieee_half_float) return result;
-  auto kind = hdr::hdr_detail::signal_kind(reader.image);
-  if (!kind) return std::unexpected{kind.error()};
-  if (*kind == hdr::hdr_detail::SignalKind::none || (!sdr && *kind != hdr::hdr_detail::SignalKind::scrgb)) return result;
+  if (reader.image.sample_representation != SampleRepresentation::ieee_half_float) return result;
   auto source = hdr::hdr_detail::make_source_transform(reader.image);
   if (!source) return std::unexpected{source.error()};
-  result.source = *source; result.enabled = true; result.sdr = sdr;
-  result.reference_white = reader.image.source_info->linear_reference_white_nits.value_or(80.0F);
-  const auto* output = pl_raw_primaries_get(sdr ? PL_COLOR_PRIM_BT_709 : PL_COLOR_PRIM_BT_2020);
+  const auto* output = pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020);
   if (!output) return std::unexpected{"目标原色不可用。"};
-  result.matrix = pl_get_color_mapping_matrix(source->primaries, output, PL_INTENT_RELATIVE_COLORIMETRIC);
-  if (!sdr) return result;
-  result.luma = pl_get_rgb2xyz_matrix(source->primaries);
-  float peak{}; double sum{};
-  for (std::size_t y = 0; y < reader.image.height; ++y) {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-    for (std::size_t x = 0; x < reader.image.width; ++x) {
-      const auto rgba = reader(x, y);
-      auto rgb = result.linear({rgba[0], rgba[1], rgba[2]});
-      for (float value : rgb) if (!std::isfinite(value)) return std::unexpected{"HDR 输入含非有限值。"};
-      const float value = hdr::hdr_detail::luma_nits(rgb, result.luma);
-      peak = std::max(peak, value); sum += value;
-    }
-  }
-  float average = static_cast<float>(sum / reader.image.width / reader.image.height);
-  if (reader.image.source_info->content_light) {
-    const auto cll = *reader.image.source_info->content_light;
-    if (cll.max_cll > 0 && (cll.max_pall == 0 || cll.max_pall <= cll.max_cll)) {
-      peak = static_cast<float>(cll.max_cll);
-      if (cll.max_pall > 0) average = static_cast<float>(cll.max_pall);
-    } else peak = std::max(peak, 100.0F);
-  } else peak = std::max(peak, 100.0F);
-  result.tone.function = &pl_tone_map_spline;
-  result.tone.constants = {PL_TONE_MAP_CONSTANTS};
-  result.tone.input_scaling = result.tone.output_scaling = PL_HDR_NITS;
-  result.tone.input_max = peak; result.tone.input_avg = average; result.tone.output_max = 100;
-  pl_tone_map_params_infer(&result.tone);
-  result.gamut.function = &pl_gamut_map_perceptual;
-  result.gamut.input_gamut = *source->primaries; result.gamut.output_gamut = *output;
-  result.gamut.min_luma = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, 0);
-  result.gamut.max_luma = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, 100);
-  result.gamut.constants.perceptual_deadzone = 0.30F;
-  result.gamut.constants.perceptual_strength = 0.80F;
-  result.gamut.constants.colorimetric_gamma = 1.80F;
-  result.gamut.constants.softclip_knee = 0.70F;
-  result.gamut.constants.softclip_desat = 0.35F;
-  result.input_to_lms = pl_ipt_rgb2lms(source->primaries);
-  result.output_to_rgb = pl_ipt_lms2rgb(output);
+  result.source = *source; result.enabled = true;
+  result.matrix = pl_raw_primaries_equal(source->primaries, output)
+      ? pl_matrix3x3{.m = {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}}}
+      : pl_get_color_mapping_matrix(source->primaries, output, PL_INTENT_RELATIVE_COLORIMETRIC);
+  if (!hdr::hdr_detail::finite_matrix(result.matrix)) return std::unexpected{"HDR10 原色矩阵包含非有限值。"};
   return result;
 }
 
@@ -404,7 +360,8 @@ std::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage& source,
 }
 
 std::expected<ImageBuffer, std::string> convert_image_pixels(
-    const ImageBuffer& source, const PixelConversionRequest& request, std::stop_token stop = {}) {
+    const ImageBuffer& source, const PixelConversionRequest& request, std::stop_token stop = {},
+    const ResourcePlan& resources = {}) {
   try {
     if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
     if (auto valid = pixel_detail::validate(source); !valid) return std::unexpected{valid.error()};
@@ -416,7 +373,78 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
       const auto view = pixel_detail::description(source);
       if (!avifGetYUVColorSpaceInfo(&view, &reader.color)) return std::unexpected{"源 YUV 色彩矩阵不受支持。"};
     }
-    auto mapping = pixel_detail::hdr_map(reader, request.tone_map_to_sdr, stop);
+    if (request.tone_map_to_sdr) {
+      auto signal = hdr::has_explicit_hdr_signal(source);
+      if (!signal) return std::unexpected{signal.error()};
+      if (*signal) {
+        if (reader.color.depth && source.source_info &&
+            (source.source_info->matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RE ||
+             source.source_info->matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RO)) {
+          return std::unexpected{"可逆 YCgCo 的 HDR 色调映射需要相匹配的整数转换。"};
+        }
+        // Native YUV destinations retain a 16-bit SDR RGB intermediate; do not
+        // quantize/dither RGB to 8-bit before the final YUV transform.
+        const int depth = request.format == PixelFormat::rgba && request.bit_depth == 8 ? 8 : 16;
+        auto tone_resources = resources;
+        if (request.format != PixelFormat::rgba || request.bit_depth != depth) {
+          // The recursive call cannot release its caller's original source.
+          // Reserve the final destination (including its metadata copy) before
+          // tone chooses its LUT/workers from the remaining finite budget.
+          auto target = pixel_detail::destination_pixel_bytes(source.width, source.height, request, source.alpha_mode);
+          auto resident = hdr_cost::multiply(hdr_cost::multiply(source.width, source.height), 4 * (depth / 8));
+          for (const auto& plane : source.planes) resident = hdr_cost::add(resident, plane.bytes.size());
+          for (const auto& block : source.metadata) {
+            resident = hdr_cost::add(resident, hdr_cost::multiply(block.bytes.size(), 2));
+            if (block.kind == MetadataKind::exif || block.kind == MetadataKind::xmp)
+              target = hdr_cost::add(target, block.bytes.size());
+          }
+          // At least one scalar IPT slot plus control state must fit. Larger
+          // tone scratch is bounded by the reduced plan and dies before the
+          // destination conversion, whose 16-bit RGB path uses a fixed 2x2 block.
+          const auto minimum_scratch = hdr_cost::tone_scratch_bytes(1, false, 1);
+          const auto required = hdr_cost::add(resident, hdr_cost::add(target, minimum_scratch));
+          if (required == UINT64_MAX) return std::unexpected{"HDR 递归转换工作集尺寸溢出。"};
+          if (resources.memory_limit_bytes) {
+            if (required > resources.memory_limit_bytes || target >= resources.memory_limit_bytes)
+              return std::unexpected{"HDR 递归转换的 source、SDR、目标及 scratch 同时工作集超出内存预算。"};
+            // A finite exhausted remainder must never be passed as zero:
+            // ResourcePlan's zero means unlimited, not no available capacity.
+            tone_resources.memory_limit_bytes = resources.memory_limit_bytes - target;
+          }
+        }
+        // Reader applies geometry and unpremultiplication once, in the source
+        // signal space. The borrowed callback remains alive until tone workers
+        // have joined; negative scRGB never passes through a clipped HDR10 copy.
+        const hdr::hdr_detail::RgbaPixelReader pixels{.context = &reader,
+            .read = [](const void* context, std::size_t x, std::size_t y) noexcept {
+              return (*static_cast<const pixel_detail::Reader*>(context))(x, y);
+            }};
+        auto prepared = hdr::hdr_detail::prepare_tone_context(source, stop, pixels);
+        if (!prepared) return std::unexpected{prepared.error()};
+        auto mapped = hdr::tone_map_to_sdr_srgb(source, *prepared, depth, stop, tone_resources);
+        if (!mapped) return std::unexpected{mapped.error()};
+        if (request.format == PixelFormat::rgba && request.bit_depth == depth) {
+          if (!request.preserve_alpha) {
+            mapped->alpha_mode = AlphaMode::none;
+            for (std::size_t y = 0; y < mapped->height; ++y) {
+              if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+              auto* row = mapped->planes[0].bytes.data() + y * mapped->planes[0].stride;
+              for (std::size_t x = 0; x < mapped->width; ++x) {
+                if (x % 1024 == 0 && stop.stop_requested()) return std::unexpected{"任务已取消。"};
+                if (depth == 8) row[x * 4 + 3] = std::byte{255};
+                else hdr::hdr_detail::write_unorm16(row, x * 4 + 3, 1.0F);
+              }
+            }
+          }
+          mapped->source_info->color_range = request.color_range;
+          return mapped;
+        }
+        auto destination = request;
+        destination.tone_map_to_sdr = false;
+        return convert_image_pixels(*mapped, destination, stop, resources);
+      }
+    }
+    auto mapping = pixel_detail::hdr_map(reader, stop);
     if (!mapping) return std::unexpected{mapping.error()};
     ImageBuffer output{.width = source.width, .height = source.height, .pixel_format = request.format,
         .alpha_mode = request.preserve_alpha && source.alpha_mode != AlphaMode::none ? AlphaMode::straight : AlphaMode::none,
@@ -425,11 +453,11 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
     output.source_info->matrix_coefficients = is_yuv_format(request.format) ? request.matrix_coefficients : 0;
     output.source_info->color_range = request.color_range;
     if (mapping->enabled) {
-      output.source_info->color_primaries = mapping->sdr ? 1 : 9;
-      output.source_info->transfer_characteristics = mapping->sdr ? 13 : 16;
-      output.source_info->has_hdr_metadata = !mapping->sdr;
+      output.source_info->color_primaries = 9;
+      output.source_info->transfer_characteristics = 16;
+      output.source_info->has_hdr_metadata = true;
       output.source_info->content_light.reset();
-      output.source_info->color_metadata_source = mapping->sdr ? "hdr-sdr-libplacebo-spline-perceptual" : "scrgb-linear-to-bt2020-pq";
+      output.source_info->color_metadata_source = "scrgb-linear-to-bt2020-pq";
       std::erase_if(output.metadata, [](const MetadataBlock& block) { return block.kind == MetadataKind::icc; });
     }
     const bool yuv = is_yuv_format(request.format);
@@ -547,9 +575,7 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
             if (!yuv) {
               for (std::size_t c = 0; c < 4; ++c) {
                 const float value = c == 3 && output.alpha_mode == AlphaMode::none ? 1 : (*rgba)[c];
-                if (mapping->sdr && request.bit_depth == 8 && c < 3)
-                  pixel_detail::write_sample(output, 0, x * 4 + c, y, hdr::hdr_detail::dithered_unorm8(value, x, y));
-                else pixel_detail::write_sample(output, 0, x * 4 + c, y, value * maximum);
+                pixel_detail::write_sample(output, 0, x * 4 + c, y, value * maximum);
               }
               continue;
             }

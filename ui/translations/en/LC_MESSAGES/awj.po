@@ -60,8 +60,8 @@ msgstr "Choose AVIF"
 msgid "极高压缩率 · 支持 HDR · 最高 12-bit"
 msgstr "top compression · HDR · up to 12-bit"
 
-msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，默认使用 YCbCr 4:2:0，支持 4:2:2、4:4:4 和 HDR Gain Map。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。"
-msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPG works with common viewers, defaults to YCbCr 4:2:0, and supports 4:2:2, 4:4:4 and HDR Gain Maps. PNG q100 is lossless. q1–99 reduces effective RGB precision while retaining storage bit depth and alpha precision."
+msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，自动按源选择 4:2:0 / 4:2:2 / 4:4:4，RGB、灰度与未知源使用三分量 4:4:4，并支持 ISO 21496-1 HDR Gain Map。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。"
+msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPG works with common viewers. Auto follows source 4:2:0 / 4:2:2 / 4:4:4; RGB, grayscale and unknown sources use three-component 4:4:4. ISO 21496-1 HDR Gain Maps are supported. PNG q100 is lossless. q1–99 reduces effective RGB precision while retaining storage bit depth and alpha precision."
 
 msgid "编码器"
 msgstr "Encoder"
@@ -207,11 +207,8 @@ msgstr "Chroma subsampling"
 msgid "自动 = 跟随源"
 msgstr "Auto follows the source"
 
-msgid "JPG 支持 444 / 422 / 420；自动使用 YCbCr 4:2:0。"
-msgstr "JPG supports 444 / 422 / 420; auto uses YCbCr 4:2:0."
-
-msgid "一律以 YUV 编码：源是 420 / 422 / 444 就原样保留，RGB 与 RGBA 视作 444，灰度按 420 处理。"
-msgstr "Everything is encoded as YUV: sources already at 420 / 422 / 444 are kept as they are, RGB and RGBA are treated as 444, and grayscale is handled as 420."
+msgid "JPG 支持 444 / 422 / 420；自动保留源 420 / 422 / 444，RGB / RGBA、灰度与未知源使用三分量 444；不支持 400。"
+msgstr "JPG supports 444 / 422 / 420. Auto retains source 420 / 422 / 444; RGB / RGBA, grayscale and unknown sources use three-component 444. 400 is not supported."
 
 msgid "渐进"
 msgstr "Progressive"

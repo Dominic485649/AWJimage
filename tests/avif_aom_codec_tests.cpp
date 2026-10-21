@@ -467,22 +467,8 @@ int verify_gain_map_geometry_and_samples() {
   metadata->baseHdrHeadroom.d = 1;
   base.metadata.push_back({awj::MetadataKind::icc, {std::byte{0}}});
   if (awj::compose_iso_gain_map(base, map, *metadata)) return fail("Unsupported ISO ICC silently accepted.");
-  base.metadata.clear();
-  if (awj::compose_apple_gain_map(base, map)) return fail("Apple Gain Map missing metadata accepted.");
-  const std::string xmp = R"(<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:HDRGainMap="http://ns.apple.com/HDRGainMap/1.0/"><HDRGainMap:HDRGainMapVersion>131072</HDRGainMap:HDRGainMapVersion><HDRGainMap:HDRGainMapHeadroom>2</HDRGainMap:HDRGainMapHeadroom></rdf:Description></rdf:RDF></x:xmpmeta>)";
-  awj::MetadataBlock packet{.kind = awj::MetadataKind::xmp};
-  for (unsigned char value : xmp) packet.bytes.push_back(std::byte(value));
-  base.metadata.push_back(std::move(packet));
-  for (unsigned c = 0; c < 3; ++c) map.planes.front().bytes[c] = std::byte{255};
-  auto apple = awj::compose_apple_gain_map(base, map);
-  if (!apple) return fail(apple.error());
-  auto apple_transform = awj::hdr::hdr_detail::make_source_transform(*apple);
-  if (!apple_transform) return fail(apple_transform.error());
-  auto apple_nits = awj::hdr::hdr_detail::linear_nits(*apple, *apple_transform, apple->planes.front().bytes.data(), 0);
-  if (!apple_nits || std::abs((*apple_nits)[0] - linear * 4 * 203) > linear * 203 * 0.02f)
-    return fail("Apple Gain Map headroom reconstruction incorrect.");
-  map.planes.front().bytes[1] = std::byte{0};
-  if (awj::compose_apple_gain_map(base, map)) return fail("Non-grayscale Apple Gain Map accepted.");
+  // Legacy protocol rejection and namespace-only false-positive boundaries are
+  // covered by iso_gain_map_tests; there is no Apple reconstruction path.
   return 0;
 }
 

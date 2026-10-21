@@ -37,6 +37,19 @@ constexpr ChromaMode avif_auto_chroma(PixelFormat source_format) noexcept {
   }
 }
 
+// Resolve before pixel conversion: source_info retains the decoder's sampling
+// even when the working pixels have already been expanded to RGB(A).
+ChromaMode jpeg_auto_chroma(const ImageBuffer& image) noexcept {
+  const auto source_format = image.source_info ? image.source_info->pixel_format
+                                               : image.pixel_format;
+  switch (source_format) {
+    case PixelFormat::yuv420: return ChromaMode::yuv420;
+    case PixelFormat::yuv422: return ChromaMode::yuv422;
+    // JPEG has no explicit 400 mode here; gray auto uses three-component 444.
+    default: return ChromaMode::yuv444;
+  }
+}
+
 enum class BackendId {
   native,
 };

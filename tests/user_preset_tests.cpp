@@ -7,6 +7,7 @@
 #include <functional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 import awj.preset;
@@ -36,6 +37,7 @@ int main() try {
   preset.formats[0].max_jobs = 3;
   preset.formats[0].memory_limit_bytes = 1536ull * 1024 * 1024;
   preset.formats[0].visual_quality = 87;
+  preset.formats[0].chroma_mode = awj::ChromaMode::yuv400;
   preset.formats[0].image_size_limit.mode = awj::ImageSizeLimitMode::manual;
   preset.formats[0].image_size_limit.scale_percent = 80;
   preset.formats[0].menu_strip_metadata = true;
@@ -65,7 +67,9 @@ int main() try {
       shell.config.memory_limit_bytes == 0, "Linux shell resource behavior changed");
 #endif
   const auto reread = require(awj::load_user_preset_file(original_path));
-  check(reread.formats[0].memory_limit_bytes == preset.formats[0].memory_limit_bytes &&
+  check(reread.formats[0].chroma_mode == awj::ChromaMode::yuv400 &&
+      shell.config.chroma_mode == awj::ChromaMode::yuv400 &&
+      reread.formats[0].memory_limit_bytes == preset.formats[0].memory_limit_bytes &&
       reread.formats[0].visual_quality == 87 && reread.formats[0].max_jobs == 3 &&
       reread.formats[0].image_size_limit.scale_percent.value_or(0) == 80 &&
       reread.formats[2].jxl_jpeg_lossless == false &&
@@ -74,6 +78,19 @@ int main() try {
       !reread.formats[0].menu_allow_wic_fallback &&
       !reread.formats[0].menu_close_on_finish,
       "shell execution rewrote source preset values");
+  auto invalid_chroma_preset = preset;
+  invalid_chroma_preset.formats[3].chroma_mode = awj::ChromaMode::yuv400;
+  check(!awj::validate_user_preset(invalid_chroma_preset) &&
+        !awj::save_user_preset(invalid_chroma_preset, true),
+        "explicit JPG 400 preset was silently normalized instead of rejected");
+  check(!awj::parse_arguments_with_user_preset({L"--preset", L"重命名 测试",
+            L"--format", L"jpgli", L"--chroma", L"400"}),
+        "explicit JPG 400 override on a saved preset was accepted");
+  const auto gray_cli = require(awj::parse_arguments_with_user_preset({L"--preset",
+      L"重命名 测试", L"--format", L"avif"}));
+  check(gray_cli.config.chroma_mode == awj::ChromaMode::yuv400,
+        "AVIF 400 preset CLI roundtrip changed its sampling");
+
   const auto duplicate = directory / "duplicate.jsonc";
   fs::copy_file(original_path, duplicate);
   auto catalog = require(awj::list_user_presets());
@@ -163,6 +180,18 @@ int main() try {
     const auto before = read(legacy_path);
     check(!awj::load_user_preset_file(legacy_path) && read(legacy_path) == before,
           "invalid migration changed the source file or was accepted");
+    fs::remove(legacy_path);
+  }
+  for (const auto* format : {"avif", "jpgli"}) {
+    std::ofstream file(legacy_path);
+    file << "{\"schema\":1,\"name\":\"explicit chroma\",\"description\":\"\",\"formats\":{\""
+         << format << "\":{\"chroma\":\"4:0:0\"}}}";
+    file.close();
+    const auto loaded = awj::load_user_preset_file(legacy_path);
+    if (std::string_view{format} == "avif")
+      check(loaded && loaded->formats[0].chroma_mode == awj::ChromaMode::yuv400,
+            "preset parser did not reuse configuration chroma aliases for AVIF 400");
+    else check(!loaded, "explicit JPG 400 on disk was silently normalized instead of rejected");
     fs::remove(legacy_path);
   }
   check(require(awj::list_user_presets()).presets.empty(), "deleted preset remains selectable");

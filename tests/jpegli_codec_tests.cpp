@@ -19,6 +19,7 @@
 import awj.codec;
 import awj.config;
 import awj.image;
+import awj.pixel_conversion;
 import awj.jpegli_codec;
 import awj.jpeg_hdr_codec;
 import awj.gain_map;
@@ -94,6 +95,111 @@ bool has_metadata_kind(const awj::ImageBuffer& image, awj::MetadataKind kind) {
   });
 }
 
+bool jpeg_sof_matches(std::span<const std::byte> bytes, awj::ChromaMode chroma) {
+  const auto value = [&](std::size_t index) { return std::to_integer<unsigned>(bytes[index]); };
+  if (bytes.size() < 2 || value(0) != 0xff || value(1) != 0xd8) return false;
+  std::size_t offset = 2;
+  while (offset + 4 <= bytes.size()) {
+    if (value(offset++) != 0xff) return false;
+    while (offset < bytes.size() && value(offset) == 0xff) ++offset;
+    if (offset >= bytes.size()) return false;
+    const auto marker = value(offset++);
+    if (marker == 0xda || marker == 0xd9) return false;
+    if (marker == 0x01 || (marker >= 0xd0 && marker <= 0xd8)) continue;
+    if (bytes.size() - offset < 2) return false;
+    const auto length = (value(offset) << 8) | value(offset + 1);
+    if (length < 2 || length > bytes.size() - offset) return false;
+    if (marker == 0xc0 || marker == 0xc1 || marker == 0xc2) {
+      const auto sampling = chroma == awj::ChromaMode::yuv420 ? 0x22u
+                          : chroma == awj::ChromaMode::yuv422 ? 0x21u : 0x11u;
+      return length >= 17 && value(offset + 2) == 8 && value(offset + 7) == 3 &&
+          value(offset + 9) == sampling && value(offset + 12) == 0x11 &&
+          value(offset + 15) == 0x11;
+    }
+    offset += length;
+  }
+  return false;
+}
+
+awj::ImageBuffer make_sampling_image() {
+  awj::ImageBuffer image{.width = 16, .height = 16,
+      .pixel_format = awj::PixelFormat::rgba, .bit_depth = 8};
+  image.planes.push_back({std::vector<std::byte>(16 * 16 * 4), 16 * 4});
+  for (std::size_t y = 0; y < 16; ++y) for (std::size_t x = 0; x < 16; ++x) {
+    auto* pixel = image.planes[0].bytes.data() + y * image.planes[0].stride + x * 4;
+    pixel[0] = std::byte{static_cast<unsigned char>(x * 17)};
+    pixel[1] = std::byte{static_cast<unsigned char>(y * 17)};
+    pixel[2] = std::byte{static_cast<unsigned char>((x + y) * 8)};
+    pixel[3] = std::byte{255};
+  }
+  return image;
+}
+
+int verify_auto_sampling(const awj::JpegliImageEncoder& encoder) {
+  static_assert(noexcept(awj::jpeg_auto_chroma(std::declval<const awj::ImageBuffer&>())));
+  for (const auto source : {awj::PixelFormat::yuv420, awj::PixelFormat::yuv422,
+      awj::PixelFormat::yuv444, awj::PixelFormat::rgb, awj::PixelFormat::rgba,
+      awj::PixelFormat::gray, awj::PixelFormat::unknown}) {
+    auto image = make_sampling_image();
+    // Working RGBA must not override the decoder's original source sampling.
+    image.source_info = awj::ImageSourceInfo{.pixel_format = source, .bit_depth = 8};
+    const auto expected = source == awj::PixelFormat::yuv420 ? awj::ChromaMode::yuv420
+                        : source == awj::PixelFormat::yuv422 ? awj::ChromaMode::yuv422
+                        : awj::ChromaMode::yuv444;
+    auto settings = jpegli_settings(90, true);
+    auto encoded = encoder.encode(image, settings);
+    if (awj::jpeg_auto_chroma(image) != expected || !encoded)
+      return fail(encoded ? "JPEG auto ignored source_info sampling." : encoded.error());
+    if (!jpeg_sof_matches(encoded->encoded.bytes, expected) ||
+        encoded->diagnostics.requested_chroma != "auto" ||
+        encoded->diagnostics.applied_chroma != awj::chroma_mode_name(expected))
+      return fail("JPEG auto direct diagnostics disagree with three-component SOF sampling.");
+    if (source != awj::PixelFormat::unknown) {
+      auto native = make_sampling_image();
+      if (source == awj::PixelFormat::rgb) {
+        auto rgb = awj::jpegli_detail::make_rgb_buffer(native.planes[0], native.width, native.height);
+        if (!rgb) return fail(rgb.error());
+        native.pixel_format = source;
+        native.planes[0] = {std::move(*rgb), native.width * 3};
+      } else if (source != awj::PixelFormat::rgba) {
+        auto converted = awj::convert_image_pixels(native, awj::PixelConversionRequest{
+            .format = source, .bit_depth = 8, .preserve_alpha = false});
+        if (!converted) return fail(converted.error());
+        native = std::move(*converted);
+      }
+      native.source_info.reset(); // Fallback to native layout when no provenance exists.
+      auto direct = encoder.encode(native, jpegli_settings(90, true));
+      if (!direct || !jpeg_sof_matches(direct->encoded.bytes, expected))
+        return fail(direct ? "JPEG native-layout auto sampling failed." : direct.error());
+      auto rejected = jpegli_settings(90, true);
+      rejected.chroma_mode = awj::ChromaMode::yuv400;
+      if (encoder.encode(native, rejected)) return fail("Explicit JPEG 400 was silently accepted.");
+    }
+  }
+  auto current_420 = awj::convert_image_pixels(make_sampling_image(), awj::PixelConversionRequest{
+      .format = awj::PixelFormat::yuv420, .preserve_alpha = false});
+  if (!current_420) return fail(current_420.error());
+  current_420->source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::unknown, .bit_depth = 8};
+  auto unknown_source = encoder.encode(*current_420, jpegli_settings(90, true));
+  if (awj::jpeg_auto_chroma(*current_420) != awj::ChromaMode::yuv444 || !unknown_source ||
+      !jpeg_sof_matches(unknown_source->encoded.bytes, awj::ChromaMode::yuv444))
+    return fail("Unknown source_info sampling was replaced by the converted working YUV420 layout.");
+  if (awj::jpeg_auto_chroma(awj::ImageBuffer{}) != awj::ChromaMode::yuv444 ||
+      awj::avif_auto_chroma(awj::PixelFormat::gray) != awj::ChromaMode::yuv400)
+    return fail("Unknown JPEG auto or AVIF gray-auto behavior changed.");
+  auto xyb = jpegli_settings(90, true);
+  xyb.jpegli_xyb = true;
+  auto plain = encoder.encode(make_sampling_image(), xyb);
+  auto with_source = make_sampling_image();
+  with_source.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::yuv420, .bit_depth = 8};
+  auto known_yuv = encoder.encode(with_source, xyb);
+  if (!plain || !known_yuv || plain->encoded.bytes != known_yuv->encoded.bytes)
+    return fail("JPEG auto source-follow changed the independent XYB sampling policy.");
+  xyb.chroma_mode = awj::ChromaMode::yuv400;
+  if (encoder.encode(with_source, xyb)) return fail("XYB accepted explicit JPEG 400.");
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -102,6 +208,7 @@ int main() {
 #endif
 
   awj::JpegliImageEncoder encoder;
+  if (const int result = verify_auto_sampling(encoder)) return result;
   auto encoded = encoder.encode(make_test_image(true), jpegli_settings(42, false));
   if (!encoded) {
     return fail(encoded.error());
@@ -116,7 +223,7 @@ int main() {
     if (!jpeg) return fail(jpeg.error());
     awj::JpegliImageDecoder decoder;
     auto decoded = decoder.decode_memory(jpeg->encoded.bytes, "JPG sampling");
-    const auto expected = chroma == awj::ChromaMode::yuv444 ? awj::PixelFormat::yuv444 : chroma == awj::ChromaMode::yuv422 ? awj::PixelFormat::yuv422 : awj::PixelFormat::yuv420;
+    const auto expected = chroma == awj::ChromaMode::auto_keep || chroma == awj::ChromaMode::yuv444 ? awj::PixelFormat::yuv444 : chroma == awj::ChromaMode::yuv422 ? awj::PixelFormat::yuv422 : awj::PixelFormat::yuv420;
     if (!decoded || !decoded->image.source_info || decoded->image.source_info->bit_depth != 8 ||
         decoded->image.source_info->pixel_format != expected || jpeg->diagnostics.applied_matrix_coefficients != 6)
       return fail("JPG SOF sampling, precision or YCbCr diagnostics are invalid.");
@@ -189,8 +296,8 @@ int main() {
   }
   const auto sdr_dimensions = decoder.probe_dimensions(path);
   std::filesystem::remove(path, ec);
-  if (!sdr_dimensions || !sdr_dimensions->opaque_sdr8_yuv420)
-    return fail("Plain SDR420 JPG was not recognized by the memory preflight.");
+  if (!sdr_dimensions || sdr_dimensions->opaque_sdr8_yuv420)
+    return fail("RGB-source auto JPG was incorrectly classified as SDR420 by memory preflight.");
   auto stripped_decoded = decoder.decode_memory(
       std::span<const std::byte>{stripped->encoded.bytes}, "jpglI-strip-test");
   if (!stripped_decoded) {
@@ -211,6 +318,14 @@ int main() {
   if (!advanced) {
     return fail(advanced.error());
   }
+  { std::ofstream output{path, std::ios::binary}; output.write(
+      reinterpret_cast<const char*>(advanced->encoded.bytes.data()),
+      static_cast<std::streamsize>(advanced->encoded.bytes.size())); }
+  const auto explicit_420_dimensions = decoder.probe_dimensions(path);
+  std::filesystem::remove(path, ec);
+  if (!explicit_420_dimensions || !explicit_420_dimensions->opaque_sdr8_yuv420 ||
+      !jpeg_sof_matches(advanced->encoded.bytes, awj::ChromaMode::yuv420))
+    return fail("Explicit plain SDR420 JPG was not recognized by memory preflight/SOF.");
   auto advanced_decoded = decoder.decode_memory(
       std::span<const std::byte>{advanced->encoded.bytes}, "jpglI-advanced-test");
   if (!advanced_decoded || advanced_decoded->image.width != 3 ||
@@ -245,13 +360,29 @@ int main() {
     opts.resources.memory_limit_bytes = 128 * 1024 * 1024;
     auto enhanced = awj::encode_hdr_jpeg(hdr, opts);
     if (!enhanced) return fail(enhanced.error());
+    if (enhanced->encoded.codec_name != "jpegli-iso21496-1" ||
+        enhanced->diagnostics.integration_mode != "jpegli-iso21496-1" ||
+        enhanced->diagnostics.applied_hdr_metadata != "iso21496-1-gain-map" ||
+        enhanced->diagnostics.requested_chroma != "auto" ||
+        enhanced->diagnostics.applied_chroma != "444" ||
+        !jpeg_sof_matches(enhanced->encoded.bytes, awj::ChromaMode::yuv444))
+      return fail("ISO HDR JPEG diagnostics or RGB-source auto SOF sampling are invalid.");
     if (!jpeg_hdr_sdr_compatible(enhanced->encoded.bytes.data(), enhanced->encoded.bytes.size(), size))
       return fail("HDR JPEG SDR compatibility failed.");
     const auto fixture = std::filesystem::temp_directory_path() / "awj-hdr-jpeg-roundtrip.jpg";
     { std::ofstream file(fixture, std::ios::binary); file.write(reinterpret_cast<const char*>(enhanced->encoded.bytes.data()), enhanced->encoded.bytes.size()); }
     auto reconstructed = awj::decode_jpeg_gain_map(fixture, {}, 1);
     auto dimensions = awj::probe_image_dimensions_for_path(fixture, {.allow_wic_fallback = false});
+    auto direct_memory = decoder.decode_memory(enhanced->encoded.bytes, "direct ISO HDR JPEG");
+    auto direct_file = decoder.decode(fixture);
+    auto direct_dimensions = decoder.probe_dimensions(fixture);
     std::filesystem::remove(fixture, ec);
+    if (!direct_memory || !direct_file || !direct_dimensions ||
+        direct_memory->decoder_id != "iso21496-1-jpeg-gain-map-enhanced" ||
+        direct_file->decoder_id != direct_memory->decoder_id ||
+        !direct_memory->image.source_info || !direct_memory->image.source_info->source_has_gain_map ||
+        direct_dimensions->width != size || direct_dimensions->height != size)
+      return fail("JPEGli direct file/memory/probe silently decoded ISO HDR as its SDR base.");
     if (!reconstructed || !*reconstructed || (**reconstructed).image.width != size ||
         !(**reconstructed).image.source_info->source_has_gain_map)
       return fail(reconstructed ? "HDR JPEG did not reconstruct a gain map." : reconstructed.error());
@@ -259,6 +390,21 @@ int main() {
         dimensions->height != (**reconstructed).image.height)
       return fail(dimensions ? "Gain Map dimension probe disagrees with decode." : dimensions.error());
     if (size == 3) {
+      for (const auto source : {awj::PixelFormat::yuv420, awj::PixelFormat::yuv422,
+          awj::PixelFormat::yuv444, awj::PixelFormat::rgb, awj::PixelFormat::rgba,
+          awj::PixelFormat::gray, awj::PixelFormat::unknown}) {
+        auto original_sampling = hdr;
+        original_sampling.source_info->pixel_format = source;
+        auto sample = awj::encode_hdr_jpeg(original_sampling, opts);
+        const auto expected = awj::jpeg_auto_chroma(original_sampling);
+        if (!sample || !jpeg_sof_matches(sample->encoded.bytes, expected) ||
+            sample->diagnostics.requested_chroma != "auto" ||
+            sample->diagnostics.applied_chroma != awj::chroma_mode_name(expected))
+          return fail(sample ? "HDR JPEG resolved base sampling after tone-map lost source provenance." : sample.error());
+      }
+      auto invalid_chroma = opts;
+      invalid_chroma.chroma_mode = awj::ChromaMode::yuv400;
+      if (awj::encode_hdr_jpeg(hdr, invalid_chroma)) return fail("HDR JPEG accepted explicit base 400.");
       auto portrait = hdr;
       portrait.height = 5;
       portrait.planes[0].bytes.resize(portrait.planes[0].stride * portrait.height);

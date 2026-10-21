@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -15,6 +16,7 @@
 import awj.image;
 import awj.pixel_conversion;
 import awj.hdr_tonemap;
+import awj.resource_planner;
 import awj.codec;
 import awj.config;
 import awj.avif_aom_codec;
@@ -94,9 +96,236 @@ std::unique_ptr<awj::ImageDecoder> decoder(awj::OutputFormat format) {
   }
 }
 
+float half_reference(std::uint16_t bits) {
+  const auto exponent = (bits >> 10) & 31u, fraction = bits & 1023u;
+  const auto sign = bits & 0x8000u ? -1.0F : 1.0F;
+  return exponent ? sign * std::ldexp(1.0F + fraction / 1024.0F, static_cast<int>(exponent) - 15)
+      : sign * std::ldexp(static_cast<float>(fraction), -24);
+}
+
+// Geometry fixtures are finite dyadic values, so this independent conversion
+// is exact and cannot hide the loss of a negative/extended linear component.
+std::uint16_t dyadic_half(float value) {
+  const auto sign = std::signbit(value) ? 0x8000u : 0u;
+  value = std::abs(value);
+  if (value == 0) return static_cast<std::uint16_t>(sign);
+  int exponent{};
+  const auto mantissa = std::frexp(value, &exponent);
+  return static_cast<std::uint16_t>(sign | (static_cast<unsigned>(exponent + 14) << 10) |
+      static_cast<unsigned>(std::lround((mantissa * 2.0F - 1.0F) * 1024.0F)));
+}
+
+awj::ImageBuffer premultiplied_scrgb() {
+  auto result = scrgb();
+  result.width = 3; result.height = 2; result.alpha_mode = awj::AlphaMode::premultiplied;
+  result.planes[0].stride = 40;
+  result.planes[0].bytes.assign(80, std::byte{0xa5});
+  constexpr std::array<std::array<float, 4>, 6> values{{
+      {0.25F, -0.125F, 1, 0.5F}, {0.5F, 0.25F, 0.125F, 1}, {0, 0, 0, 0},
+      {2, 1, 0.5F, 0.5F}, {-0.25F, 0.5F, 0.125F, 0.5F}, {0.0625F, 0.125F, 0.25F, 1}}};
+  for (std::size_t y = 0; y < 2; ++y) for (std::size_t x = 0; x < 3; ++x) for (std::size_t c = 0; c < 4; ++c) {
+    const auto half = dyadic_half(values[y * 3 + x][c]);
+    std::memcpy(result.planes[0].bytes.data() + y * 40 + (x * 4 + c) * 2, &half, 2);
+  }
+  return result;
+}
+
+awj::ImageBuffer reference_straight_geometry(const awj::ImageBuffer& view) {
+  awj::ImageBuffer result{.width = view.width, .height = view.height, .pixel_format = awj::PixelFormat::rgba,
+      .alpha_mode = awj::AlphaMode::straight, .bit_depth = 16,
+      .sample_representation = awj::SampleRepresentation::ieee_half_float, .source_info = view.source_info};
+  result.planes.push_back({std::vector<std::byte>(view.width * view.height * 8), view.width * 8});
+  const auto& g = *view.geometry;
+  const auto rw = g.rotation % 2 ? g.crop_height : g.crop_width;
+  const auto rh = g.rotation % 2 ? g.crop_width : g.crop_height;
+  for (std::size_t y = 0; y < view.height; ++y) for (std::size_t x = 0; x < view.width; ++x) {
+    auto px = x * rw / view.width, py = y * rh / view.height;
+    if (g.mirror_axis == 0) py = rh - 1 - py;
+    if (g.mirror_axis == 1) px = rw - 1 - px;
+    std::size_t sx{}, sy{};
+    switch (g.rotation) {
+      case 1: sx = g.crop_width - 1 - py; sy = px; break;
+      case 2: sx = g.crop_width - 1 - px; sy = g.crop_height - 1 - py; break;
+      case 3: sx = py; sy = g.crop_height - 1 - px; break;
+      default: sx = px; sy = py; break;
+    }
+    std::array<float, 4> rgba{};
+    const auto* input = view.planes[0].bytes.data() + (sy + g.crop_y) * view.planes[0].stride + (sx + g.crop_x) * 8;
+    for (std::size_t c = 0; c < 4; ++c) {
+      std::uint16_t half{}; std::memcpy(&half, input + c * 2, 2); rgba[c] = half_reference(half);
+    }
+    for (std::size_t c = 0; c < 3; ++c) rgba[c] = rgba[3] > 0 ? rgba[c] / rgba[3] : 0;
+    for (std::size_t c = 0; c < 4; ++c) {
+      const auto half = dyadic_half(rgba[c]);
+      std::memcpy(result.planes[0].bytes.data() + (y * view.width * 4 + x * 4 + c) * 2, &half, 2);
+    }
+  }
+  return result;
+}
+
+int check_hdr_native_gray() {
+  awj::ImageBuffer source{.width = 2, .height = 3, .pixel_format = awj::PixelFormat::gray,
+      .bit_depth = 12, .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::gray,
+          .bit_depth = 12, .color_primaries = 9, .transfer_characteristics = 16,
+          .matrix_coefficients = 9, .color_range = 1,
+          .content_light = awj::HdrContentLightMetadata{1000, 0}, .has_hdr_metadata = true},
+      .geometry = awj::ImageGeometry{.stored_width = 3, .stored_height = 2,
+          .crop_width = 3, .crop_height = 2, .rotation = 1}};
+  source.planes.resize(3);
+  source.planes[0].stride = 8; source.planes[0].bytes.resize(16);
+  constexpr std::array<std::uint16_t, 6> codes{0, 64, 256, 1024, 2048, 4095};
+  for (std::size_t y = 0; y < 2; ++y) for (std::size_t x = 0; x < 3; ++x)
+    std::memcpy(source.planes[0].bytes.data() + y * 8 + x * 2, &codes[y * 3 + x], 2);
+  auto logical = source; logical.geometry.reset();
+  logical.planes[0].stride = 4; logical.planes[0].bytes.resize(12);
+  for (std::size_t y = 0; y < 3; ++y) for (std::size_t x = 0; x < 2; ++x) {
+    const auto value = codes[x * 3 + 2 - y];
+    std::memcpy(logical.planes[0].bytes.data() + y * 4 + x * 2, &value, 2);
+  }
+  const awj::ResourcePlan resources{.file_parallelism = 1, .encoder_threads_per_file = 2,
+      .global_thread_budget = 2, .memory_limit_bytes = 0};
+  const awj::PixelConversionRequest request{.bit_depth = 16, .tone_map_to_sdr = true};
+  auto expected = awj::convert_image_pixels(logical, request, {}, resources);
+  auto converted = awj::convert_image_pixels(source, request, {}, resources);
+  if (!expected || !converted || !same_planes(*expected, *converted) || converted->geometry ||
+      converted->source_info->transfer_characteristics != 13)
+    return fail("Native 12-bit PQ gray geometry did not use the shared HDR reader.");
+  auto yuv = awj::convert_image_pixels(logical, {.format = awj::PixelFormat::yuv420,
+      .bit_depth = 12, .matrix_coefficients = 9}, {}, resources);
+  if (!yuv) return fail("Native HDR YUV420 fixture conversion failed.");
+  auto tone_yuv = awj::convert_image_pixels(*yuv, request, {}, resources);
+  if (!tone_yuv || tone_yuv->source_info->transfer_characteristics != 13) return fail("Native HDR YUV tone failed.");
+  for (std::size_t i = 0; i < expected->planes[0].bytes.size(); i += 2) {
+    std::uint16_t a{}, b{};
+    std::memcpy(&a, expected->planes[0].bytes.data() + i, 2);
+    std::memcpy(&b, tone_yuv->planes[0].bytes.data() + i, 2);
+    if (std::abs(static_cast<int>(a) - b) / 65535.0F > 2.0e-4F)
+      return fail("Native HDR YUV reader exceeded pre-quantization sRGB tolerance.");
+  }
+  return 0;
+}
+
+int check_hdr_geometry() {
+  if (const auto result = check_hdr_native_gray()) return result;
+  const auto stored = premultiplied_scrgb();
+  const awj::ResourcePlan resources{.file_parallelism = 2, .encoder_threads_per_file = 3,
+      .global_thread_budget = 6, .memory_limit_bytes = 0};
+  for (unsigned rotation = 0; rotation < 4; ++rotation) for (int mirror = -1; mirror <= 1; ++mirror) {
+    for (const bool crop : {false, true}) {
+      auto view = stored;
+      view.geometry = awj::ImageGeometry{.stored_width = 3, .stored_height = 2,
+          .crop_x = crop ? 1u : 0u, .crop_y = 0, .crop_width = crop ? 2u : 3u,
+          .crop_height = 2, .rotation = rotation, .mirror_axis = mirror};
+      view.width = crop ? 1 : rotation % 2 ? 2 : view.geometry->crop_width;
+      view.height = rotation % 2 ? view.geometry->crop_width : 2;
+      auto reference = reference_straight_geometry(view);
+      auto hdr_view = awj::hdr::materialize_scrgb_as_hdr10(awj::ImageBuffer{view});
+      auto hdr_reference = awj::hdr::materialize_scrgb_as_hdr10(awj::ImageBuffer{reference});
+      if (!hdr_view || !hdr_reference || !same_planes(*hdr_view, *hdr_reference) ||
+          hdr_view->geometry || hdr_view->alpha_mode != awj::AlphaMode::straight)
+        return fail("HDR materialization changed geometry or premultiplied linear samples.");
+      for (const int depth : {8, 16}) {
+        auto expected = awj::hdr::tone_map_to_sdr_srgb(reference, depth, {}, resources);
+        auto converted = awj::convert_image_pixels(view, {.bit_depth = depth, .tone_map_to_sdr = true}, {}, resources);
+        auto direct = awj::hdr::tone_map_to_sdr_srgb(view, depth, {}, resources);
+        if (!expected || !converted || !direct) return fail("Geometry/premultiplied linear HDR tone conversion failed.");
+        if (!same_planes(*expected, *converted) || !same_planes(*expected, *direct) ||
+            converted->alpha_mode != awj::AlphaMode::straight || converted->geometry ||
+            converted->source_info->transfer_characteristics != 13)
+          return fail("Geometry/unpremultiply changed negative scRGB tone input, alpha or dither coordinates.");
+      }
+      const awj::PixelConversionRequest yuv{.format = awj::PixelFormat::yuv420, .bit_depth = 10,
+          .matrix_coefficients = 1, .color_range = 1, .tone_map_to_sdr = true};
+      auto full_precision = awj::hdr::tone_map_to_sdr_srgb(reference, 16, {}, resources);
+      if (!full_precision) return fail("Reference HDR tone failed.");
+      auto without_tone = yuv; without_tone.tone_map_to_sdr = false;
+      auto expected_yuv = awj::convert_image_pixels(*full_precision, without_tone, {}, resources);
+      auto converted_yuv = awj::convert_image_pixels(view, yuv, {}, resources);
+      if (!expected_yuv || !converted_yuv || !same_planes(*expected_yuv, *converted_yuv))
+        return fail("Native YUV tone conversion bypassed shared HDR core or lost precision.");
+      auto discarded = awj::convert_image_pixels(view,
+          {.bit_depth = 16, .preserve_alpha = false, .tone_map_to_sdr = true}, {}, resources);
+      if (!discarded || discarded->alpha_mode != awj::AlphaMode::none) return fail("Tone alpha discard failed.");
+      for (std::size_t y = 0; y < discarded->height; ++y) for (std::size_t x = 0; x < discarded->width; ++x) {
+        std::uint16_t alpha{}; std::memcpy(&alpha, discarded->planes[0].bytes.data() + y * discarded->planes[0].stride + x * 8 + 6, 2);
+        if (alpha != 65535) return fail("Discarded tone alpha was not opaque.");
+      }
+    }
+  }
+  auto hidden_nan = stored;
+  const std::uint16_t nan = 0x7e00u, zero = 0;
+  std::memcpy(hidden_nan.planes[0].bytes.data(), &nan, 2);
+  std::memcpy(hidden_nan.planes[0].bytes.data() + 6, &zero, 2);
+  if (awj::convert_image_pixels(hidden_nan, {.tone_map_to_sdr = true}, {}, resources) ||
+      awj::hdr::tone_map_to_sdr_srgb(hidden_nan, 8, {}, resources))
+    return fail("Transparent premultiplied alpha hid a non-finite source component.");
+  std::stop_source stop; stop.request_stop();
+  if (awj::convert_image_pixels(stored, {.tone_map_to_sdr = true}, stop.get_token(), resources))
+    return fail("Shared HDR conversion ignored resource-aware cancellation.");
+  return 0;
+}
+
+int check_hdr_recursive_budget() {
+  auto source = scrgb();
+  source.width = source.height = 64;
+  source.alpha_mode = awj::AlphaMode::none;
+  source.metadata.clear();
+  source.planes[0].stride = 64 * 8;
+  source.planes[0].bytes.resize(64 * 64 * 8);
+  const std::array<std::uint16_t, 4> rgba{0x3800u, 0x3800u, 0x3800u, 0x3c00u};
+  for (std::size_t i = 0; i < 64 * 64; ++i)
+    std::memcpy(source.planes[0].bytes.data() + i * 8, rgba.data(), sizeof(rgba));
+  const awj::PixelConversionRequest yuv{.format = awj::PixelFormat::yuv420, .bit_depth = 8,
+      .preserve_alpha = false, .tone_map_to_sdr = true};
+  awj::ResourcePlan resources{.file_parallelism = 1, .encoder_threads_per_file = 1,
+      .global_thread_budget = 1, .memory_limit_bytes = 68 * 1024};
+  // Source RGBA16 + tone RGBA16 + final 420 = 32 + 32 + 6 KiB,
+  // before scratch. The original source remains alive through recursion.
+  if (awj::convert_image_pixels(source, yuv, {}, resources))
+    return fail("HDR recursion admitted 70 KiB of pixels into a 68 KiB budget.");
+  resources.memory_limit_bytes = 6 * 1024; // Exactly the final target reservation.
+  if (awj::convert_image_pixels(source, yuv, {}, resources))
+    return fail("A zero remaining recursive budget became unlimited.");
+  resources.memory_limit_bytes = 70 * 1024; // Pixels alone fit, scratch does not.
+  if (awj::convert_image_pixels(source, yuv, {}, resources))
+    return fail("HDR recursion admitted no room for necessary scratch.");
+  resources.memory_limit_bytes = 78 * 1024;
+  if (!awj::convert_image_pixels(source, yuv, {}, resources))
+    return fail("A fitting finite HDR recursive budget was rejected.");
+  resources.memory_limit_bytes = 0;
+  auto unlimited = awj::convert_image_pixels(source, yuv, {}, resources);
+  if (!unlimited || unlimited->pixel_format != awj::PixelFormat::yuv420)
+    return fail("Unlimited HDR recursion was rejected.");
+  const awj::PixelConversionRequest rgba12{.bit_depth = 12, .preserve_alpha = false, .tone_map_to_sdr = true};
+  resources.memory_limit_bytes = 90 * 1024; // Three RGBA16-sized planes need 96 KiB.
+  if (awj::convert_image_pixels(source, rgba12, {}, resources))
+    return fail("Secondary RGBA recursion omitted the live original source/target.");
+  resources.memory_limit_bytes = 0;
+  if (!awj::convert_image_pixels(source, rgba12, {}, resources))
+    return fail("Unlimited secondary RGBA recursion failed.");
+  source.metadata.push_back({awj::MetadataKind::exif, std::vector<std::byte>(4096)});
+  source.metadata.push_back({awj::MetadataKind::xmp, std::vector<std::byte>(4096)});
+  resources.memory_limit_bytes = 80 * 1024;
+  if (awj::convert_image_pixels(source, yuv, {}, resources))
+    return fail("HDR recursion omitted simultaneously-live metadata copies.");
+  resources.memory_limit_bytes = 0;
+  if (!awj::convert_image_pixels(source, yuv, {}, resources))
+    return fail("Unlimited HDR recursion with metadata failed.");
+  // Cover the 4096-square reproduction's arithmetic without allocating a
+  // 128-MiB source in this small regression test.
+  const auto large_target = awj::pixel_detail::destination_pixel_bytes(4096, 4096, yuv, awj::AlphaMode::none);
+  if (large_target != 24ull * 1024 * 1024 ||
+      2 * (4096ull * 4096 * 8) + large_target != 280ull * 1024 * 1024 ||
+      2 * (4096ull * 4096 * 8) + large_target <= 272ull * 1024 * 1024)
+    return fail("HDR recursion's 4096-square working-set arithmetic differs.");
+  return 0;
+}
+
 } // namespace
 
 int main() {
+  if (const auto result = check_hdr_recursive_budget()) return result;
+  if (const auto result = check_hdr_geometry()) return result;
   const auto source = rgba();
   const std::array formats{awj::OutputFormat::avif, awj::OutputFormat::png, awj::OutputFormat::webp,
       awj::OutputFormat::jxl, awj::OutputFormat::jpgli};

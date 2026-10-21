@@ -636,7 +636,7 @@ class WebPImageEncoder final : public ImageEncoder {
       if ((image.geometry || is_yuv_format(image.pixel_format) || image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
           image.sample_representation != SampleRepresentation::unorm || settings.tone_map_to_sdr_pixels) &&
           !pixels_match(image, request)) {
-        auto converted = convert_image_pixels(image, request, stop_token);
+        auto converted = convert_image_pixels(image, request, stop_token, settings.resources);
         if (!converted) return std::unexpected{converted.error()};
         auto normalized = settings; normalized.tone_map_to_sdr_pixels = false;
         return encode(*converted, normalized, stop_token);

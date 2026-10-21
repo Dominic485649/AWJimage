@@ -1,5 +1,6 @@
 module;
 #include "../core/work_memory_admission.h"
+#include "../core/hdr_cost.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -207,6 +208,15 @@ std::uint64_t estimated_regular_working_set_bytes(
     const auto metrics = visual_quality_working_set_bytes_for_dimensions(dimensions);
     const auto maximum = std::numeric_limits<std::uint64_t>::max();
     return encoding > maximum - metrics ? maximum : encoding + metrics;
+  }
+  if (cfg.output_format == OutputFormat::jpgli) {
+    // Probe dimensions do not yet identify HDR reliably (forced SDR can still
+    // need HDR tone buffers). Reserve the maximum simultaneously-live HDR JPEG
+    // phase with the encoder helper; admission still admits files dynamically.
+    const auto hdr = hdr_cost::jpeg_working_set_bytes(dimensions.width, dimensions.height,
+        compressed_bytes, static_cast<std::uint64_t>(std::max(1, cfg.max_jobs)));
+    return cfg.visual_quality
+        ? std::max(hdr, visual_quality_working_set_bytes_for_dimensions(dimensions)) : hdr;
   }
   if (cfg.visual_quality) {
     return visual_quality_working_set_bytes_for_dimensions(dimensions);

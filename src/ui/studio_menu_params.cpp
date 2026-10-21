@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <string>
+#include <utility>
 
 #include "studio_parameter_page.h"
 
@@ -49,7 +50,9 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
   app.set_menu_avif_encoder_index(params.avif_encoder_index);
   app.set_menu_avif_color_representation_index(
       params.avif_color_representation_index);
-  app.set_menu_chroma_index(params.chroma_index);
+  app.set_menu_chroma_index(normalized_parameter_chroma_index(
+      app.get_menu_format_index(), params.chroma_index,
+      params.avif_color_representation_index));
   app.set_menu_alpha_policy_index(params.alpha_policy_index);
   app.set_menu_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_menu_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
@@ -69,13 +72,18 @@ void apply_menu_params_to_ui(AwjStudio& app, const MenuFormatParams& params) {
 
 void store_current_menu_params(AwjStudio& app, UiState& state) {
   const int index = std::clamp(state.last_menu_format_index, 0, 4);
-  state.menu_params[static_cast<std::size_t>(index)] = capture_menu_params_from_ui(app);
+  auto params = capture_menu_params_from_ui(app);
+  params.chroma_index = normalized_parameter_chroma_index(
+      index, params.chroma_index, params.avif_color_representation_index);
+  state.menu_params[static_cast<std::size_t>(index)] = std::move(params);
 }
 
 void load_menu_params_for_index(AwjStudio& app, UiState& state, int index) {
   index = std::clamp(index, 0, 4);
   state.last_menu_format_index = index;
   auto& params = state.menu_params[static_cast<std::size_t>(index)];
+  params.chroma_index = normalized_parameter_chroma_index(
+      index, params.chroma_index, params.avif_color_representation_index);
   if (params.speed_text.empty()) {
     params.speed_text = default_menu_params_for_index(index).speed_text;
   }
@@ -92,6 +100,11 @@ std::array<MenuFormatParams, 5> menu_params_snapshot(const AwjStudio& app,
                                                 : app.get_menu_format_index(),
                                0, 4);
   params[static_cast<std::size_t>(index)] = capture_menu_params_from_ui(app);
+  for (std::size_t i = 0; i < params.size(); ++i) {
+    params[i].chroma_index = normalized_parameter_chroma_index(
+        static_cast<int>(i), params[i].chroma_index,
+        params[i].avif_color_representation_index);
+  }
   return params;
 }
 

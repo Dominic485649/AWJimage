@@ -20,6 +20,11 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+  static_assert(static_cast<int>(awj::ChromaMode::auto_keep) == 0 &&
+                static_cast<int>(awj::ChromaMode::yuv444) == 1 &&
+                static_cast<int>(awj::ChromaMode::yuv422) == 2 &&
+                static_cast<int>(awj::ChromaMode::yuv420) == 3 &&
+                static_cast<int>(awj::ChromaMode::yuv400) == 4);
   if (awj::automatic_thread_budget(0) != 1 ||
       awj::automatic_thread_budget(1) != 1 ||
       awj::automatic_thread_budget(2) != 1 ||
@@ -31,6 +36,32 @@ int main() {
       awj::automatic_thread_budget(256) != 128) {
     return fail("automatic thread budget reservation rules changed.");
   }
+
+  // Capability and persisted indices are independent of filtered dropdown rows.
+  for (const auto mode : {awj::ChromaMode::auto_keep, awj::ChromaMode::yuv444,
+                         awj::ChromaMode::yuv422, awj::ChromaMode::yuv420,
+                         awj::ChromaMode::yuv400}) {
+    const int index = static_cast<int>(mode);
+    if (!awj::supports_chroma_mode(awj::OutputFormat::avif, mode) ||
+        !awj::supports_chroma_mode(awj::OutputFormat::avif, mode, awj::AvifColorRepresentation::source) ||
+        awj::normalize_chroma_selection_index(awj::OutputFormat::avif, index) != index ||
+        awj::supports_chroma_mode(awj::OutputFormat::jpgli, mode) != (index < 4) ||
+        awj::normalize_chroma_selection_index(awj::OutputFormat::jpgli, index) != (index < 4 ? index : 0) ||
+        awj::supports_chroma_mode(awj::OutputFormat::avif, mode, awj::AvifColorRepresentation::rgb_identity) != (index < 2) ||
+        awj::normalize_chroma_selection_index(awj::OutputFormat::avif, index,
+            awj::AvifColorRepresentation::rgb_identity) != (index < 2 ? index : 0))
+      return fail("Chroma capability or stable UI-index normalization changed.");
+    for (const auto format : {awj::OutputFormat::png, awj::OutputFormat::webp, awj::OutputFormat::jxl}) {
+      if (awj::supports_chroma_selection(format) ||
+          awj::supports_chroma_mode(format, mode) != (index == 0) ||
+          awj::normalize_chroma_selection_index(format, index) != 0)
+        return fail("Unsupported formats exposed manual chroma selection.");
+    }
+  }
+  if (awj::normalize_chroma_selection_index(awj::OutputFormat::jpgli, -1) != 0 ||
+      awj::normalize_chroma_selection_index(awj::OutputFormat::avif, 5) != 0 ||
+      awj::supports_chroma_mode(awj::OutputFormat::avif, static_cast<awj::ChromaMode>(5)))
+    return fail("Out-of-range chroma cache index was not rejected or normalized.");
 
   const auto defaults = awj::default_app_config();
   for (const auto& args : {
@@ -73,10 +104,16 @@ int main() {
     return fail("HDR/animation CLI roundtrip failed.");
   for (const auto* chroma : {L"400", L"4:0:0"}) {
     auto gray = awj::parse_arguments({L"--format", L"avif", L"--chroma", chroma});
+    auto source_follow = awj::parse_arguments({L"--format", L"avif", L"--chroma", chroma,
+        L"--avif-color-representation", L"source"});
     if (!gray || gray->config.chroma_mode != awj::ChromaMode::yuv400 ||
-        !awj::validate_execution_config(gray->config)) return fail("Forced monochrome AVIF CLI rejected.");
+        !awj::validate_execution_config(gray->config) || !source_follow ||
+        source_follow->config.chroma_mode != awj::ChromaMode::yuv400 ||
+        !awj::validate_execution_config(source_follow->config))
+      return fail("Forced monochrome/default or source-follow AVIF CLI rejected.");
   }
   for (const auto args : {std::vector<std::wstring>{L"--format", L"jpgli", L"--chroma", L"400"},
+      std::vector<std::wstring>{L"--format", L"jpgli", L"--chroma", L"4:0:0"},
       std::vector<std::wstring>{L"--chroma", L"400", L"--avif-color-representation", L"rgb"}}) {
     auto gray = awj::parse_arguments(args);
     if (gray && awj::validate_execution_config(gray->config)) return fail("Unsupported monochrome combination accepted.");

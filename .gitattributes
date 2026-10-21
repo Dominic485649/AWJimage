@@ -9,6 +9,7 @@
 /update-keyring.json text eol=lf
 /update-keyring.json.sig text eol=lf
 /scripts/package-linux-release.sh text eol=lf
+/scripts/release-source-fingerprint.sh text eol=lf
 
 ###############################################################################
 # Set default behavior for command prompt diff.

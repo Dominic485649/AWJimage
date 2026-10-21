@@ -18,6 +18,7 @@
 #include <jxl/decode.h>
 
 import awj.config;
+import awj.codec;
 import awj.core;
 import awj.encoding_defaults;
 import awj.avif_aom_codec;
@@ -121,6 +122,85 @@ awj::ImageBuffer make_hdr_test_image() {
                               .color_metadata_source = "test-bt2020-pq"}};
   image.planes.push_back(std::move(plane));
   return image;
+}
+
+// Minimal uncompressed TIFFs keep the decoder's RGB/RGBA/gray/unknown
+// provenance distinct, without relying on an encoder that expands all to RGBA.
+bool write_source_tiff(const std::filesystem::path& path, awj::PixelFormat format) {
+  constexpr std::uint32_t width = 16, height = 16;
+  const bool cmyk = format == awj::PixelFormat::unknown;
+  const bool alpha = format == awj::PixelFormat::rgba;
+  const std::uint16_t channels = format == awj::PixelFormat::gray ? 1 : format == awj::PixelFormat::rgb ? 3 : 4;
+  const std::uint16_t count = static_cast<std::uint16_t>(10 + cmyk + alpha);
+  const std::uint32_t bits_offset = 8u + 2u + count * 12u + 4u;
+  const std::uint32_t data_offset = bits_offset + channels * 2u;
+  struct Entry { std::uint16_t tag, type; std::uint32_t count, value; };
+  std::vector<Entry> entries{{256, 4, 1, width}, {257, 4, 1, height},
+      {258, 3, channels, channels == 1 ? 8u : bits_offset}, {259, 3, 1, 1},
+      {262, 3, 1, cmyk ? 5u : channels == 1 ? 1u : 2u},
+      {273, 4, 1, data_offset}, {277, 3, 1, channels}, {278, 4, 1, height},
+      {279, 4, 1, width * height * channels}, {284, 3, 1, 1}};
+  if (cmyk) entries.push_back({332, 3, 1, 1}); // CMYK ink set, not an RGB/alpha source.
+  if (alpha) entries.push_back({338, 3, 1, 2});
+  std::vector<std::byte> bytes;
+  const auto u32 = [&](std::uint32_t value) {
+    push_u16(bytes, static_cast<std::uint16_t>(value));
+    push_u16(bytes, static_cast<std::uint16_t>(value >> 16));
+  };
+  push_u16(bytes, 0x4949); push_u16(bytes, 42); u32(8); push_u16(bytes, count);
+  for (const auto& entry : entries) {
+    push_u16(bytes, entry.tag); push_u16(bytes, entry.type); u32(entry.count); u32(entry.value);
+  }
+  u32(0);
+  for (unsigned c = 0; c < channels; ++c) push_u16(bytes, 8);
+  for (unsigned y = 0; y < height; ++y) for (unsigned x = 0; x < width; ++x)
+    for (unsigned c = 0; c < channels; ++c) {
+      const unsigned value = channels == 1 ? (x + y) * 8 : c == 0 ? x * 17
+                           : c == 1 ? y * 17 : c == 2 ? (x + y) * 8 : alpha ? 255 : 0;
+      bytes.push_back(std::byte{static_cast<unsigned char>(value)});
+    }
+  std::ofstream stream{path, std::ios::binary};
+  stream.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  return static_cast<bool>(stream);
+}
+
+std::vector<std::string> csv_record(std::string_view text) {
+  std::vector<std::string> fields(1);
+  bool quoted = false;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    const char ch = text[i];
+    if (ch == '"') {
+      if (quoted && i + 1 < text.size() && text[i + 1] == '"') {
+        fields.back().push_back('"'); ++i;
+      } else quoted = !quoted;
+    } else if (ch == ',' && !quoted) fields.emplace_back();
+    else if (ch != '\r' || quoted) fields.back().push_back(ch);
+  }
+  return fields;
+}
+
+bool csv_sampling_matches(std::string_view text, std::span<const awj::EncodeResult> results) {
+  std::size_t offset = 0;
+  const auto line = [&] {
+    const auto end = text.find('\n', offset);
+    const auto value = text.substr(offset, end == std::string_view::npos ? text.size() - offset : end - offset);
+    offset = end == std::string_view::npos ? text.size() : end + 1;
+    return value;
+  };
+  const auto header = csv_record(line());
+  const auto requested = std::ranges::find(header, "requested_chroma");
+  const auto applied = std::ranges::find(header, "applied_chroma");
+  if (requested == header.end() || applied == header.end()) return false;
+  const auto requested_column = static_cast<std::size_t>(requested - header.begin());
+  const auto applied_column = static_cast<std::size_t>(applied - header.begin());
+  for (const auto& result : results) {
+    if (offset >= text.size()) return false;
+    const auto fields = csv_record(line());
+    if (fields.size() <= std::max(requested_column, applied_column) ||
+        fields[requested_column] != result.requested_chroma || fields[applied_column] != result.applied_chroma)
+      return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -284,8 +364,23 @@ int main() {
     auto restored = awj::decode_jpeg_gain_map(result.output_path);
     if (!restored) return fail(restored.error());
     if (restored->has_value() != enhanced) return fail("HDR JPEG output map presence failed.");
-    if ((result.integration_mode.find("ultrahdr") != std::string::npos) != enhanced)
-      return fail("HDR JPEG auto/sdr/hdr routing failed.");
+    if (result.integration_mode != (enhanced ? "jpegli-iso21496-1" : "jpegli-native") ||
+        result.requested_chroma != "auto" || result.applied_chroma != "444" ||
+        (enhanced && result.applied_hdr_metadata != "iso21496-1-gain-map"))
+      return fail("HDR JPEG auto/sdr/hdr routing or source-follow sampling failed.");
+    if (enhanced) {
+      auto branch_cfg = awj::default_app_config();
+      branch_cfg.output_format = awj::OutputFormat::jxl;
+      branch_cfg.output_dir = output / std::format("jxl-iso-gain-map-{}", static_cast<int>(mode));
+      branch_cfg.quality = 100;
+      branch_cfg.jxl_jpeg_lossless = true;
+      awj::NativeBackend branch{branch_cfg, logger, awj::ResourcePlan{
+          .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
+          .memory_limit_bytes = 128 * 1024 * 1024}};
+      const auto converted = branch.encode(awj::ImageFile{.index = 0, .path = result.output_path, .bytes = result.output_bytes});
+      if (!converted.ok || converted.integration_mode == "jxl-jpeg-bitstream-transcode" || !converted.source_has_hdr_metadata)
+        return fail("ISO gain-map JPEG bypassed HDR pixel decoding via JXL bitstream transcode.");
+    }
   }
 
   {
@@ -428,6 +523,35 @@ int main() {
     }
     if (!recovered) return fail("JPEG -> JXL -> JPEG changed the original bytes");
   }
+  // 没有 MPF 的旧 HDR／坏 ISO 也不能经 JPEG 位流快速路径绕过终止屏障。
+  for (const bool invalid_iso : {false, true}) {
+    std::string packet = invalid_iso ? "urn:iso:std:iso:ts:21496:-1" : "http://ns.adobe.com/xap/1.0/";
+    packet.push_back('\0');
+    packet += invalid_iso ? std::string(8, '\0') :
+        "<x:xmpmeta xmlns:x='adobe:ns:meta/'><rdf:RDF xmlns:rdf='http://www.w3.org/1999/02/22-rdf-syntax-ns#'>"
+        "<rdf:Description xmlns:hdrgm='http://ns.adobe.com/hdr-gain-map/1.0/' hdrgm:GainMapMax='2'/></rdf:RDF></x:xmpmeta>";
+    const auto malformed_input = root / (invalid_iso ? "invalid-iso.jpg" : "legacy-hdr.jpg");
+    {
+      std::ofstream stream{malformed_input, std::ios::binary};
+      const auto marker_length = static_cast<unsigned>(packet.size() + 2);
+      const char marker[]{char(0xff), char(invalid_iso ? 0xe2 : 0xe1), char(marker_length >> 8), char(marker_length & 0xff)};
+      stream.write(reinterpret_cast<const char*>(source_jpeg->encoded.bytes.data()), 2);
+      stream.write(marker, sizeof(marker));
+      stream.write(packet.data(), static_cast<std::streamsize>(packet.size()));
+      stream.write(reinterpret_cast<const char*>(source_jpeg->encoded.bytes.data() + 2),
+          static_cast<std::streamsize>(source_jpeg->encoded.bytes.size() - 2));
+      if (!stream) return fail("Cannot write HDR bitstream barrier fixture.");
+    }
+    auto branch_cfg = cfg;
+    branch_cfg.output_dir = output / (invalid_iso ? "jxl-invalid-iso" : "jxl-legacy-hdr");
+    awj::NativeBackend branch{branch_cfg, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto result = branch.encode(awj::ImageFile{.index = 0, .path = malformed_input,
+        .bytes = std::filesystem::file_size(malformed_input)});
+    if (result.ok || result.message.find("Gain Map:") == std::string::npos ||
+        result.message.find("ISO 21496-1") == std::string::npos)
+      return fail("Legacy or invalid ISO JPEG escaped terminal rejection through JXL transcode.");
+  }
   for (const bool resize : {false, true}) {
     auto branch_cfg = cfg;
     branch_cfg.output_dir = output / (resize ? "jxl-scaled" : "jxl-quality");
@@ -500,6 +624,83 @@ int main() {
       jpegli_summary_csv.find("JPG,jpegli") == std::string::npos) {
     return fail("native backend JPG summary diagnostics invalid.");
   }
+  std::vector<awj::EncodeResult> sampling_results;
+  const auto exercise_auto = [&](const std::filesystem::path& source,
+                                 awj::PixelFormat source_format,
+                                 awj::ChromaMode expected) {
+    for (const bool search : {false, true}) {
+      auto options = awj::default_app_config();
+      options.input_path = source;
+      options.output_format = awj::OutputFormat::jpgli;
+      options.output_dir = output / (search ? "jpeg-auto-search" : "jpeg-auto") / source.stem();
+      options.quality = 85;
+      if (search) options.visual_quality = 30;
+      options.visual_quality_gpu = false;
+      options.visual_quality_fallback = true;
+      options.strip_metadata = true;
+      options.allow_wic_fallback = false;
+      options.max_jobs = 1;
+      awj::NativeBackend test{options, logger, awj::ResourcePlan{
+          .file_parallelism = 1, .encoder_threads_per_file = 1,
+          .global_thread_budget = 1, .memory_limit_bytes = 64 * 1024 * 1024}};
+      auto result = test.encode(awj::ImageFile{.index = sampling_results.size(), .path = source,
+          .bytes = std::filesystem::file_size(source)});
+      if (!result.ok) return fail(result.message);
+      const auto source_chroma = source_format == awj::PixelFormat::unknown ? "unknown"
+                               : source_format == awj::PixelFormat::gray ? "400"
+                               : awj::chroma_mode_name(expected);
+      const auto expected_format = expected == awj::ChromaMode::yuv420 ? awj::PixelFormat::yuv420
+                                 : expected == awj::ChromaMode::yuv422 ? awj::PixelFormat::yuv422
+                                 : awj::PixelFormat::yuv444;
+      awj::JpegliImageDecoder decoder;
+      const auto decoded = decoder.decode(result.output_path);
+      if (!decoded || !decoded->image.source_info ||
+          decoded->image.source_info->pixel_format != expected_format ||
+          decoded->image.source_info->bit_depth != 8 || result.user_chroma != "auto" ||
+          result.source_chroma != source_chroma || result.requested_chroma != "auto" ||
+          result.applied_chroma != awj::chroma_mode_name(expected))
+        return fail(decoded ? std::format(
+            "JPEG sampling mismatch: source={} search={} expected={} decoded_format={} depth={} user={} source_chroma={} expected_source={} requested={} applied={}",
+            source.filename().string(), search, awj::chroma_mode_name(expected),
+            decoded->image.source_info ? static_cast<int>(decoded->image.source_info->pixel_format) : -1,
+            decoded->image.source_info ? decoded->image.source_info->bit_depth : -1,
+            result.user_chroma, result.source_chroma, source_chroma, result.requested_chroma, result.applied_chroma) : decoded.error());
+      sampling_results.push_back(std::move(result));
+    }
+    return 0;
+  };
+  for (const auto mode : {awj::ChromaMode::yuv420, awj::ChromaMode::yuv422, awj::ChromaMode::yuv444}) {
+    const auto seed = root / std::format("source-yuv-{}.jpg", awj::chroma_mode_name(mode));
+    auto bytes = source_jpeg_encoder.encode(make_alpha_test_image(), awj::NativeEncodeSettings{
+        .output_format = awj::OutputFormat::jpgli, .quality = 95, .chroma_mode = mode,
+        .strip_metadata = true});
+    if (!bytes) return fail(bytes.error());
+    { std::ofstream file{seed, std::ios::binary}; file.write(
+        reinterpret_cast<const char*>(bytes->encoded.bytes.data()),
+        static_cast<std::streamsize>(bytes->encoded.bytes.size())); }
+    const auto source_format = mode == awj::ChromaMode::yuv420 ? awj::PixelFormat::yuv420
+                             : mode == awj::ChromaMode::yuv422 ? awj::PixelFormat::yuv422
+                             : awj::PixelFormat::yuv444;
+    if (const int result = exercise_auto(seed, source_format, mode)) return result;
+  }
+  for (const auto source_format : {awj::PixelFormat::rgb, awj::PixelFormat::rgba,
+                                  awj::PixelFormat::gray, awj::PixelFormat::unknown}) {
+    const auto seed = root / std::format("source-{}.tif", static_cast<int>(source_format));
+    if (!write_source_tiff(seed, source_format)) return fail("failed to create TIFF source provenance fixture.");
+    if (const int result = exercise_auto(seed, source_format, awj::ChromaMode::yuv444)) return result;
+  }
+  const auto sampling_csv_dir = output / "jpeg-auto-summary";
+  if (auto written = awj::write_csv(sampling_csv_dir, sampling_results); !written) return fail(written.error());
+  if (!csv_sampling_matches(read_text(sampling_csv_dir / "summary.csv"), sampling_results))
+    return fail("JPEG requested/applied sampling CSV columns disagree with encoded SOFs.");
+  auto invalid_jpeg = awj::default_app_config();
+  invalid_jpeg.output_format = awj::OutputFormat::jpgli;
+  invalid_jpeg.chroma_mode = awj::ChromaMode::yuv400;
+  invalid_jpeg.output_dir = output / "jpeg-reject-400";
+  awj::NativeBackend rejected_400{invalid_jpeg, logger, awj::ResourcePlan{
+      .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+  if (rejected_400.encode(awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes}).ok)
+    return fail("Native JPEG backend silently accepted explicit 400.");
 #endif
 
   cfg.output_format = awj::OutputFormat::avif;

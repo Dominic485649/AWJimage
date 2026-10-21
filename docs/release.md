@@ -1,9 +1,35 @@
-# 发布指南
+# 发布与本地版本交付
 
-1. 从同一干净源码提交构建 Windows x64 与原生 Linux x64 Release。完成回归、CLI/UI 检查、CPU 基线和依赖检查；保留 AVX2 / x86-64-v3、IPO/LTO 和第三方许可证。
-2. Windows 运行 `release.ps1 -SkipUpdateManifest`。Linux 运行 `scripts/package-linux-release.sh --binary bin/x64/Release/AWJ`；正式包要求 HEAD 为匹配版本 tag，本地候选使用 `--candidate-head <commit>`。Linux 在原生文件系统构建和打包。
-3. 使用 PowerShell 7 的 `scripts/package-release.ps1`，指定两平台程序、Linux 包和归档。审查候选时使用 `-SkipManifests`；正式发布时提供渠道、递增 `ArchiveManifestSequence`、密钥环、发布密钥 ID、公钥、仓库外 seed 和到期时间。
-4. 固定成员：Windows 为 `AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；Linux 为 `AWJ`、`LICENSE`、`NOTICE.txt`。归档使用 LZMA2，验证完整性、成员、可执行位、版本和 SHA-256。
-5. 审查通过后发布 tag 和 GitHub Release。复核公开下载，再提交与实际资产完全一致的 `update-archive.json`、`update-keyring.json` 及各自签名。候选不得写入正式更新清单。
+## 版本目录约定
 
-签名与轮换流程见 [更新安全](update-security.md)。1.2.1 起停止生成旧更新入口，1.0.12 及更早版本需手动升级。
+- 新版本只投放到 `bin/<VERSION>/`，按 `Windows/`、`Linux/` 放置扁平平台包，并附 `AWJ_Win.7z`、`AWJ_Linux.7z` 和 `SHA256SUMS`。
+- `bin/x64/` 由用户手动管理。发行、验证和清理工具都必须拒绝把它作为写入、移动或删除目标。
+- 构建／测试中间产物在项目 `build/` 的独立工作目录，通过 `AWJ_RUNTIME_OUTPUT_ROOT` 显式隔离。已有有效编译缓存和依赖可以复用，不要求每次冷构建。
+- 平台归档只收固定成员。Windows 为 `AWJ.exe`、`AWJ.com`、`LICENSE`、`NOTICE.txt`；Linux 为 `AWJ`、`LICENSE`、`NOTICE.txt`。本地验证、用户数据备份和签名工具不进入归档。
+
+## 本地候选
+
+1. Windows 使用 `release.ps1 -LocalCandidate -SkipUpdateManifest`，可指定本项目内的独立 build、runtime、vcpkg installed 和源缓存路径。脚本记录源码指纹，并在编译前后核对源码未变化。
+2. Linux 必须在原生文件系统编译和打包。现有 WSL 工作区可就地增量修复，稳定后统一源码差异；不通过 Windows 共享路径或 `/mnt` 编译。
+3. Linux 打包器使用 `--local-candidate --build-directory <原生构建目录>`，保持原有 Clang 23／libc++／Release／IPO／x86-64-v3，再做一次增量构建并绑定二进制 SHA256 与前后源码指纹。记录真实 HEAD 与 dirty 状态；旧 `--candidate-head` 仍要求干净源码，不将其误用作 dirty 工作区许可。
+4. 两平台候选必须具有相同源码指纹、正确版本和有效 patch 锁。完成两平台测试、HDR 数学、ISO 协议、采样、原生 UI 和原始 JXR 验收后，使用 `scripts/package-release.ps1 -LocalCandidate -VerificationReportPath <验收报告>` 验证报告及两平台构建证据，再创建全新 staging。
+5. 校验版本、许可、成员白名单、归档往返 SHA256、Linux 可执行位和运行自检，通过后投放 `bin/<VERSION>/`。拒绝先删除输入或覆盖未知的已存在版本目录。
+6. 对投放后的真实产物完成自动化验收，保存 `verification/acceptance.json`。未通过时保留旧版本，不把构建或压缩退出成功当作全部验收。
+
+本地候选不推送、不自动打 tag、不公开发布，不签或改写正式更新清单。源码指纹算法为 `sha256/git-normalized-source-v1`，只覆盖源码白名单，不读取或哈希私钥、运行配置、bin/build 或本地素材。
+
+## 旧版本与无效缓存
+
+每次新版本验收后，先生成项目限定的清理清单，再备份旧版本用户配置、预设和防回放状态，逐文件校验。备份按来源版本分开，不自动激活或合并旧安全状态，不降低 sequence／revocation floor。
+
+只将可确认属于本项目、可重建、无当前引用的缓存列为候选。根目录、`bin/x64/`、仓库外路径、链接越界、活跃进程引用、dirty 工作副本、有效工具链／依赖、原始 artwork、样本及未知素材均受保护。文件夹名字含旧版本不等于缓存失效。
+
+删除动作与清单／备份分离。实际清理必须同时通过路径和归属重检，并获得执行环境允许。权限拦截时只生成清单与备份，报告未删除项目，不能绕过或声称清理成功。
+
+## 正式发布
+
+正式 Windows／Linux 从同一干净源码提交构建，保留 AVX2／x86-64-v3、IPO/LTO、既定运行库和完整许可证。Linux 正式包要求匹配版本 tag；本地候选不能通过 `SkipManifests` 混入正式入口。
+
+正式 `scripts/package-release.ps1` 仍需渠道、递增 manifest sequence、受信密钥环、发布委派 key ID、公钥、仓库外 seed 与到期时间。验证签名及归档后，才由明确授权的发布步骤创建 tag／GitHub Release，复核公开下载，再提交与实际资产匹配的更新清单及签名。
+
+签名和轮换见 [更新安全](update-security.md)。候选不得写入正式清单，不静默轮换信任根；1.0.12 及更早版本需手动升级。

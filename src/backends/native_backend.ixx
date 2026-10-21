@@ -1929,8 +1929,13 @@ class NativeBackend final {
       return std::nullopt;
     }
     const auto source = native_backend_detail::inspect_jpeg_bitstream_source(*bytes);
-    if (source.has_mpf || gain_map_detail::jpeg_has_gain_map_marker(*bytes) || source.width == 0 || source.height == 0 ||
+    if (source.has_mpf || source.width == 0 || source.height == 0 ||
         limited_dimensions(source.width, source.height, cfg_)) {
+      return std::nullopt;
+    }
+    // HDR 和损坏的增益图必须经过常规解码入口，不能用 JPEG 位流转码绕过 ISO 校验。
+    const auto gain_map = probe_jpeg_gain_map_dimensions(std::span<const std::byte>{*bytes}, stop_token);
+    if (!gain_map || gain_map->has_value()) {
       return std::nullopt;
     }
     if (cancel_if_requested(result, stop_token)) {
@@ -2313,9 +2318,10 @@ class NativeBackend final {
           prepared.settings.bit_depth_reason =
               cfg_.bit_depth ? "用户明确请求 JPG 8-bit 输出"
                              : "JPG 输出 JPEG 兼容 8-bit precision";
+          // Fix the sampling before any RGB/tone-map conversion loses the source layout.
           prepared.settings.chroma_mode =
               cfg_.chroma_mode == ChromaMode::auto_keep && !cfg_.jpegli_xyb
-                  ? ChromaMode::yuv420
+                  ? jpeg_auto_chroma(decoded.image)
                   : cfg_.chroma_mode;
           if (!cfg_.jpegli_xyb) {
             prepared.settings.applied_matrix_coefficients = 6;
@@ -2324,7 +2330,8 @@ class NativeBackend final {
           prepared.settings.chroma_reason =
               cfg_.chroma_mode == ChromaMode::auto_keep
                   ? (cfg_.jpegli_xyb ? "XYB 模式使用 Jpegli 默认 RGB/XYB 采样"
-                                     : "JPG 默认使用 YCbCr 4:2:0")
+                                     : std::format("JPG chroma auto 根据源图选择 {} chroma（灰度回退三分量 444）",
+                                                   chroma_mode_name(prepared.settings.chroma_mode)))
                   : "用户请求 JPG 色度采样";
           if (cfg_.jpegli_xyb && !cfg_.strip_metadata) {
             prepared.settings.applied_icc =
@@ -2372,7 +2379,8 @@ class NativeBackend final {
         std::optional<ImageBuffer> rgb;
         if (is_yuv_format(decoded.image.pixel_format)) {
           auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{.format = PixelFormat::rgba,
-              .bit_depth = decoded.image.bit_depth > 8 ? 16 : 8, .preserve_alpha = false}, stop_token);
+              .bit_depth = decoded.image.bit_depth > 8 ? 16 : 8, .preserve_alpha = false},
+              stop_token, effective_settings.resources);
           if (!converted) return std::unexpected{converted.error()};
           rgb = std::move(*converted);
         } else if (decoded.image.geometry) {
@@ -2423,7 +2431,8 @@ class NativeBackend final {
       auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{.format = PixelFormat::rgba,
           .bit_depth = effective_settings.tone_map_to_sdr_pixels ? 8 : 16,
           .preserve_alpha = effective_settings.applied_alpha == "kept",
-          .tone_map_to_sdr = effective_settings.tone_map_to_sdr_pixels}, stop_token);
+          .tone_map_to_sdr = effective_settings.tone_map_to_sdr_pixels},
+          stop_token, effective_settings.resources);
       if (!converted) return std::unexpected{converted.error()};
       search_reference = std::move(*converted); effective_image = &*search_reference;
       effective_settings.tone_map_to_sdr_pixels = false;

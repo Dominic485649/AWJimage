@@ -1,5 +1,5 @@
 {
-  "awj_version": "1.2.2",
+  "awj_version": "1.2.3",
   "selected_at": "2026-10-06",
   "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
   "vcpkg_baseline": "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4",
@@ -9,7 +9,8 @@
     "url": "https://codeload.github.com/google/libultrahdr/tar.gz/refs/tags/v2.0.2",
     "sha256": "aa8d193bb887c348c419780511dd03b374f4e07af8812b6d3f80c8537cf1ef2c",
     "patches": [
-      "cmake/patch_libultrahdr_threads.cmake"
+      "cmake/patch_libultrahdr_threads.cmake",
+      "cmake/patch_libultrahdr_iso_only.cmake"
     ]
   },
   "libheif": {
@@ -157,6 +158,7 @@
     "vcpkg-overlays/libyuv/usage": "0349d92bb20741341ff15af25c416369ff7673323e09865bc0797b8e5070a8d1",
     "vcpkg-overlays/libyuv/vcpkg.json": "f48f825c171d0bf96f80873a7a12ffb8959b13bb48121f641f364a69a720fa49",
     "cmake/patch_libultrahdr_threads.cmake": "5f027f631cc147b95bc5c749df91d912cfe226cefc288cbfb698e4f2cd77262b",
+    "cmake/patch_libultrahdr_iso_only.cmake": "75230938274c8152141aabaef9de78d3ae6c8e8a4067a7d87eee0bf805faa7b5",
     "vcpkg-overlays/libpng/cmake.patch": "e1c91b1739580791b8bfe770981cdb07bf65261caf6b2a99da988a8bb21d4094",
     "vcpkg-overlays/libpng/libpng-config.cmake": "24086e8ff194402a0f2d68e9f992ca7a6899a194883a9df0054818e42d41c246",
     "vcpkg-overlays/libpng/portfile.cmake": "06b17efcb5b7f8700780de9272e63c90046ebce016dba5f874ee44d080a5d890",

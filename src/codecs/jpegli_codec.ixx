@@ -32,6 +32,7 @@ import awj.config;
 import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
+import awj.gain_map;
 import awj.image;
 import awj.pixel_conversion;
 import awj.jpeg_codec;
@@ -40,6 +41,27 @@ import awj.large_image_plan;
 export namespace awj {
 
 namespace jpegli_detail {
+
+// JPEGli uses JPEG ABI 62; jpeg_codec is built against libjpeg-turbo ABI 80.
+// Keep all header/error/marker structure access local to its owning codec.
+#if defined(_MSC_VER)
+#pragma warning(push)
+#pragma warning(disable : 4324)
+#endif
+struct ErrorManager {
+  jpeg_error_mgr pub{};
+  jmp_buf jump{};
+  char message[JMSG_LENGTH_MAX]{};
+};
+#if defined(_MSC_VER)
+#pragma warning(pop)
+#endif
+
+void error_exit(j_common_ptr cinfo) {
+  auto* error = reinterpret_cast<ErrorManager*>(cinfo->err);
+  (*cinfo->err->format_message)(cinfo, error->message);
+  longjmp(error->jump, 1);
+}
 
 struct DecompressCleanup {
   jpeg_decompress_struct* cinfo{};
@@ -81,7 +103,7 @@ struct DecodeContext {
 
 struct RawEncodeContext {
   jpeg_compress_struct cinfo{};
-  jpeg_detail::ErrorManager error{};
+  jpegli_detail::ErrorManager error{};
   bool created{};
   unsigned char* output{};
   unsigned long output_size{};
@@ -273,6 +295,84 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
   return std::move(*bytes);
 }
 
+std::expected<void, std::string> validate_mpf_primary_image(
+    const jpeg_decompress_struct& cinfo, std::string_view source_name) {
+  static constexpr char signature[] = "MPF\0";
+  for (auto* marker = cinfo.marker_list; marker != nullptr; marker = marker->next) {
+    if (marker->marker != JPEG_APP0 + 2 ||
+        !jpeg_detail::marker_payload_has_prefix(marker->data, marker->data_length,
+            signature, sizeof(signature) - 1)) continue;
+    auto count = jpeg_detail::parse_mpf_image_count(marker->data, marker->data_length);
+    if (!count)
+      return std::unexpected{std::format("暂不支持多图 JPEG MPF 输入: {}; {}", source_name, count.error())};
+    if (*count == 0)
+      return std::unexpected{std::format("JPEG MPF 图像数量不能为零: {}", source_name)};
+  }
+  return {};
+}
+
+ImageSourceInfo source_info_from_header(const jpeg_decompress_struct& cinfo) noexcept {
+  auto pixel_format = PixelFormat::unknown;
+  if (cinfo.num_components == 1 || cinfo.jpeg_color_space == JCS_GRAYSCALE) {
+    pixel_format = PixelFormat::gray;
+  } else if (cinfo.jpeg_color_space == JCS_RGB) {
+    pixel_format = PixelFormat::rgb;
+  } else if (cinfo.jpeg_color_space == JCS_YCbCr && cinfo.num_components >= 3 &&
+             cinfo.comp_info != nullptr) {
+    const auto& y = cinfo.comp_info[0];
+    const auto& cb = cinfo.comp_info[1];
+    const auto& cr = cinfo.comp_info[2];
+    pixel_format = jpeg_detail::source_pixel_format_from_sampling(y.h_samp_factor, y.v_samp_factor,
+        cb.h_samp_factor, cb.v_samp_factor, cr.h_samp_factor, cr.v_samp_factor);
+  }
+  return ImageSourceInfo{.pixel_format = pixel_format,
+                         .bit_depth = cinfo.data_precision > 0 ? cinfo.data_precision : 0};
+}
+
+bool opaque_sdr8_yuv420_header(const jpeg_decompress_struct& cinfo) noexcept {
+  const auto info = source_info_from_header(cinfo);
+  if (info.bit_depth != 8 || info.pixel_format != PixelFormat::yuv420) return false;
+  static constexpr char signature[] = "ICC_PROFILE";
+  for (auto* marker = cinfo.marker_list; marker != nullptr; marker = marker->next)
+    if (marker->marker == JPEG_APP0 + 2 && marker->data_length >= sizeof(signature) + 2 &&
+        jpeg_detail::marker_payload_has_prefix(marker->data, marker->data_length, signature, sizeof(signature)))
+      return false;
+  return true;
+}
+
+std::expected<void, std::string> copy_app1_metadata(
+    ImageBuffer& image, const jpeg_decompress_struct& cinfo) {
+  static constexpr char exif_signature[] = "Exif\0\0";
+  static constexpr char xmp_signature[] = "http://ns.adobe.com/xap/1.0/\0";
+  bool copied_exif = false;
+  bool copied_xmp = false;
+  for (auto* marker = cinfo.marker_list; marker != nullptr; marker = marker->next) {
+    if (marker->marker != JPEG_APP0 + 1) continue;
+    if (!copied_exif && jpeg_detail::marker_payload_has_prefix(marker->data, marker->data_length,
+            exif_signature, sizeof(exif_signature) - 1)) {
+      auto exif = jpeg_detail::copy_marker_payload(marker->data, marker->data_length,
+          sizeof(exif_signature) - 1, "JPEG Exif metadata");
+      if (!exif) return std::unexpected{exif.error()};
+      if (!exif->empty()) {
+        image.metadata.push_back(MetadataBlock{.kind = MetadataKind::exif, .bytes = std::move(*exif)});
+        copied_exif = true;
+      }
+      continue;
+    }
+    if (!copied_xmp && jpeg_detail::marker_payload_has_prefix(marker->data, marker->data_length,
+            xmp_signature, sizeof(xmp_signature) - 1)) {
+      auto xmp = jpeg_detail::copy_marker_payload(marker->data, marker->data_length,
+          sizeof(xmp_signature) - 1, "JPEG XMP metadata");
+      if (!xmp) return std::unexpected{xmp.error()};
+      if (!xmp->empty()) {
+        image.metadata.push_back(MetadataBlock{.kind = MetadataKind::xmp, .bytes = std::move(*xmp)});
+        copied_xmp = true;
+      }
+    }
+  }
+  return {};
+}
+
 std::expected<ImageDecodeResult, std::string> decode_bytes(
     std::span<const std::byte> bytes, std::string_view source_name,
     bool copy_metadata_payloads, bool native_pixels = false) {
@@ -282,6 +382,15 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     }
     if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<unsigned long>::max())) {
       return std::unexpected{"JPG 输入超过 libjpeg API 限制。"};
+    }
+
+    // Recognized legacy/broken HDR is terminal, never a plain-JPEG fallback.
+    // The ISO decoder uses its internal libjpeg path and cannot recurse here.
+    auto enhanced = decode_jpeg_gain_map(bytes);
+    if (!enhanced) return std::unexpected{enhanced.error()};
+    if (*enhanced) {
+      if (!copy_metadata_payloads) (**enhanced).image.metadata.clear();
+      return std::move(**enhanced);
     }
 
     std::unique_ptr<jpegli_detail::DecodeContext> context;
@@ -296,9 +405,9 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
 #pragma warning(push)
 #pragma warning(disable : 4324 4611)
 #endif
-    jpeg_detail::ErrorManager error{};
+    jpegli_detail::ErrorManager error{};
     cinfo.err = jpegli_std_error(&error.pub);
-    error.pub.error_exit = jpeg_detail::error_exit;
+    error.pub.error_exit = jpegli_detail::error_exit;
     DecompressCleanup cleanup{.cinfo = &cinfo};
     if (setjmp(error.jump) != 0) {
       return std::unexpected{std::format("JPG 解码失败: {}", error.message)};
@@ -324,10 +433,10 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     if (jpegli_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
       return std::unexpected{std::format("JPG/JPEG 文件头无效: {}", source_name)};
     }
-    if (auto mpf = jpeg_detail::reject_multi_picture_mpf(cinfo, source_name); !mpf) {
+    if (auto mpf = jpegli_detail::validate_mpf_primary_image(cinfo, source_name); !mpf) {
       return std::unexpected{mpf.error()};
     }
-    const auto source_info = jpeg_detail::source_info_from_header(cinfo);
+    const auto source_info = jpegli_detail::source_info_from_header(cinfo);
     auto icc_profile = jpegli_detail::copy_icc_profile(cinfo);
     if (!icc_profile) {
       return std::unexpected{icc_profile.error()};
@@ -335,7 +444,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     context->icc_profile = std::move(*icc_profile);
     if (copy_metadata_payloads) {
       ImageBuffer metadata_image{};
-      if (auto copied = jpeg_detail::copy_app1_metadata(metadata_image, cinfo); !copied) {
+      if (auto copied = jpegli_detail::copy_app1_metadata(metadata_image, cinfo); !copied) {
         return std::unexpected{copied.error()};
       }
       context->app1_metadata = std::move(metadata_image.metadata);
@@ -452,6 +561,9 @@ class JpegliImageDecoder final : public ImageDecoder {
   std::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
     try {
+      auto enhanced = probe_jpeg_gain_map_dimensions(path);
+      if (!enhanced) return std::unexpected{enhanced.error()};
+      if (*enhanced) return **enhanced;
       jpeg_detail::FileCleanup input{jpeg_detail::open_binary_file(path)};
       if (input.file == nullptr) {
         return std::unexpected{std::format("无法读取 JPG/JPEG 文件: {}",
@@ -463,9 +575,9 @@ class JpegliImageDecoder final : public ImageDecoder {
 #pragma warning(push)
 #pragma warning(disable : 4324 4611)
 #endif
-      jpeg_detail::ErrorManager error{};
+      jpegli_detail::ErrorManager error{};
       cinfo.err = jpegli_std_error(&error.pub);
-      error.pub.error_exit = jpeg_detail::error_exit;
+      error.pub.error_exit = jpegli_detail::error_exit;
       jpegli_detail::DecompressCleanup cleanup{.cinfo = &cinfo};
       if (setjmp(error.jump) != 0) {
         return std::unexpected{std::format("JPG 读取尺寸失败: {}", error.message)};
@@ -486,12 +598,12 @@ class JpegliImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("JPG/JPEG 文件头无效: {}",
                                            display_path_for_user(path))};
       }
-      if (auto mpf = jpeg_detail::reject_multi_picture_mpf(cinfo, display_path_for_user(path)); !mpf) {
+      if (auto mpf = jpegli_detail::validate_mpf_primary_image(cinfo, display_path_for_user(path)); !mpf) {
         return std::unexpected{mpf.error()};
       }
       auto dimensions = decoder_common::make_image_dimensions_checked(cinfo.image_width,
                                                            cinfo.image_height, "JPG");
-      if (dimensions) dimensions->opaque_sdr8_yuv420 = jpeg_detail::opaque_sdr8_yuv420_header(cinfo);
+      if (dimensions) dimensions->opaque_sdr8_yuv420 = jpegli_detail::opaque_sdr8_yuv420_header(cinfo);
       return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"JPG 尺寸探测内存不足。"};
@@ -556,21 +668,28 @@ class JpegliImageEncoder final : public ImageEncoder {
         return std::unexpected{
             "JPG 渐进 JPEG 需要优化哈夫曼表；若要关闭优化，请将渐进设为 0。"};
       }
+      if (!supports_chroma_mode(OutputFormat::jpgli, settings.chroma_mode)) {
+        return std::unexpected{"JPG 不支持 400；请使用 auto/444/422/420。"};
+      }
+      const auto effective_chroma =
+          settings.chroma_mode == ChromaMode::auto_keep && !settings.jpegli_xyb
+              ? jpeg_auto_chroma(image) : settings.chroma_mode;
       if (image.geometry || is_yuv_format(image.pixel_format) || image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
           image.sample_representation != SampleRepresentation::unorm || settings.tone_map_to_sdr_pixels) {
-        const auto chroma = settings.chroma_mode == ChromaMode::auto_keep ? ChromaMode::yuv420 : settings.chroma_mode;
         const auto format = settings.jpegli_xyb ? PixelFormat::rgba
-            : chroma == ChromaMode::yuv444 ? PixelFormat::yuv444
-            : chroma == ChromaMode::yuv422 ? PixelFormat::yuv422 : PixelFormat::yuv420;
+            : effective_chroma == ChromaMode::yuv444 ? PixelFormat::yuv444
+            : effective_chroma == ChromaMode::yuv422 ? PixelFormat::yuv422 : PixelFormat::yuv420;
         const PixelConversionRequest request{.format = format, .bit_depth = 8, .matrix_coefficients = 6,
             .color_range = 1, .preserve_alpha = false, .tone_map_to_sdr = settings.tone_map_to_sdr_pixels};
         std::optional<ImageBuffer> converted;
         if (!pixels_match(image, request)) {
-          auto normalized = convert_image_pixels(image, request, stop_token);
+          auto normalized = convert_image_pixels(image, request, stop_token, settings.resources);
           if (!normalized) return std::unexpected{normalized.error()};
           converted = std::move(*normalized);
         }
-        auto normalized_settings = settings; normalized_settings.tone_map_to_sdr_pixels = false;
+        auto normalized_settings = settings;
+        normalized_settings.chroma_mode = effective_chroma;
+        normalized_settings.tone_map_to_sdr_pixels = false;
         if (!settings.jpegli_xyb) return jpegli_detail::encode_yuv(converted ? *converted : image, normalized_settings, stop_token);
         return encode(converted ? *converted : image, normalized_settings, stop_token);
       }
@@ -602,9 +721,9 @@ class JpegliImageEncoder final : public ImageEncoder {
 #pragma warning(push)
 #pragma warning(disable : 4324 4611)
 #endif
-      jpeg_detail::ErrorManager error{};
+      jpegli_detail::ErrorManager error{};
       cinfo.err = jpegli_std_error(&error.pub);
-      error.pub.error_exit = jpeg_detail::error_exit;
+      error.pub.error_exit = jpegli_detail::error_exit;
       jpegli_detail::CompressCleanup cleanup{.cinfo = &cinfo};
       if (setjmp(error.jump) != 0) {
         output_cleanup.data = output;
@@ -629,7 +748,7 @@ class JpegliImageEncoder final : public ImageEncoder {
       if (settings.jpegli_gain_map_samples) {
         jpegli_enable_adaptive_quantization(&cinfo, FALSE);
       }
-      jpegli_detail::apply_chroma_sampling(cinfo, settings.chroma_mode == ChromaMode::auto_keep && !settings.jpegli_xyb ? ChromaMode::yuv420 : settings.chroma_mode);
+      jpegli_detail::apply_chroma_sampling(cinfo, effective_chroma);
       const int final_quality = std::clamp(settings.quality, 1, 100);
       jpegli_set_quality(&cinfo, final_quality, TRUE);
       jpegli_set_progressive_level(&cinfo, settings.jpegli_progressive_level);
@@ -674,7 +793,7 @@ class JpegliImageEncoder final : public ImageEncoder {
       if (!settings.jpegli_xyb) {
         diagnostics.applied_matrix_coefficients = 6;
         diagnostics.applied_color_range = 1;
-        diagnostics.applied_chroma = chroma_mode_name(settings.chroma_mode == ChromaMode::auto_keep ? ChromaMode::yuv420 : settings.chroma_mode);
+        diagnostics.applied_chroma = chroma_mode_name(effective_chroma);
       }
       diagnostics.encoder_id = "jpegli";
       diagnostics.integration_mode = "jpegli-native";
@@ -707,7 +826,7 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
   auto context = std::make_unique<RawEncodeContext>();
   auto& cinfo = context->cinfo;
   auto& error = context->error;
-  cinfo.err = jpegli_std_error(&error.pub); error.pub.error_exit = jpeg_detail::error_exit;
+  cinfo.err = jpegli_std_error(&error.pub); error.pub.error_exit = jpegli_detail::error_exit;
   if (setjmp(error.jump) != 0) return std::unexpected{std::format("JPG YUV 编码失败: {}", error.message)};
   jpegli_create_compress(&cinfo); context->created = true;
   jpegli_mem_dest(&cinfo, &context->output, &context->output_size);

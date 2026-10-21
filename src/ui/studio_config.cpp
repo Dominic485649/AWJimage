@@ -227,7 +227,16 @@ std::expected<void, std::string> write_studio_config_file(
     add_int(menu_config_key(prefix, "avif_encoder_index"), value.avif_encoder_index == 1 ? 2 : value.avif_encoder_index,
             fallback.avif_encoder_index == 1 ? 2 : fallback.avif_encoder_index);
     add_int(menu_config_key(prefix, "avif_color_representation_index"), value.avif_color_representation_index, fallback.avif_color_representation_index);
-    add_int(menu_config_key(prefix, "chroma_index"), value.chroma_index, fallback.chroma_index);
+    constexpr std::array formats{awj::OutputFormat::avif, awj::OutputFormat::webp,
+                                awj::OutputFormat::jxl, awj::OutputFormat::jpgli,
+                                awj::OutputFormat::png};
+    const auto chroma_index = [format = formats[i]](const MenuFormatParams& params) {
+      return awj::normalize_chroma_selection_index(
+          format, params.chroma_index,
+          static_cast<awj::AvifColorRepresentation>(
+              std::clamp(params.avif_color_representation_index, 0, 2)));
+    };
+    add_int(menu_config_key(prefix, "chroma_index"), chroma_index(value), chroma_index(fallback));
     add_int(menu_config_key(prefix, "alpha_policy_index"), value.alpha_policy_index, fallback.alpha_policy_index);
     add_int(menu_config_key(prefix, "jpegli_progressive_index"), value.jpegli_progressive_index, fallback.jpegli_progressive_index);
     add_bool(menu_config_key(prefix, "jpegli_optimize_huffman"), value.jpegli_optimize_huffman, fallback.jpegli_optimize_huffman);

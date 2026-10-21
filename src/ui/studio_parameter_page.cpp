@@ -69,6 +69,14 @@ awj::AvifColorRepresentation avif_color_representation_from_index(
   }
 }
 
+int normalized_parameter_chroma_index(
+    int format_index, int chroma_index,
+    int avif_color_representation_index) noexcept {
+  return awj::normalize_chroma_selection_index(
+      output_format_from_index(format_index), chroma_index,
+      avif_color_representation_from_index(avif_color_representation_index));
+}
+
 // The parameter-page order differs from OutputFormat's enum order.
 int parameter_index_from_output_format(awj::OutputFormat format) noexcept {
   switch (format) {
@@ -148,10 +156,12 @@ std::expected<awj::AppConfig, std::string> config_from_menu_params(
     cfg.avif_encoder = avif_encoder_from_index(params.avif_encoder_index);
     cfg.avif_color_representation = avif_color_representation_from_index(
         params.avif_color_representation_index);
-    cfg.chroma_mode = chroma_from_index(params.chroma_index);
+    cfg.chroma_mode = chroma_from_index(awj::normalize_chroma_selection_index(
+        format, params.chroma_index, cfg.avif_color_representation));
     cfg.alpha_policy = alpha_policy_from_index(params.alpha_policy_index);
   } else if (format == awj::OutputFormat::jpgli) {
-    cfg.chroma_mode = chroma_from_index(params.chroma_index);
+    cfg.chroma_mode = chroma_from_index(awj::normalize_chroma_selection_index(
+        format, params.chroma_index, cfg.avif_color_representation));
     cfg.jpegli_progressive_level = std::clamp(params.jpegli_progressive_index, 0, 2);
     cfg.jpegli_optimize_huffman = cfg.jpegli_progressive_level > 0
                                       ? true
@@ -269,7 +279,8 @@ void apply_parameter_params_to_ui(AwjStudio& app,
   app.set_avif_encoder_index(params.avif_encoder_index);
   app.set_avif_color_representation_index(
       params.avif_color_representation_index);
-  app.set_chroma_index(params.chroma_index);
+  app.set_chroma_index(normalized_parameter_chroma_index(
+      format_index, params.chroma_index, params.avif_color_representation_index));
   app.set_alpha_policy_index(params.alpha_policy_index);
   app.set_jpegli_progressive_index(params.jpegli_progressive_index);
   app.set_jpegli_optimize_huffman(params.jpegli_progressive_index > 0 || params.jpegli_optimize_huffman);
@@ -310,6 +321,8 @@ const std::array<ParameterFormatParams, 5>& active_parameter_params(
 void store_current_parameter_params(AwjStudio& app, UiState& state) {
   const auto index = parameter_editor_format_index(state.last_format_index);
   auto params = capture_parameter_params_from_ui(app);
+  params.chroma_index = normalized_parameter_chroma_index(
+      index, params.chroma_index, params.avif_color_representation_index);
   const auto format = output_format_from_index(index);
   if (format == awj::OutputFormat::png) {
     params.visual_quality_text.clear();
