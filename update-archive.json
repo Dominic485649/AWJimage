@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 15,
+  "sequence": 16,
   "key_id": "release-2026",
-  "issued_at": "2026-10-21T06:37:06Z",
-  "expires_at": "2027-02-18T06:37:06Z",
+  "issued_at": "2026-10-24T08:53:20Z",
+  "expires_at": "2027-01-22T08:53:20Z",
   "entries": [
     {
-      "version": "1.2.3",
+      "version": "1.2.4",
       "channel": "stable",
-      "published_at": "2026-10-21T06:37:06Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.3",
+      "published_at": "2026-10-24T08:53:20Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.4",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Win.7z",
-            "size": 13192869,
-            "sha256": "ddba4c403556c8fa6ac973a7595bb3d9cd957e1a4c1ae769e5f6b65f033dce90"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
+            "size": 13211761,
+            "sha256": "11cd159f217b8059c354fcc83648150d781eb5a819c3b0e2bb2ef5e27cf887d3"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
               "size": 24472064,
-              "sha256": "bb7b57ba36ede9664580951fc8aa356bc42c48bd7f0fbf425acfb097bb8765b2"
+              "sha256": "273d9ab640b3c5b9b95b42e5a3ee7c1644e8aaaffb649895775e2043c0cfaa0a"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Win.7z",
-              "size": 20573696,
-              "sha256": "afa24c51711715f3ecf9ce9ac4e3a051ef9115d3d41cf7cb932ad6277803aea9"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
+              "size": 20619264,
+              "sha256": "295c3660a6d79abb8e282a85e45304871c15d896b15e61c2d5469478ced3cd72"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
               "size": 166170,
-              "sha256": "48d785daa2e2441aa0291c44e821f3f398c351c47e27303da9291bb353ce1b12"
+              "sha256": "0c39a430e15ad5d24b6393da69c4502bca493ce8b563901dc6ac7ac0be7ddd4f"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Linux.7z",
-            "size": 18320167,
-            "sha256": "7d0850bd096000f88e41ec1633c5b026262551b618ecc013c49b1998bd287561"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
+            "size": 18342458,
+            "sha256": "da6bdbf6214b67421b7bbc0184b6a07e172b88071786345780a7ec7a18e6b652"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Linux.7z",
-              "size": 66102912,
-              "sha256": "18e9dbf72d2372e862ee34f95e5b66dc9433fff86227d01cad7848cb970b8ccd"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
+              "size": 66183512,
+              "sha256": "9e71d2e957fd6608f34a73675455bcbe7eaeb536ee906d8385b0cd37ac1d65d7"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.3/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
               "size": 166042,
-              "sha256": "3c438d208e5131b1e7efd0edea94937f99c0be88c44ff811106b51195fa92f24"
+              "sha256": "c2caac4c04dde3695af905a7055e9794bf72ec0bb5c18679c8cfdd4580bc0c0f"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 修复与优化\n\n- 修复 HDR 转 SDR 基图的 IPT／PQ 运算次序。预计算 PQ 域色调曲线，以有界批处理替代逐像素感知色域初始化，并为合法同原色像素提供快路径，保留负值、超范围颜色和取消校验。\n- HDR JPEG 根据实际 canonical 内容峰值生成显示 headroom，不再沿用线性格式的理论峰值；低亮度内容仍保持可序列化的正容量范围。\n- JPG 的 auto 色度采样与 AVIF 对齐：保留源 420／422／444，RGB、RGBA 和未知源使用 444。JPG 灰度源 auto 使用三分量 444，显式 400 仍不支持。\n- 采样下拉直接移除当前模式不支持的选项，不再显示灰色 400；恢复旧状态时归一化不支持的值，保持各格式独立设置。\n- 修复 AVIF 400 用户预设可保存但不能重新加载的问题。\n\n### 协议与发行\n\n- Gain Map 仅保留 ISO 21496-1。删除旧 Adobe／Google／Apple Gain Map 解码兼容，并在计算库中关闭旧 XMP 解码回退；保留普通 XMP、EXIF、ICC 和 ISO 所需的 MPF。\n- 继续使用固定版本 libultrahdr 作为内部 ISO 计算引擎，保留第三方许可；SDR 基图仍正确使用 sRGB／8-bit 标签。\n- 新版本候选投放到 bin/版本号，保护用户手动管理的 bin/x64。候选与正式发布安全门禁分离，记录源码与产物指纹，版本清理前检查依赖引用并备份用户数据。\n- 修复 Windows 隐藏配置及更新安全状态备份时的元数据读取错误。保留原文件的隐藏属性与写入时间，匹配的既有备份可幂等复用，冲突内容按哈希保留历史，不激活旧配置或合并安全状态。",
-        "en": "### Fixes and optimization\n\n- Correct the IPT/PQ operation order when preparing SDR bases from HDR input. Precompute the PQ-domain tone curve and use bounded gamut batches instead of per-pixel perceptual setup, with a safe in-gamut fast path and validation for negative and extended colors and cancellation.\n- Derive HDR JPEG display headroom from the actual canonical content peak instead of the theoretical peak of linear input. Keep a serializable positive capacity range for low-luminance content.\n- Align JPG auto chroma with AVIF: preserve known source 420/422/444 and use 444 for RGB, RGBA and unknown sources. Grayscale JPG auto uses three-component 444; explicit 400 remains unsupported.\n- Omit unsupported chroma choices from the dropdown instead of showing a disabled 400 entry. Normalize unsupported restored values while retaining independent per-format settings.\n- Fix saving AVIF 400 presets that could not subsequently be loaded.\n\n### Protocol and packaging\n\n- Support ISO 21496-1 gain maps only. Remove legacy Adobe, Google and Apple gain-map decoding and disable the compute library's XMP decoding fallback, while preserving ordinary XMP, EXIF, ICC and required MPF data.\n- Retain the pinned libultrahdr version as the internal ISO compute engine and keep its license. SDR bases retain correct sRGB and 8-bit labels.\n- Stage versioned candidates under bin/VERSION without changing the manually managed bin/x64 directory. Separate local candidates from formal release gates, record source and asset fingerprints, and check references and back up user state before version cleanup.\n- Fix metadata reads when backing up hidden Windows configuration and update-security state files. Preserve source attributes and timestamps, reuse matching backups idempotently, and keep conflicting content in hash-addressed history without activating old configuration or merging security state."
+        "zh-CN": "### 编码队列\n\n- 明确显示源文件大小，新增输出大小列，成功转换后可直接比较；未生成、跳过、失败或取消的任务不显示旧输出大小。\n- 队列各列可独立拖动调整，分隔线只改变左侧列宽；最大化、缩小窗口或切换页面均保留当前列宽，溢出时通过底部滚动条同步查看表头和正文。\n- 右键表头可勾选显示或隐藏序号、文件名、目录、源文件大小、输出大小、状态和输出或日志。支持全部隐藏后恢复，文字统一左对齐，超长内容在右侧显示省略号。\n- 表头分隔线使用单个物理像素并对齐像素网格，高 DPI 下仍保持细线；深浅主题使用更柔和的独立配色，保留较宽的拖动命中区域。\n- 移除列显隐菜单各选项的整行白色焦点边框，保留勾选框、鼠标操作、键盘切换和无障碍状态；修复深色模式下任务右键菜单仍使用白色背景的问题。\n\n### 预设与配置\n\n- 编码队列默认使用内置预设。用户切换后，将所选预设的文件身份写入 AWJ.jsonc，并在下次启动时恢复。\n- 预设列表重排、语言切换或显示名修改不会错误切换队列预设；所选文件被删除或失效时回退内置默认，不加载配置指定的任意路径。\n- Windows 与 Linux 同步上述队列和预设行为，编解码器依赖版本及预设文件 schema 保持不变。",
+        "en": "### Encoding queue\n\n- Explicitly label source file sizes and add output sizes for direct comparison after successful conversion. Pending, skipped, failed and canceled tasks do not display stale output sizes.\n- Resize each column independently by dragging its right divider. Only the column on the left changes width. Maximize, narrow or switch pages without redistributing widths; use the bottom scrollbar to scroll headers and rows together.\n- Right-click the header to show or hide the index, file name, folder, source size, output size, status and output or log columns. Restore columns even after hiding all of them. Left-align cell text and ellipsize overflow on the right.\n- Use pixel-aligned, single-physical-pixel header dividers that stay thin at high DPI, with softer light/dark colors and unchanged wider drag targets.\n- Remove the full-row white focus outline from every column-menu option while preserving checkmarks, mouse interaction, keyboard selection and accessibility states. Fix the task context menu retaining a white background in dark mode.\n\n### Presets and settings\n\n- Start the encoding queue with the built-in defaults. Persist the selected user preset's file identity in AWJ.jsonc and restore it on the next launch.\n- Keep the correct selection after catalog reordering, language changes and display-name edits. Fall back to the built-in defaults when the selected file is deleted or invalid, without loading arbitrary paths from configuration.\n- Apply the queue and preset changes on Windows and Linux without changing codec dependency versions or the preset-file schema."
       }
     }
   ]
