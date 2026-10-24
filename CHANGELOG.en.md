@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.5 - 2026-10-24
+
+### UI fixes
+
+- Give the queue-header context menu the same opening animation and option-background transitions as the task context menu.
+- Restore initial keyboard focus after the opening clip completes while preserving column toggles, Escape dismissal and mutually exclusive menus.
+- Restore the top-left version action: download, verify and install an available update, or open the repository Releases page when no update is available, instead of navigating to the embedded changelog.
+- Apply the fixes on Windows and Linux while retaining size comparisons, independent column widths, column visibility and preset persistence. Codec dependency versions and configuration formats are unchanged.
+
 ## 1.2.4 - 2026-10-24
 
 ### Encoding queue

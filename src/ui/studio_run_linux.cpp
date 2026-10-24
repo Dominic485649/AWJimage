@@ -2908,9 +2908,11 @@ int awj::studio::run_studio_ui() {
     app->on_version_clicked([weak, state] {
       if (auto app = weak.lock()) {
         if (!linux_pending_update_is_newer(*state)) {
-          state->changelog_opened_manually = true;
-          sync_linux_update_ui(**app, *state);
-          (*app)->set_selected_page(4);
+          if (auto opened = open_linux_url("https://github.com/Dominic485649/AWJimage/releases"); !opened) {
+            state->update_status_zh = "无法打开发布页面。";
+            state->update_status_en = "Could not open the releases page.";
+            sync_linux_update_ui(**app, *state);
+          }
           return;
         }
         if ((*app)->get_running()) {

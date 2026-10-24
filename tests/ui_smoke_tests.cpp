@@ -980,6 +980,15 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
     const slint::LogicalPosition point{{pos.x + 16, pos.y + 16}};
     app->window().dispatch_pointer_press_event(point, slint::PointerEventButton::Right);
     app->window().dispatch_pointer_release_event(point, slint::PointerEventButton::Right);
+    if (slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) != 1)
+      return false;
+    // 列菜单现在也有开场动画，先推进真实绑定和计时器，再验证完成后的键盘操作。
+    const auto surfaces = slint::testing::ElementHandle::find_by_element_id(app, "AwjStudio::queue-column-menu-surface");
+    for (const auto& surface : surfaces) (void)surface.size();
+    slint::private_api::testing::mock_elapsed_time(1);
+    slint::private_api::testing::mock_elapsed_time(25);
+    for (const auto& surface : surfaces) (void)surface.size();
+    slint::private_api::testing::mock_elapsed_time(250);
     return slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) == 1;
   };
   // 全部列均允许隐藏，空白表头仍能右键恢复；空队列也必须可以配置列。
@@ -1184,7 +1193,7 @@ int verify_menu_rendering_snapshots(const std::filesystem::path& directory, floa
   std::optional<std::string> error;
   std::size_t case_index = 0;
   int captures = 0, frame_attempts = 0;
-  bool size_requested = false, case_open = false;
+  bool size_requested = false, case_open = false, case_keyboard_sent = false;
   auto changed_at = std::chrono::steady_clock::now();
   const auto finish = [&](std::string message) {
     if (!message.empty()) error = std::move(message);
@@ -1218,25 +1227,29 @@ int verify_menu_rendering_snapshots(const std::filesystem::path& directory, floa
       const auto current = cases.at(case_index);
       if (!case_open) {
         app->set_theme_index(current.theme);
-        if (current.column >= 0) {
-          app->invoke_open_queue_column_menu(menu_x, menu_y);
-          for (int i = 0; i < current.column; ++i) send_key(app, slint::platform::key_codes::Tab);
-          if (!current.checked) send_key(app, slint::platform::key_codes::Space);
-          const std::array<bool, 7> checked{app->get_queue_index_visible(), app->get_queue_filename_visible(),
-              app->get_queue_dir_visible(), app->get_queue_size_visible(), app->get_queue_output_size_visible(),
-              app->get_queue_status_visible(), app->get_queue_log_visible()};
-          if (checked[static_cast<std::size_t>(current.column)] != current.checked) {
-            finish("原生列菜单未响应对应选项的键盘切换");
-            return;
-          }
-        } else {
-          app->invoke_open_queue_menu(0, menu_x, menu_y);
-        }
+        if (current.column >= 0) app->invoke_open_queue_column_menu(menu_x, menu_y);
+        else app->invoke_open_queue_menu(0, menu_x, menu_y);
         case_open = true;
+        case_keyboard_sent = false;
         changed_at = std::chrono::steady_clock::now();
         return;
       }
       if (std::chrono::steady_clock::now() - changed_at < std::chrono::milliseconds{350}) return;
+      if (current.column >= 0 && !case_keyboard_sent) {
+        // 开场完成后再操作，随后等待新增的焦点底色过渡，避免采到动画中的颜色。
+        for (int i = 0; i < current.column; ++i) send_key(app, slint::platform::key_codes::Tab);
+        if (!current.checked) send_key(app, slint::platform::key_codes::Space);
+        const std::array<bool, 7> checked{app->get_queue_index_visible(), app->get_queue_filename_visible(),
+            app->get_queue_dir_visible(), app->get_queue_size_visible(), app->get_queue_output_size_visible(),
+            app->get_queue_status_visible(), app->get_queue_log_visible()};
+        if (checked[static_cast<std::size_t>(current.column)] != current.checked) {
+          finish("原生列菜单未响应对应选项的键盘切换");
+          return;
+        }
+        case_keyboard_sent = true;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
       const auto pixel_matches = [&](float x, float y, const std::array<int, 3>& expected) {
         const int px = static_cast<int>(std::floor((menu_x + x) * scale));
         const int py = static_cast<int>(std::floor((menu_y + y) * scale));
@@ -1898,12 +1911,108 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   return verify_queue_column_resize(app);
 }
 
+// 只验证本次菜单动效，使用生产组件和模拟时钟，不触发其它页面或编码测试。
+int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
+                                bool english) {
+  using Role = slint::language::AccessibleRole;
+  app->set_selected_page(1);
+  app->set_selected_queue_index(-1);
+  awj::ui::bind_queue_model(*app, task_rows());
+  app->window().set_size(slint::LogicalSize({1171.0f, 800.0f}));
+  slint::cbindgen_private::slint_testing_use_native_popup(&app->window().window_handle(), false);
+  const auto active_popups = [&] {
+    return slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle());
+  };
+  const auto verify_open = [&](bool columns, float x, float y) -> int {
+    if (columns) app->invoke_open_queue_column_menu(x, y);
+    else app->invoke_open_queue_menu(0, x, y);
+    if (active_popups() != 1) return fail("菜单互斥打开后弹窗数量错误");
+    const auto id = columns ? "AwjStudio::queue-column-menu-surface" : "AwjStudio::queue-menu-surface";
+    const auto surfaces = slint::testing::ElementHandle::find_by_element_id(app, id);
+    if (surfaces.size() != 1) return fail(std::format("未找到动画菜单表面 {}", id));
+    const auto& surface = surfaces[0];
+    const auto initial = surface.size();
+    const auto initial_position = surface.absolute_position();
+    if (initial.width > 1 || initial.height > 1)
+      return fail("右键菜单没有从折叠状态开始展开");
+    slint::private_api::testing::mock_elapsed_time(1);
+    slint::private_api::testing::mock_elapsed_time(25);
+    (void)surface.size();
+    slint::private_api::testing::mock_elapsed_time(50);
+    const auto middle = surface.size();
+    const float expected_width = columns ? 220.0f : 216.0f;
+    const float expected_height = columns ? 280.0f : 338.0f;
+    if (!(middle.width > 1 && middle.width < expected_width - 0.1f &&
+          middle.height > 1 && middle.height < expected_height - 0.1f))
+      return fail(std::format("菜单缺少展开动画中间帧：columns={} size=({}, {})",
+                              columns, middle.width, middle.height));
+    slint::private_api::testing::mock_elapsed_time(250);
+    const auto final_size = surface.size();
+    const auto final_position = surface.absolute_position();
+    if (std::fabs(final_size.width - expected_width) > 0.5f ||
+        std::fabs(final_size.height - expected_height) > 0.5f)
+      return fail("菜单动画结束后尺寸错误");
+    if (initial_position.x < final_position.x - 0.5f || initial_position.y < final_position.y - 0.5f)
+      return fail("菜单展开起点超出点击位置方向");
+    return 0;
+  };
+  for (const auto point : {slint::LogicalPosition{{300, 200}}, slint::LogicalPosition{{1160, 790}}}) {
+    for (int reopen = 0; reopen < 2; ++reopen) {
+      if (const int result = verify_open(true, point.x, point.y)) return result;
+      const auto option = find_one(app, "#", Role::Checkbox);
+      if (!option || !option->accessible_checked() || !*option->accessible_checked())
+        return fail("列菜单的勾选状态丢失");
+      send_key(app, slint::platform::key_codes::Space);
+      if (app->get_queue_index_visible()) return fail("动画后的列菜单不响应键盘切换");
+      send_key(app, slint::platform::key_codes::Space);
+      if (!app->get_queue_index_visible()) return fail("列菜单无法恢复勾选状态");
+      if (const int result = verify_open(false, point.x, point.y)) return result;
+      if (const int result = verify_open(true, point.x, point.y)) return result;
+      send_key(app, slint::platform::key_codes::Escape);
+      if (active_popups() != 0) return fail("列菜单不响应 Escape");
+    }
+  }
+  app->invoke_open_queue_column_menu(300, 200);
+  send_key(app, slint::platform::key_codes::Escape);
+  slint::private_api::testing::mock_elapsed_time(300);
+  if (active_popups() != 0) return fail("开场计时器在关闭后重新打开菜单");
+  if (const int result = verify_open(true, 300, 200)) return result;
+  const slint::LogicalPosition outside{{30, 200}};
+  app->window().dispatch_pointer_press_event(outside, slint::PointerEventButton::Left);
+  app->window().dispatch_pointer_release_event(outside, slint::PointerEventButton::Left);
+  if (active_popups() != 0) return fail("列菜单不响应外部点击关闭");
+  if (app->get_selected_queue_index() != -1) return fail("打开菜单修改了队列详情选择");
+  std::printf("queue-menu-animation language=%s result=passed\n", english ? "en" : "zh");
+  return 0;
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
   if (const int result = verify_native_file_payload(); result != 0) return result;
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
+  }
+  if (argc >= 2 && std::string_view{argv[1]} == "--queue-menu-animation") {
+    if (argc != 2) return fail("菜单动画回归不接受额外参数");
+    slint::testing::init();
+    for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
+      for (const int theme : {1, 2}) {
+        for (const bool english : {false, true}) {
+          slint::select_bundled_translation(english ? "en" : "");
+          auto app = AwjStudio::create();
+          app->set_current_version(AWJ_UI_VERSION);
+          app->set_theme_index(theme);
+          app->set_language_index(english ? 1 : 0);
+          app->window().window_handle().set_const_scale_factor(scale);
+          app->show();
+          if (const int result = verify_queue_menu_animation(app, english)) return result;
+          app->hide();
+          std::printf("queue-menu-animation scale=%.2f theme=%d result=passed\n", double(scale), theme);
+        }
+      }
+    }
+    return 0;
   }
   if (argc >= 2 && std::string_view{argv[1]} == "--queue-column-regression") {
     if (argc != 2) return fail("队列列宽回归不接受额外参数");

@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.4**.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.5**.
 
 ## Formats
 

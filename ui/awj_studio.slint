@@ -212,8 +212,12 @@ export component AwjStudio inherits Window {
     in-out property <bool> queue-log-visible: true;
     property <length> queue-column-menu-x;
     property <length> queue-column-menu-y;
+    property <length> queue-column-menu-origin-x;
+    property <length> queue-column-menu-origin-y;
     property <length> queue-column-menu-width: 220px;
     property <length> queue-column-menu-height: 280px;
+    property <bool> queue-column-menu-visible: false;
+    property <bool> queue-column-menu-opening: false;
     in-out property <int> pending-theme-index: -1;
     in-out property <int> combo-close-generation: 0;
     in-out property <bool> combo-popup-open: false;
@@ -263,14 +267,21 @@ export component AwjStudio inherits Window {
     property <color> combo-border-hover: StudioTheme.combo-border-hover(root.dark-mode);
 
     public function open-queue-column-menu(x: length, y: length) {
+        root.queue-menu-opening = false;
         queue-menu-popup.close();
         root.queue-column-menu-x = clamp(x, 0px, max(0px, root.width - root.queue-column-menu-width - 10px));
         root.queue-column-menu-y = clamp(y, 0px, max(0px, root.height - root.queue-column-menu-height - 10px));
+        root.queue-column-menu-origin-x = max(0px, x - root.queue-column-menu-x);
+        root.queue-column-menu-origin-y = max(0px, y - root.queue-column-menu-y);
+        root.queue-column-menu-opening = false;
+        root.queue-column-menu-visible = false;
         queue-column-popup.show();
+        root.queue-column-menu-opening = true;
     }
 
     public function open-queue-menu(index: int, x: length, y: length) {
         if index >= 0 && index < root.task-rows.length {
+            root.queue-column-menu-opening = false;
             queue-column-popup.close();
             root.queue-menu-index = index;
             root.queue-menu-x = max(0px, min(root.width - root.queue-menu-width - 10px, x));
@@ -1073,26 +1084,45 @@ export component AwjStudio inherits Window {
             close-policy: close-on-click-outside;
             forward-focus: column-menu-focus;
 
+            column-menu-open-timer := Timer {
+                interval: root.queue-column-menu-visible ? 220ms : 20ms;
+                running: root.queue-column-menu-opening;
+                triggered => {
+                    if (!root.queue-column-menu-visible) {
+                        root.queue-column-menu-visible = true;
+                    } else {
+                        root.queue-column-menu-opening = false;
+                        // 等开场裁剪结束再恢复首项焦点，避免原生窗口将其判定为不可见。
+                        column-index-option.focus();
+                    }
+                }
+            }
+
             column-menu-focus := FocusScope {
                 width: parent.width;
                 height: parent.height;
                 forward-focus: column-index-option;
                 key-pressed(event) => {
                     if (event.text == Key.Escape) {
+                        root.queue-column-menu-opening = false;
                         queue-column-popup.close();
                         return accept;
                     }
                     return reject;
                 }
-                Rectangle {
-                    width: parent.width;
-                    height: parent.height;
+                queue-column-menu-surface := Rectangle {
+                    x: root.queue-column-menu-visible ? 0px : root.queue-column-menu-origin-x;
+                    y: root.queue-column-menu-visible ? 0px : root.queue-column-menu-origin-y;
+                    width: root.queue-column-menu-visible ? parent.width : 0px;
+                    height: root.queue-column-menu-visible ? parent.height : 0px;
                     border-radius: 6px;
                     border-width: 1px;
                     border-color: root.panel-border;
                     background: root.panel-bg;
+                    clip: true;
                     accessible-role: list;
                     accessible-label: @tr("显示列");
+                    animate x, y, width, height { duration: 220ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
                     VerticalLayout {
                         padding: 8px;
                         spacing: 2px;
@@ -1136,7 +1166,7 @@ export component AwjStudio inherits Window {
                 }
             }
 
-            Rectangle {
+            queue-menu-surface := Rectangle {
                 x: root.queue-menu-visible ? 0px : root.queue-menu-origin-x;
                 y: root.queue-menu-visible ? 0px : root.queue-menu-origin-y;
                 width: root.queue-menu-visible ? parent.width : 0px;

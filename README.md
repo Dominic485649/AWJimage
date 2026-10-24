@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前源码版本：**1.2.4**。
+AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前源码版本：**1.2.5**。
 
 ## 格式支持
 

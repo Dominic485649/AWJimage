@@ -550,9 +550,9 @@ int run_studio_ui(const wchar_t* health_event,
               nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL));
         };
         if (!pending_update_is_newer(*state)) {
-          state->changelog_opened_manually = true;
-          sync_update_ui(**app, *state);
-          (*app)->set_selected_page(4);
+          if (open_release("https://github.com/Dominic485649/AWJimage/releases") <= 32) {
+            (*app)->set_update_status(to_shared("无法打开发布页面。"));
+          }
           return;
         }
         if (worker_active(state) || (*app)->get_running()) {

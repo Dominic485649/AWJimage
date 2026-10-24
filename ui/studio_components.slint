@@ -651,6 +651,7 @@ export component MenuCheckBox inherits Rectangle {
     border-width: 0px;
     background: root.enabled && (check-touch.has-hover || root.has-focus)
         ? StudioTheme.accent-soft(root.dark-mode) : transparent;
+    animate background { duration: 120ms; easing: ease-out; }
     forward-focus: check-focus;
     accessible-role: checkbox;
     accessible-label: root.text;
