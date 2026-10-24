@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 17,
+  "sequence": 18,
   "key_id": "release-2026",
-  "issued_at": "2026-10-24T12:49:33Z",
-  "expires_at": "2027-01-22T08:53:20Z",
+  "issued_at": "2026-10-24T14:22:51Z",
+  "expires_at": "2027-01-22T14:22:51Z",
   "entries": [
     {
-      "version": "1.2.4",
+      "version": "1.2.5",
       "channel": "stable",
-      "published_at": "2026-10-24T08:53:20Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.4",
+      "published_at": "2026-10-24T14:22:51Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.5",
       "minimum_updater_version": "1.0.13",
-      "revoked": true,
+      "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
-            "size": 13211761,
-            "sha256": "11cd159f217b8059c354fcc83648150d781eb5a819c3b0e2bb2ef5e27cf887d3"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
+            "size": 13218863,
+            "sha256": "ae9bc99918c1209968f7a1fb153ede1d6f0953f93bb8090d983844c2aaa481e4"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
               "size": 24472064,
-              "sha256": "273d9ab640b3c5b9b95b42e5a3ee7c1644e8aaaffb649895775e2043c0cfaa0a"
+              "sha256": "e790ac8338ff2f72c6e51ea72fbe15e0b0709b36150c6663fe2a7e181b4718a2"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
-              "size": 20619264,
-              "sha256": "295c3660a6d79abb8e282a85e45304871c15d896b15e61c2d5469478ced3cd72"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
+              "size": 20649984,
+              "sha256": "d01bc5d27cd5be6963dd18b1aa360c4965a4cb808f64821c2d86d537c48f8ae4"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
               "size": 166170,
-              "sha256": "0c39a430e15ad5d24b6393da69c4502bca493ce8b563901dc6ac7ac0be7ddd4f"
+              "sha256": "691059784361088330d78ba3fe6f9d16049220862ef8f093be59c0a4b7597093"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
-            "size": 18342458,
-            "sha256": "da6bdbf6214b67421b7bbc0184b6a07e172b88071786345780a7ec7a18e6b652"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
+            "size": 18350626,
+            "sha256": "f32c2c633168a0122418dd11a91a0e71f78fb5369ca1c85e509e212bb2aea781"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
-              "size": 66183512,
-              "sha256": "9e71d2e957fd6608f34a73675455bcbe7eaeb536ee906d8385b0cd37ac1d65d7"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
+              "size": 66248664,
+              "sha256": "bb829eb8b2cbd1370a7a699c10b6bdfa3c74b18748ed72294e89f59c82cdc77b"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.4/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
               "size": 166042,
-              "sha256": "c2caac4c04dde3695af905a7055e9794bf72ec0bb5c18679c8cfdd4580bc0c0f"
+              "sha256": "ef2402c3dbaa1a837518246772238de9f14b7bbd078e5b2f57127a64b56edba9"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 编码队列\n\n- 明确显示源文件大小，新增输出大小列，成功转换后可直接比较；未生成、跳过、失败或取消的任务不显示旧输出大小。\n- 队列各列可独立拖动调整，分隔线只改变左侧列宽；最大化、缩小窗口或切换页面均保留当前列宽，溢出时通过底部滚动条同步查看表头和正文。\n- 右键表头可勾选显示或隐藏序号、文件名、目录、源文件大小、输出大小、状态和输出或日志。支持全部隐藏后恢复，文字统一左对齐，超长内容在右侧显示省略号。\n- 表头分隔线使用单个物理像素并对齐像素网格，高 DPI 下仍保持细线；深浅主题使用更柔和的独立配色，保留较宽的拖动命中区域。\n- 移除列显隐菜单各选项的整行白色焦点边框，保留勾选框、鼠标操作、键盘切换和无障碍状态；修复深色模式下任务右键菜单仍使用白色背景的问题。\n\n### 预设与配置\n\n- 编码队列默认使用内置预设。用户切换后，将所选预设的文件身份写入 AWJ.jsonc，并在下次启动时恢复。\n- 预设列表重排、语言切换或显示名修改不会错误切换队列预设；所选文件被删除或失效时回退内置默认，不加载配置指定的任意路径。\n- Windows 与 Linux 同步上述队列和预设行为，编解码器依赖版本及预设文件 schema 保持不变。",
-        "en": "### Encoding queue\n\n- Explicitly label source file sizes and add output sizes for direct comparison after successful conversion. Pending, skipped, failed and canceled tasks do not display stale output sizes.\n- Resize each column independently by dragging its right divider. Only the column on the left changes width. Maximize, narrow or switch pages without redistributing widths; use the bottom scrollbar to scroll headers and rows together.\n- Right-click the header to show or hide the index, file name, folder, source size, output size, status and output or log columns. Restore columns even after hiding all of them. Left-align cell text and ellipsize overflow on the right.\n- Use pixel-aligned, single-physical-pixel header dividers that stay thin at high DPI, with softer light/dark colors and unchanged wider drag targets.\n- Remove the full-row white focus outline from every column-menu option while preserving checkmarks, mouse interaction, keyboard selection and accessibility states. Fix the task context menu retaining a white background in dark mode.\n\n### Presets and settings\n\n- Start the encoding queue with the built-in defaults. Persist the selected user preset's file identity in AWJ.jsonc and restore it on the next launch.\n- Keep the correct selection after catalog reordering, language changes and display-name edits. Fall back to the built-in defaults when the selected file is deleted or invalid, without loading arbitrary paths from configuration.\n- Apply the queue and preset changes on Windows and Linux without changing codec dependency versions or the preset-file schema."
+        "zh-CN": "### 界面修复\n\n- 为队列表头右键菜单补齐与任务右键菜单一致的展开动画和选项背景过渡。\n- 菜单展开完成后恢复首项键盘焦点，保留列勾选、Escape 关闭及两类菜单互斥。\n- 恢复左上角版本号的点击行为：有可用更新时下载、验证并安装，没有更新时打开仓库 Releases，不再跳转到内置更新日志。\n- Windows 与 Linux 同步修复，保留现有大小对比、独立列宽、列显隐和预设记忆功能；编解码器依赖与配置格式保持不变。",
+        "en": "### UI fixes\n\n- Give the queue-header context menu the same opening animation and option-background transitions as the task context menu.\n- Restore initial keyboard focus after the opening clip completes while preserving column toggles, Escape dismissal and mutually exclusive menus.\n- Restore the top-left version action: download, verify and install an available update, or open the repository Releases page when no update is available, instead of navigating to the embedded changelog.\n- Apply the fixes on Windows and Linux while retaining size comparisons, independent column widths, column visibility and preset persistence. Codec dependency versions and configuration formats are unchanged."
       }
     }
   ]
