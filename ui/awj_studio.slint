@@ -5,7 +5,7 @@ import { SettingsPage } from "settings_page.slint";
 import { PresetEditor } from "preset_editor.slint";
 export { ShellConvertWindow } from "shell_convert_window.slint";
 import { Button, CheckBox, LineEdit, Palette, ScrollView, ListView, TextEdit } from "std-widgets.slint";
-import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, NavItem, QueueMenuItem, ParamHint } from "studio_components.slint";
+import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, NavItem, QueueMenuItem, MenuCheckBox, ParamHint } from "studio_components.slint";
 import { StudioTheme } from "studio_theme.slint";
 // 保持原 awj_studio.slint 的 C++ 公共类型名不变；组件实现已拆到独立文件。
 export { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption }
@@ -195,10 +195,25 @@ export component AwjStudio inherits Window {
     // 六个 token 共用该宽度，保证中英文在单行/双行布局中都不会因标签长度产生宽度差异。
     property <length> page-gap: 10px;
     property <length> nav-width: 147px;
-    // 队列列宽由 QueuePage 内的拖拽手柄改写，这里用 in-out 双向绑定保留会话内状态。
-    in-out property <length> queue-filename-width: 170px;
-    in-out property <length> queue-size-width: 72px;
+    // 列状态留在窗口中，切换页面及改变窗口大小都不重新分配列宽。
+    in-out property <length> queue-index-width: 40px;
+    in-out property <length> queue-filename-width: 190px;
+    in-out property <length> queue-dir-width: 220px;
+    in-out property <length> queue-size-width: 120px;
+    in-out property <length> queue-output-size-width: 120px;
     in-out property <length> queue-status-width: 104px;
+    in-out property <length> queue-log-width: 240px;
+    in-out property <bool> queue-index-visible: true;
+    in-out property <bool> queue-filename-visible: true;
+    in-out property <bool> queue-dir-visible: true;
+    in-out property <bool> queue-size-visible: true;
+    in-out property <bool> queue-output-size-visible: true;
+    in-out property <bool> queue-status-visible: true;
+    in-out property <bool> queue-log-visible: true;
+    property <length> queue-column-menu-x;
+    property <length> queue-column-menu-y;
+    property <length> queue-column-menu-width: 220px;
+    property <length> queue-column-menu-height: 280px;
     in-out property <int> pending-theme-index: -1;
     in-out property <int> combo-close-generation: 0;
     in-out property <bool> combo-popup-open: false;
@@ -247,8 +262,16 @@ export component AwjStudio inherits Window {
     property <color> combo-border: StudioTheme.combo-border(root.dark-mode);
     property <color> combo-border-hover: StudioTheme.combo-border-hover(root.dark-mode);
 
+    public function open-queue-column-menu(x: length, y: length) {
+        queue-menu-popup.close();
+        root.queue-column-menu-x = clamp(x, 0px, max(0px, root.width - root.queue-column-menu-width - 10px));
+        root.queue-column-menu-y = clamp(y, 0px, max(0px, root.height - root.queue-column-menu-height - 10px));
+        queue-column-popup.show();
+    }
+
     public function open-queue-menu(index: int, x: length, y: length) {
         if index >= 0 && index < root.task-rows.length {
+            queue-column-popup.close();
             root.queue-menu-index = index;
             root.queue-menu-x = max(0px, min(root.width - root.queue-menu-width - 10px, x));
             root.queue-menu-y = max(0px, min(root.height - root.queue-menu-height - 10px, y));
@@ -755,7 +778,19 @@ export component AwjStudio inherits Window {
     queue-drag-dropped(a0, a1) => { return root.queue-drag-dropped(a0, a1); }
     queue-failed-count <=> root.queue-failed-count;
     queue-failed-only <=> root.queue-failed-only;
+    queue-index-width <=> root.queue-index-width;
     queue-filename-width <=> root.queue-filename-width;
+    queue-dir-width <=> root.queue-dir-width;
+    queue-output-size-width <=> root.queue-output-size-width;
+    queue-log-width <=> root.queue-log-width;
+    queue-index-visible <=> root.queue-index-visible;
+    queue-filename-visible <=> root.queue-filename-visible;
+    queue-dir-visible <=> root.queue-dir-visible;
+    queue-size-visible <=> root.queue-size-visible;
+    queue-output-size-visible <=> root.queue-output-size-visible;
+    queue-status-visible <=> root.queue-status-visible;
+    queue-log-visible <=> root.queue-log-visible;
+    open-column-menu(x, y) => { root.open-queue-column-menu(x, y); }
     queue-format-index <=> root.queue-format-index;
     queue-pending-count <=> root.queue-pending-count;
     queue-preset-description : root.queue-preset-description;
@@ -1030,6 +1065,50 @@ export component AwjStudio inherits Window {
             }
         }
 
+        queue-column-popup := PopupWindow {
+            x: root.queue-column-menu-x;
+            y: root.queue-column-menu-y;
+            width: root.queue-column-menu-width;
+            height: root.queue-column-menu-height;
+            close-policy: close-on-click-outside;
+            forward-focus: column-menu-focus;
+
+            column-menu-focus := FocusScope {
+                width: parent.width;
+                height: parent.height;
+                forward-focus: column-index-option;
+                key-pressed(event) => {
+                    if (event.text == Key.Escape) {
+                        queue-column-popup.close();
+                        return accept;
+                    }
+                    return reject;
+                }
+                Rectangle {
+                    width: parent.width;
+                    height: parent.height;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: root.panel-border;
+                    background: root.panel-bg;
+                    accessible-role: list;
+                    accessible-label: @tr("显示列");
+                    VerticalLayout {
+                        padding: 8px;
+                        spacing: 2px;
+                        Text { text: @tr("显示列"); color: root.text-body; font-size: 13px; font-weight: 600; height: 24px; vertical-alignment: center; }
+                        column-index-option := MenuCheckBox { dark-mode: root.dark-mode; text: "#"; checked <=> root.queue-index-visible; }
+                        MenuCheckBox { dark-mode: root.dark-mode; text: @tr("文件名"); checked <=> root.queue-filename-visible; }
+                        MenuCheckBox { dark-mode: root.dark-mode; text: @tr("目录"); checked <=> root.queue-dir-visible; }
+                        MenuCheckBox { dark-mode: root.dark-mode; text: @tr("源文件大小"); checked <=> root.queue-size-visible; }
+                        MenuCheckBox { dark-mode: root.dark-mode; text: @tr("输出大小"); checked <=> root.queue-output-size-visible; }
+                        MenuCheckBox { dark-mode: root.dark-mode; text: @tr("状态"); checked <=> root.queue-status-visible; }
+                        MenuCheckBox { dark-mode: root.dark-mode; text: @tr("输出或日志"); checked <=> root.queue-log-visible; }
+                    }
+                }
+            }
+        }
+
         queue-menu-popup := PopupWindow {
             x: root.queue-menu-x;
             y: root.queue-menu-y;
@@ -1065,7 +1144,7 @@ export component AwjStudio inherits Window {
                 border-radius: 6px;
                 border-width: 1px;
                 border-color: root.panel-border;
-                background: #ffffff;
+                background: root.panel-bg;
                 clip: true;
                 accessible-role: list;
                 accessible-label: @tr("队列操作");

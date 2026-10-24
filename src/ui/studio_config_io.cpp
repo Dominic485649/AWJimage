@@ -56,6 +56,7 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .theme_index = app.get_theme_index(),
       .language_index = app.get_language_index(),
       .ui_font_family = shared_to_string(app.get_ui_font_family()),
+      .queue_preset_file = state != nullptr ? state->queue_preset_file : std::string{},
       .allow_wic_fallback = app.get_allow_wic_fallback(),
       .shell_menu_compatibility = app.get_shell_menu_compatibility(),
       .visual_quality_gpu = app.get_visual_quality_gpu(),
@@ -282,6 +283,10 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
       !result) {
     return result;
   }
+
+  // 可选身份字段缺失或类型失效时回到内置；稍后只在已验证清单内解析。
+  state.queue_preset_file = awj::studio_json::config_string(
+      *values, "queue_preset_file").value_or(std::string{});
 
   if (auto result = apply(apply_config_bool(
           app, *values, "allow_wic_fallback",

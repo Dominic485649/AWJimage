@@ -163,6 +163,8 @@ std::expected<void, std::string> write_studio_config_file(
   add_int("theme_index", current.theme_index, defaults.theme_index);
   add_int("language_index", current.language_index, defaults.language_index);
   add_string("ui_font_family", current.ui_font_family, defaults.ui_font_family);
+  add_string("queue_preset_file", current.queue_preset_file,
+             defaults.queue_preset_file);
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);

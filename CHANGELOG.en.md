@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.2.4 - 2026-10-24
+
+### Encoding queue
+
+- Explicitly label source file sizes and add output sizes for direct comparison after successful conversion. Pending, skipped, failed and canceled tasks do not display stale output sizes.
+- Resize each column independently by dragging its right divider. Only the column on the left changes width. Maximize, narrow or switch pages without redistributing widths; use the bottom scrollbar to scroll headers and rows together.
+- Right-click the header to show or hide the index, file name, folder, source size, output size, status and output or log columns. Restore columns even after hiding all of them. Left-align cell text and ellipsize overflow on the right.
+- Use pixel-aligned, single-physical-pixel header dividers that stay thin at high DPI, with softer light/dark colors and unchanged wider drag targets.
+- Remove the full-row white focus outline from every column-menu option while preserving checkmarks, mouse interaction, keyboard selection and accessibility states. Fix the task context menu retaining a white background in dark mode.
+
+### Presets and settings
+
+- Start the encoding queue with the built-in defaults. Persist the selected user preset's file identity in AWJ.jsonc and restore it on the next launch.
+- Keep the correct selection after catalog reordering, language changes and display-name edits. Fall back to the built-in defaults when the selected file is deleted or invalid, without loading arbitrary paths from configuration.
+- Apply the queue and preset changes on Windows and Linux without changing codec dependency versions or the preset-file schema.
+
 ## 1.2.3 - 2026-10-20
 
 ### Fixes and optimization

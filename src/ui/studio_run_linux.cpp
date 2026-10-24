@@ -48,6 +48,7 @@
 #include "studio_run_linux.h"
 #include "linux_process.h"
 #include "queue_model.h"
+#include "queue_preset_selection.h"
 #include "deferred_model.h"
 #include "changelog_history.h"
 
@@ -148,6 +149,8 @@ struct LinuxUiState {
   std::uint64_t next_queue_run_id{1};
   std::array<LinuxParameterParams, 5> builtin_params{};
   std::array<LinuxParameterParams, 5> parameter_preset_params{};
+  // 空串表示内置预设；持久化的身份不依赖下拉排序或显示名。
+  std::string queue_preset_file{};
   std::vector<awj::UserPreset> user_presets{};
   std::vector<std::string> user_preset_errors{};
   int parameter_preset_index{};
@@ -744,6 +747,7 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   }
   apply_int("theme_index", 0, 2, &AwjStudio::set_theme_index);
   apply_int("language_index", 0, 1, &AwjStudio::set_language_index);
+  state.queue_preset_file = linux_config_string(state.config_document, "queue_preset_file");
   apply_bool("allow_wic_fallback", &AwjStudio::set_allow_wic_fallback);
   apply_bool("visual_quality_gpu", &AwjStudio::set_visual_quality_gpu);
   apply_bool("visual_quality_fallback", &AwjStudio::set_visual_quality_fallback);
@@ -804,12 +808,15 @@ std::expected<void, std::string> persist_linux_update_config(
   if (!state.config_readable || state.config_path.empty()) {
     return std::unexpected{"AWJ.jsonc 当前不可安全写入。"};
   }
-  // 根配置是白名单写入：迁移时故意不复制旧文档，以清理普通队列、路径、
+  // 根配置是白名单写入：仅保留队列预设的文件身份，清理其余普通队列、路径、
   // 窗口状态以及曾经持久化的参数页数据。
   nlohmann::ordered_json document = nlohmann::ordered_json::object();
   document["theme_index"] = app.get_theme_index();
   document["language_index"] = app.get_language_index();
   document["ui_font_family"] = shared_to_string(app.get_ui_font_family());
+  if (!state.queue_preset_file.empty()) {
+    document["queue_preset_file"] = state.queue_preset_file;
+  }
   document["allow_wic_fallback"] = app.get_allow_wic_fallback();
   document["visual_quality_gpu"] = app.get_visual_quality_gpu();
   document["visual_quality_fallback"] = app.get_visual_quality_fallback();
@@ -1101,6 +1108,10 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
                  .filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
                  .folder = to_shared(awj::path_to_utf8(result.input_path.parent_path())),
                  .size = to_shared(awj::format_size(result.original_bytes)),
+                 // 仅本轮实际成功生成的结果有输出大小，跳过或失败不能沿用旧文件。
+                 .output_size = result.ok && !result.skipped && !result.canceled
+                                    ? to_shared(awj::format_size(result.output_bytes))
+                                    : to_shared("-"),
                  .status = to_shared(linux_result_status_text(result)),
                  .output = to_shared(awj::path_to_utf8(result.output_path.filename())),
                  .log = to_shared(result.ok ? std::string{} : result.message),
@@ -1192,6 +1203,7 @@ void mark_linux_task_row_running(AwjStudio& app,
       auto row = rows->row_data(*index);
       if (row) {
         row->status = to_shared("正在转码");
+        row->output_size = to_shared("-");
         row->locked = true;
         row->state = 1;
         awj::ui::replace_queue_row(app, rows, *index, *row);
@@ -1206,6 +1218,7 @@ void mark_linux_task_row_running(AwjStudio& app,
                           .folder = to_shared(awj::path_to_utf8(
                               result.input_path.parent_path())),
                           .size = to_shared(awj::format_size(result.original_bytes)),
+                          .output_size = to_shared("-"),
                           .status = to_shared("正在转码"),
                            .output = to_shared(awj::path_to_utf8(
                                result.output_path.filename())),
@@ -1260,6 +1273,7 @@ void add_large_image_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>
                               .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
                               .folder = to_shared(awj::path_to_utf8(item.file.path.parent_path())),
                               .size = to_shared(awj::format_size(item.file.bytes)),
+                              .output_size = to_shared("-"),
                               .status = to_shared("大图模式"),
                               .output = {},
                               .log = to_shared(std::format("{}；{}", awj::large_image_reason_name(item.decision.reason), item.decision.reason_text)),
@@ -1353,6 +1367,7 @@ TaskRow pending_linux_queue_row(const awj::ImageFile& file, std::size_t index,
       .filename = to_shared(awj::path_to_utf8(file.path.filename())),
       .folder = to_shared(awj::path_to_utf8(file.path.parent_path())),
       .size = to_shared(awj::format_size(file.bytes)),
+      .output_size = to_shared("-"),
       .status = to_shared("等待编码"),
       .output = file.resolved_output_path.empty()
                     ? slint::SharedString{}
@@ -2046,6 +2061,11 @@ std::array<LinuxParameterParams, 5> linux_parameter_params_from_user_preset(
 }
 
 void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
+  const bool editing_user_preset = state.parameter_preset_index > 1;
+  const auto parameter_file = editing_user_preset
+      ? awj::studio::queue_preset_file_for_index(
+            state.user_presets, state.parameter_preset_index - 1)
+      : std::string{};
   auto catalog = awj::list_user_presets();
   if (!catalog) {
     state.user_presets.clear();
@@ -2068,11 +2088,18 @@ void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
       std::make_shared<slint::VectorModel<ComboOption>>(std::move(queue_options)));
   app.set_parameter_preset_options(
       std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
-  if (app.get_queue_preset_index() > static_cast<int>(state.user_presets.size())) {
-    app.set_queue_preset_index(0);
-  }
-  if (state.parameter_preset_index < 0 ||
-      state.parameter_preset_index > static_cast<int>(state.user_presets.size()) + 1) {
+  // 参数页的编辑缓冲也跟随原文件，避免重排后误保存到另一个预设。
+  if (editing_user_preset) {
+    const int selected = awj::studio::queue_preset_index_for_file(
+        state.user_presets, parameter_file);
+    state.parameter_preset_index = selected == 0 ? 0 : selected + 1;
+    if (selected == 0) {
+      const auto format_index = linux_parameter_editor_format_index(app.get_format_index());
+      state.last_format_index = format_index;
+      apply_linux_parameter_params(
+          app, state.builtin_params[static_cast<std::size_t>(format_index)], format_index);
+    }
+  } else if (state.parameter_preset_index < 0) {
     state.parameter_preset_index = 0;
   }
   app.set_parameter_preset_index(state.parameter_preset_index);
@@ -2084,9 +2111,9 @@ void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
                 : to_shared(state.user_presets[static_cast<std::size_t>(
                                 state.parameter_preset_index - 2)]
                                 .description));
-  const auto queue_index = std::clamp(
-      app.get_queue_preset_index(), 0,
-      static_cast<int>(state.user_presets.size()));
+  const auto queue_index = awj::studio::queue_preset_index_for_file(
+      state.user_presets, state.queue_preset_file);
+  if (queue_index == 0) state.queue_preset_file.clear();
   app.set_queue_preset_index(queue_index);
   app.set_queue_preset_description(
       queue_index == 0
@@ -2118,11 +2145,16 @@ void select_linux_parameter_preset(AwjStudio& app, LinuxUiState& state, int inde
         app, state.menu_params[static_cast<std::size_t>(state.menu_format_index)]);
     return;
   }
-  apply_linux_format_parameters(app, state, app.get_format_index());
+  // 旧值已在切换前保存，不能再次采集并覆盖刚选中的预设或内置缓冲。
+  state.last_format_index = linux_parameter_editor_format_index(app.get_format_index());
+  apply_linux_parameter_params(
+      app, active_linux_parameter_params(state)[static_cast<std::size_t>(state.last_format_index)],
+      state.last_format_index);
 }
 
 void select_linux_queue_preset(AwjStudio& app, LinuxUiState& state, int index) {
-  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()));
+  state.queue_preset_file = awj::studio::queue_preset_file_for_index(state.user_presets, index);
+  index = awj::studio::queue_preset_index_for_file(state.user_presets, state.queue_preset_file);
   app.set_queue_preset_index(index);
   app.set_queue_preset_description(
       index == 0
@@ -2767,12 +2799,13 @@ int awj::studio::run_studio_ui() {
     apply_linux_parameter_params(*app, state->builtin_params.front(), 0);
     app->set_queue_format_index(0);
     app->set_queue_preset_index(0);
-    reload_linux_user_preset_options(*app, *state);
     for (int i = 0; i < 5; ++i) {
       state->menu_params[static_cast<std::size_t>(i)] =
           default_linux_menu_params(i);
     }
     load_linux_update_config(*app, *state);
+    // 先读取保存的文件身份与语言，再从有效目录清单恢复下拉选择。
+    reload_linux_user_preset_options(*app, *state);
     restore_cached_linux_update_history(*state);
     sync_linux_update_ui(*app, *state);
     state->menu_format_index = 0;
@@ -2948,7 +2981,15 @@ int awj::studio::run_studio_ui() {
     });
     app->on_queue_preset_selected([weak, state](int index) {
       if (auto app = weak.lock(); app && !(*app)->get_running()) {
+        const auto previous_file = state->queue_preset_file;
         select_linux_queue_preset(**app, *state, index);
+        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
+          // 保存失败不宣称选择已持久化，按原身份恢复而不是沿用旧索引。
+          select_linux_queue_preset(**app, *state,
+              awj::studio::queue_preset_index_for_file(state->user_presets, previous_file));
+          (*app)->set_status_text(to_shared(
+              std::format("队列预设保存失败，已恢复原选择：{}", saved.error())));
+        }
       }
     });
     app->on_queue_drag_data([weak, state](int index) {
@@ -3005,16 +3046,21 @@ int awj::studio::run_studio_ui() {
       if (!app || (*app)->get_running()) return;
       const auto index = state->parameter_preset_index;
       if (index <= 1 || index > static_cast<int>(state->user_presets.size()) + 1) return;
-      const auto queue_index = (*app)->get_queue_preset_index();
+      const auto previous_queue_file = state->queue_preset_file;
       const auto user_index = index - 2;
       auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(user_index)]);
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
-      state->parameter_preset_index = 0;
-      (*app)->set_queue_preset_index(
-          queue_index == user_index + 1 ? 0 : queue_index > user_index + 1 ? queue_index - 1 : queue_index);
-      reload_linux_user_preset_options(**app, *state);
       select_linux_parameter_preset(**app, *state, 0);
+      reload_linux_user_preset_options(**app, *state);
       (*app)->set_preset_editor_open(false);
+      if (state->queue_preset_file != previous_queue_file) {
+        if (auto saved = persist_linux_update_config(**app, *state); !saved) {
+          // 删除已完成，不能因配置写失败恢复一个已不存在的预设。
+          (*app)->set_status_text(to_shared(std::format(
+              "用户预设已删除，但队列选择保存失败：{}", saved.error())));
+          return;
+        }
+      }
       (*app)->set_status_text(to_shared("用户预设已删除。"));
     });
 
@@ -3067,17 +3113,20 @@ int awj::studio::run_studio_ui() {
             (*app)->set_preset_editor_error(to_shared(saved.error()));
             return;
           }
+          const auto previous_queue_file = state->queue_preset_file;
           reload_linux_user_preset_options(**app, *state);
-          const auto found = std::ranges::find(
-              state->user_presets, preset->name, &awj::UserPreset::name);
-          if (found != state->user_presets.end()) {
-            select_linux_parameter_preset(
-                **app, *state,
-                static_cast<int>(std::distance(state->user_presets.begin(), found)) +
-                    2);
-          }
+          const int saved_index = awj::studio::queue_preset_index_for_file(
+              state->user_presets, awj::studio::user_preset_file_name(*saved));
+          select_linux_parameter_preset(**app, *state, saved_index == 0 ? 0 : saved_index + 1);
           (*app)->set_preset_editor_open(false);
           (*app)->set_preset_editor_error({});
+          if (state->queue_preset_file != previous_queue_file) {
+            if (auto persisted = persist_linux_update_config(**app, *state); !persisted) {
+              (*app)->set_status_text(to_shared(std::format(
+                  "用户预设已保存，但队列选择保存失败：{}", persisted.error())));
+              return;
+            }
+          }
           (*app)->set_status_text(to_shared("用户预设已保存。"));
         });
     app->on_clear_tasks([weak, state] {
@@ -3348,6 +3397,7 @@ int awj::studio::run_studio_ui() {
         if (row && row->state == 3) {
           row->state = 0;
           row->status = to_shared("等待重试");
+          row->output_size = to_shared("-");
           row->warning = false;
           state->task_rows->set_row_data(index, *row);
         }
@@ -3409,6 +3459,7 @@ int awj::studio::run_studio_ui() {
                           if (row) {
                             row->state = 3;
                             row->status = to_shared("失败");
+                            row->output_size = to_shared("-");
                             row->log = to_shared(summary.error());
                             row->warning = true;
                             rows->set_row_data(*index, *row);
@@ -3476,10 +3527,16 @@ int awj::studio::run_studio_ui() {
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared(std::format("大图处理：{}", action)));
-      state->worker = std::jthread([weak, state, cfg = std::move(*cfg), index, action](std::stop_token token) mutable {
-        auto progress = [weak](const awj::BatchProgress& event) {
-          slint::invoke_from_event_loop([weak, event] {
+      const auto rows = state->task_rows;
+      state->worker = std::jthread([weak, state, rows, cfg = std::move(*cfg), index, action](std::stop_token token) mutable {
+        auto progress = [weak, state, rows](const awj::BatchProgress& event) {
+          slint::invoke_from_event_loop([weak, state, rows, event] {
             if (auto app = weak.lock()) {
+              if (event.kind == awj::BatchEventKind::item_started) {
+                mark_linux_task_row_running(**app, rows, *state, event.result);
+              } else if (event.kind == awj::BatchEventKind::item_finished) {
+                set_linux_task_row_result(**app, rows, *state, event.result);
+              }
               if (event.total > 0) {
                 (*app)->set_progress(static_cast<float>(event.completed) / static_cast<float>(event.total));
               }

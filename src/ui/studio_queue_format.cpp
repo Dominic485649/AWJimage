@@ -59,6 +59,41 @@ std::string stage_timings_text(double decode_seconds, double prepare_seconds,
                      stage_seconds_text(write_seconds));
 }
 
+TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
+  const auto folder = item.path.parent_path();
+  const auto output = item.locked_output_path.empty()
+                          ? std::string{}
+                          : awj::path_to_utf8(item.locked_output_path.filename());
+  const auto output_path = item.locked_output_path.empty()
+                               ? std::string{}
+                               : awj::path_to_utf8(item.locked_output_path);
+  const auto status = item.status_text.empty()
+                          ? queue_status_label(item.status)
+                          : item.status_text;
+  return TaskRow{.order = to_shared(std::format("{}", order + 1)),
+                 .filename = to_shared(awj::path_to_utf8(item.path.filename())),
+                 .folder = to_shared(awj::path_to_utf8(folder)),
+                 .size = to_shared(awj::format_size(item.bytes)),
+                 .output_size = item.output_bytes
+                                    ? to_shared(awj::format_size(*item.output_bytes))
+                                    : to_shared("-"),
+                 .status = to_shared(status),
+                 .output = to_shared(output),
+                 .log = item.log_text,
+                 .warning = item.warning,
+                 .locked = !queue_item_editable(item),
+                 .state = queue_status_code(item.status),
+                 .input_path = to_shared(awj::path_to_utf8(item.path)),
+                 .output_path = to_shared(output_path),
+                 .encoder = to_shared(item.encoder_id),
+                 .threads = item.encoder_threads > 0
+                                ? to_shared(std::format("{}", item.encoder_threads))
+                                : slint::SharedString{},
+                 .stage_timings = to_shared(stage_timings_text(
+                     item.decode_seconds, item.prepare_seconds,
+                     item.encode_seconds, item.write_seconds))};
+}
+
 bool queue_item_editable(const QueueImageItem& item) noexcept {
   return item.status == QueueItemStatus::pending;
 }

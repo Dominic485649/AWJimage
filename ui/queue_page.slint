@@ -2,28 +2,29 @@ import { CheckBox, LineEdit, ScrollView, ListView, TextEdit, Button } from "std-
 import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, ParamHint } from "studio_components.slint";
 import { StudioTheme } from "studio_theme.slint";
 
-// 列宽拖拽手柄：悬停显示分隔线，按住水平拖动回调增量。
-// 与 Fluent tableview 的做法一致，只改列宽属性，不参与行选中。
+struct QueueColumn { title: string, offset: length, width: length, shown: bool }
+
+// 手柄的命中区域比绘制线宽；绝对鼠标坐标避免列边界移动引起拖动累加。
 component ColumnResizer inherits Rectangle {
     in property <color> line-color;
     in property <length> resize-min: 40px;
-    in property <length> resize-max: 480px;
     in property <length> target-width;
     callback resized(length);
+    callback context-menu-requested(length, length);
 
-    width: 7px;
+    width: 8px;
     background: transparent;
+    property <length> pressed-width;
+    property <length> grab-x;
+    property <bool> resizing: false;
 
-    property <length> pressed-width: root.target-width;
-    property <length> grab-x: 0px;
-
-    Rectangle {
-        x: (parent.width - self.width) / 2;
-        width: 1px;
+    separator := Rectangle {
+        // 使用物理像素并对齐窗口像素网格，避免高 DPI 放大和半像素抗锯齿显粗。
+        x: Math.round((root.absolute-position.x + (root.width - self.width) / 2) / 1phx)
+            * 1phx - root.absolute-position.x;
+        width: 1phx;
         height: parent.height;
         background: root.line-color;
-        opacity: resizer-touch.has-hover || resizer-touch.pressed ? 1.0 : 0.0;
-        animate opacity { duration: 120ms; }
     }
 
     resizer-touch := TouchArea {
@@ -31,15 +32,21 @@ component ColumnResizer inherits Rectangle {
         height: parent.height;
         mouse-cursor: ew-resize;
         pointer-event(event) => {
-            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.resizing = true;
                 root.pressed-width = root.target-width;
-                root.grab-x = resizer-touch.absolute-position.x + resizer-touch.mouse-x;
+                root.grab-x = self.absolute-position.x + self.mouse-x;
+            } else if (event.kind == PointerEventKind.down && event.button == PointerEventButton.right) {
+                root.context-menu-requested(self.absolute-position.x + self.mouse-x,
+                    self.absolute-position.y + self.mouse-y);
+            } else if (event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel) {
+                root.resizing = false;
             }
         }
         moved => {
-            if (self.pressed) {
+            if (root.resizing && self.pressed) {
                 root.resized(clamp(root.pressed-width + self.absolute-position.x + self.mouse-x - root.grab-x,
-                                   root.resize-min, root.resize-max));
+                                   root.resize-min, 4096px));
             }
         }
     }
@@ -115,22 +122,53 @@ export component QueuePage inherits VerticalLayout {
     callback queue-preset-selected(int);
     callback queue-row-pointer-event(int, int, int, float);
     in-out property <int> queue-running-count;
-    // 可拖动列宽：由本页在拖拽手柄中改写，表头与数据行共用同一组值。
-    in-out property <length> queue-filename-width: 170px;
-    in-out property <length> queue-size-width: 72px;
+    in-out property <length> queue-index-width: 40px;
+    in-out property <length> queue-filename-width: 190px;
+    in-out property <length> queue-dir-width: 220px;
+    in-out property <length> queue-size-width: 120px;
+    in-out property <length> queue-output-size-width: 120px;
     in-out property <length> queue-status-width: 104px;
-    property <length> queue-index-width: 40px;
-    // 「目录」列也显式定宽、两侧共用。表头与数据行处在不同容器里（表头直接在
-    // queue-table 下，数据行在 ListView 视口里），让这一列弹性分配会得到不同
-    // 宽度（实测差约 20px），后面的固定列随之错位。共用一个由 queue-table
-    // 宽度算出的值，两侧逐列严格对齐。
-    // 常数项 = 左右 padding 20 + 五处间距 50 + 固定列合计 + 日志列预留 140
-    // （含 5 个 10px 间距与序号列）；窗口最小宽度下仍保底 60px，避免算成 0。
-    property <length> queue-fixed-columns: root.queue-index-width
-        + root.queue-filename-width + root.queue-size-width
-        + root.queue-status-width;
-    property <length> queue-dir-width: max(60px,
-        queue-table.width - 210px - root.queue-fixed-columns);
+    in-out property <length> queue-log-width: 240px;
+    in-out property <bool> queue-index-visible: true;
+    in-out property <bool> queue-filename-visible: true;
+    in-out property <bool> queue-dir-visible: true;
+    in-out property <bool> queue-size-visible: true;
+    in-out property <bool> queue-output-size-visible: true;
+    in-out property <bool> queue-status-visible: true;
+    in-out property <bool> queue-log-visible: true;
+    callback open-column-menu(length, length);
+
+    // 同一组绝对列坐标用于表头与虚拟化行；隐藏列不留下间距，也不分摊剩余宽度。
+    private property <length> filename-x: root.queue-index-visible ? root.queue-index-width : 0px;
+    private property <length> dir-x: root.filename-x + (root.queue-filename-visible ? root.queue-filename-width : 0px);
+    private property <length> size-x: root.dir-x + (root.queue-dir-visible ? root.queue-dir-width : 0px);
+    private property <length> output-size-x: root.size-x + (root.queue-size-visible ? root.queue-size-width : 0px);
+    private property <length> status-x: root.output-size-x + (root.queue-output-size-visible ? root.queue-output-size-width : 0px);
+    private property <length> log-x: root.status-x + (root.queue-status-visible ? root.queue-status-width : 0px);
+    private property <length> columns-width: root.log-x + (root.queue-log-visible ? root.queue-log-width : 0px);
+    private property <[QueueColumn]> columns: [
+        { title: "#", offset: 0px, width: root.queue-index-width, shown: root.queue-index-visible },
+        { title: @tr("文件名"), offset: root.filename-x, width: root.queue-filename-width, shown: root.queue-filename-visible },
+        { title: @tr("目录"), offset: root.dir-x, width: root.queue-dir-width, shown: root.queue-dir-visible },
+        { title: @tr("源文件大小"), offset: root.size-x, width: root.queue-size-width, shown: root.queue-size-visible },
+        { title: @tr("输出大小"), offset: root.output-size-x, width: root.queue-output-size-width, shown: root.queue-output-size-visible },
+        { title: @tr("状态"), offset: root.status-x, width: root.queue-status-width, shown: root.queue-status-visible },
+        { title: @tr("输出或日志"), offset: root.log-x, width: root.queue-log-width, shown: root.queue-log-visible }
+    ];
+    function resize-column(index: int, width: length) {
+        if (index == 0) { root.queue-index-width = width; }
+        else if (index == 1) { root.queue-filename-width = width; }
+        else if (index == 2) { root.queue-dir-width = width; }
+        else if (index == 3) { root.queue-size-width = width; }
+        else if (index == 4) { root.queue-output-size-width = width; }
+        else if (index == 5) { root.queue-status-width = width; }
+        else if (index == 6) { root.queue-log-width = width; }
+    }
+    function clamp-horizontal-scroll() {
+        queue-list.content-x = clamp(queue-list.content-x,
+            min(0px, queue-list.visible-width - root.columns-width), 0px);
+    }
+    changed columns-width => { root.clamp-horizontal-scroll(); }
     in-out property <int> queue-success-count;
     callback retry-failed();
     in-out property <bool> running;
@@ -437,55 +475,54 @@ export component QueuePage inherits VerticalLayout {
                 queue-header := Rectangle {
                     x: 0px;
                     y: 0px;
-                    // 表头与数据行同宽（都铺满视口）且 padding 一致，弹性「目录」列
-                    // 才会得到相同宽度，固定列随之对齐。列位置由下面的属性算出，
-                    // 手柄绝对定位在列右缘、不参与布局，因此不影响列宽分配。
-                    property <length> h-pad: 10px;
-                    property <length> h-spacing: 10px;
-                    property <length> h-dir-width: root.queue-dir-width;
-                    property <length> h-filename-edge: self.h-pad + root.queue-index-width
-                        + self.h-spacing + root.queue-filename-width;
-                    property <length> h-size-edge: self.h-filename-edge + self.h-spacing
-                        + self.h-dir-width + self.h-spacing + root.queue-size-width;
-                    property <length> h-status-edge: self.h-size-edge + self.h-spacing
-                        + root.queue-status-width;
                     width: parent.width;
                     height: 34px;
                     background: root.field-bg;
-                    border-color: root.field-border;
-                    border-width: 0px;
-                    animate background, border-color { duration: 180ms; easing: ease-out; }
-                    HorizontalLayout {
-                        padding-left: 10px;
-                        padding-right: 10px;
-                        spacing: 10px;
-                        Text { text: "#"; width: root.queue-index-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                        Text { text: @tr("文件名"); width: root.queue-filename-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text { text: @tr("目录"); width: root.queue-dir-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text { text: @tr("大小"); width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text { text: @tr("状态"); width: root.queue-status-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                        Text { text: @tr("输出或日志"); horizontal-stretch: 1; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
+                    clip: true;
+                    animate background { duration: 180ms; easing: ease-out; }
+                    header-touch := TouchArea {
+                        width: parent.width;
+                        height: parent.height;
+                        pointer-event(event) => {
+                            if (event.button == PointerEventButton.right && event.kind == PointerEventKind.down) {
+                                root.open-column-menu(self.absolute-position.x + self.mouse-x,
+                                    self.absolute-position.y + self.mouse-y);
+                            }
+                        }
                     }
-                    ColumnResizer {
-                        x: queue-header.h-filename-edge - 3px;
-                        y: 0px; height: parent.height;
-                        resize-min: 60px; resize-max: 480px; target-width: root.queue-filename-width;
-                        line-color: root.field-border;
-                        resized(w) => { root.queue-filename-width = w; }
-                    }
-                    ColumnResizer {
-                        x: queue-header.h-size-edge - 3px;
-                        y: 0px; height: parent.height;
-                        resize-min: 48px; resize-max: 200px; target-width: root.queue-size-width;
-                        line-color: root.field-border;
-                        resized(w) => { root.queue-size-width = w; }
-                    }
-                    ColumnResizer {
-                        x: queue-header.h-status-edge - 3px;
-                        y: 0px; height: parent.height;
-                        resize-min: 60px; resize-max: 280px; target-width: root.queue-status-width;
-                        line-color: root.field-border;
-                        resized(w) => { root.queue-status-width = w; }
+                    // 表头只跟随列表的水平偏移，垂直滚动仍保留固定表头。
+                    header-content := Rectangle {
+                        x: queue-list.content-x;
+                        width: max(root.columns-width, queue-header.width);
+                        height: parent.height;
+                        // 固定数量的委托保留正在拖动的 TouchArea，列状态变化只更新属性。
+                        for index in 7: Rectangle {
+                            property <QueueColumn> column: root.columns[index];
+                            x: self.column.offset;
+                            width: self.column.width;
+                            height: parent.height;
+                            visible: self.column.shown;
+                            header-label := Text {
+                                x: 10px;
+                                width: max(0px, parent.width - 20px);
+                                height: parent.height;
+                                text: parent.column.title;
+                                color: root.text-muted;
+                                font-size: 12px;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                                overflow: elide;
+                            }
+                            ColumnResizer {
+                                x: parent.width - self.width / 2;
+                                height: parent.height;
+                                resize-min: index == 0 ? 24px : 40px;
+                                target-width: parent.column.width;
+                                line-color: StudioTheme.queue-separator(root.dark-mode);
+                                resized(w) => { root.resize-column(index, w); }
+                                context-menu-requested(x, y) => { root.open-column-menu(x, y); }
+                            }
+                        }
                     }
                 }
 
@@ -519,12 +556,18 @@ export component QueuePage inherits VerticalLayout {
                         }
                     }
 
-                    if root.task-rows.length > 0 && (!root.queue-failed-only || root.queue-failed-count > 0): ListView {
+                    queue-list := ListView {
+                 width: parent.width;
+                 height: parent.height;
+                 content-width: max(root.columns-width, self.visible-width);
+                 horizontal-scrollbar-policy: as-needed;
+                 changed visible-width => { root.clamp-horizontal-scroll(); }
                  accessible-role: list;
                  accessible-label: @tr("编码任务");
                  accessible-item-count: root.queue-failed-only ? root.queue-failed-count : root.task-rows.length;
                  for row[index] in (root.queue-failed-only ? root.failed-task-rows : root.task-rows): Rectangle {
                      property <int> source-index: root.queue-failed-only ? root.failed-row-source-index(index) : index;
+                     width: max(root.columns-width, queue-list.visible-width);
                      height: 34px;
                      drop-row := DropArea {
                      property <length> hover-y: 0px;
@@ -557,19 +600,27 @@ export component QueuePage inherits VerticalLayout {
                              accessible-item-selectable: true;
                              accessible-item-selected: root.selected-queue-index == drop-row.source-index;
                              animate y, background { duration: 190ms; easing: cubic-bezier(0.16, 1, 0.3, 1); }
-                             HorizontalLayout {
-                                 // 与表头同宽同 padding：弹性「目录」列宽度才会一致，
-                                 // 固定列随之逐列对齐。滚动条是 14px 覆盖层，靠右侧
-                                 // 的「输出或日志」弹性列自然让出空间。
-                                 padding-left: 10px;
-                                 padding-right: 10px;
-                                 spacing: 10px;
-                                 Text { text: row.order; width: root.queue-index-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
-                                 Text { text: row.filename; width: root.queue-filename-width; color: root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                 Text { text: row.folder; width: root.queue-dir-width; color: root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                 Text { text: row.size; width: root.queue-size-width; color: root.text-muted; font-size: 12px; vertical-alignment: center; }
-                                 Text { text: row.status; width: root.queue-status-width; color: row.warning ? root.warning : root.text-body; font-size: 12px; overflow: elide; vertical-alignment: center; }
-                                 Text { text: row.output.is-empty ? row.log : row.output; horizontal-stretch: 1; color: row.warning ? root.warning : root.text-muted; font-size: 12px; overflow: elide; vertical-alignment: center; }
+                             for column-index in 7: Rectangle {
+                                 property <QueueColumn> column: root.columns[column-index];
+                                 x: self.column.offset;
+                                 width: self.column.width;
+                                 height: parent.height;
+                                 visible: self.column.shown;
+                                 clip: true;
+                                 cell-label := Text {
+                                     x: 10px;
+                                     width: max(0px, parent.width - 20px);
+                                     height: parent.height;
+                                     text: [row.order, row.filename, row.folder, row.size,
+                                         row.output-size.is-empty ? "-" : row.output-size, row.status,
+                                         row.output.is-empty ? row.log : row.output][column-index];
+                                     color: (column-index == 5 || column-index == 6) && row.warning ? root.warning
+                                         : (column-index == 1 || column-index == 5 ? root.text-body : root.text-muted);
+                                     font-size: 12px;
+                                     horizontal-alignment: left;
+                                     vertical-alignment: center;
+                                     overflow: elide;
+                                 }
                              }
                              row-touch := TouchArea {
                                  width: parent.width;

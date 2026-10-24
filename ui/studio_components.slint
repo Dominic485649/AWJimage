@@ -1,4 +1,5 @@
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, Palette } from "std-widgets.slint";
+import { StudioTheme } from "studio_theme.slint";
 
 export struct DropRegion { x: length, y: length, width: length, height: length }
 
@@ -7,6 +8,7 @@ export struct TaskRow {
     filename: string,
     folder: string,
     size: string,
+    output-size: string,
     status: string,
     output: string,
     log: string,
@@ -633,6 +635,86 @@ export component NavItem inherits Rectangle {
         }
     }
 
+}
+
+// 菜单使用底色提示焦点，不绘制标准 CheckBox 的整行焦点边框。
+export component MenuCheckBox inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> dark-mode: false;
+    in-out property <bool> checked;
+    out property <bool> has-focus <=> check-focus.has-focus;
+    callback toggled();
+
+    height: 32px;
+    border-radius: 4px;
+    border-width: 0px;
+    background: root.enabled && (check-touch.has-hover || root.has-focus)
+        ? StudioTheme.accent-soft(root.dark-mode) : transparent;
+    forward-focus: check-focus;
+    accessible-role: checkbox;
+    accessible-label: root.text;
+    accessible-enabled: root.enabled;
+    accessible-checkable: true;
+    accessible-checked: root.checked;
+    accessible-action-default => { root.toggle(); }
+
+    function toggle() {
+        if (root.enabled) {
+            root.checked = !root.checked;
+            root.toggled();
+        }
+    }
+
+    check-indicator := Rectangle {
+        x: 4px;
+        y: (parent.height - self.height) / 2;
+        width: 18px;
+        height: 18px;
+        border-radius: 2px;
+        border-width: root.checked ? 0px : 1px;
+        border-color: StudioTheme.text-muted(root.dark-mode);
+        background: root.checked ? Palette.accent-background : transparent;
+        Path {
+            x: 3px;
+            y: 3px;
+            width: 12px;
+            height: 12px;
+            visible: root.checked;
+            commands: "M 1 6 L 4.5 9.5 L 11 2";
+            stroke: Palette.accent-foreground;
+            stroke-width: 2px;
+            fill: transparent;
+        }
+    }
+    Text {
+        x: 34px;
+        width: max(0px, parent.width - 40px);
+        height: parent.height;
+        text: root.text;
+        color: StudioTheme.text-body(root.dark-mode);
+        font-size: 13px;
+        vertical-alignment: center;
+        horizontal-alignment: left;
+        overflow: elide;
+        accessible-role: none;
+    }
+    check-touch := TouchArea {
+        enabled: root.enabled;
+        clicked => { check-focus.focus(); root.toggle(); }
+    }
+    check-focus := FocusScope {
+        x: 0px;
+        width: 0px;
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Space || event.text == Key.Return) {
+                root.toggle();
+                return accept;
+            }
+            return reject;
+        }
+    }
 }
 
 export component QueueMenuItem inherits Rectangle {

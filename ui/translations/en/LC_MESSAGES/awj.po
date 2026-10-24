@@ -456,6 +456,15 @@ msgstr "Folder"
 msgid "大小"
 msgstr "Size"
 
+msgid "源文件大小"
+msgstr "Source size"
+
+msgid "输出大小"
+msgstr "Output size"
+
+msgid "显示列"
+msgstr "Show columns"
+
 msgid "状态"
 msgstr "Status"
 

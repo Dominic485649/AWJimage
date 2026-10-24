@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 
+#include "queue_preset_selection.h"
 #include "studio_fields.h"
 #include "studio_menu_params.h"
 #include "studio_parameter_page.h"
@@ -100,6 +101,7 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_bit_depth_follows_format(true);
   app.set_queue_format_index(0);
   app.set_queue_preset_index(0);
+  state.queue_preset_file.clear();
   app.set_strip_metadata(false);
   app.set_preserve_creation_time(false);
   app.set_preserve_modification_time(false);
@@ -113,32 +115,18 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
 }
 
 void reload_user_preset_options(AwjStudio& app, UiState& state) {
+  const bool editing_user_preset = state.parameter_preset_index > 1;
+  const auto parameter_file = editing_user_preset
+      ? queue_preset_file_for_index(state.user_presets, state.parameter_preset_index - 1)
+      : std::string{};
   auto catalog = awj::list_user_presets();
   if (!catalog) {
     state.user_presets.clear();
     state.user_preset_errors = {catalog.error()};
-    const auto builtin_label = app.get_language_index() == 1
-                                   ? "Built-in default" : "内置默认";
-    const auto menu_label = app.get_language_index() == 1
-                                ? "Context menu" : "右键菜单";
-    const std::vector<ComboOption> builtin_only{
-        {.text = to_shared(builtin_label), .enabled = true}};
-    const std::vector<ComboOption> parameter_only{
-        {.text = to_shared(builtin_label), .enabled = true},
-        {.text = to_shared(menu_label), .enabled = true}};
-    app.set_queue_preset_options(
-        std::make_shared<slint::VectorModel<ComboOption>>(builtin_only));
-    app.set_parameter_preset_options(
-        std::make_shared<slint::VectorModel<ComboOption>>(parameter_only));
-    app.set_queue_preset_index(0);
-    app.set_queue_preset_description({});
-    state.parameter_preset_index = 0;
-    app.set_parameter_preset_index(0);
-    app.set_parameter_preset_description({});
-    return;
+  } else {
+    state.user_presets = std::move(catalog->presets);
+    state.user_preset_errors = std::move(catalog->errors);
   }
-  state.user_presets = std::move(catalog->presets);
-  state.user_preset_errors = std::move(catalog->errors);
   std::vector<ComboOption> options;
   options.reserve(state.user_presets.size() + 2);
   options.push_back(ComboOption{.text = to_shared(app.get_language_index() == 1
@@ -154,13 +142,17 @@ void reload_user_preset_options(AwjStudio& app, UiState& state) {
       std::make_shared<slint::VectorModel<ComboOption>>(std::move(queue_options)));
   app.set_parameter_preset_options(
       std::make_shared<slint::VectorModel<ComboOption>>(options));
-  if (app.get_queue_preset_index() >
-      static_cast<int>(state.user_presets.size())) {
-    app.set_queue_preset_index(0);
-  }
-  if (state.parameter_preset_index < 0 ||
-      state.parameter_preset_index >
-          static_cast<int>(state.user_presets.size()) + 1) {
+  // 参数页的编辑缓冲也跟随原文件，避免重排后误保存到另一个预设。
+  if (editing_user_preset) {
+    const int selected = queue_preset_index_for_file(state.user_presets, parameter_file);
+    state.parameter_preset_index = selected == 0 ? 0 : selected + 1;
+    if (selected == 0) {
+      const auto format_index = parameter_editor_format_index(app.get_format_index());
+      state.last_format_index = format_index;
+      apply_parameter_params_to_ui(
+          app, state.builtin_params[static_cast<std::size_t>(format_index)], format_index);
+    }
+  } else if (state.parameter_preset_index < 0) {
     state.parameter_preset_index = 0;
   }
   app.set_parameter_preset_index(state.parameter_preset_index);
@@ -172,16 +164,8 @@ void reload_user_preset_options(AwjStudio& app, UiState& state) {
                 : to_shared(state.user_presets[static_cast<std::size_t>(
                                                state.parameter_preset_index - 2)]
                                 .description));
-  const auto queue_index = std::clamp(
-      app.get_queue_preset_index(), 0,
-      static_cast<int>(state.user_presets.size()));
-  app.set_queue_preset_index(queue_index);
-  app.set_queue_preset_description(
-      queue_index == 0
-          ? slint::SharedString{}
-          : to_shared(state.user_presets[static_cast<std::size_t>(
-                          queue_index - 1)]
-                          .description));
+  select_queue_preset(app, state,
+      queue_preset_index_for_file(state.user_presets, state.queue_preset_file));
 }
 
 std::expected<awj::AppConfig, std::string> config_from_parameter_params(
@@ -396,7 +380,8 @@ void select_parameter_preset(AwjStudio& app, UiState& state, int index) {
 }
 
 void select_queue_preset(AwjStudio& app, UiState& state, int index) {
-  index = std::clamp(index, 0, static_cast<int>(state.user_presets.size()));
+  state.queue_preset_file = queue_preset_file_for_index(state.user_presets, index);
+  index = queue_preset_index_for_file(state.user_presets, state.queue_preset_file);
   app.set_queue_preset_index(index);
   app.set_queue_preset_description(
       index == 0

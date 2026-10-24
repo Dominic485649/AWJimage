@@ -96,6 +96,7 @@ struct QueueImageItem {
   std::filesystem::path source_root{};
   std::filesystem::path relative_dir{};
   std::uintmax_t bytes{};
+  std::optional<std::uintmax_t> output_bytes{};
   QueueItemStatus status{QueueItemStatus::pending};
   std::size_t run_index{std::numeric_limits<std::size_t>::max()};
   std::filesystem::path locked_output_path{};
@@ -227,6 +228,8 @@ struct StudioConfigSnapshot {
   // 界面语言：0 = 中文（.slint 里的 msgid 原文），1 = English（bundled 翻译）。
   int language_index{};
   std::string ui_font_family{};
+  // 空串表示内置预设；用户预设仅保存目录清单中的 UTF-8 basename。
+  std::string queue_preset_file{};
   bool allow_wic_fallback{};
   bool shell_menu_compatibility{};
   bool visual_quality_gpu{true};
@@ -301,6 +304,8 @@ struct UiState {
   std::array<ParameterFormatParams, 5> parameter_preset_params{};
   std::array<MenuFormatParams, 5> menu_params{};
   std::string menu_preset_description{"用于右键菜单转换的参数。"};
+  // 独立于界面索引，重载目录时仍按文件身份恢复队列选择。
+  std::string queue_preset_file{};
   std::vector<awj::UserPreset> user_presets{};
   std::vector<std::string> user_preset_errors{};
   int parameter_preset_index{};

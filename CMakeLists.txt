@@ -1656,6 +1656,7 @@ if(BUILD_TESTING)
         "${CMAKE_CURRENT_BINARY_DIR}")
     target_compile_definitions(awj_ui_smoke_tests PRIVATE
         SLINT_FEATURE_EXPERIMENTAL=1
+        AWJ_UI_VERSION="${PROJECT_VERSION}"
         AWJ_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
     target_link_libraries(awj_ui_smoke_tests PRIVATE Slint::Slint)
     if(TARGET slint_cpp)

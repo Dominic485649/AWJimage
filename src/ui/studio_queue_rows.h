@@ -8,11 +8,9 @@
 #include <optional>
 
 #include "awj_studio.h"
-#include "studio_state.h"
+#include "studio_queue_format.h"
 
 namespace awj::studio {
-
-TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order);
 void refresh_queue_rows(AwjStudio& app, UiState& state);
 std::optional<std::size_t> queue_index_for_id(const UiState& state,
                                               std::uint64_t id) noexcept;

@@ -10,6 +10,7 @@
 
 namespace awj::studio {
 
+TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order);
 std::string queue_status_label(QueueItemStatus status);
 int queue_status_code(QueueItemStatus status) noexcept;
 std::string stage_seconds_text(double seconds);

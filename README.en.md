@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.3**.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.4**.
 
 ## Formats
 
@@ -30,7 +30,9 @@ Download published builds from [GitHub Releases](https://github.com/Dominic48564
 
 Drop images or folders into the queue, select an output directory and format, then click **Start conversion**. Save settings as presets. The parameter page can install Windows Explorer context menus; Linux supports Nautilus Scripts and Thunar UCA.
 
-Settings are stored in `AWJ.jsonc` beside the application. User presets live in `preset/*.jsonc`.
+The queue shows source sizes and output sizes after successful conversion. Drag a header divider to resize only the column on its left. Column widths stay fixed when the window is resized; use the bottom scrollbar to view overflowing columns. Right-click the header to choose visible columns. Widths and visibility are retained for the current session.
+
+Settings are stored in `AWJ.jsonc` beside the application. User presets live in `preset/*.jsonc`. The queue initially uses the built-in defaults. Selecting a user preset stores its filename in `queue_preset_file` and restores that selection on the next launch. Selecting the built-in defaults clears the saved selection; deleted or invalid presets also fall back to the built-in defaults.
 
 ## CLI
 

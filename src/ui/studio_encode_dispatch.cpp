@@ -8,8 +8,10 @@
 #include <chrono>
 #include <cstddef>
 #include <cwctype>
+#include <filesystem>
 #include <format>
 #include <mutex>
+#include <optional>
 #include <random>
 #include <string>
 #include <system_error>
@@ -168,6 +170,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       }
       item.status = QueueItemStatus::pending;
       item.status_text = "等待编码";
+      item.output_bytes.reset();
       clear_shared_string(item.log_text);
       item.encoder_id.clear();
       item.encoder_threads = 0;
@@ -222,7 +225,24 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       std::optional<StudioWorkerItemEvent> pending_item;
 
       auto publish_item = [&](StudioWorkerItemEvent event) {
-        post_to_ui(weak, [state, run_id, event](AwjStudio& app) {
+        std::optional<std::uintmax_t> output_bytes;
+        if (event.status == 'D') {
+          std::filesystem::path output_path;
+          {
+            std::scoped_lock lock{state->mutex};
+            if (state->run_id != run_id) return;
+            if (const auto index = queue_index_for_run_index(*state, event.index)) {
+              output_path = state->queue_items[*index].locked_output_path;
+            }
+          }
+          // 在监控线程读取完成文件的元数据，不在 UI 渲染或模型刷新中访问磁盘。
+          if (!output_path.empty()) {
+            std::error_code ec;
+            const auto bytes = std::filesystem::file_size(output_path, ec);
+            if (!ec) output_bytes = bytes;
+          }
+        }
+        post_to_ui(weak, [state, run_id, event, output_bytes](AwjStudio& app) {
           std::scoped_lock lock{state->mutex};
           if (state->run_id != run_id) {
             return;
@@ -230,6 +250,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
           if (auto queue_index =
                   queue_index_for_run_index(*state, event.index)) {
             auto& item = state->queue_items[*queue_index];
+            item.output_bytes = output_bytes;
             item.warning = item.warning || event.status == 'F';
             switch (event.status) {
               case 'R':

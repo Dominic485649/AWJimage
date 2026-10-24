@@ -50,6 +50,7 @@
 #include "file_drop_win32.h"
 #include "import_service.h"
 #include "path_picker_win32.h"
+#include "queue_preset_selection.h"
 #include "shell_context_menu.hpp"
 #include "studio_config.h"
 #include "studio_config_io.h"
@@ -760,17 +761,14 @@ int run_studio_ui(const wchar_t* health_event,
       if (!app || (*app)->get_running() || state->menu_operation_active) return;
       const auto index = state->parameter_preset_index;
       if (index <= 1 || index > static_cast<int>(state->user_presets.size()) + 1) return;
-      const auto queue_index = (*app)->get_queue_preset_index();
       const auto user_index = index - 2;
       auto removed = awj::delete_user_preset(state->user_presets[static_cast<std::size_t>(user_index)], [state] {
         return synchronize_shell_context_menu(state->menu_params);
       });
       if (!removed) { (*app)->set_preset_editor_error(to_shared(removed.error())); return; }
-      state->parameter_preset_index = 0;
-      (*app)->set_queue_preset_index(
-          queue_index == user_index + 1 ? 0 : queue_index > user_index + 1 ? queue_index - 1 : queue_index);
-      reload_user_preset_options(**app, *state);
+      // 先退出被删除项的编辑缓冲，队列选择由重载后的文件身份解析决定。
       select_parameter_preset(**app, *state, 0);
+      reload_user_preset_options(**app, *state);
       (*app)->set_preset_editor_open(false);
       (*app)->set_status_text(to_shared("用户预设已删除。"));
     });
@@ -821,14 +819,9 @@ int run_studio_ui(const wchar_t* health_event,
           return;
         }
         reload_user_preset_options(**app, *state);
-        const auto found = std::ranges::find(state->user_presets, preset->name,
-                                             &awj::UserPreset::name);
-        if (found != state->user_presets.end()) {
-          select_parameter_preset(
-              **app, *state,
-              static_cast<int>(std::distance(state->user_presets.begin(), found)) +
-                  2);
-        }
+        const int saved_index = awj::studio::queue_preset_index_for_file(
+            state->user_presets, awj::studio::user_preset_file_name(*saved));
+        select_parameter_preset(**app, *state, saved_index == 0 ? 0 : saved_index + 1);
         (*app)->set_preset_editor_open(false);
         (*app)->set_preset_editor_error({});
         (*app)->set_status_text(to_shared("用户预设已保存。"));

@@ -84,7 +84,7 @@ int verify_font_rendering_snapshots(const std::filesystem::path& directory, floa
   app->set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(fonts)));
   app->set_ui_font_index(family.empty() ? 0 : 1);
   app->set_ui_font_family(slint::SharedString{family});
-  app->set_current_version("1.2.2");
+  app->set_current_version(AWJ_UI_VERSION);
   app->set_selected_page(1);
   app->set_theme_index(1);
   slint::select_bundled_translation("");
@@ -455,6 +455,7 @@ std::shared_ptr<slint::VectorModel<TaskRow>> task_rows() {
           "failed-image-with-a-very-long-name-that-must-stay-contained.webp",
       .folder = "C:\\smoke\\input\\a-very-long-folder-name",
       .size = "4.2 MiB",
+      .output_size = "-",
       .status = "失败",
       .output = "failed.avif",
       .log = "完整错误：测试 worker 返回了可滚动的详细错误文本。",
@@ -471,6 +472,7 @@ std::shared_ptr<slint::VectorModel<TaskRow>> task_rows() {
                          .filename = "completed.png",
                          .folder = "C:\\smoke\\input",
                          .size = "1.0 MiB",
+                         .output_size = "256.0 KiB",
                          .status = "完成",
                          .output = "completed.avif",
                          .log = {},
@@ -831,78 +833,466 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
   using Role = slint::language::AccessibleRole;
   app->set_selected_page(1);
   app->set_queue_failed_only(false);
-  app->set_task_rows(task_rows());
+  awj::ui::bind_queue_model(*app, task_rows());
   app->set_selected_queue_index(-1);
+  app->set_queue_index_width(40.0f);
   app->set_queue_filename_width(170.0f);
-  app->set_queue_size_width(72.0f);
+  app->set_queue_dir_width(180.0f);
+  app->set_queue_size_width(110.0f);
+  app->set_queue_output_size_width(110.0f);
   app->set_queue_status_width(104.0f);
-  app->window().set_size(slint::LogicalSize({1220.0f, 827.0f}));
+  app->set_queue_log_width(220.0f);
+  app->window().set_size(slint::LogicalSize({1500.0f, 827.0f}));
   slint::select_bundled_translation("");
 
-  const auto header_filename = find_one(app, "文件名", Role::Text);
-  const auto header_size = find_one(app, "大小", Role::Text);
-  const auto header_status = find_one(app, "状态", Role::Text);
-  const auto header_log = find_one(app, "输出或日志", Role::Text);
-  const auto header_dir = find_one(app, "目录", Role::Text);
-  if (!header_filename || !header_size || !header_status) {
-    return fail("queue header columns are missing");
+  const std::array<std::string_view, 7> titles{
+      "#", "文件名", "目录", "源文件大小", "输出大小", "状态", "输出或日志"};
+  const std::array<std::string_view, 7> values{
+      "2", "completed.png", "C:\\smoke\\input", "1.0 MiB", "256.0 KiB", "完成", "completed.avif"};
+  const auto widths = [&] {
+    return std::array<float, 7>{app->get_queue_index_width(), app->get_queue_filename_width(),
+        app->get_queue_dir_width(), app->get_queue_size_width(), app->get_queue_output_size_width(),
+        app->get_queue_status_width(), app->get_queue_log_width()};
+  };
+  const auto visibility = [&] {
+    return std::array<bool, 7>{app->get_queue_index_visible(), app->get_queue_filename_visible(),
+        app->get_queue_dir_visible(), app->get_queue_size_visible(), app->get_queue_output_size_visible(),
+        app->get_queue_status_visible(), app->get_queue_log_visible()};
+  };
+  // Slint 的无障碍查询不返回完全裁剪的单元格，先在宽窗保留句柄，再核对屏外几何。
+  std::array<std::optional<slint::testing::ElementHandle>, 7> header_cells, row_cells;
+  for (std::size_t i = 0; i < titles.size(); ++i) {
+    header_cells[i] = find_one(app, titles[i], Role::Text);
+    row_cells[i] = find_one(app, values[i], Role::Text);
   }
-  const auto row_filename = find_one(app, "completed.png", Role::Text);
-  const auto row_status = find_one(app, "完成", Role::Text);
-  const auto row_size = find_one(app, "1.0 MiB", Role::Text);
-  if (!row_filename || !row_status || !row_size) {
-    return fail("queue data row columns are missing");
-  }
-
-  const auto header_size_x = header_size->absolute_position().x;
-  const auto header_status_x = header_status->absolute_position().x;
-  const auto row_size_x = row_size->absolute_position().x;
-  const auto row_status_x = row_status->absolute_position().x;
-
-  // 核心修复：表头与数据行的固定列必须逐列对齐。两者处在不同容器里
-  // （表头在 queue-table 下，数据行在 ListView 视口里），错位正是本次要修的。
-  if (std::fabs(header_size_x - row_size_x) > 2.0f) {
-    return fail(std::format(
-        "header size column misaligned with data row: header={} row={}",
-        header_size_x, row_size_x));
-  }
-  if (std::fabs(header_status_x - row_status_x) > 2.0f) {
-    return fail(std::format(
-        "header status column misaligned with data row: header={} row={}",
-        header_status_x, row_status_x));
-  }
-
-  // 拖动文件名列：该列自身应变宽（拖拽生效），且表头与数据行仍逐列对齐。
-  const auto before_filename_width = header_filename->size().width;
+  const auto aligned = [&] {
+    const auto sizes = widths();
+    for (std::size_t i = 0; i < titles.size(); ++i) {
+      const auto& header = header_cells[i];
+      const auto& row = row_cells[i];
+      if (!header || !row) {
+        std::fprintf(stderr, "queue-column lookup index=%zu header=%s row=%s\n", i,
+                     header ? "yes" : "no", row ? "yes" : "no");
+        return false;
+      }
+      if (std::fabs(header->absolute_position().x - row->absolute_position().x) > 1 ||
+          std::fabs(header->size().width - row->size().width) > 1 ||
+          std::fabs(header->size().width - (sizes[i] - 20)) > 1) {
+        std::fprintf(stderr, "queue-column geometry index=%zu header=(%.2f,%.2f) row=(%.2f,%.2f) expected=%.2f\n", i,
+                     header->absolute_position().x, header->size().width,
+                     row->absolute_position().x, row->size().width, sizes[i] - 20);
+        return false;
+      }
+    }
+    return true;
+  };
+  if (!aligned()) return fail("队列表头与数据行的固定列未对齐或缺少源/输出大小");
   const auto drag = [&](const auto& header, float delta) {
     const auto position = header->absolute_position();
-    const float x = position.x + header->size().width;
+    const float x = position.x + header->size().width + 9.0f;
     const float y = position.y + header->size().height / 2;
     app->window().dispatch_pointer_press_event(slint::LogicalPosition({x, y}), slint::PointerEventButton::Left);
     for (int step = 1; step <= 6; ++step)
       app->window().dispatch_pointer_move_event(slint::LogicalPosition({x + delta * step / 6, y}));
     app->window().dispatch_pointer_release_event(slint::LogicalPosition({x + delta, y}), slint::PointerEventButton::Left);
   };
-  drag(header_filename, 60.0f);
-  if (std::fabs(header_filename->size().width - (before_filename_width + 60.0f)) > 1.0f) {
-    return fail(std::format("filename column did not widen: {} -> {}",
-                            before_filename_width, header_filename->size().width));
+  const std::array<float, 7> deltas{12, 60, 35, 24, 18, -18, 44};
+  for (std::size_t i = 0; i < titles.size(); ++i) {
+    const auto before = widths();
+    const auto header = find_one(app, titles[i], Role::Text);
+    if (!header) return fail("拖动前缺少队列表头");
+    drag(header, deltas[i]);
+    const auto after = widths();
+    for (std::size_t j = 0; j < after.size(); ++j)
+      if (std::fabs(after[j] - before[j] - (i == j ? deltas[i] : 0)) > 1)
+        return fail(std::format("拖动列 {} 改变了非目标列 {} 或没有生效", i, j));
+    if (!aligned()) return fail("拖动后表头与数据行错位");
   }
-  if (std::fabs(row_filename->size().width - header_filename->size().width) > 1.0f) {
-    return fail("filename column width diverged between header and data row");
+  const auto filename_before_minimum = app->get_queue_filename_width();
+  const auto filename_for_minimum = find_one(app, "文件名", Role::Text);
+  if (!filename_for_minimum) return fail("最小列宽检查缺少文件名表头");
+  drag(filename_for_minimum, -1000);
+  if (app->get_queue_filename_width() != 40.0f) return fail("列宽未限制为可操作的最小值");
+  app->set_queue_filename_width(filename_before_minimum);
+  const auto fixed_widths = widths();
+  for (const float window_width : {1920.0f, 747.0f, 1100.0f, 820.0f}) {
+    app->window().set_size(slint::LogicalSize({window_width, 827.0f}));
+    slint::private_api::testing::mock_elapsed_time(300);
+    const auto actual_widths = widths();
+    if (actual_widths != fixed_widths) {
+      for (std::size_t i = 0; i < actual_widths.size(); ++i)
+        std::fprintf(stderr, "queue-column width window=%.0f index=%zu before=%.2f after=%.2f\n",
+                     window_width, i, fixed_widths[i], actual_widths[i]);
+      return fail("窗口缩放重新分配了队列列宽");
+    }
+    if (!aligned()) return fail(std::format("窗口宽度 {} 时表头与正文不对齐", window_width));
   }
-  if (std::fabs(header_size->absolute_position().x - row_size->absolute_position().x) > 2.0f ||
-      std::fabs(header_status->absolute_position().x - row_status->absolute_position().x) > 2.0f) {
-    return fail("fixed columns lost alignment after resize");
+
+  const auto lists = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-list");
+  const auto headers = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-header");
+  if (lists.size() != 1 || headers.size() != 1) return fail("队列滚动区或表头缺失");
+  const auto list_pos = lists[0].absolute_position();
+  const auto list_size = lists[0].size();
+  const slint::LogicalPosition scrollbar_point{{list_pos.x + list_size.width / 2, list_pos.y + list_size.height - 6}};
+  const auto filename_header = find_one(app, "文件名", Role::Text);
+  if (!filename_header) return fail("横向滚动前缺少文件名表头");
+  const auto before_scroll_x = filename_header->absolute_position().x;
+  const auto header_y = headers[0].absolute_position().y;
+  app->window().dispatch_pointer_scroll_event(scrollbar_point, -360, 0);
+  slint::private_api::testing::mock_elapsed_time(300);
+  if (filename_header->absolute_position().x >= before_scroll_x - 10 || !aligned() ||
+      std::fabs(headers[0].absolute_position().y - header_y) > 0.5f || widths() != fixed_widths)
+    return fail("横向滚动条没有同步移动表头/正文，或改变了列宽");
+
+  const auto source_header = find_one(app, "源文件大小", Role::Text);
+  if (!source_header) return fail("滚动后缺少源文件大小表头");
+  drag(source_header, 30);
+  auto resized_widths = fixed_widths;
+  resized_widths[3] += 30;
+  if (widths() != resized_widths || !aligned()) return fail("横向滚动后拖动没有只调整左列");
+  app->window().dispatch_pointer_scroll_event(scrollbar_point, 100000, 0);
+  slint::private_api::testing::mock_elapsed_time(300);
+  const float source_x = source_header->absolute_position().x;
+  app->set_queue_dir_visible(false);
+  slint::private_api::testing::mock_elapsed_time(20);
+  if (std::fabs(source_header->absolute_position().x - source_x + app->get_queue_dir_width()) > 1 ||
+      widths() != resized_widths) return fail("隐藏列留下空隙或修改了列宽");
+  app->set_selected_page(2);
+  if (!slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-header").empty())
+    return fail("切换页面没有真正移除队列组件");
+  app->set_selected_page(1);
+  if (app->get_queue_dir_visible() || widths() != resized_widths) return fail("切换页面丢失列宽或显隐状态");
+  const auto restored_filename = find_one(app, "文件名", Role::Text);
+  const auto restored_source = find_one(app, "源文件大小", Role::Text);
+  const auto restored_row_source = find_one(app, "1.0 MiB", Role::Text);
+  if (!restored_filename || !restored_source || !restored_row_source || find_one(app, "目录", Role::Text) ||
+      std::fabs(restored_filename->size().width - (resized_widths[1] - 20)) > 1 ||
+      std::fabs(restored_source->size().width - (resized_widths[3] - 20)) > 1 ||
+      std::fabs(restored_source->absolute_position().x - restored_filename->absolute_position().x - resized_widths[1]) > 1 ||
+      std::fabs(restored_source->absolute_position().x - restored_row_source->absolute_position().x) > 1)
+    return fail("队列组件重建后没有恢复实际列几何与显隐绑定");
+  app->set_queue_dir_visible(true);
+
+  const auto open_menu = [&] {
+    const auto header = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-header");
+    if (header.size() != 1) return false;
+    const auto pos = header[0].absolute_position();
+    const slint::LogicalPosition point{{pos.x + 16, pos.y + 16}};
+    app->window().dispatch_pointer_press_event(point, slint::PointerEventButton::Right);
+    app->window().dispatch_pointer_release_event(point, slint::PointerEventButton::Right);
+    return slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) == 1;
+  };
+  // 全部列均允许隐藏，空白表头仍能右键恢复；空队列也必须可以配置列。
+  awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>());
+  for (const bool show : {false, true}) {
+    if (!open_menu()) return fail("空队列或全隐藏表头无法打开列菜单");
+    for (std::size_t i = 0; i < titles.size(); ++i) {
+      send_key(app, slint::platform::key_codes::Space);
+      const auto visible = visibility();
+      for (std::size_t j = 0; j < visible.size(); ++j)
+        if (visible[j] != (j <= i ? show : !show)) return fail("列菜单复选框没有切换对应列");
+      if (slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) != 1)
+        return fail("勾选列时菜单意外关闭");
+      if (i + 1 < titles.size()) send_key(app, slint::platform::key_codes::Tab);
+    }
+    send_key(app, slint::platform::key_codes::Escape);
+    if (slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) != 0)
+      return fail("列菜单未响应 Escape");
+    if (widths() != resized_widths) return fail("切换列显隐丢失调整后的宽度");
   }
-  const auto before_size = app->get_queue_size_width();
-  drag(header_size, 24.0f);
-  if (std::fabs(app->get_queue_size_width() - before_size - 24.0f) > 1.0f)
-    return fail("size column pointer drag failed");
-  const auto before_status = app->get_queue_status_width();
-  drag(header_status, -18.0f);
-  if (std::fabs(app->get_queue_status_width() - before_status + 18.0f) > 1.0f)
-    return fail(std::format("status column pointer drag failed: {} -> {}", before_status, app->get_queue_status_width()));
+  awj::ui::bind_queue_model(*app, task_rows());
+  app->window().set_size(slint::LogicalSize({1500.0f, 827.0f}));
+  for (const int theme : {1, 2}) {
+    app->set_theme_index(theme);
+    for (const int language : {0, 1}) {
+      slint::select_bundled_translation(language ? "en" : "");
+      app->set_language_index(language);
+      const auto separators = slint::testing::ElementHandle::find_by_element_id(app, "ColumnResizer::separator");
+      if (separators.size() != titles.size()) return fail("并非所有队列列都有拖动分隔线");
+      const auto scale = app->window().scale_factor();
+      for (const auto& separator : separators) {
+        if (std::fabs(separator.size().width * scale - 1) > 0.01f)
+          return fail("标题分隔线不是单个物理像素");
+        const auto physical_x = separator.absolute_position().x * scale;
+        if (std::fabs(physical_x - std::round(physical_x)) > 0.01f)
+          return fail("标题分隔线没有对齐物理像素网格");
+      }
+      if (!find_one(app, language ? "Source size" : "源文件大小", Role::Text) ||
+          !find_one(app, language ? "Output size" : "输出大小", Role::Text) || widths() != resized_widths)
+        return fail("主题或语言切换丢失大小列或固定列宽");
+    }
+  }
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
+  return 0;
+}
+
+// 只覆盖表头细线的真实 GPU 像素，不加载控制器、用户配置或系统右键菜单。
+int verify_queue_separator_snapshots(const std::filesystem::path& directory, float scale) {
+  if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2)
+    return fail("分隔线截图缩放必须为 1、1.25、1.5 或 2");
+  if (!std::filesystem::create_directory(directory)) return fail("分隔线截图目录必须为新目录");
+  std::ofstream metrics{directory / "pixels.tsv"};
+  metrics << "theme\tseparator\tscale\tx\ty\tlogical_x\tlogical_width\tline_r\tline_g\tline_b\tbg_r\tbg_g\tbg_b\n";
+  if (!metrics) return fail("无法创建分隔线像素记录");
+  bool saw_opengl = false;
+  auto app = AwjStudio::create();
+  app->set_current_version(AWJ_UI_VERSION);
+  app->set_selected_page(1);
+  app->set_selected_queue_index(-1);
+  // 仅测试夹具缩窄目录列，让全部分隔线同时位于截图视口内；产品默认宽度不变。
+  app->set_queue_dir_width(160);
+  awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>());
+  slint::select_bundled_translation("");
+  app->window().window_handle().set_const_scale_factor(scale);
+  const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround(1171 * scale)),
+                                  static_cast<std::uint32_t>(std::lround(800 * scale))}};
+  if (app->window().set_rendering_notifier([&](slint::RenderingState, slint::GraphicsAPI api) {
+        saw_opengl = saw_opengl || api == slint::GraphicsAPI::NativeOpenGL;
+      })) return fail("分隔线像素回归需要原生 OpenGL 渲染器");
+  std::optional<std::string> error;
+  int theme = 1, captures = 0, frame_attempts = 0;
+  std::size_t checked_separators = 0;
+  bool size_requested = false, theme_set = false;
+  auto changed_at = std::chrono::steady_clock::now();
+  const auto finish = [&](std::string message) {
+    if (!message.empty()) error = std::move(message);
+    app->hide();
+    slint::quit_event_loop();
+  };
+  slint::Timer frames;
+  frames.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50}, [&] {
+    try {
+      if (!size_requested) {
+        app->window().set_size(size);
+        size_requested = true;
+        return;
+      }
+      const auto snapshot = app->window().take_snapshot();
+      const auto window_size = app->window().size();
+      if (!snapshot || snapshot->width() != size.width || snapshot->height() != size.height ||
+          window_size.width != size.width || window_size.height != size.height || !saw_opengl) {
+        if (++frame_attempts < 80) return;
+        finish("分隔线像素回归未获取请求尺寸的原生 GPU 帧");
+        return;
+      }
+      frame_attempts = 0;
+      if (std::fabs(app->window().scale_factor() - scale) > 0.001f) {
+        finish("分隔线像素回归未使用指定缩放比例");
+        return;
+      }
+#ifdef _WIN32
+      if (!app->window().win32_hwnd()) { finish("分隔线像素回归没有真实 Win32 窗口"); return; }
+#endif
+      if (!theme_set) {
+        app->set_theme_index(theme);
+        theme_set = true;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
+      if (std::chrono::steady_clock::now() - changed_at < std::chrono::milliseconds{350}) return;
+      const auto separators = slint::testing::ElementHandle::find_by_element_id(app, "ColumnResizer::separator");
+      if (separators.size() != 7) { finish("原生截图没有包含全部队列分隔线"); return; }
+      const auto line = theme == 2 ? std::array{105, 105, 105} : std::array{158, 172, 192};
+      const auto background = theme == 2 ? std::array{48, 48, 48} : std::array{251, 253, 255};
+      const auto pixel_matches = [&](int x, int y, const std::array<int, 3>& expected) {
+        const auto& pixel = snapshot->begin()[static_cast<std::size_t>(y) * snapshot->width() + x];
+        return std::abs(int(pixel.r) - expected[0]) <= 2 &&
+               std::abs(int(pixel.g) - expected[1]) <= 2 &&
+               std::abs(int(pixel.b) - expected[2]) <= 2;
+      };
+      for (std::size_t i = 0; i < separators.size(); ++i) {
+        const auto position = separators[i].absolute_position();
+        const auto extent = separators[i].size();
+        const auto physical_x = position.x * scale;
+        const int x = static_cast<int>(std::lround(physical_x));
+        const int y = static_cast<int>(std::lround((position.y + extent.height / 2) * scale));
+        if (std::fabs(extent.width * scale - 1) > 0.01f ||
+            std::fabs(physical_x - std::round(physical_x)) > 0.01f ||
+            x < 1 || x + 1 >= static_cast<int>(snapshot->width()) ||
+            y < 0 || y >= static_cast<int>(snapshot->height()) ||
+            !pixel_matches(x, y, line) || !pixel_matches(x - 1, y, background) ||
+            !pixel_matches(x + 1, y, background)) {
+          (void)write_snapshot_ppm(directory / std::format("failed-theme{}.ppm", theme), *snapshot);
+          finish(std::format("分隔线像素错误：theme={} separator={} x={} y={} width={:.4f}",
+              theme, i, x, y, extent.width * scale));
+          return;
+        }
+        metrics << std::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+            theme, i, scale, x, y, position.x, extent.width, line[0], line[1], line[2],
+            background[0], background[1], background[2]);
+        ++checked_separators;
+      }
+      if (!write_snapshot_ppm(directory / std::format("theme{}.ppm", theme), *snapshot)) {
+        finish("无法保存分隔线原生截图");
+        return;
+      }
+      ++captures;
+      if (theme == 2) { finish({}); return; }
+      theme = 2;
+      theme_set = false;
+    } catch (const std::exception& exception) { finish(exception.what()); }
+  });
+  app->window().on_close_requested([&] {
+    error = "分隔线回归窗口在完成前关闭";
+    slint::quit_event_loop();
+    return slint::CloseRequestResponse::HideWindow;
+  });
+  slint::Timer timeout;
+  timeout.start(slint::TimerMode::SingleShot, std::chrono::seconds{20}, [&] { finish("分隔线像素回归超时"); });
+  app->show();
+  slint::run_event_loop();
+  frames.stop();
+  timeout.stop();
+  metrics.flush();
+  if (error) return fail(*error);
+  if (captures != 2 || checked_separators != 14 || !saw_opengl || !metrics)
+    return fail("分隔线像素回归未覆盖全部主题和列");
+  std::printf("queue-separators scale=%.2f themes=%d separators=%zu physical_width=1 api=NativeOpenGL result=passed\n",
+              double(scale), captures, checked_separators);
+  return 0;
+}
+
+// 直接渲染生产组件，覆盖所有列的键盘焦点和勾选状态；不加载用户配置或同步系统菜单。
+int verify_menu_rendering_snapshots(const std::filesystem::path& directory, float scale) {
+  if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2)
+    return fail("菜单截图缩放必须为 1、1.25、1.5 或 2");
+  if (!std::filesystem::create_directory(directory)) return fail("菜单截图目录必须为新目录");
+  bool saw_opengl = false;
+  auto app = AwjStudio::create();
+  app->set_current_version(AWJ_UI_VERSION);
+  app->set_selected_page(1);
+  app->set_selected_queue_index(-1);
+  awj::ui::bind_queue_model(*app, task_rows());
+  slint::select_bundled_translation("");
+  app->window().window_handle().set_const_scale_factor(scale);
+  const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround(1171 * scale)),
+                                  static_cast<std::uint32_t>(std::lround(800 * scale))}};
+  struct MenuCase { int theme; int column; bool checked; };
+  std::vector<MenuCase> cases;
+  for (const int theme : {1, 2}) {
+    for (int column = 0; column < 7; ++column) {
+      cases.push_back({theme, column, true});
+      cases.push_back({theme, column, false});
+    }
+    cases.push_back({theme, -1, true});
+  }
+  constexpr float menu_x = 300, menu_y = 200;
+  if (app->window().set_rendering_notifier([&](slint::RenderingState, slint::GraphicsAPI api) {
+        saw_opengl = saw_opengl || api == slint::GraphicsAPI::NativeOpenGL;
+      })) return fail("菜单像素回归需要原生 OpenGL 渲染器");
+  std::optional<std::string> error;
+  std::size_t case_index = 0;
+  int captures = 0, frame_attempts = 0;
+  bool size_requested = false, case_open = false;
+  auto changed_at = std::chrono::steady_clock::now();
+  const auto finish = [&](std::string message) {
+    if (!message.empty()) error = std::move(message);
+    app->hide();
+    slint::quit_event_loop();
+  };
+  slint::Timer frames;
+  frames.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50}, [&] {
+    try {
+      if (!size_requested) {
+        app->window().set_size(size);
+        size_requested = true;
+        return;
+      }
+      const auto snapshot = app->window().take_snapshot();
+      const auto window_size = app->window().size();
+      if (!snapshot || snapshot->width() != size.width || snapshot->height() != size.height ||
+          window_size.width != size.width || window_size.height != size.height || !saw_opengl) {
+        if (++frame_attempts < 80) return;
+        finish("菜单像素回归未获取请求尺寸的原生 GPU 帧");
+        return;
+      }
+      frame_attempts = 0;
+      if (std::fabs(app->window().scale_factor() - scale) > 0.001f) {
+        finish("菜单像素回归未使用指定缩放比例");
+        return;
+      }
+#ifdef _WIN32
+      if (!app->window().win32_hwnd()) { finish("菜单像素回归没有真实 Win32 窗口"); return; }
+#endif
+      const auto current = cases.at(case_index);
+      if (!case_open) {
+        app->set_theme_index(current.theme);
+        if (current.column >= 0) {
+          app->invoke_open_queue_column_menu(menu_x, menu_y);
+          for (int i = 0; i < current.column; ++i) send_key(app, slint::platform::key_codes::Tab);
+          if (!current.checked) send_key(app, slint::platform::key_codes::Space);
+          const std::array<bool, 7> checked{app->get_queue_index_visible(), app->get_queue_filename_visible(),
+              app->get_queue_dir_visible(), app->get_queue_size_visible(), app->get_queue_output_size_visible(),
+              app->get_queue_status_visible(), app->get_queue_log_visible()};
+          if (checked[static_cast<std::size_t>(current.column)] != current.checked) {
+            finish("原生列菜单未响应对应选项的键盘切换");
+            return;
+          }
+        } else {
+          app->invoke_open_queue_menu(0, menu_x, menu_y);
+        }
+        case_open = true;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
+      if (std::chrono::steady_clock::now() - changed_at < std::chrono::milliseconds{350}) return;
+      const auto pixel_matches = [&](float x, float y, const std::array<int, 3>& expected) {
+        const int px = static_cast<int>(std::floor((menu_x + x) * scale));
+        const int py = static_cast<int>(std::floor((menu_y + y) * scale));
+        const auto& pixel = snapshot->begin()[static_cast<std::size_t>(py) * snapshot->width() + px];
+        return std::abs(int(pixel.r) - expected[0]) <= 8 &&
+               std::abs(int(pixel.g) - expected[1]) <= 8 &&
+               std::abs(int(pixel.b) - expected[2]) <= 8;
+      };
+      const std::array<int, 3> panel = current.theme == 2 ? std::array{40, 40, 40} : std::array{255, 255, 255};
+      const auto failed_frame = [&](std::string message) {
+        (void)write_snapshot_ppm(directory / std::format("failed-theme{}-column{}-checked{}.ppm",
+            current.theme, current.column, current.checked), *snapshot);
+        finish(std::move(message));
+      };
+      if (!pixel_matches(3, 80, panel) || !pixel_matches(3, 160, panel) || !pixel_matches(3, 250, panel)) {
+        failed_frame(std::format("菜单背景像素未跟随主题：theme={} column={}", current.theme, current.column));
+        return;
+      }
+      if (current.column >= 0) {
+        const std::array<int, 3> focus = current.theme == 2 ? std::array{20, 50, 91} : std::array{231, 241, 255};
+        const float center_y = 34 + 34 * static_cast<float>(current.column) + 16;
+        // 取整行最右侧的内部像素，避开标签和勾选框；标准 FocusBorder 在这里会产生白/黑边。
+        if (!pixel_matches(210.5f, center_y, focus) || !pixel_matches(209, center_y, focus)) {
+          failed_frame(std::format("列菜单仍有外框或焦点底色错误：theme={} column={} checked={}",
+              current.theme, current.column, current.checked));
+          return;
+        }
+      }
+      if (current.column == -1 || (current.column == 0 && current.checked) ||
+          (current.column == 4 && !current.checked)) {
+        const auto name = current.column == -1 ? std::format("tasks-theme{}.ppm", current.theme)
+            : std::format("columns-theme{}-column{}.ppm", current.theme, current.column);
+        if (!write_snapshot_ppm(directory / name, *snapshot)) { finish("无法保存菜单原生截图"); return; }
+        ++captures;
+      }
+      if (current.column >= 0 && !current.checked) send_key(app, slint::platform::key_codes::Space);
+      send_key(app, slint::platform::key_codes::Escape);
+      case_open = false;
+      if (++case_index == cases.size()) finish({});
+    } catch (const std::exception& exception) { finish(exception.what()); }
+  });
+  app->window().on_close_requested([&] {
+    error = "菜单回归窗口在完成前关闭";
+    slint::quit_event_loop();
+    return slint::CloseRequestResponse::HideWindow;
+  });
+  slint::Timer timeout;
+  timeout.start(slint::TimerMode::SingleShot, std::chrono::seconds{45}, [&] { finish("菜单像素回归超时"); });
+  app->show();
+  slint::run_event_loop();
+  frames.stop();
+  timeout.stop();
+  if (error) return fail(*error);
+  if (case_index != cases.size() || captures != 6 || !saw_opengl) return fail("菜单像素回归未覆盖全部状态");
+  std::printf("menu-rendering scale=%.2f cases=%zu snapshots=%d api=NativeOpenGL result=passed\n",
+              double(scale), case_index, captures);
   return 0;
 }
 
@@ -1515,6 +1905,28 @@ int main(int argc, char** argv) {
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
   }
+  if (argc >= 2 && std::string_view{argv[1]} == "--queue-column-regression") {
+    if (argc != 2) return fail("队列列宽回归不接受额外参数");
+    slint::testing::init();
+    for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
+      auto app = AwjStudio::create();
+      app->set_current_version(AWJ_UI_VERSION);
+      app->window().window_handle().set_const_scale_factor(scale);
+      app->show();
+      if (const int result = verify_queue_column_resize(app); result != 0) return result;
+      app->hide();
+      std::printf("queue-columns scale=%.2f result=passed\n", double(scale));
+    }
+    return 0;
+  }
+  if (argc >= 2 && std::string_view{argv[1]} == "--queue-separator-snapshots") {
+    if (argc != 4) return fail("分隔线像素回归需要输出目录和缩放参数");
+    return verify_queue_separator_snapshots(std::filesystem::path{argv[2]}, std::stof(argv[3]));
+  }
+  if (argc >= 2 && std::string_view{argv[1]} == "--menu-rendering-snapshots") {
+    if (argc != 4) return fail("菜单像素回归需要输出目录和缩放参数");
+    return verify_menu_rendering_snapshots(std::filesystem::path{argv[2]}, std::stof(argv[3]));
+  }
   if (argc == 4 && std::string_view{argv[1]} == "--font-rendering-snapshots") {
     return verify_font_rendering_snapshots(std::filesystem::path{argv[2]}, std::stof(argv[3]));
   }
@@ -1680,7 +2092,7 @@ int main(int argc, char** argv) {
     if (scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2)
       return fail("snapshot scale must be 1, 1.25, 1.5, or 2");
     app->window().window_handle().set_const_scale_factor(scale);
-    app->set_current_version("1.2.1");
+    app->set_current_version(AWJ_UI_VERSION);
     app->set_update_history(update_history_rows());
     if (scrolling) {
       std::vector<UpdateHistoryRow> history(64, *update_history_rows()->row_data(0));

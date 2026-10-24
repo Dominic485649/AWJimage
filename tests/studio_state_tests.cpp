@@ -1,6 +1,7 @@
 #include "../src/ui/studio_config.h"
 #include "../src/ui/studio_json.h"
 #include "../src/ui/studio_queue_format.h"
+#include "../src/ui/queue_preset_selection.h"
 #include <psapi.h>
 #include <chrono>
 #include <cstdio>
@@ -65,6 +66,29 @@ void queue_check(std::size_t count, bool legacy) {
   check(queue.capacity() == 0 && snapshot.capacity() == 0, "queue storage retained");
   memory("clear", count, legacy);
 }
+void queue_output_size_check() {
+  using namespace awj::studio;
+  QueueImageItem item{.path = L"C:\\queue-fixture\\size.png", .bytes = 8192};
+  const auto source_size = to_shared(awj::format_size(item.bytes));
+  const auto pending = make_queue_task_row(item, 0);
+  check(pending.size == source_size && pending.output_size == to_shared("-"),
+        "pending output size must be absent without changing source size");
+  item.status = QueueItemStatus::done;
+  item.output_bytes = 0;
+  const auto empty_output = make_queue_task_row(item, 0);
+  check(empty_output.size == source_size &&
+        empty_output.output_size == to_shared(awj::format_size(0)),
+        "zero-byte output was mistaken for an absent output");
+  item.output_bytes = 123456;
+  const auto completed = make_queue_task_row(item, 0);
+  check(completed.size == source_size &&
+        completed.output_size == to_shared(awj::format_size(*item.output_bytes)),
+        "completed output size was not formatted independently of source size");
+  item.output_bytes.reset();
+  item.status = QueueItemStatus::pending;
+  check(make_queue_task_row(item, 0).output_size == to_shared("-"),
+        "reset output size retained a previous completion");
+}
 void config_check() {
   using namespace awj::studio;
   namespace fs = std::filesystem;
@@ -73,6 +97,16 @@ void config_check() {
   auto current = StudioConfigSnapshot{};
   const auto defaults = current;
   check(current.only_show_changelog_after_update, "new changelog option must default on");
+  check(current.queue_preset_file.empty(), "queue preset must default to built-in");
+  current.queue_preset_file = "照片 测试.jsonc";
+  check(current != defaults, "snapshot equality ignored the queue preset identity");
+  current.queue_preset_file.clear();
+  check(current == defaults, "cleared queue preset did not restore default snapshot equality");
+  check(write_studio_config_file(current, defaults).has_value(), "default config write failed");
+  const auto default_config = awj::studio_json::parse_jsonc_config(read(path));
+  check(default_config && !default_config->contains("queue_preset_file"),
+        "built-in queue preset should be omitted from the config file");
+  current.queue_preset_file = "照片 测试.jsonc";
   current.show_update_changelog = false;
   current.only_show_changelog_after_update = false;
   current.language_index = 1;
@@ -86,8 +120,12 @@ void config_check() {
   current.menu_params[3].chroma_index = 4; // Removed JPG 400 from an old UI cache.
   {
     std::ofstream old(path);
-    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false})";
+    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output"})";
   }
+  const auto legacy = awj::studio_json::parse_jsonc_config(read(path));
+  check(legacy && awj::studio_json::config_string(*legacy, "queue_preset_file")
+                      .value_or(std::string{}).empty(),
+        "legacy queue index or name must not restore a user preset");
   check(write_studio_config_file(current, defaults).has_value(), "config write failed");
   const auto first = read(path);
   const auto parsed = awj::studio_json::parse_jsonc_config(first);
@@ -96,15 +134,30 @@ void config_check() {
         parsed->at("update_manifest_v2_raw").string == current.update_manifest_v2_raw &&
         parsed->at("update_keyring_raw").string == current.update_keyring_raw &&
         parsed->at("menu_preset_description").string == current.menu_preset_description &&
+        parsed->at("queue_preset_file").string == current.queue_preset_file &&
         parsed->at("menu_avif_chroma_index").integer == 4,
         "whitelist lost current config or v2 state");
+  auto selected_preset = awj::default_user_preset();
+  selected_preset.source_path = fs::path{u8"照片 测试.jsonc"};
+  selected_preset.name = "display name is not a persisted identity";
+  const std::vector<awj::UserPreset> catalog{selected_preset};
+  const auto restored_file = awj::studio_json::config_string(*parsed, "queue_preset_file");
+  check(restored_file && queue_preset_index_for_file(catalog, *restored_file) == 1,
+        "UTF-8 preset identity did not restore after a real config write and parse");
+  for (const auto* invalid : {R"({"queue_preset_file":7})", R"({"queue_preset_file":false})"}) {
+    const auto invalid_config = awj::studio_json::parse_jsonc_config(invalid);
+    check(invalid_config && queue_preset_index_for_file(catalog,
+              awj::studio_json::config_string(*invalid_config, "queue_preset_file")
+                  .value_or(std::string{})) == 0,
+          "invalid optional identity must restore the built-in preset");
+  }
   check(!parsed->contains("menu_jpgli_chroma_index") ||
         parsed->at("menu_jpgli_chroma_index").integer == 0,
         "old JPG 400 UI cache was persisted instead of normalizing to auto");
   check(!parsed->at("show_update_changelog").boolean &&
         !parsed->at("only_show_changelog_after_update").boolean, "changelog preferences were not preserved");
-  for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature", "hide_update_changelog_after_exit", "show_update_changelog_after_update"})
-    check(!parsed->contains(key), "legacy UI cache was persisted");
+  for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature", "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name", "queue_format_index", "format_index", "quality_text", "input_path", "output_dir"})
+    check(!parsed->contains(key), "legacy UI cache or transient queue state was persisted");
   check(!parsed->contains("menu_avif_avif_animation_tune_index") &&
         !parsed->contains("menu_avif_avif_animation_keyframe"), "CLI-only animation options persisted in UI config");
   for (const int index : {0, 1, 2, 3}) {
@@ -127,6 +180,14 @@ void config_check() {
               : !reloaded->contains("menu_avif_chroma_index")),
           "source-follow AVIF hid valid 400 or forced Identity retained invalid 400");
   }
+  auto builtin = current;
+  builtin.queue_preset_file.clear();
+  check(write_studio_config_file(builtin, defaults).has_value(),
+        "switching the queue back to built-in could not be saved");
+  const auto cleared = awj::studio_json::parse_jsonc_config(read(path));
+  check(cleared && !cleared->contains("queue_preset_file") &&
+        cleared->at("language_index").integer == current.language_index,
+        "returning to built-in retained its old identity or lost other config");
   check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
         "config rewrite was not idempotent");
   {
@@ -143,7 +204,7 @@ void config_check() {
 int main(int argc, char** argv) try {
   if (argc == 4 && std::string_view{argv[1]} == "--queue-benchmark") {
     queue_check(std::stoull(argv[2]), std::string_view{argv[3]} == "legacy");
-  } else { queue_check(10, false); config_check(); }
+  } else { queue_check(10, false); queue_output_size_check(); config_check(); }
   return 0;
 } catch (const std::exception& error) {
   std::fprintf(stderr, "%s\n", error.what());
