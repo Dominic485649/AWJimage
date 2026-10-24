@@ -1,8 +1,8 @@
 {
   "schema": 2,
-  "sequence": 16,
+  "sequence": 17,
   "key_id": "release-2026",
-  "issued_at": "2026-10-24T08:53:20Z",
+  "issued_at": "2026-10-24T12:49:33Z",
   "expires_at": "2027-01-22T08:53:20Z",
   "entries": [
     {
@@ -11,7 +11,7 @@
       "published_at": "2026-10-24T08:53:20Z",
       "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.4",
       "minimum_updater_version": "1.0.13",
-      "revoked": false,
+      "revoked": true,
       "assets": {
         "windows_x64_archive": {
           "archive": {
