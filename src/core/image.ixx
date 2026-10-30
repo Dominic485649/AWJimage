@@ -6,6 +6,8 @@ module;
 #include <expected>
 #include <filesystem>
 #include <optional>
+#include <memory>
+#include <limits>
 #include <span>
 #include <string>
 #include <string_view>
@@ -55,6 +57,18 @@ struct MetadataBlock {
 struct ImagePlane {
   std::vector<std::byte> bytes{};
   std::size_t stride{};
+  // 外部输入只读；bytes 仍专用于拥有型输出。借用跨候选线程时共享真实所有者。
+  std::span<const std::byte> borrowed{};
+  std::shared_ptr<const void> lease{};
+
+  [[nodiscard]] std::span<const std::byte> read_bytes() const noexcept {
+    return borrowed.empty() ? std::span<const std::byte>{bytes} : borrowed;
+  }
+  [[nodiscard]] bool contains_rows(std::size_t rows, std::size_t row_bytes) const noexcept {
+    if (!rows || stride < row_bytes || !stride ||
+        rows - 1 > (std::numeric_limits<std::size_t>::max() - row_bytes) / stride) return false;
+    return read_bytes().size() >= (rows - 1) * stride + row_bytes;
+  }
 };
 
 struct HdrContentLightMetadata {
@@ -75,6 +89,8 @@ struct ImageSourceInfo {
   // Linear FP16 values are relative to this diffuse white, not necessarily scRGB's 80 nits.
   std::optional<float> linear_reference_white_nits{};
   bool source_has_gain_map{};
+  // 与 AVChromaLocation 一致；未指定时保留原文件管线的居中采样约定。
+  std::optional<int> chroma_location{};
 };
 
 // Precision of the current unorm samples, independent of their 8/16-bit storage.

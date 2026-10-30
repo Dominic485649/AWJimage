@@ -568,9 +568,8 @@ std::expected<LumaDispatchInfo, std::string> describe_luma_dispatch(const ImageB
     return std::unexpected{"Direct3D luma 输入宽度过大。"};
   }
   const std::size_t min_stride = image.width * channels;
-  if (plane.stride < min_stride ||
-      plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
-      plane.bytes.size() < plane.stride * image.height) {
+  if (!plane.contains_rows(image.height, min_stride) ||
+      plane.stride > std::numeric_limits<std::size_t>::max() / image.height) {
     return std::unexpected{"Direct3D luma 输入 buffer 尺寸无效。"};
   }
   if (plane.stride > static_cast<std::size_t>(std::numeric_limits<std::uint32_t>::max())) {
@@ -591,7 +590,7 @@ std::expected<LumaDispatchInfo, std::string> describe_luma_dispatch(const ImageB
     return std::unexpected{"Direct3D luma dispatch 尺寸超过 GPU 资源限制。"};
   }
 
-  const std::size_t input_byte_count = plane.stride * image.height;
+  const std::size_t input_byte_count = plane.stride * (image.height - 1) + min_stride;
   const std::size_t input_word_count =
       input_byte_count / sizeof(std::uint32_t) +
       (input_byte_count % sizeof(std::uint32_t) == 0 ? 0u : 1u);
@@ -719,7 +718,7 @@ std::expected<LumaDispatchInfo, std::string> write_luma_buffer(GpuSessionState& 
     return std::unexpected{input_words.error()};
   }
   std::fill(session.input_words.begin(), session.input_words.end(), 0u);
-  std::memcpy(session.input_words.data(), plane.bytes.data(), info->input_byte_count);
+  std::memcpy(session.input_words.data(), plane.read_bytes().data(), info->input_byte_count);
 
   auto& gpu = *session.gpu;
   auto input_buffer = ensure_structured_buffer(gpu,
@@ -839,7 +838,7 @@ std::expected<LumaDispatchInfo, std::string> write_luma_buffer_batch(
     const auto& plane = images[index].planes.front();
     auto* target = session.input_words.data() +
                    index * first_info->input_word_count;
-    std::memcpy(target, plane.bytes.data(), first_info->input_byte_count);
+    std::memcpy(target, plane.read_bytes().data(), first_info->input_byte_count);
   }
 
   auto& gpu = *session.gpu;

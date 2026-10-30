@@ -16,6 +16,15 @@ project(AWJimage
 
 include(CTest)
 
+option(AWJ_BUILD_APPLICATION "构建桌面程序、CLI 和更新器" ON)
+option(AWJ_BUILD_SDK "构建仅公开 C ABI 的帧处理库" ON)
+option(AWJ_SDK_NATIVE_CODECS "SDK 包含项目原生编码器" ON)
+option(AWJ_ENABLE_GPU_METRICS "构建平台 GPU 视觉质量后端" ON)
+set(AWJ_SDK_VERSION "${PROJECT_VERSION}")
+if(AWJ_BUILD_SDK)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+endif()
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -173,6 +182,7 @@ find_package(TIFF REQUIRED)
 find_package(libraw CONFIG REQUIRED)
 find_package(AOM CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+if(AWJ_BUILD_APPLICATION)
 # CMake's FindLibArchive scans debug before release and otherwise pins every
 # Release executable to archive.lib built with /MTd. Select the vcpkg release
 # archive up front, then give the imported target explicit config locations.
@@ -206,12 +216,15 @@ if(NOT TARGET unofficial-sodium::sodium)
         INTERFACE_INCLUDE_DIRECTORIES "${AWJ_SYSTEM_SODIUM_INCLUDE_DIR}")
     add_library(unofficial-sodium::sodium ALIAS awj_system_sodium)
 endif()
+endif()
 if(WIN32)
     find_package(libyuv CONFIG REQUIRED)
 endif()
 if(NOT WIN32)
     find_package(Threads REQUIRED)
-    find_package(CURL REQUIRED)
+    if(AWJ_BUILD_APPLICATION)
+        find_package(CURL REQUIRED)
+    endif()
 endif()
 
 set(AWJ_JPEGLI_AVAILABLE OFF)
@@ -440,6 +453,7 @@ function(avif_copy_slint_runtime target)
     # 拷到独立目录，编译器不可能被打进包里，所以这个清理没有任何收益。
 endfunction()
 
+if(AWJ_ENABLE_GPU_METRICS)
 set(AWJ_VISUAL_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/core/shaders")
 set(AWJ_VISUAL_SHADER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/visual_shaders")
 set(AWJ_VISUAL_SHADER_HEADER "${AWJ_VISUAL_SHADER_GENERATED_DIR}/awj_visual_metric_shaders.hpp")
@@ -527,6 +541,9 @@ add_custom_command(
     COMMENT "Embedding visual metric shader bytecode"
     VERBATIM)
 add_custom_target(awj_visual_metric_shaders DEPENDS "${AWJ_VISUAL_SHADER_HEADER}")
+else()
+    add_custom_target(awj_visual_metric_shaders)
+endif()
 
 include(FetchContent)
 
@@ -554,6 +571,10 @@ FetchContent_Declare(libde265
     URL_HASH SHA256=${AWJ_LIBDE265_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
 FetchContent_MakeAvailable(libde265)
+if(MSVC AND CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND TARGET x86_sse)
+    # 上游把 clang-cl 归入 MSVC 分支，漏掉仅 SSE4.1 dispatch 对象所需的 ISA。
+    target_compile_options(x86_sse PRIVATE /clang:-msse4.1)
+endif()
 
 set(LIBDE265_INCLUDE_DIR "${libde265_SOURCE_DIR}" CACHE PATH "" FORCE)
 set(LIBDE265_LIBRARY de265 CACHE STRING "" FORCE)
@@ -619,6 +640,8 @@ target_include_directories(heif PUBLIC
     $<BUILD_INTERFACE:${libheif_SOURCE_DIR}/libheif/api>
     $<BUILD_INTERFACE:${libheif_BINARY_DIR}>)
 target_compile_definitions(heif PRIVATE LIBDE265_STATIC_BUILD)
+# libheif 的上游 target 即使静态链接仍传播 LIBHEIF_EXPORTS，必须关闭 DLL 导出标记。
+target_compile_definitions(heif PUBLIC LIBHEIF_STATIC_BUILD)
 target_include_directories(heif PRIVATE "${libde265_BINARY_DIR}")
 set(BUILD_TESTING ${AWJ_PARENT_BUILD_TESTING})
 
@@ -737,6 +760,7 @@ else()
     message(STATUS "JPGLI/Jpegli codec support disabled by AWJ_ENABLE_JPEGLI=OFF.")
 endif()
 
+if(AWJ_BUILD_APPLICATION)
 if(AVIF_STATIC_SLINT)
     set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
 else()
@@ -787,6 +811,7 @@ if(NOT WIN32)
         endif()
     endforeach()
     target_link_libraries(Slint INTERFACE fontconfig freetype)
+endif()
 endif()
 
 function(avif_add_slint_sources target slint_file)
@@ -886,29 +911,35 @@ add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
 add_dependencies(awj_base awj_visual_metric_shaders)
 target_link_libraries(awj_base PUBLIC awj_shared awj_libplacebo)
-if(WIN32)
+if(NOT AWJ_ENABLE_GPU_METRICS)
+    target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=0 AWJ_HAS_VULKAN=0)
+elseif(WIN32)
     target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=1 AWJ_HAS_VULKAN=0)
 else()
     target_link_libraries(awj_base PUBLIC Vulkan::Headers Threads::Threads ${CMAKE_DL_LIBS})
     target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=0 AWJ_HAS_VULKAN=1)
 endif()
-target_sources(awj_base PRIVATE "${AWJ_VISUAL_SHADER_HEADER}")
-target_include_directories(awj_base PUBLIC "$<BUILD_INTERFACE:${AWJ_VISUAL_SHADER_GENERATED_DIR}>")
+if(AWJ_ENABLE_GPU_METRICS)
+    target_sources(awj_base PRIVATE "${AWJ_VISUAL_SHADER_HEADER}")
+    target_include_directories(awj_base PUBLIC "$<BUILD_INTERFACE:${AWJ_VISUAL_SHADER_GENERATED_DIR}>")
+endif()
+if(NOT WIN32)
+    target_link_libraries(awj_base PUBLIC Threads::Threads)
+endif()
 target_sources(awj_base PUBLIC
     FILE_SET awj_base_modules TYPE CXX_MODULES FILES
         src/core/visual_metrics.ixx
         src/core/hdr_tonemap.ixx)
 
-if(WIN32)
-    target_sources(awj_base
-        PUBLIC
-            FILE_SET awj_base_modules TYPE CXX_MODULES FILES
-                src/core/visual_metrics_gpu.ixx)
+if(NOT AWJ_ENABLE_GPU_METRICS)
+    target_sources(awj_base PUBLIC FILE_SET awj_base_modules TYPE CXX_MODULES FILES
+        src/core/visual_metrics_gpu_disabled.ixx)
+elseif(WIN32)
+    target_sources(awj_base PUBLIC FILE_SET awj_base_modules TYPE CXX_MODULES FILES
+        src/core/visual_metrics_gpu.ixx)
 else()
-    target_sources(awj_base
-        PUBLIC
-            FILE_SET awj_base_modules TYPE CXX_MODULES FILES
-                src/core/visual_metrics_gpu_vulkan.ixx)
+    target_sources(awj_base PUBLIC FILE_SET awj_base_modules TYPE CXX_MODULES FILES
+        src/core/visual_metrics_gpu_vulkan.ixx)
 endif()
 
 add_library(awj_raw_image_io STATIC)
@@ -1038,6 +1069,13 @@ target_sources(awj_pipeline
 
 add_library(awj_core INTERFACE)
 target_link_libraries(awj_core INTERFACE awj_pipeline)
+
+if(AWJ_BUILD_SDK)
+    include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdk-targets.cmake")
+endif()
+if(NOT AWJ_BUILD_APPLICATION)
+    return()
+endif()
 
 # 更新系统的纯逻辑核心：版本比较、渠道过滤、候选判定和检查调度。
 # 刻意不依赖 awj_base —— 这一层没有 I/O 也没有平台 API，独立成库才能让

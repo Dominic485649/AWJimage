@@ -192,8 +192,11 @@ AvifEncoderSelection make_selection(const AvifEncoderCapability& capability,
 
 const AvifEncoderCapability* find_capability(std::span<const AvifEncoderCapability> capabilities,
                                              AvifEncoderMode mode) {
-  const auto it = std::ranges::find(capabilities, mode, &AvifEncoderCapability::mode);
-  return it == capabilities.end() ? nullptr : &*it;
+  // Clang 21 在 modules 中生成成员投影 ranges::find 的 IR 时会崩溃。
+  for (const auto& capability : capabilities) {
+    if (capability.mode == mode) return &capability;
+  }
+  return nullptr;
 }
 
 }  // namespace awj_registry_detail

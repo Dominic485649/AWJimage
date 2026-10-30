@@ -186,7 +186,7 @@ std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& imag
   if (!expected_bytes) {
     return std::unexpected{expected_bytes.error()};
   }
-  if (plane.stride < *expected_stride || plane.bytes.size() < *expected_bytes) {
+  if (!plane.contains_rows(image.height, *expected_stride)) {
     return std::unexpected{"WebP encoder 输入 RGBA buffer 尺寸无效。"};
   }
   return &plane;
@@ -664,7 +664,7 @@ class WebPImageEncoder final : public ImageEncoder {
             image.width, image.height, WEBP_MAX_DIMENSION)};
       }
 
-      const auto* rgba = reinterpret_cast<const std::uint8_t*>((*plane)->bytes.data());
+      const auto* rgba = reinterpret_cast<const std::uint8_t*>((*plane)->read_bytes().data());
       const int width = static_cast<int>(image.width);
       const int height = static_cast<int>(image.height);
       const int stride = static_cast<int>((*plane)->stride);
@@ -695,7 +695,7 @@ class WebPImageEncoder final : public ImageEncoder {
       picture.picture.height = height;
       webp_detail::WebPVectorWriter writer{.stop_token = &stop_token};
       writer.bytes.reserve(
-          webp_detail::initial_encoder_output_capacity((*plane)->bytes.size()));
+          webp_detail::initial_encoder_output_capacity((*plane)->read_bytes().size()));
       picture.picture.writer = webp_detail::write_webp_bytes;
       picture.picture.custom_ptr = &writer;
       if (stop_token.stop_requested()) {
@@ -703,13 +703,13 @@ class WebPImageEncoder final : public ImageEncoder {
       }
       if (is_yuv_format(image.pixel_format)) {
         picture.picture.colorspace = image.alpha_mode == AlphaMode::none ? WEBP_YUV420 : WEBP_YUV420A;
-        picture.picture.y = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[0].bytes.data()));
-        picture.picture.u = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[1].bytes.data()));
-        picture.picture.v = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[2].bytes.data()));
+        picture.picture.y = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[0].read_bytes().data()));
+        picture.picture.u = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[1].read_bytes().data()));
+        picture.picture.v = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[2].read_bytes().data()));
         picture.picture.y_stride = static_cast<int>(image.planes[0].stride);
         picture.picture.uv_stride = static_cast<int>(image.planes[1].stride);
         if (image.alpha_mode != AlphaMode::none) {
-          picture.picture.a = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[3].bytes.data()));
+          picture.picture.a = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[3].read_bytes().data()));
           picture.picture.a_stride = static_cast<int>(image.planes[3].stride);
         }
       } else if (settings.applied_alpha == "kept") {

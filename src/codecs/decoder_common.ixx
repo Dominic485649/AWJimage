@@ -256,17 +256,16 @@ std::expected<bool, std::string> has_non_opaque_alpha(const ImageBuffer& image,
   const auto bytes = image.bit_depth > 8 ? 2u : 1u;
   const auto channels = planar ? 1u : 4u;
   const auto& plane = image.planes[planar ? 3 : 0];
-  if (size[0] > std::numeric_limits<std::size_t>::max() / channels / bytes || plane.stride == 0 ||
-      plane.stride < size[0] * channels * bytes || size[1] > std::numeric_limits<std::size_t>::max() / plane.stride ||
-      plane.bytes.size() < size[1] * plane.stride)
+  if (size[0] > std::numeric_limits<std::size_t>::max() / channels / bytes ||
+      !plane.contains_rows(size[1], size[0] * channels * bytes))
     return std::unexpected{std::format("{} alpha buffer 尺寸无效。", context)};
   const auto opaque = image.sample_representation == SampleRepresentation::ieee_half_float ? 0x3c00u : (1u << image.bit_depth) - 1;
   for (std::size_t y = 0; y < image.height; ++y) for (std::size_t x = 0; x < image.width; ++x) {
     const auto point = image_sample_coordinates(image, x, y);
     const auto offset = point[1] * plane.stride + (point[0] * channels + (planar ? 0 : 3)) * bytes;
     std::uint16_t alpha{};
-    if (bytes == 1) alpha = std::to_integer<unsigned char>(plane.bytes[offset]);
-    else std::memcpy(&alpha, plane.bytes.data() + offset, 2);
+    if (bytes == 1) alpha = std::to_integer<unsigned char>(plane.read_bytes()[offset]);
+    else std::memcpy(&alpha, plane.read_bytes().data() + offset, 2);
     if (alpha != opaque) return true;
   }
   return false;

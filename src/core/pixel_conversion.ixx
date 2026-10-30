@@ -121,16 +121,14 @@ std::expected<void, std::string> validate(const ImageBuffer& image) {
     if (size[0] > std::numeric_limits<std::size_t>::max() / samples / bytes)
       return std::unexpected{"像素转换平面宽度溢出。"};
     const auto& plane = image.planes[c];
-    if (plane.stride < size[0] * samples * bytes ||
-        size[1] > std::numeric_limits<std::size_t>::max() / plane.stride ||
-        plane.bytes.size() < size[1] * plane.stride)
+    if (!plane.contains_rows(size[1], size[0] * samples * bytes))
       return std::unexpected{"像素转换输入平面尺寸无效。"};
   }
   return {};
 }
 
 float sample(const ImageBuffer& image, std::size_t channel, std::size_t x, std::size_t y) noexcept {
-  const auto* row = image.planes[channel].bytes.data() + y * image.planes[channel].stride;
+  const auto* row = image.planes[channel].read_bytes().data() + y * image.planes[channel].stride;
   if (image.bit_depth == 8) return static_cast<float>(std::to_integer<unsigned char>(row[x]));
   std::uint16_t value{};
   std::memcpy(&value, row + x * 2, 2);
@@ -140,8 +138,13 @@ float sample(const ImageBuffer& image, std::size_t channel, std::size_t x, std::
 float chroma(const ImageBuffer& image, std::size_t channel, std::size_t x, std::size_t y) noexcept {
   const auto factors = subsampling(image.pixel_format);
   const auto size = plane_size(image, channel);
-  const float fx = (static_cast<float>(x) + 0.5F) / static_cast<float>(factors[0]) - 0.5F;
-  const float fy = (static_cast<float>(y) + 0.5F) / static_cast<float>(factors[1]) - 0.5F;
+  const int location = image.source_info ? image.source_info->chroma_location.value_or(2) : 2;
+  const bool left = location == 1 || location == 3 || location == 5;
+  const float center_x = factors[0] == 1 || left ? 0.0F : 0.5F;
+  const float center_y = factors[1] == 1 || location == 3 || location == 4 ? 0.0F
+      : location == 5 || location == 6 ? 1.0F : 0.5F;
+  const float fx = (static_cast<float>(x) - center_x) / static_cast<float>(factors[0]);
+  const float fy = (static_cast<float>(y) - center_y) / static_cast<float>(factors[1]);
   const auto x0 = static_cast<std::ptrdiff_t>(std::floor(fx));
   const auto y0 = static_cast<std::ptrdiff_t>(std::floor(fy));
   const auto at = [&](std::ptrdiff_t px, std::ptrdiff_t py) {
@@ -177,7 +180,7 @@ struct Reader {
     const float maximum = static_cast<float>((1u << image.bit_depth) - 1);
     if (!is_yuv_format(image.pixel_format)) {
       const auto channels = image.pixel_format == PixelFormat::rgb ? 3u : 4u;
-      const auto* row = image.planes[0].bytes.data() + y * image.planes[0].stride;
+      const auto* row = image.planes[0].read_bytes().data() + y * image.planes[0].stride;
       for (std::size_t c = 0; c < channels; ++c) {
         if (image.sample_representation == SampleRepresentation::ieee_half_float)
           rgba[c] = hdr::hdr_detail::read_sample(image, row, x * channels + c);
@@ -277,7 +280,7 @@ std::expected<ImageBuffer, std::string> resize_native_pixels(
         .significant_bits = source.significant_bits, .metadata = source.metadata};
     output.planes.resize(source.planes.size());
     for (std::size_t c = 0; c < output.planes.size(); ++c) {
-      if (source.planes[c].bytes.empty()) continue;
+      if (source.planes[c].read_bytes().empty()) continue;
       const auto input_size = pixel_detail::plane_size(source, c);
       const auto output_size = pixel_detail::plane_size(output, c);
       const auto sample_bytes = (source.bit_depth > 8 ? 2u : 1u) *
@@ -296,7 +299,7 @@ std::expected<ImageBuffer, std::string> resize_native_pixels(
           const auto point = source.geometry ? image_sample_coordinates(source,
               x * source.width / width, y * source.height / height) : std::array{sx, sy};
           std::memcpy(bytes->data() + y * stride + x * sample_bytes,
-              source.planes[c].bytes.data() + point[1] * source.planes[c].stride + point[0] * sample_bytes, sample_bytes);
+              source.planes[c].read_bytes().data() + point[1] * source.planes[c].stride + point[0] * sample_bytes, sample_bytes);
         }
       }
       output.planes[c] = ImagePlane{.bytes = std::move(*bytes), .stride = stride};
@@ -314,9 +317,9 @@ std::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& image) {
   auto view = pixel_detail::description(image);
   for (std::size_t c = 0; c < image.planes.size() && c < 4; ++c) {
     if (image.planes[c].stride > UINT32_MAX) return std::unexpected{"YUV stride 超过 API 限制。"};
-    auto* data = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[c].bytes.data()));
+    auto* data = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[c].read_bytes().data()));
     if (c == 3) { view.alphaPlane = data; view.alphaRowBytes = static_cast<std::uint32_t>(image.planes[c].stride); }
-    else { view.yuvPlanes[c] = image.planes[c].bytes.empty() ? nullptr : data; view.yuvRowBytes[c] = static_cast<std::uint32_t>(image.planes[c].stride); }
+    else { view.yuvPlanes[c] = image.planes[c].read_bytes().empty() ? nullptr : data; view.yuvRowBytes[c] = static_cast<std::uint32_t>(image.planes[c].stride); }
   }
   view.alphaPremultiplied = image.alpha_mode == AlphaMode::premultiplied ? AVIF_TRUE : AVIF_FALSE;
   return view;
@@ -392,7 +395,7 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
           // tone chooses its LUT/workers from the remaining finite budget.
           auto target = pixel_detail::destination_pixel_bytes(source.width, source.height, request, source.alpha_mode);
           auto resident = hdr_cost::multiply(hdr_cost::multiply(source.width, source.height), 4 * (depth / 8));
-          for (const auto& plane : source.planes) resident = hdr_cost::add(resident, plane.bytes.size());
+          for (const auto& plane : source.planes) resident = hdr_cost::add(resident, plane.read_bytes().size());
           for (const auto& block : source.metadata) {
             resident = hdr_cost::add(resident, hdr_cost::multiply(block.bytes.size(), 2));
             if (block.kind == MetadataKind::exif || block.kind == MetadataKind::xmp)
@@ -490,7 +493,7 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
       avifRGBImage rgb{};
       avifRGBImageSetDefaults(&rgb, &*view);
       rgb.format = AVIF_RGB_FORMAT_RGBA; rgb.depth = source.bit_depth;
-      rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(source.planes[0].bytes.data()));
+      rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(source.planes[0].read_bytes().data()));
       if (source.planes[0].stride > UINT32_MAX) return std::unexpected{"RGBA stride 超过 API 限制。"};
       rgb.rowBytes = static_cast<std::uint32_t>(source.planes[0].stride);
       rgb.alphaPremultiplied = source.alpha_mode == AlphaMode::premultiplied ? AVIF_TRUE : AVIF_FALSE;
@@ -501,7 +504,8 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
       if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
       return output;
     }
-    if (!mapping->enabled && !source.geometry && is_yuv_format(source.pixel_format) && !yuv) {
+    if (!mapping->enabled && !source.geometry && is_yuv_format(source.pixel_format) && !yuv &&
+        (!source.source_info || !source.source_info->chroma_location || source.source_info->chroma_location == 2)) {
       auto view = yuv_plane_view(source);
       if (!view) return std::unexpected{view.error()};
       avifRGBImage rgb{};

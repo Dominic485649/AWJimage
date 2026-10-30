@@ -1,0 +1,199 @@
+# AWJimage 1.3.0 C ABI SDK（未发布开发版本）
+
+本 SDK 接收其他软件主动提交的图像帧，直接处理 CPU 内存、Windows D3D11 纹理、共享内存槽位或二进制帧流。它不附带录屏选择器、WGC capture session、视频播放器或完整 FFmpeg 解码器，也不能无侵入读取任意软件的私有内存。“任何软件”指能够按平台 C ABI 和资源所有权契约集成 SDK 的软件，不等于支持未知像素布局或任意地址。
+
+**公共接口只有 C ABI。** C++ 调用方也包含同一套 C 头；没有另一套 C++ ABI、`awj.hpp` 或导出的 C++ 封装。内部保持 C++23，私有 modules/BMI 不进入 SDK 消费接口。调用方不要求 Clang 21，但必须匹配目标 OS、架构、C 结构布局和调用约定。
+
+本项目继续适用现有 AGPL-3.0；库化和 C ABI 不会自动给予闭源软件链接/分发的许可豁免。第三方许可证见 `LICENSE`、`THIRD_PARTY_NOTICES.txt` 和 `licenses/`。本阶段只交付本地未发布开发包，不发布正式更新、签名或 tag。
+
+## 平台与当前边界
+
+| 目标 | 当前阶段 |
+| --- | --- |
+| Windows x64，clang-cl 21.1.8 + MSVC ABI/运行库 | 已建立独立原生 SDK 构建及实际编码测试；最终结果以开发包附带证据为准 |
+| Windows x64，Clang 23.1.4 | 基础 API 有先前验证；独立安装消费者另行记录，不把它当作完整 Clang 23 源码构建证明 |
+| D3D11 | WARP 测试覆盖回读、严格模式、映射借用、池背压；共享 NT/keyed mutex 子项独立记录是否通过或跳过 |
+| 真实 WGC、物理 GPU HDR、跨设备共享 | 未验证；WARP 不替代这些结果 |
+| FFmpeg | 可选桥接，按精确 libavutil 头版本构建，真实用户 DLL 集成测试；未验证实际 D3D11 解码会话 |
+| Linux/WSL | 用户明确要求等 1.2.6 合入 1.3.0 后再做；本阶段不执行 |
+| 华为 HarmonyOS Native SDK | 有独立构建入口和薄 Node-API 示例，未用真实 SDK 编译/链接或真机验证；不能宣布已支持 |
+
+主线仍保持 `master`。1.3.0 基于已提交的 1.2.5 在独立 worktree/分支开发，不能根据一次构建或版本号推断 1.2.6 已完成。须由用户确认完成后，先合入 1.2.6，再整合验证/Linux，最后才合主线并在必要时迁移为 `main`、正式提交与分发。
+
+## 复制与无文件保证
+
+| 入口 | 实际边界 |
+| --- | --- |
+| `awj_frame_create` | 按值复制描述符，不复制像素；来源内存与 ICC 保持到最后一个 frame release |
+| FFmpeg 引用计数软件帧 | 使用来源库的 `av_buffer_ref/unref` 保持像素地址，不克隆 AVFrame、字典或未知 side data；ICC 可复制 |
+| FFmpeg 非引用计数帧 | strict 拒绝；兼容模式按有效裁切范围逐行复制，并报告 `input_copy_bytes` |
+| 共享内存 | 生产者直接写槽位，消费者借用映射；已有私有帧搬入槽位仍然是生产者侧复制 |
+| 已可读 staging 纹理 | Map 后可直接借用，来源不能改写/复用；NV12/P010 等后续规范化仍可能需要转换 |
+| 普通 GPU/WGC 纹理 | 软件编码器需 Copy/readback；返回帧借用有界 staging 的 RowPitch，不再额外紧凑化，除非目标编码器需要 |
+| stdin/普通 OS 管道 | 复用接收缓冲，不创建输入临时文件；OS/接收复制不能消除，不称为零复制 |
+
+`AWJ_COPY_REQUIRE_BORROWED` 拒绝已发生搬运的帧，以及目标入口必须执行的负 stride 重排、BGRA 交换、半平面拆分、JXL 紧凑化和非居中色度相位规范化。编码本身所需的色彩/位深转换和第三方编码器工作存储不能据此称为端到端零复制。
+
+诊断分别提供 `input_copy_bytes`、`conversion_bytes`、`gpu_copy_bytes`、`gpu_readback_bytes`。`encoder_internal_copies_known=0` 表示编码器内部复制未知；`conversion_bytes_known=0` 时，转换量只是已观测下界，0 不代表没有转换。共享槽位前的生产者复制不在消费者的可观测范围。
+
+默认内存 API 不扫描来源文件、不创建 raw/PNG 输入快照、候选文件、日志或报告，编码结果由 `awj_result` 持有。显式文件 sink 才写最终输出；应用的最终文件事务暂存与输入中间文件是不同边界。不能保证 OS 换页、驱动缓存和转储绝不写物理磁盘。
+
+## 构建与安装
+
+Windows 可运行 `scripts/build-sdk.ps1`；默认构建独立 SDK，不构建 GUI/Slint、更新器、libarchive/sodium。依赖、下载、安装缓存、临时文件和构建树都位于当前 worktree 的 `build/`，不复用 1.2.6 的可变构建树，不修改系统工具链。
+
+```bash
+pwsh -NoProfile -File scripts/build-sdk.ps1 -BuildDirectory build/sdk-native-clang21 -CompilerDirectory build/sdk-tools/clang21-extracted/bin
+```
+
+实际使用时 `CompilerDirectory` 推荐绝对路径。最低编译器的下载/摘要验证见 `scripts/fetch-sdk-clang21.ps1`；不运行 LLVM 系统安装器。`-CoreOnly` 只构建帧、队列、协议和所选平台适配器，`awj_encode` 返回 UNSUPPORTED，不能将其称为完整编码 SDK。
+
+可选配置：
+
+- `AWJ_SDK_NATIVE_CODECS=ON`：项目锁定的五种编码器。
+- `AWJ_SDK_D3D11`、`AWJ_SDK_SHM`：仅 Windows。
+- `AWJ_SDK_FFMPEG=ON`、`AWJ_SDK_AVUTIL_INCLUDE_DIR`：编译可选 AVFrame 桥接，**不查找或链接 avutil 导入库**。
+- `AWJ_ENABLE_GPU_METRICS=OFF`：CPU 视觉质量，无 FXC/DXC/Vulkan shader 构建依赖。D3D11 导入可独立开启。
+- `AWJ_SDK_TOOLS=ON`：构建 `awj-stream`。
+- `AWJ_SDK_FFMPEG_TEST_AVUTIL`：仅测试来源 DLL 的绝对路径，不安装/分发此 DLL。
+
+只安装本 SDK 的组件，避免同时安装第三方依赖的内部包：
+
+```bash
+cmake --install build/sdk-native-clang21 --prefix build/sdk-install --component AWJimageSDK
+```
+
+安装后的 `AWJimage::SDK` 只公开 C 头和动态库/导入库，不要求消费项目的 C++23、私有 modules 或第三方静态 target。当前验证/交付为动态库；没有验证或交付独立静态 SDK，不能把 DLL 的 `.lib` 导入库误称为静态库。
+
+独立消费者见 `examples/basic/`：C99 和 C++11 均使用同一 C ABI。
+
+```bash
+cmake -S examples/basic -B build/sdk-consumers -DCMAKE_PREFIX_PATH=<SDK安装目录>
+```
+
+```bash
+cmake --build build/sdk-consumers --config Release
+```
+
+```bash
+ctest --test-dir build/sdk-consumers -C Release --output-on-failure
+```
+
+CMake `find_package(AWJimage 1.3 CONFIG REQUIRED)`，可要求 `D3D11`、`SHM`、`FFMPEG`、`NATIVE_CODECS` 组件。FFmpeg/HarmonyOS 额外约束不会污染通用帧 ABI。
+
+## 公共 C ABI 与生命周期
+
+公共头：`awj.h`、可选 `awj_d3d11.h`、`awj_shm.h`、`awj_ffmpeg.h`。Windows 是默认对齐的 x64 C ABI、`__cdecl`；不要以不同 packing 编译结构。结构包含固定宽度整数、指针/长度、size/version 和 reserved；ABI 1 当前要求准确结构大小，reserved 为 0，不接受随意的前缀截断。原生结构不作为网络/wire 布局。
+
+- 使用 `*_init`，再覆盖字段。frame layout/diagnostics 等输出结构先设置 size/version。
+- 状态码不跨边界传异常；`awj_last_error()` 是当前线程 UTF-8 缓冲，保存到本线程下一次可能失败的调用之前。
+- 所有分配在分配模块释放。调用方不得 `free/delete` result/frame/context，也不得先卸载 SDK 再释放对象。
+- `awj_frame_create` 只复制描述符，owner retain/release 必须同时提供或同时省略；成功 retain 一次，最后一次 release 恰好归还一次。owner 必须涵盖像素和 ICC 的真实来源。
+- owner 为空时，调用方保证全部来源存储在 frame 最后释放前有效且不变。适配器与传输返回的 SDK storage 会自行保活。
+- `release` 可在最后一个引用释放的线程执行，不持内部队列/pool 锁。回调不得抛异常，不得销毁当前正在调用的 context/channel/reader，或重入销毁仍在使用的同一对象。
+- `awj_encode` 同步完成，但 context 可有多个受预算准入的调用；调用方保持帧不可变，不并发销毁句柄。
+- `awj_context_cancel` 永久取消此 context。destroy 前需等待所有使用该 context 的 API 完成；已导入/借出的 frame 可以晚于 context 释放。
+- result 数据指针有效到 result release；来源 frame 可以先释放。
+- 队列有固定容量，只接受带真实所有权回调或 SDK storage 的帧。push 成功才增加引用；pop 移交该引用，close 可 drain，destroy 前必须 join 全部队列调用。队列取消通过 close，不与 context 自动联动。
+- context 的帧上限、传输槽位、pool 和编码准入均有界；预算是 SDK 上限/工作集准入，不是对第三方分配或进程总 RSS 的硬沙箱。
+
+## CPU 帧与色彩
+
+`awj_plane.data` 为分配区起点，`size` 是真实可读范围，`offset` 为首行位置，`stride` 为有符号行距。支持 padding、负 stride、不同平面地址；只访问有效行字节，不要求最后一行之后的 padding 存在。SDK 能检查描述范围和整数溢出，不能探测任意地址是否真实可读。
+
+支持 RGBA8/BGRA8/RGB8/gray8、RGBA16/gray16、RGBA FP16、8/10/12/16-bit planar YUV420/422/444、NV12、P010。多字节 CPU 样本为小端；P010 的有效 10 位在 word 高位，普通 10-bit planar 样本在低位。使用 `awj_frame_layout` 获取奇数尺寸的准确平面行宽/行数，不自行用 floor 除二。
+
+- 色彩使用 CICP primaries/transfer/matrix、range（0 limited、1 full、-1 未指定）、chroma location、alpha、ICC 与线性参考白。
+- 编码必须明确源 CICP/range 或提供 ICC；YUV 仍必须提供 matrix/range，ICC 不能替代 YUV 采样矩阵。
+- FP16 编码必须明确 transfer=8（linear）和正参考白亮度。WGC/scRGB 为 BT.709、linear、RGB、full、80 nits；不能对所有 FP16 猜测这一语义。
+- 非居中 subsampled chroma 按 AVChromaLocation 1..6 显式重采样到规范化 RGB，再编码；strict 模式拒绝该转换。未指定的色度相位沿用原文件管线的居中约定，不声称从裸流恢复了丢失信息。
+- FFmpeg crop_left/top 的奇数子采样相位裁切当前明确拒绝，不静默取整。硬件帧的左/上裁切也暂不支持。
+- 缺失元数据、未知格式/硬件后端、越界、预算不足均明确返回状态，不隐式落盘或下载到未知路径。
+- `lossless=1` 是编码器模式，不保证色彩/采样转换无损；JPEGli 不提供像素无损，明确拒绝，不以 q100 冒充无损。
+
+最小 C 用例见 `examples/basic/basic.c`，包含创建 context、借用像素、内存 PNG 编码和按分配方释放。用 `awj_frame_row` 可以核对导入地址身份；不能以执行耗时推断零复制。
+
+## WGC / D3D11
+
+调用方在持有有效 WGC capture frame 时提交其 texture、ContentSize 及 owner。**单纯 AddRef 底层 texture 不保证捕获内容不会被 frame pool 重用。** resize/recreate/device lost 后，不得把旧代资源继续当新内容使用。
+
+`awj_d3d11_import` 接受同进程纹理，或 `device + shared_nt_handle`。共享资源必须由来源合法创建并通过控制通道传递/复制 NT 句柄；普通 WGC texture 不会自动变为跨进程共享纹理。裸整数在另一个进程中不是有效 HANDLE。
+
+来源明确完成同步时设置 `AWJ_D3D11_SOURCE_READY`；否则使用 keyed mutex 与 acquire/release key。timeout 约束 keyed mutex 获取，不保证强制打断驱动 Map/Copy。提交 copy 后，即使取消也必须等来源不再被 GPU 使用，才能归还 WGC capture frame。
+
+context 必须开启 D3D 多线程保护，或调用方用 `AWJ_D3D11_CALLER_SERIALIZED` 保证所有外部/SDK D3D 调用（包括最后一个 frame release 中的 Unmap）串行化。SDK 不改变外部设备全局线程保护设置，拒绝 SINGLETHREADED device。
+
+普通 GPU texture 使用最多 3 个可复用 staging 槽位，返回帧持有 Map，释放后才复用。有效区域只采用左上角 width/height，半平面按 2x2 单元复制必要样本，不将未定义边缘当有效像素。直接可读 staging 在借用期间保持来源 owner；普通 copy/readback 在 Map 完成后即可归还来源。
+
+## FFmpeg 桥接
+
+编译时必须使用与来源 DLL **精确版本匹配**的 libavutil 公共头。当前验证使用固定提交 `d8990137eec96e8ead292f5de2fc2c6de450e676`，libavutil 61.18.100。可查询 `awj_ffmpeg_expected_avutil_version()`；不同版本的 `AVFrame` 不能跨此适配器使用。
+
+`awj_ffmpeg_api` 由调用方提供 `avutil_version`、`av_buffer_ref`、`av_buffer_unref` 三个 C 函数指针和可选 module_owner。必须来自同一匹配的 libavutil。SDK 不加载、不硬链接、不分发 FFmpeg；调用方从可信绝对路径加载并保持运行库直到最后一次 buffer_unref 返回。
+
+只引用像素 buffers 与必要的 hw_frames_ctx，不读取/转移 `private_ref`，不克隆未知字典或 side data。支持常见 CPU 像素、linesize、crop、CICP/range、alpha、ICC、pts/time_base；有有效 pts 却无 time_base 时必须显式补入。导入成功后可释放原 AVFrame，但在 SDK 引用存在时不能绕过 FFmpeg 可写性契约继续写同一像素存储。
+
+D3D11 硬件帧走平台适配器，保持 AVBufferRef 到资源使用结束；其他未实现的硬件格式返回 UNSUPPORTED，不把 opaque `data` 当 CPU 指针或静默调用硬件下载。
+
+验证用的用户 FFmpeg 是 `--enable-gpl --enable-nonfree` 运行库，**不在 SDK 开发包中再分发**。普通原版 FFmpeg CLI 也不会自动采用本 SDK 的共享槽位协议。
+
+## 共享内存
+
+`awj_shm_create/open` 是当前用户范围的 Windows 本机 SPSC 通道；名称限制 1..64 个 ASCII 字母/数字/`-`/`_`，建议通过可信控制通道传递不可预测随机名称。对象 ACL 限制当前用户与 SYSTEM，不开放网络服务；不提供针对恶意同权限进程的完整防篡改隔离。
+
+生产者 `begin_write` -> 直接写槽位紧凑平面与尾部 ICC -> `commit`；消费者 `receive` -> 持有 frame -> `frame_release`。WRITING/READY/READING 都占槽位；不得在 commit 后继续写或在消费完成前复用。满队列返回 BUSY/超时，拒绝无界扩容。token/代次防止迟到提交/归还误用。
+
+通道使用显式 little-endian 元数据与 Win32 mutex/events，不把 `std::atomic` 或 C++ 对象布局当跨进程 ABI。对端以进程句柄和创建时间识别，防止 PID 重用；生产者或消费者异常退出会使通道进入不可恢复 I/O 错误，不偷回仍借出的槽位。已经借出的 frame 保持映射有效，channel/context 可先释放。
+
+正常 close 唤醒并允许 drain 已提交帧；EOF 表示关闭且无待取帧。mutex abandoned、损坏头或状态无效均失败。归还槽位的锁等待有界，失败后当前映射标记不可继续使用，不能把这种失败当已成功归还。
+
+## 二进制帧协议与流工具
+
+`awj-stream` 仅包含公共 C 头，通过 C ABI 调用 SDK，不依赖项目私有 modules。默认输入 `AWJFRM1`，输出 `AWJRES1`；`--raw` 接收紧凑 rawvideo，必须显式提供格式、尺寸与 `--color`。stdin/stdout 是二进制，所有说明/日志写 stderr；没有文件输出参数，需要时由调用方显式重定向最终输出。
+
+输入等待为每帧 60 秒，短读与任意碎片正常处理；截断失败后不继续解释剩余字节。CLI 的 stdout 写入采用平台同步 I/O，不能承诺对不配合消费者的写阻塞强制超时；应用内调用可提供符合期限契约的 I/O 回调。Ctrl+C 会请求 context 取消，不能强制中断第三方驱动/编码器的不合作阻塞。
+
+`--single` 只接受单帧输入，输出原始编码码流，不能用于无分帧拼接多张图。默认多帧模式允许帧描述变化，通过结果长度界定码流，不把任意编码格式无边界拼接。
+
+示例（以下命令需要在支持二进制 native 管道的 shell 中执行；不能让旧文本管道改写字节）：
+
+```bash
+ffmpeg -f lavfi -i testsrc=size=640x360:rate=1 -frames:v 2 -pix_fmt rgba -f rawvideo pipe:1 | awj-stream --raw rgba8 640 360 --color 1 13 0 1 --codec png --lossless > frames.awjres
+```
+
+已知单帧 WGC FP16 原始流可用 `--raw rgba16f W H --color 1 8 0 1 --reference-white 80 --alpha straight --single`。原有 `AWJ --stdin-wgc-rgba16f WxH -o <目录>` 语法仍在：直接在接收缓冲内编码，不再创建临时 `.awsraw`；它复用与 SDK 相同的 `NativeBackend::encode_memory` 核心并保留原应用参数决策，只有显式最终文件 sink 写盘。该内存分支不生成文件日志/summary，也不提供“原输入文件”的 SHA-256 命名模板。
+
+### AWJFRM1 输入
+
+固定 160 字节头，所有整数 little-endian，float 为 IEEE-754 位模式，时间戳为 int64 位模式；不是直接发送 C 结构。
+
+| offset | 字段 |
+| --- | --- |
+| 0 | `AWJFRM1\0`，8 字节 |
+| 8 / 12 | version=1 / header_size=160，u32 |
+| 16 / 20 / 24 / 28 | width / height / format / bit_depth，u32 |
+| 32 / 36 | plane_count / alpha，u32 |
+| 40 / 48 | frame_id u64 / timestamp i64 |
+| 56 / 60 | time_base_num / time_base_den，u32 |
+| 64..80 | primaries / transfer / matrix / range / chroma_location，5 个 i32 |
+| 84 | linear_reference_white_nits，float |
+| 88 / 96 | icc_size / payload_size，u64 |
+| 104..135 | row_bytes[4]，u64 |
+| 136..151 | rows[4]，u32 |
+| 152 | reserved=0，u64 |
+
+payload 是各平面逐行的有效像素字节，再附 ICC，不传 padding。尺寸/格式派生的平面布局必须与头一致，接收器校验长度、溢出和预算。reader 保留固定槽位，全部借出时返回 BUSY；frame 可比 reader/context 活得更久。
+
+### AWJRES1 输出
+
+固定 40 字节头：0=`AWJRES1\0`，8=version u32(1)，12=header_size u32(40)，16=frame_id u64，24=codec u32，28=reserved u32(0)，32=encoded_size u64；随后紧跟对应长度的完整编码结果。失败走非零退出码/stderr，不输出伪造成功结果。
+
+## 验证、证据与交付
+
+`awj_sdk_validation` 只构建 SDK 和受影响的定向检查，不运行更新器/UI 全量回归。测试覆盖公共 C/C++ 消费、布局/owner/队列/协议、真实跨进程 SHM 和异常退出、WARP、真实 libavutil、五种编码器内存回读、只读页、负 stride、常见 RGB/YUV、FP16 和 CPU 视觉质量。
+
+`tests/sdk_stream_cli_tests.ps1` 用真实 FFmpeg 子进程、内存 stdin/stdout 验证多帧结果、原生单帧码流、截断和旧 WGC 分支；检查测试工作目录不产生输入中间文件，但这不等于系统级全进程文件 I/O 跟踪。
+
+安装后独立 C99/C++11 项目消费；`scripts/verify-sdk-exports.ps1` 从实际安装公共头生成精确白名单并核对 DLL，不能只检查 `awj_` 前缀。构建证据记录源码指纹/每文件哈希、工具链、配置、原始日志、测试与产物 SHA-256；不把先前测试当本次重跑。
+
+开发交付固定到 `D:\Code\Cpp\AWJimage\bin\1.3.0\dev\<构建标识>\`；保留正式包、许可证和用户的 `bin/x64/`，不覆盖未知内容。实际交付的位置与未验证项见本轮报告。Linux、真实 HarmonyOS、真实 WGC/物理 HDR GPU 和正式发布仍有独立验收门槛。

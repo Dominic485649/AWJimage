@@ -26,7 +26,7 @@ is_source() {
     rest=${rest#*/}
   done
   case "$path" in
-    src/*|ui/*|cmake/*|vcpkg-overlays/*|licenses/*|tests/*|scripts/*|docs/*) return 0 ;;
+    src/*|include/*|sdk/*|examples/*|ui/*|cmake/*|vcpkg-overlays/*|licenses/*|tests/*|scripts/*|docs/*) return 0 ;;
   esac
   [[ "$path" =~ ^(CMakeLists\.txt|CMakePresets\.json|release\.ps1|VERSION|\.gitattributes|\.gitignore|LICENSE|THIRD_PARTY_NOTICES\.txt|README(\.[^.]+)?\.md|CHANGELOG(\.[^.]+)?\.md|vcpkg[^/]*\.json)$ ]]
 }

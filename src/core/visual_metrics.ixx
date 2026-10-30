@@ -114,12 +114,10 @@ std::expected<LumaImage, std::string> make_luma_image(
       return std::unexpected{"RGB/RGBA 图像宽度过大，无法计算视觉指标。"};
     }
     const std::size_t min_stride = image.width * channels * bytes_per_sample;
-    if (plane.stride < min_stride ||
-        plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
-        plane.bytes.size() < plane.stride * image.height) {
+    if (!plane.contains_rows(image.height, min_stride)) {
       return std::unexpected{"RGB/RGBA 图像 buffer 尺寸无效，无法计算视觉指标。"};
     }
-    const auto* bytes = reinterpret_cast<const unsigned char*>(plane.bytes.data());
+    const auto* bytes = reinterpret_cast<const unsigned char*>(plane.read_bytes().data());
     for (std::size_t y = 0; y < image.height; ++y) {
       const auto* row = bytes + y * plane.stride;
       for (std::size_t x = 0; x < image.width; ++x) {
@@ -136,12 +134,10 @@ std::expected<LumaImage, std::string> make_luma_image(
 
   if (image.pixel_format == PixelFormat::gray) {
     if (image.width > std::numeric_limits<std::size_t>::max() / bytes_per_sample ||
-        plane.stride < image.width * bytes_per_sample ||
-        plane.stride > std::numeric_limits<std::size_t>::max() / image.height ||
-        plane.bytes.size() < plane.stride * image.height) {
+        !plane.contains_rows(image.height, image.width * bytes_per_sample)) {
       return std::unexpected{"灰度图像 buffer 尺寸无效，无法计算视觉指标。"};
     }
-    const auto* bytes = reinterpret_cast<const unsigned char*>(plane.bytes.data());
+    const auto* bytes = reinterpret_cast<const unsigned char*>(plane.read_bytes().data());
     for (std::size_t y = 0; y < image.height; ++y) {
       const auto* row = bytes + y * plane.stride;
       for (std::size_t x = 0; x < image.width; ++x) {

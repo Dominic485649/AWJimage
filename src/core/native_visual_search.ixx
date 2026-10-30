@@ -37,8 +37,10 @@ using Clock = std::chrono::steady_clock;
 std::string_view gpu_session_path() noexcept {
 #if AWJ_HAS_VULKAN
   return "vulkan-session";
-#else
+#elif AWJ_HAS_D3D11
   return "d3d11-session";
+#else
+  return "cpu-only";
 #endif
 }
 
@@ -178,7 +180,7 @@ std::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
   if (!rgba_size) {
     return std::unexpected{rgba_size.error()};
   }
-  if (plane.stride < *rgba_stride || plane.bytes.size() < *rgba_size) {
+  if (plane.stride < *rgba_stride || plane.read_bytes().size() < *rgba_size) {
     return std::unexpected{
         std::format("{} 输入 RGBA buffer 尺寸无效。", context)};
   }
@@ -188,7 +190,7 @@ std::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
     return std::unexpected{rgb.error()};
   }
   const auto* rgba_data =
-      reinterpret_cast<const std::uint8_t*>(plane.bytes.data());
+      reinterpret_cast<const std::uint8_t*>(plane.read_bytes().data());
   auto* rgb_data = reinterpret_cast<std::uint8_t*>(rgb->data());
   for (std::size_t y = 0; y < image.height; ++y) {
     const auto* rgba_row = rgba_data + y * plane.stride;

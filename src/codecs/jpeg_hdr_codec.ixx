@@ -118,7 +118,7 @@ std::expected<NativeEncodeResult, std::string> encode_hdr_jpeg(
     }
     const auto engine_threads = static_cast<unsigned>(hdr::hdr_detail::tone_worker_budget(settings.resources));
     std::uint64_t source_bytes{};
-    for (const auto& plane : image.planes) source_bytes = hdr_cost::add(source_bytes, plane.bytes.size());
+    for (const auto& plane : image.planes) source_bytes = hdr_cost::add(source_bytes, plane.read_bytes().size());
     for (const auto& block : image.metadata) {
       source_bytes = hdr_cost::add(source_bytes, hdr_cost::multiply(block.bytes.size(), 2));
     }

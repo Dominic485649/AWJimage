@@ -1,0 +1,4 @@
+AWJ_1 {
+    global: awj_*;
+    local: *;
+};

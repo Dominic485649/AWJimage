@@ -53,7 +53,7 @@ std::expected<void, std::string> transform_rgba(ImageBuffer& image, unsigned ccw
     if (mirror == 0) dy = height - 1 - dy;
     if (mirror == 1) dx = width - 1 - dx;
     std::memcpy(bytes->data() + (dy * width + dx) * pixel_bytes,
-        image.planes.front().bytes.data() + y * image.planes.front().stride + x * pixel_bytes, pixel_bytes);
+        image.planes.front().read_bytes().data() + y * image.planes.front().stride + x * pixel_bytes, pixel_bytes);
   }
   image.width = width; image.height = height;
   image.planes.front() = {std::move(*bytes), width * pixel_bytes};
@@ -104,7 +104,7 @@ std::expected<void, std::string> crop_rgba(ImageBuffer& image, std::size_t x, st
   const auto stride = width * 4 * sample_bytes;
   for (std::size_t row = 0; row < height; ++row)
     std::memcpy(bytes->data() + row * stride,
-        image.planes.front().bytes.data() + (y + row) * image.planes.front().stride + x * 4 * sample_bytes, stride);
+        image.planes.front().read_bytes().data() + (y + row) * image.planes.front().stride + x * 4 * sample_bytes, stride);
   image.width = width; image.height = height; image.planes.front() = {std::move(*bytes), stride};
   return {};
 }
@@ -425,7 +425,7 @@ std::expected<ImageBuffer, std::string> compose_iso_gain_map(
   avifRGBImage map_rgb{};
   avifRGBImageSetDefaults(&map_rgb, gain.get());
   map_rgb.format = AVIF_RGB_FORMAT_RGBA; map_rgb.depth = map.bit_depth; map_rgb.ignoreAlpha = AVIF_TRUE;
-  map_rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(map.planes.front().bytes.data()));
+  map_rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(map.planes.front().read_bytes().data()));
   if (map.planes.front().stride > std::numeric_limits<std::uint32_t>::max()) return std::unexpected{"Gain Map: ISO 21496-1: map stride 过大。"};
   map_rgb.rowBytes = static_cast<std::uint32_t>(map.planes.front().stride);
   const auto converted = avifImageRGBToYUV(gain.get(), &map_rgb);
@@ -440,7 +440,7 @@ std::expected<ImageBuffer, std::string> compose_iso_gain_map(
   base_rgb.format = AVIF_RGB_FORMAT_RGBA; base_rgb.depth = base.bit_depth;
   if (base.planes.front().stride > std::numeric_limits<std::uint32_t>::max()) return std::unexpected{"Gain Map: ISO 21496-1: base stride 过大。"};
   base_rgb.rowBytes = static_cast<std::uint32_t>(base.planes.front().stride);
-  base_rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(base.planes.front().bytes.data()));
+  base_rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(base.planes.front().read_bytes().data()));
   avifRGBImage enhanced{};
   enhanced.format = AVIF_RGB_FORMAT_RGBA; enhanced.depth = 16;
   avifDiagnostics diag{};

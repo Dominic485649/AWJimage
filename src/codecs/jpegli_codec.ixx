@@ -22,8 +22,12 @@ module;
 #include <utility>
 #include <vector>
 
+#include <cstdio>
+// JPEGli ABI 62 与 libjpeg-turbo ABI 80 不能向模块全局域提供同名结构。
+namespace awj_jpegli_c {
 #include <lib/jpegli/decode.h>
 #include <lib/jpegli/encode.h>
+}
 
 export module awj.jpegli_codec;
 
@@ -37,6 +41,8 @@ import awj.image;
 import awj.pixel_conversion;
 import awj.jpeg_codec;
 import awj.large_image_plan;
+
+namespace awj { using namespace awj_jpegli_c; }
 
 export namespace awj {
 
@@ -137,7 +143,7 @@ std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& imag
   if (!expected_bytes) {
     return std::unexpected{expected_bytes.error()};
   }
-  if (plane.bytes.size() < *expected_bytes) {
+  if (!plane.contains_rows(image.height, *expected_stride)) {
     return std::unexpected{"JPG encoder 输入 RGBA buffer 尺寸无效。"};
   }
   return &plane;
@@ -158,7 +164,7 @@ std::expected<std::vector<std::byte>, std::string> make_rgb_buffer(
   if (!rgb) {
     return std::unexpected{rgb.error()};
   }
-  const auto* rgba_data = reinterpret_cast<const std::uint8_t*>(plane.bytes.data());
+  const auto* rgba_data = reinterpret_cast<const std::uint8_t*>(plane.read_bytes().data());
   auto* rgb_data = reinterpret_cast<std::uint8_t*>(rgb->data());
   for (std::size_t y = 0; y < height; ++y) {
     const auto* rgba_row = rgba_data + y * plane.stride;
@@ -763,7 +769,7 @@ class JpegliImageEncoder final : public ImageEncoder {
         const auto y = static_cast<std::size_t>(cinfo.next_scanline);
         const std::byte* data{};
         if (rgb_input.empty()) {
-          const auto* source = (*plane)->bytes.data() + y * (*plane)->stride;
+          const auto* source = (*plane)->read_bytes().data() + y * (*plane)->stride;
           for (std::size_t x = 0; x < image.width; ++x) {
             std::memcpy(row_buffer.data() + x * 3, source + x * 4, 3);
           }
@@ -863,7 +869,7 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
       const auto first = static_cast<std::size_t>(cinfo.next_scanline) * component.v_samp_factor / cinfo.max_v_samp_factor;
       for (std::size_t row = 0; row < context->rows[c].size(); ++row) {
         auto* destination = context->rows[c][row];
-        const auto* source = image.planes[c].bytes.data() + std::min(first + row, height - 1) * image.planes[c].stride;
+        const auto* source = image.planes[c].read_bytes().data() + std::min(first + row, height - 1) * image.planes[c].stride;
         std::memcpy(destination, source, width);
         std::fill(destination + width, destination + padded, destination[width - 1]);
       }

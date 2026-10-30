@@ -188,7 +188,7 @@ std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& imag
   if (!expected_bytes) {
     return std::unexpected{expected_bytes.error()};
   }
-  if (plane.bytes.size() < *expected_bytes) {
+  if (!plane.contains_rows(image.height, *expected_stride)) {
     return std::unexpected{"JXL encoder 输入 RGBA buffer 尺寸无效。"};
   }
   return &plane;
@@ -405,7 +405,7 @@ std::expected<std::vector<std::byte>, std::string> make_rgb_buffer(const ImagePl
   if (!rgb) {
     return std::unexpected{rgb.error()};
   }
-  const auto* rgba_data = reinterpret_cast<const std::byte*>(plane.bytes.data());
+  const auto* rgba_data = reinterpret_cast<const std::byte*>(plane.read_bytes().data());
   auto* rgb_data = reinterpret_cast<std::byte*>(rgb->data());
   for (std::size_t y = 0; y < height; ++y) {
     const auto* rgba_row = rgba_data + y * plane.stride;
@@ -1229,7 +1229,7 @@ class JXLImageEncoder final : public ImageEncoder {
                               .data_type = image.bit_depth > 8 ? JXL_TYPE_UINT16 : JXL_TYPE_UINT8,
                               .endianness = JXL_NATIVE_ENDIAN,
                               .align = 0};
-        const auto& rgba = (*plane)->bytes;
+        const auto& rgba = (*plane)->read_bytes();
         const auto size = jxl_detail::checked_image_bytes((*plane)->stride, image.height, "JXL encoder");
         if (!size) {
           return std::unexpected{size.error()};

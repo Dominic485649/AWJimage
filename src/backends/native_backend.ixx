@@ -683,7 +683,7 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
   const auto pixel_bytes = 4 * bytes_per_sample;
   for (std::size_t y = 0; y < new_height; ++y) {
     const auto sy = std::min(image.height - 1, y * image.height / new_height);
-    const auto* src_row = src.bytes.data() + sy * src.stride;
+    const auto* src_row = src.read_bytes().data() + sy * src.stride;
     auto* dst_row = out->data() + y * *stride;
     for (std::size_t x = 0; x < new_width; ++x) {
       const auto sx = std::min(image.width - 1, x * image.width / new_width);
@@ -1708,6 +1708,20 @@ class NativeBackend final {
     overrides.avif_encoder = AvifEncoderMode::aom;
     overrides.avif_grid_plan = std::move(plan);
     return encode_with_requested_file_times(image, std::move(overrides), stop_token);
+  }
+
+  // 内存入口只复用参数决策和编码；不扫描文件、不初始化文件结果、不写出。
+  std::expected<NativeEncodeResult, std::string> encode_memory(
+      ImageDecodeResult decoded, std::stop_token stop_token = {}) const {
+    if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_); !limited)
+      return std::unexpected{limited.error()};
+    const ImageFile source{};
+    auto prepared = prepare_encoding(source, decoded, {});
+    if (!prepared) return std::unexpected{prepared.error().message};
+    // 路径形参在候选搜索中仅用作输出码流的格式提示，不是输入或候选文件。
+    const auto format_hint = fs::path{std::wstring{L"memory"} + output_extension_for(cfg_)};
+    return execute_encode(decoded, prepared->encoder.get(), prepared->settings, format_hint, stop_token);
   }
 
  private:

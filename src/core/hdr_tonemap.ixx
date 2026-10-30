@@ -76,9 +76,7 @@ std::expected<void, std::string> validate_rgba(const ImageBuffer& image,
   }
   const auto minimum_stride = storage[0] * 4 * bytes_per_sample;
   const auto& plane = image.planes.front();
-  if (plane.stride < minimum_stride ||
-      storage[1] > std::numeric_limits<std::size_t>::max() / plane.stride ||
-      plane.bytes.size() < plane.stride * storage[1]) {
+  if (!plane.contains_rows(storage[1], minimum_stride)) {
     return std::unexpected{std::format("{} RGBA buffer 尺寸无效。", context)};
   }
   return {};
@@ -259,7 +257,7 @@ std::array<float, 4> read_source_rgba(const ImageBuffer& image, const RgbaPixelR
                                      std::size_t x, std::size_t y) noexcept {
   if (reader.read) return reader.read(reader.context, x, y);
   const auto coordinate = image_sample_coordinates(image, x, y);
-  const auto* row = image.planes.front().bytes.data() + coordinate[1] * image.planes.front().stride;
+  const auto* row = image.planes.front().read_bytes().data() + coordinate[1] * image.planes.front().stride;
   const auto sample = coordinate[0] * 4;
   std::array<float, 4> rgba{read_sample(image, row, sample), read_sample(image, row, sample + 1),
                             read_sample(image, row, sample + 2), read_sample(image, row, sample + 3)};
@@ -274,7 +272,7 @@ float read_source_alpha(const ImageBuffer& image, const RgbaPixelReader& reader,
                          std::size_t x, std::size_t y) noexcept {
   if (reader.read) return reader.read(reader.context, x, y)[3];
   const auto coordinate = image_sample_coordinates(image, x, y);
-  const auto* row = image.planes.front().bytes.data() + coordinate[1] * image.planes.front().stride;
+  const auto* row = image.planes.front().read_bytes().data() + coordinate[1] * image.planes.front().stride;
   return read_sample(image, row, coordinate[0] * 4 + 3);
 }
 
@@ -387,8 +385,8 @@ bool matches_source(const PreparedToneMap& context, const ImageBuffer& image) no
   return context.source == &image && !image.planes.empty() && context.width == image.width &&
       context.height == image.height && context.source_depth == image.bit_depth &&
       context.source_representation == image.sample_representation &&
-      context.stride == image.planes.front().stride && context.source_size == image.planes.front().bytes.size() &&
-      context.source_data == image.planes.front().bytes.data();
+      context.stride == image.planes.front().stride && context.source_size == image.planes.front().read_bytes().size() &&
+      context.source_data == image.planes.front().read_bytes().data();
 }
 
 std::expected<PreparedToneMap, std::string> prepare_tone_context(
@@ -408,10 +406,10 @@ std::expected<PreparedToneMap, std::string> prepare_tone_context(
   if (!bt709 || !bt2020) return std::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
   PreparedToneMap context;
   context.source = &image;
-  context.source_data = image.planes.front().bytes.data();
+  context.source_data = image.planes.front().read_bytes().data();
   context.width = image.width; context.height = image.height;
   context.stride = image.planes.front().stride;
-  context.source_size = image.planes.front().bytes.size();
+  context.source_size = image.planes.front().read_bytes().size();
   context.source_depth = image.bit_depth;
   context.source_representation = image.sample_representation;
   context.reader = reader;
@@ -698,7 +696,7 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
   const auto total = image.width * image.height;
   const auto output_bytes = hdr_cost::multiply(total, 4 * (output_depth / 8));
   std::uint64_t resident = output_bytes;
-  for (const auto& plane : image.planes) resident = hdr_cost::add(resident, plane.bytes.size());
+  for (const auto& plane : image.planes) resident = hdr_cost::add(resident, plane.read_bytes().size());
   for (const auto& block : image.metadata) resident = hdr_cost::add(resident, hdr_cost::multiply(block.bytes.size(), 2));
   // The scheduler already admits concurrent files. This is a whole-plan check,
   // not limit/file_parallelism, so an admitted large file may use spare capacity.
@@ -898,8 +896,8 @@ std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(ImageBuffer&&
       ? pl_matrix3x3{.m = {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}}}
       : pl_get_color_mapping_matrix(transform->primaries, bt2020, PL_INTENT_RELATIVE_COLORIMETRIC);
   std::optional<std::vector<std::byte>> transformed;
-  if (image.geometry) {
-    auto bytes = hdr_detail::make_rgba_bytes(image.width, image.height, 2, "scRGB geometry -> HDR");
+  if (image.geometry || !image.planes.front().borrowed.empty()) {
+    auto bytes = hdr_detail::make_rgba_bytes(image.width, image.height, 2, "scRGB borrowed/geometry -> HDR");
     if (!bytes) return std::unexpected{bytes.error()};
     transformed.emplace(std::move(*bytes));
   }

@@ -1,0 +1,6 @@
+#ifndef AVUTIL_AVCONFIG_H
+#define AVUTIL_AVCONFIG_H
+/* 仅供未配置的公共头文件使用；不编译 FFmpeg，实现不依赖其内联快速路径。 */
+#define AV_HAVE_BIGENDIAN @AWJ_FFMPEG_BIG_ENDIAN@
+#define AV_HAVE_FAST_UNALIGNED 0
+#endif

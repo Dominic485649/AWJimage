@@ -376,14 +376,14 @@ std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& imag
   if (!expected_stride) {
     return std::unexpected{expected_stride.error()};
   }
-  if (plane.stride != *expected_stride) {
-    return std::unexpected{"PNG encoder 当前需要紧凑排列的 RGBA buffer。"};
+  if (plane.stride < *expected_stride) {
+    return std::unexpected{"PNG encoder 输入行宽不足。"};
   }
   const auto expected_bytes = decoder_common::checked_image_bytes(plane.stride, image.height, "PNG encoder");
   if (!expected_bytes) {
     return std::unexpected{expected_bytes.error()};
   }
-  if (plane.bytes.size() < *expected_bytes) {
+  if (!plane.contains_rows(image.height, *expected_stride)) {
     return std::unexpected{"PNG encoder 输入 RGBA buffer 尺寸无效。"};
   }
   return &plane;
@@ -891,7 +891,7 @@ class PngImageEncoder final : public ImageEncoder {
       const bool quantize = rgb_bits[0] < source_bits.red || rgb_bits[1] < source_bits.green ||
                             rgb_bits[2] < source_bits.blue;
       auto state = std::make_unique<png_detail::WriteState>();
-      state->bytes.reserve(std::min((*plane)->bytes.size(), std::size_t{1u << 20}));
+      state->bytes.reserve(std::min((*plane)->read_bytes().size(), std::size_t{1u << 20}));
       if (quantize) state->row.resize((*plane)->stride);
       png_detail::PngWritePtr png{png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)};
       if (!png) {
@@ -934,7 +934,7 @@ class PngImageEncoder final : public ImageEncoder {
 
       for (std::size_t y = 0; y < image.height; ++y) {
         if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
-        const auto* row = (*plane)->bytes.data() + y * (*plane)->stride;
+        const auto* row = (*plane)->read_bytes().data() + y * (*plane)->stride;
         if (quantize) {
           std::memcpy(state->row.data(), row, state->row.size());
           const auto sample_bytes = static_cast<std::size_t>(bit_depth / 8);

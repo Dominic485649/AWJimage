@@ -1,0 +1,8 @@
+@PACKAGE_INIT@
+set(AWJimage_ABI_VERSION 1)
+set(AWJimage_D3D11_FOUND @AWJ_SDK_D3D11@)
+set(AWJimage_SHM_FOUND @AWJ_SDK_SHM@)
+set(AWJimage_FFMPEG_FOUND @AWJ_SDK_FFMPEG@)
+set(AWJimage_NATIVE_CODECS_FOUND @AWJ_SDK_NATIVE_CODECS@)
+include("${CMAKE_CURRENT_LIST_DIR}/AWJimageTargets.cmake")
+check_required_components(AWJimage)

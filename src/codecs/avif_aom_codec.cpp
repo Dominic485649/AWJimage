@@ -286,7 +286,7 @@ std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& imag
   if (!expected_bytes) {
     return std::unexpected{expected_bytes.error()};
   }
-  if (plane.stride < *expected_stride || plane.bytes.size() < *expected_bytes) {
+  if (!plane.contains_rows(image.height, *expected_stride)) {
     return std::unexpected{std::format("{} encoder 输入 RGBA buffer 尺寸无效。", encoder_id)};
   }
   return &plane;
@@ -837,11 +837,11 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
     return std::unexpected{"AVIF grid tile 偏移过大。"};
   }
   const auto tile_offset = row_offset + col_offset;
-  if (tile_offset > plane.bytes.size()) {
+  if (tile_offset > plane.read_bytes().size()) {
     return std::unexpected{"AVIF grid tile 输入范围无效。"};
   }
   const auto tile_pixels = std::span<const std::byte>{
-      plane.bytes.data() + tile_offset, plane.bytes.size() - tile_offset};
+      plane.read_bytes().data() + tile_offset, plane.read_bytes().size() - tile_offset};
   auto tile = AvifImage{avifImageCreate(
       static_cast<std::uint32_t>(tile_width), static_cast<std::uint32_t>(tile_height),
       context.bit_depth, context.pixel_format)};
@@ -1039,7 +1039,7 @@ std::expected<RgbSource, std::string> rgb_source_for_encode(
     avifImage* avif_image,
     const NativeEncodeSettings& settings) {
   return rgb_source_for_encode(image.width, image.height,
-                               std::span<const std::byte>{plane.bytes.data(), plane.bytes.size()},
+                               plane.read_bytes(),
                                plane.stride, avif_image, settings, image.bit_depth);
 }
 

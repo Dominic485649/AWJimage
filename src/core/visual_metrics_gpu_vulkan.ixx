@@ -432,9 +432,9 @@ std::expected<LumaDispatchInfo, std::string> describe_luma_dispatch(const ImageB
   const std::size_t channels = image.pixel_format == PixelFormat::rgba ? 4 : 3;
   if (image.width > std::numeric_limits<std::size_t>::max() / channels) return std::unexpected{"Vulkan luma 输入宽度过大。"};
   const std::size_t min_stride = image.width * channels;
-  if (plane.stride < min_stride || plane.stride > std::numeric_limits<std::size_t>::max() / image.height || plane.bytes.size() < plane.stride * image.height || plane.stride > std::numeric_limits<std::uint32_t>::max()) return std::unexpected{"Vulkan luma 输入 buffer 尺寸无效。"};
+  if (!plane.contains_rows(image.height, min_stride) || plane.stride > std::numeric_limits<std::size_t>::max() / image.height || plane.stride > std::numeric_limits<std::uint32_t>::max()) return std::unexpected{"Vulkan luma 输入 buffer 尺寸无效。"};
   const auto pixel_count = image.width * image.height;
-  const auto input_byte_count = plane.stride * image.height;
+  const auto input_byte_count = plane.stride * (image.height - 1) + min_stride;
   const auto input_word_count = input_byte_count / sizeof(std::uint32_t) + (input_byte_count % sizeof(std::uint32_t) == 0 ? 0u : 1u);
   if (input_byte_count > std::numeric_limits<std::uint32_t>::max()) return std::unexpected{"Vulkan luma 输入 buffer 超过 shader 32-bit 地址限制。"};
   if (pixel_count > std::numeric_limits<std::uint32_t>::max() || input_word_count > std::numeric_limits<std::uint32_t>::max()) return std::unexpected{"Vulkan luma buffer 超过 GPU 资源限制。"};
@@ -448,7 +448,7 @@ std::expected<LumaDispatchInfo, std::string> write_luma_buffer(GpuSessionState& 
   if (!info) return std::unexpected{info.error()};
   auto& gpu = *session.gpu;
   session.input_words.assign(info->input_word_count, 0u);
-  std::memcpy(session.input_words.data(), image.planes.front().bytes.data(), info->input_byte_count);
+  std::memcpy(session.input_words.data(), image.planes.front().read_bytes().data(), info->input_byte_count);
   if (auto ok = ensure_buffer(gpu, session.luma_input, info->input_word_count * sizeof(std::uint32_t), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "luma input"); !ok) return std::unexpected{ok.error()};
   if (auto ok = ensure_buffer(gpu, output, info->pixel_count * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, "luma output"); !ok) return std::unexpected{ok.error()};
   if (auto ok = write_buffer(gpu, session.luma_input, session.input_words.data(), info->input_word_count * sizeof(std::uint32_t), "luma input"); !ok) return std::unexpected{ok.error()};

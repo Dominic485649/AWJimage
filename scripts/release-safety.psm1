@@ -88,7 +88,7 @@ function Test-AwjSourcePath([string]$Path) {
     foreach ($part in $Path.Replace('\', '/').Split('/')) {
         if (Test-AwjSensitiveName $part) { return $false }
     }
-    return $Path -cmatch '^(?:src/|ui/|cmake/|vcpkg-overlays/|licenses/|tests/|scripts/|docs/)' -or
+    return $Path -cmatch '^(?:src/|include/|sdk/|examples/|ui/|cmake/|vcpkg-overlays/|licenses/|tests/|scripts/|docs/)' -or
         $Path -cmatch '^(?:CMakeLists\.txt|CMakePresets\.json|release\.ps1|VERSION|\.gitattributes|\.gitignore|LICENSE|THIRD_PARTY_NOTICES\.txt|README(?:\.[^.]+)?\.md|CHANGELOG(?:\.[^.]+)?\.md|vcpkg[^/]*\.json)$'
 }
 

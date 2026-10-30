@@ -16,6 +16,10 @@
 #include <iostream>
 #include <limits>
 #include <memory>
+#include <optional>
+#include <random>
+#include <span>
+#include <cstddef>
 #include <csignal>
 #include <stop_token>
 #include <string>
@@ -31,11 +35,17 @@
 
 import awj.config;
 import awj.core;
+#ifndef AWJ_MEMORY_CLI_ONLY
 import awj.pipeline;
+#endif
 import awj.decoder_registry;
 import awj.preset;
 #ifdef _WIN32
-import awj.raw_image_io;
+import awj.image;
+import awj.codec;
+import awj.native_backend;
+import awj.resource_planner;
+import awj.encoding_defaults;
 #endif
 
 namespace {
@@ -147,51 +157,93 @@ std::expected<std::optional<WgcStdinSpec>, std::string> extract_wgc_stdin_spec(
   return result;
 }
 
-struct WgcStdinTemporary {
-  std::filesystem::path directory{};
-  std::filesystem::path path{};
-  bool owns_directory{};
-  ~WgcStdinTemporary() {
-    std::error_code ignored;
-    if (owns_directory && !directory.empty()) {
-      std::filesystem::remove_all(directory, ignored);
+std::expected<std::size_t, std::string> read_stdin_bytes(std::span<std::byte> bytes, std::stop_token stop) {
+  const auto input = GetStdHandle(STD_INPUT_HANDLE);
+  if (!input || input == INVALID_HANDLE_VALUE) return std::unexpected{"stdin 句柄无效。"};
+  const auto type = GetFileType(input);
+  if (type != FILE_TYPE_PIPE && type != FILE_TYPE_DISK) return std::unexpected{"WGC stdin 必须来自二进制管道或文件。"};
+  while (!stop.stop_requested()) {
+    DWORD available = static_cast<DWORD>(std::min<std::size_t>(bytes.size(), 65536));
+    if (type == FILE_TYPE_PIPE) {
+      if (!PeekNamedPipe(input, nullptr, 0, nullptr, &available, nullptr)) {
+        if (GetLastError() == ERROR_BROKEN_PIPE) return 0;
+        return std::unexpected{"查询 WGC stdin 管道失败。"};
+      }
+      if (!available) { std::this_thread::sleep_for(std::chrono::milliseconds{2}); continue; }
+      available = static_cast<DWORD>(std::min<std::size_t>(available, std::min<std::size_t>(bytes.size(), 65536)));
     }
+    DWORD received{};
+    if (!ReadFile(input, bytes.data(), available, &received, nullptr)) {
+      if (GetLastError() == ERROR_BROKEN_PIPE) return 0;
+      return std::unexpected{"读取 WGC stdin 失败。"};
+    }
+    return static_cast<std::size_t>(received);
   }
-};
+  return std::unexpected{"任务已取消。"};
+}
 
-std::expected<std::unique_ptr<WgcStdinTemporary>, std::string>
-spool_wgc_stdin(const WgcStdinSpec& spec) {
-  std::error_code ec;
-  const auto temp_root = std::filesystem::temp_directory_path(ec);
-  if (ec) return std::unexpected{"无法定位 WGC stdin 临时目录。"};
-  const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-  auto temporary = std::make_unique<WgcStdinTemporary>();
-  for (unsigned attempt = 0; attempt < 32; ++attempt) {
-    temporary->directory = temp_root / std::format(
-        L"AWJ-wgc-{}-{}-{}", GetCurrentProcessId(), stamp, attempt);
-    if (std::filesystem::create_directory(temporary->directory, ec)) {
-      temporary->owns_directory = true;
-      break;
-    }
-    if (ec && ec != std::errc::file_exists) {
-      return std::unexpected{"无法创建 WGC stdin 临时目录。"};
-    }
-    ec.clear();
+std::expected<awj::ImageDecodeResult, std::string> read_wgc_stdin(
+    const WgcStdinSpec& spec, const awj::AppConfig& config, std::stop_token stop) {
+  const auto stride = static_cast<std::uint64_t>(spec.width) * 8;
+  const auto maximum = awj::encoding_defaults::effective_max_input_file_bytes();
+  if (stride > maximum || spec.height > maximum / stride ||
+      (config.memory_limit_bytes && spec.height > config.memory_limit_bytes / stride))
+    return std::unexpected{"WGC stdin 帧超过输入或配置内存上限。"};
+  awj::ImageDecodeResult decoded;
+  decoded.decoder_id = "stdin-wgc-memory";
+  auto& image = decoded.image;
+  image.width = spec.width; image.height = spec.height;
+  image.pixel_format = awj::PixelFormat::rgba; image.bit_depth = 16;
+  image.alpha_mode = awj::AlphaMode::straight;
+  image.sample_representation = awj::SampleRepresentation::ieee_half_float;
+  image.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+      .color_primaries = 1, .transfer_characteristics = 8, .matrix_coefficients = 0, .color_range = 1,
+      .has_hdr_metadata = true, .color_metadata_source = "wgc-scrgb-half-linear", .linear_reference_white_nits = 80};
+  image.planes.resize(1);
+  auto& plane = image.planes[0]; plane.stride = static_cast<std::size_t>(stride);
+  plane.bytes.resize(static_cast<std::size_t>(stride * spec.height));
+  std::size_t offset{};
+  while (offset < plane.bytes.size()) {
+    auto received = read_stdin_bytes(std::span{plane.bytes}.subspan(offset), stop);
+    if (!received) return std::unexpected{received.error()};
+    if (!*received) return std::unexpected{"WGC stdin 数据短于声明的单帧。"};
+    offset += *received;
   }
-  if (!temporary->owns_directory || temporary->directory.empty() ||
-      !std::filesystem::is_directory(temporary->directory, ec) || ec) {
-    return std::unexpected{"无法创建 WGC stdin 临时目录。"};
-  }
-  temporary->path = temporary->directory / L"stdin-wgc-rgba16f.awsraw";
-  if (_setmode(_fileno(stdin), _O_BINARY) == -1) {
-    return std::unexpected{"无法将 WGC stdin 切换为二进制模式。"};
-  }
-  if (auto written = awj::write_wgc_scrgb_half_stream_file(
-          temporary->path, spec.width, spec.height, std::cin);
-      !written) {
-    return std::unexpected{written.error()};
-  }
-  return temporary;
+  std::byte extra{};
+  auto tail = read_stdin_bytes({&extra, 1}, stop);
+  if (!tail) return std::unexpected{tail.error()};
+  if (*tail) return std::unexpected{"WGC stdin 数据长于声明的单帧；多帧请使用 awj-stream。"};
+  return decoded;
+}
+
+std::expected<int, std::string> run_wgc_memory(const WgcStdinSpec& spec, awj::AppConfig config, std::stop_token stop) {
+  if (config.output_dir.empty()) return std::unexpected{"--stdin-wgc-rgba16f 必须显式指定 -o/--output。"};
+  if (config.output_template.find(L"{sha256") != std::wstring::npos)
+    return std::unexpected{"内存 stdin 不提供原输入文件的 SHA-256 模板；请使用帧号或普通名称。"};
+  auto decoded = read_wgc_stdin(spec, config, stop);
+  if (!decoded) return std::unexpected{decoded.error()};
+  const auto input_bytes = decoded->image.planes[0].bytes.size();
+  std::uint64_t hash = 14695981039346656037ull;
+  for (const auto byte : decoded->image.planes[0].read_bytes()) { hash ^= std::to_integer<unsigned char>(byte); hash *= 1099511628211ull; }
+  std::mt19937_64 random{static_cast<std::uint64_t>(std::chrono::steady_clock::now().time_since_epoch().count())};
+  config.input_path = L"stdin-wgc-rgba16f.awsraw"; // 仅作为最终文件命名提示，不创建/打开此文件。
+  config.write_log = false; config.write_summary = false;
+  awj::FileLogger logger{{}, false};
+  const auto resources = awj::plan_resources({.automatic_thread_budget = std::max(1, config.max_jobs),
+      .file_count = 1, .memory_limit_bytes = config.memory_limit_bytes, .estimated_bytes_per_file = input_bytes});
+  awj::NativeBackend backend{config, logger, resources};
+  auto encoded = backend.encode_memory(std::move(*decoded), stop);
+  if (!encoded) return std::unexpected{encoded.error()};
+  const auto source = awj::make_image_file(0, config.input_path, {}, input_bytes, random, std::format(L"{:016x}", hash));
+  auto output = awj::resolve_collision_output_path(awj::output_path_for(config, source), config.collision_mode, nullptr, awj::output_extension_for(config));
+  if (!output) return std::unexpected{output.error()};
+  std::error_code error;
+  if (config.collision_mode == awj::CollisionMode::skip && std::filesystem::exists(*output, error) && !error) return 0;
+  auto written = awj::native_backend_detail::write_output_bytes(*output, encoded->encoded.bytes,
+      config.collision_mode == awj::CollisionMode::overwrite, stop);
+  if (!written) return std::unexpected{written.error()};
+  std::println("[OK] {}", awj::display_path_for_user(*output));
+  return 0;
 }
 #endif
 
@@ -310,23 +362,6 @@ int run_cli_args(std::vector<std::wstring> args) {
       }
     }};
 #endif
-#ifdef _WIN32
-    std::unique_ptr<WgcStdinTemporary> wgc_temporary;
-    if (*wgc_stdin) {
-      if (parsed->config.output_dir.empty()) {
-        print_line("[FAIL] --stdin-wgc-rgba16f 必须显式指定 -o/--output，避免把结果写入临时目录。");
-        return 1;
-      }
-      auto spooled = spool_wgc_stdin(**wgc_stdin);
-      if (!spooled) {
-        print_line(std::format("[FAIL] {}", spooled.error()));
-        return 1;
-      }
-      parsed->config.input_path = (*spooled)->path;
-      parsed->shell_inputs.clear();
-      wgc_temporary = std::move(*spooled);
-    }
-#endif
     if (auto valid = awj::validate_execution_config(parsed->config); !valid) {
       print_line(std::format("[FAIL] {}", valid.error()));
       return 1;
@@ -354,13 +389,20 @@ int run_cli_args(std::vector<std::wstring> args) {
       }
     }
 #endif
-    const auto exit_code = capture_expected<int>([&] {
+    const auto exit_code = capture_expected<int>([&]() -> std::expected<int, std::string> {
       const auto token = g_cli_stop_source.get_token();
+#ifdef _WIN32
+      if (*wgc_stdin) return run_wgc_memory(**wgc_stdin, parsed->config, token);
+#endif
+#ifdef AWJ_MEMORY_CLI_ONLY
+      return std::unexpected{"此无 GUI 验证目标仅接受 --stdin-wgc-rgba16f。"};
+#else
       if (parsed->config.output_policy == awj::OutputPolicy::shell &&
           !parsed->shell_inputs.empty()) {
         return awj::run_pipeline(parsed->config, parsed->shell_inputs, token);
       }
       return awj::run_pipeline(parsed->config, token);
+#endif
     });
     studio_cancel_watcher.request_stop();
     studio_cancel_watcher = {};

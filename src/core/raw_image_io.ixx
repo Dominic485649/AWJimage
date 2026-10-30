@@ -309,7 +309,7 @@ std::expected<void, std::string> write_raw_image_file(
     }
     const auto& plane = image.planes.front();
     if (image.width == 0 || image.height == 0 || plane.stride == 0 ||
-        plane.bytes.empty()) {
+        plane.read_bytes().empty()) {
       return std::unexpected{"raw 图像写入收到空图像。"};
     }
     if (image.width > std::numeric_limits<std::uint32_t>::max() ||
@@ -331,7 +331,7 @@ std::expected<void, std::string> write_raw_image_file(
       return std::unexpected{"raw 图像 stride 小于像素格式要求。"};
     }
     const auto min_bytes = static_cast<std::uint64_t>(plane.stride) * image.height;
-    if (plane.bytes.size() < min_bytes) {
+    if (plane.read_bytes().size() < min_bytes) {
       return std::unexpected{"raw 图像 payload 小于尺寸要求。"};
     }
     if (min_bytes > encoding_defaults::effective_max_input_file_bytes() - sizeof(raw_image_detail::Header)) {
@@ -385,7 +385,7 @@ std::expected<void, std::string> write_raw_image_file(
     if (auto written = raw_image_detail::write_all(output.get(), &header, sizeof(header), path); !written) {
       return std::unexpected{written.error()};
     }
-    if (auto written = raw_image_detail::write_all(output.get(), plane.bytes.data(), min_bytes, path); !written) {
+    if (auto written = raw_image_detail::write_all(output.get(), plane.read_bytes().data(), min_bytes, path); !written) {
       return std::unexpected{written.error()};
     }
 #ifdef _WIN32
