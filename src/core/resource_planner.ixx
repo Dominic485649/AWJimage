@@ -7,9 +7,11 @@ module;
 #include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 
 export module awj.resource_planner;
 
+import awj.config;
 import awj.encoding_defaults;
 
 export namespace awj {
@@ -34,6 +36,19 @@ struct ResourcePlan {
   int memory_file_parallelism{1};
 };
 
+struct HeifDecodeThreadPlan {
+  int tile_parallelism{1};
+  int codec_threads{1};
+};
+
+HeifDecodeThreadPlan plan_heif_decode_threads(int requested, std::uint64_t tiles, std::uint64_t tile_pixels) noexcept {
+  const int budget = std::clamp(requested, 1, encoding_defaults::max_automatic_thread_budget);
+  const int inner = tile_pixels >= 1024ull * 1024 ? 4 : tile_pixels >= 512ull * 512 ? 2 : 1;
+  const int parallel = static_cast<int>(std::min<std::uint64_t>(std::max<std::uint64_t>(1, tiles),
+      static_cast<std::uint64_t>(std::max(1, budget / inner))));
+  return {.tile_parallelism = parallel, .codec_threads = std::max(1, budget / parallel)};
+}
+
 // 自动内存上限取 min(总内存 80%, 当前可用 50%)：总内存那一项防止在空闲机器上
 // 把整台机器吃满，可用内存那一项给其他进程留出继续申请的余量。只读到一项时用该项。
 std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
@@ -47,6 +62,34 @@ std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
     return total_headroom;
   }
   return std::min(total_headroom, available_headroom);
+}
+
+// AppConfig keeps 0 = automatic for compatibility. Resolve the session unlock
+// before consulting that value; downstream 0 must not turn back into automatic.
+std::uint64_t effective_memory_limit(const AppConfig& cfg,
+                                    MemoryStatus status) noexcept {
+  if (cfg.unlock_memory_limit) return 0;
+  return cfg.memory_limit_bytes != 0 ? cfg.memory_limit_bytes
+                                     : automatic_memory_limit(status);
+}
+
+std::string_view memory_limit_mode(const AppConfig& cfg) noexcept {
+  if (cfg.unlock_memory_limit) return "unlocked";
+  return cfg.memory_limit_bytes != 0 ? "manual" : "automatic";
+}
+
+std::string_view memory_limit_source(const AppConfig& cfg,
+                                     MemoryStatus status) noexcept {
+  if (cfg.unlock_memory_limit) return "session_unlock";
+  if (cfg.memory_limit_bytes != 0) return "configuration";
+  if (status.total_bytes == 0 && status.available_bytes == 0)
+    return "system_unavailable";
+  const auto total_headroom = static_cast<std::uint64_t>(
+      static_cast<long double>(status.total_bytes) * 0.8L);
+  const auto available_headroom = status.available_bytes / 2;
+  if (total_headroom == 0) return "system_available";
+  if (available_headroom == 0) return "system_total";
+  return available_headroom < total_headroom ? "system_available" : "system_total";
 }
 
 ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {

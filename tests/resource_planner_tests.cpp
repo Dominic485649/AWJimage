@@ -6,6 +6,7 @@
 #else
 #include <sched.h>
 #endif
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <string>
@@ -17,11 +18,13 @@
 #include <bit>
 #include <vector>
 #include "../src/core/work_memory_admission.h"
+#include "../src/core/hdr_cost.h"
 
 import awj.codec;
 import awj.config;
 import awj.encoding_defaults;
 import awj.large_image_plan;
+import awj.image;
 import awj.resource_planner;
 
 namespace {
@@ -35,6 +38,41 @@ int fail(std::string_view message) {
 }  // namespace
 
 int main() {
+  awj::ImageBuffer reference{};
+  reference.bit_depth = 16;
+  reference.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::yuv420, .bit_depth = 8};
+  if (awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, false).value_or(0) != 10 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::jxl, reference, false).value_or(0) != 16 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, false).value_or(0) != 8 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, true).value_or(0) != 16 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, false, 8).value_or(0) != 8 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, false, 16).value_or(0) != 16 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, false, 12) ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::webp, reference, false, 10))
+    return fail("Rendition precision/PNG compatibility/explicit-parameter policy mismatch.");
+  reference.source_info->pixel_format = awj::PixelFormat::rgba;
+  reference.source_info->bit_depth = 16;
+  if (awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, true).value_or(0) != 12 ||
+      awj::avif_auto_chroma(reference.source_info->pixel_format) != awj::ChromaMode::yuv444)
+    return fail("Reconstructed RGB16 HDR did not select AVIF12/444.");
+  reference.source_info->pixel_format = awj::PixelFormat::yuv420;
+  reference.source_info->bit_depth = 10;
+  if (awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, true).value_or(0) != 10 ||
+      awj::avif_auto_chroma(reference.source_info->pixel_format) != awj::ChromaMode::yuv420)
+    return fail("Retained reverse-map HDR base lost native precision/sampling.");
+  if (awj::gain_map_mode_for_output(awj::OutputFormat::png, awj::JpegHdrMode::automatic) != awj::GainMapDecodeMode::hdr_only ||
+      awj::gain_map_mode_for_output(awj::OutputFormat::webp, awj::JpegHdrMode::automatic) != awj::GainMapDecodeMode::sdr_only ||
+      awj::gain_map_mode_for_output(awj::OutputFormat::jpgli, awj::JpegHdrMode::sdr) != awj::GainMapDecodeMode::sdr_only ||
+      awj::gain_map_mode_for_output(awj::OutputFormat::avif, awj::JpegHdrMode::automatic) != awj::GainMapDecodeMode::preserve_both)
+    return fail("Target capability selected the wrong Gain Map rendition mode.");
+  for (int budget : {0, 1, 2, 3, 12, 64}) for (std::uint64_t tiles : {0ull, 1ull, 4ull, 100ull})
+    for (std::uint64_t pixels : {0ull, 65536ull, 262144ull, 4194304ull}) {
+      const auto plan = awj::plan_heif_decode_threads(budget, tiles, pixels);
+      if (plan.tile_parallelism < 1 || plan.codec_threads < 1 ||
+          plan.tile_parallelism * plan.codec_threads > std::max(1, budget) ||
+          static_cast<std::uint64_t>(plan.tile_parallelism) > std::max<std::uint64_t>(1, tiles))
+        return fail("HEIF tile/codec split multiplied the per-file thread budget.");
+    }
   if (awj::default_max_jobs() != awj::automatic_thread_budget(awj::available_processor_count()))
     return fail("Automatic threads ignored available CPU affinity.");
 #ifdef _WIN32
@@ -117,6 +155,15 @@ int main() {
     if (!third || third->bytes != 2) return fail("Overflow boundary lost work");
     queue.release(third->bytes);
   }
+  {
+    const std::array groups{Group{11}, Group{12}};
+    awj::WorkMemoryAdmission queue{0, groups};
+    const auto first = queue.acquire({});
+    const auto second = queue.acquire({});
+    if (!first || !second) return fail("Resolved zero budget did not mean unlimited admission.");
+    queue.release(first->bytes);
+    queue.release(second->bytes);
+  }
   try {
     const std::array groups{Group{11}};
     awj::WorkMemoryAdmission queue{10, groups};
@@ -139,10 +186,49 @@ int main() {
       awj::avif_encode_working_set_bytes_for_dimensions(awj::make_image_dimensions(1, 65)) !=
       awj::avif_encode_working_set_bytes_for_dimensions(awj::make_image_dimensions(64, 128)))
     return fail("Known opaque memory profile or codec block padding is invalid.");
+  {
+    constexpr std::uint64_t n = 2048ull * 1536;
+    const auto sdr = awj::hdr_cost::jpeg_sdr_working_set_bytes(2048, 1536, 0, n * 4);
+    const auto hdr = awj::hdr_cost::jpeg_working_set_bytes(2048, 1536, 0, 1, n * 4);
+    if (sdr >= hdr || sdr < n * 4 ||
+        awj::hdr_cost::jpeg_sdr_working_set_bytes(2048, 1536, 7, n * 4) != sdr + 14 ||
+        awj::hdr_cost::jpeg_sdr_working_set_bytes(2048, 1536, UINT64_MAX) != UINT64_MAX ||
+        awj::hdr_cost::jpeg_sdr_working_set_bytes(0, 1536) != UINT64_MAX)
+      return fail("SDR JPEG phases retained the HDR graph, lost input storage or overflowed.");
+  }
+
   const auto measured_budget = awj::plan_resources({.automatic_thread_budget = 8,
       .file_count = 4, .memory_limit_bytes = 3 * gib, .estimated_bytes_per_file = aom_working_set});
   if (measured_budget.file_parallelism != 1 || measured_budget.encoder_threads_per_file != 8)
     return fail("AOM memory limit did not reassign the thread budget to the remaining file");
+
+  {
+    auto cfg = awj::default_app_config();
+    const awj::MemoryStatus status{.total_bytes = 32 * gib, .available_bytes = 10 * gib};
+    cfg.memory_limit_bytes = 0;
+    if (awj::effective_memory_limit(cfg, status) != 5 * gib ||
+        awj::memory_limit_mode(cfg) != "automatic" ||
+        awj::memory_limit_source(cfg, status) != "system_available")
+      return fail("Configured zero no longer means automatic memory admission.");
+    cfg.unlock_memory_limit = true;
+    if (awj::effective_memory_limit(cfg, status) != 0 ||
+        awj::memory_limit_mode(cfg) != "unlocked" ||
+        awj::memory_limit_source(cfg, status) != "session_unlock")
+      return fail("Session unlock fell back to an automatic memory limit.");
+    cfg.memory_limit_bytes = 3 * gib;
+    if (awj::effective_memory_limit(cfg, status) != 0 || cfg.memory_limit_bytes != 3 * gib)
+      return fail("Session unlock erased or failed to override a manual memory value.");
+    cfg.unlock_memory_limit = false;
+    if (awj::effective_memory_limit(cfg, status) != 3 * gib ||
+        awj::memory_limit_mode(cfg) != "manual" ||
+        awj::memory_limit_source(cfg, status) != "configuration")
+      return fail("Disabling unlock did not restore the manual budget.");
+    cfg.memory_limit_bytes = 0;
+    cfg.unlock_max_input_file_bytes = true;
+    if (awj::effective_memory_limit(cfg, status) != 5 * gib ||
+        awj::memory_limit_source(cfg, {}) != "system_unavailable")
+      return fail("The input/buffer unlock unexpectedly changed the working-set budget.");
+  }
 
   // 可用内存偏紧时由 available*0.5 决定。
   const auto memory = awj::automatic_memory_limit(

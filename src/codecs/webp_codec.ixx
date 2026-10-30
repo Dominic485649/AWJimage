@@ -2,6 +2,10 @@ module;
 
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <lcms2.h>
+#include <avif/internal.h>
+#include <libplacebo/colorspace.h>
 #include <cstddef>
 #include <cstdint>
 #include <cwctype>
@@ -12,6 +16,7 @@ module;
 #include <limits>
 #include <memory>
 #include <new>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <stop_token>
@@ -31,7 +36,9 @@ import awj.config;
 import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
+import awj.gain_map;
 import awj.image;
+import awj.hdr_tonemap;
 import awj.pixel_conversion;
 import awj.large_image_plan;
 
@@ -365,11 +372,16 @@ std::expected<void, std::string> set_metadata_chunk(WebPMux* mux,
   return {};
 }
 
+std::expected<std::vector<std::byte>, std::string> sdr_cicp_icc(
+    const ImageSourceInfo& info, std::stop_token stop = {}) {
+  return gain_map_detail::sdr_presentation_icc(info, stop);
+}
+
 std::expected<std::vector<std::byte>, std::string> mux_metadata(
     std::span<const std::byte> encoded,
     const ImageBuffer& image,
     const NativeEncodeSettings& settings,
-    std::stop_token stop_token = {}) {
+    std::stop_token stop_token = {}, const MetadataBlock* essential_icc = nullptr) {
   if (stop_token.stop_requested()) {
     return std::unexpected{"任务已取消。"};
   }
@@ -384,12 +396,18 @@ std::expected<std::vector<std::byte>, std::string> mux_metadata(
   if (WebPMuxSetImage(mux, &image_data, 1) != WEBP_MUX_OK) {
     return std::unexpected{"WebP mux 设置图像失败。"};
   }
-  if (settings.applied_icc == "kept") {
+  if (essential_icc) {
+    if (essential_icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes)
+      return std::unexpected{"WebP essential ICC 超过元数据上限。"};
+    const WebPData icc{reinterpret_cast<const std::uint8_t*>(essential_icc->bytes.data()), essential_icc->bytes.size()};
+    if (WebPMuxSetChunk(mux, "ICCP", &icc, 1) != WEBP_MUX_OK)
+      return std::unexpected{"WebP essential ICC 封装失败。"};
+  } else if (settings.applied_icc == "kept") {
     if (auto set = set_metadata_chunk(mux, image, webp_metadata_chunks[0]); !set) {
       return std::unexpected{set.error()};
     }
   }
-  for (std::size_t index = 1; index < std::size(webp_metadata_chunks); ++index) {
+  for (std::size_t index = 1; !settings.strip_metadata && index < std::size(webp_metadata_chunks); ++index) {
     if (stop_token.stop_requested()) {
       return std::unexpected{"任务已取消。"};
     }
@@ -448,9 +466,19 @@ class WebPImageDecoder final : public ImageDecoder {
           features.width <= 0 || features.height <= 0) {
         return std::unexpected{std::format("WebP 文件信息无效: {}", display_path_for_user(path))};
       }
-      return decoder_common::make_image_dimensions_checked(static_cast<std::uint32_t>(features.width),
-                                                           static_cast<std::uint32_t>(features.height),
-                                                           "WebP");
+      auto dimensions = decoder_common::make_image_dimensions_checked(static_cast<std::uint32_t>(features.width),
+          static_cast<std::uint32_t>(features.height), "WebP");
+      if (!dimensions) return dimensions;
+      // VP8X 的 ICC 标志位可在固定头部中读取，不扫描或解压整幅图像。
+      const bool extended = bytes->size() >= 21 && webp_detail::fourcc_is(*bytes, 12, "VP8X");
+      const bool has_icc = extended && (std::to_integer<unsigned>((*bytes)[20]) & 0x20u) != 0;
+      dimensions->source_bit_depth = 8;
+      dimensions->source_has_alpha = features.has_alpha != 0;
+      dimensions->source_dynamic_range = has_icc ? ImageDynamicRangeHint::unknown : ImageDynamicRangeHint::sdr;
+      dimensions->opaque_sdr8_yuv420 = features.format == 1 && !dimensions->source_has_alpha && !has_icc;
+      const auto pixels = static_cast<std::uint64_t>(features.width) * features.height;
+      dimensions->decoded_storage_bytes = pixels * 4;
+      return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"WebP 尺寸探测内存不足。"};
     } catch (const std::length_error&) {
@@ -742,8 +770,22 @@ class WebPImageEncoder final : public ImageEncoder {
       }
       EncodedImage encoded{.codec_name = "libwebp"};
       encoded.bytes = std::move(writer.bytes);
-      if (!settings.strip_metadata && webp_detail::has_metadata_to_mux(image, settings)) {
-        auto muxed = webp_detail::mux_metadata(encoded.bytes, image, settings, stop_token);
+      std::optional<MetadataBlock> generated_icc;
+      const MetadataBlock* essential_icc = nullptr;
+      if (settings.applied_icc == "kept" || (image.source_info && image.source_info->source_has_gain_map))
+        essential_icc = webp_detail::first_metadata(image, MetadataKind::icc);
+      if (!essential_icc && image.source_info) {
+        const auto& source = *image.source_info;
+        if (source.color_primaries && source.transfer_characteristics &&
+            (source.color_primaries != 1 || source.transfer_characteristics != 13)) {
+          auto profile = webp_detail::sdr_cicp_icc(source, stop_token);
+          if (!profile) return std::unexpected{profile.error()};
+          generated_icc = MetadataBlock{MetadataKind::icc, std::move(*profile)};
+          essential_icc = &*generated_icc;
+        }
+      }
+      if (essential_icc || (!settings.strip_metadata && webp_detail::has_metadata_to_mux(image, settings))) {
+        auto muxed = webp_detail::mux_metadata(encoded.bytes, image, settings, stop_token, essential_icc);
         if (!muxed) {
           return std::unexpected{muxed.error()};
         }
@@ -752,6 +794,14 @@ class WebPImageEncoder final : public ImageEncoder {
 
       auto diagnostics = diagnostics_from_settings(settings);
       diagnostics.encoder_id = "libwebp";
+      if (essential_icc) {
+        diagnostics.applied_icc = generated_icc ? "generated-essential-sdr-cicp" : "essential-sdr-rendition";
+        if (image.source_info) {
+          diagnostics.applied_color_primaries = image.source_info->color_primaries;
+          diagnostics.applied_transfer_characteristics = image.source_info->transfer_characteristics;
+        }
+        diagnostics.color_reason = "写入解释所选 SDR 呈现所需的 ICC；strip 仅移除可选元数据";
+      }
       diagnostics.speed_mapping = speed_mapping;
       diagnostics.encoder_threads = settings.resources.encoder_threads_per_file;
       diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;

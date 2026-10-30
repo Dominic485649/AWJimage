@@ -1,17 +1,21 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <expected>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <optional>
 #include <span>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -80,7 +84,14 @@ struct Sandbox {
   fs::path path = fs::temp_directory_path() / ("awj-iso-gain-map-" +
       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()));
   Sandbox() { require(fs::create_directory(path), "ISO test sandbox must be fresh"); }
-  ~Sandbox() { std::error_code ec; fs::remove_all(path, ec); }
+  ~Sandbox() {
+    // 出错时保留项目 TMPDIR 内的必要复现输入，成功时再清理自有唯一目录。
+    if (std::uncaught_exceptions() > 0) {
+      try { std::fprintf(stderr, "失败测试输入保留：%s\n", path.string().c_str()); } catch (...) {}
+      return;
+    }
+    std::error_code ec; fs::remove_all(path, ec);
+  }
   fs::path save(std::string_view name, View bytes) const {
     auto file = path / name;
     std::ofstream output(file, std::ios::binary);
@@ -367,6 +378,13 @@ void jpeg_matrix(const Sandbox& sandbox) {
   check_jpeg(sandbox, "legacy-google.jpg", app(base, 0xe1, xmp(R"(<rdf:Description xmlns:c="http://ns.google.com/photos/1.0/container/"><rdf:li i:Semantic='GainMap'/></rdf:Description>)")), Outcome::rejected);
   auto truncated = app(base, 0xe2, text("urn:iso:std:iso:ts:21496:-1"));
   check_jpeg(sandbox, "truncated-iso.jpg", truncated, Outcome::rejected);
+  for (const auto mode : {awj::GainMapDecodeMode::hdr_only,awj::GainMapDecodeMode::sdr_only,awj::GainMapDecodeMode::preserve_both}) {
+    for (const auto* invalid : {&legacy,&corrupt,&truncated})
+      check_image(turbo.decode_memory(*invalid,"terminal JPEG rendition gate",{.gain_map_mode = mode}),Outcome::rejected);
+    auto untouched = take(turbo.decode_memory(ordinary,"ordinary JPEG rendition mode",{.gain_map_mode = mode}));
+    require(!untouched.gain_map_alternative && untouched.image.source_info &&
+        !untouched.image.source_info->source_has_gain_map,"Ordinary JPEG was promoted to a paired HDR image");
+  }
   // Even when MPF makes entropy scanning necessary, stuffed bytes cannot turn
   // arbitrary entropy text into an ISO APP2 record.
   auto fake = app(Bytes{std::byte{255},std::byte{216}}, 0xe2, text(std::string_view{"MPF\0",4}));
@@ -396,13 +414,14 @@ Box& find(std::vector<Box>& list, std::string_view type) {
   const auto it = std::ranges::find_if(list, [&](const Box& b) { return b.type == type; });
   require(it != list.end(), "Missing pinned HEIF fixture box"); return *it;
 }
-Bytes iso_tmap_metadata() {
+Bytes iso_tmap_metadata(bool hdr_base = false) {
   Bytes out(6); out[5] = std::byte{64};
-  for (auto [n,d] : {std::pair{0u,1u}, {2u,1u}, {0u,1u}, {2u,1u}, {1u,1u}, {0u,1u}, {0u,1u}}) { u32(out,n); u32(out,d); }
+  for (auto [n,d] : {std::pair{hdr_base ? 2u : 0u,1u}, {hdr_base ? 0u : 2u,1u}, {0u,1u}, {2u,1u}, {1u,1u}, {0u,1u}, {0u,1u}}) { u32(out,n); u32(out,d); }
   require(out.size() == 62, "Invalid ISO tmap test metadata"); return out;
 }
 Bytes heif_fixture(bool iso, bool apple, bool corrupt = false, bool rotate = false,
-    std::string_view name = "rainbow-451x461.heic", bool tmap_primary = false, Bytes metadata = {}) {
+    std::string_view name = "rainbow-451x461.heic", bool tmap_primary = false, Bytes metadata = {},
+    int base_transfer = 13, bool crop = false) {
   auto source = load(fs::path(AWJ_ISO_TEST_HEIF_DATA) / name);
   auto top = boxes(source); auto& meta_box = find(top, "meta");
   const auto old_meta_size = meta_box.payload.size() + 8;
@@ -427,14 +446,27 @@ Bytes heif_fixture(bool iso, bool apple, bool corrupt = false, bool rotate = fal
 
   auto& iprp = find(meta,"iprp"); auto properties = boxes(iprp.payload);
   auto& ipco = find(properties,"ipco"); auto props = boxes(ipco.payload);
+  const bool hdr_base = base_transfer == 16 || base_transfer == 18;
   unsigned colr_count = 0;
   for (auto& property : props) if (property.type == "colr") {
-    property.payload = text("nclx"); u16(property.payload,1); u16(property.payload,13); u16(property.payload,1); property.payload.push_back(std::byte{128}); ++colr_count;
+    property.payload = text("nclx"); u16(property.payload,hdr_base ? 9 : 1); u16(property.payload,base_transfer);
+    u16(property.payload,hdr_base ? 9 : 1); property.payload.push_back(std::byte{128}); ++colr_count;
   }
   require(colr_count == 1, "Pinned HEIF color profile layout changed");
   Bytes auxc(4); append(auxc,text(apple ? "urn:com:apple:photo:2020:aux:hdrgainmap" : "urn:iso:std:iso:ts:21496:-1")); auxc.push_back(std::byte{0});
   props.push_back({"auxC",std::move(auxc)}); const auto aux_property = static_cast<unsigned>(props.size());
-  unsigned rotation_property = 0;
+  unsigned rotation_property = 0, crop_property = 0, alternate_color_property = 0;
+  if (iso && hdr_base) {
+    auto color = text("nclx"); u16(color,1); u16(color,13); u16(color,1); color.push_back(std::byte{128});
+    props.push_back({"colr",std::move(color)}); alternate_color_property = static_cast<unsigned>(props.size());
+  }
+  if (crop) {
+    require(iso, "Test crop requires a tmap rendition");
+    const bool alpha = name.find("alpha") != std::string_view::npos;
+    Bytes clap;
+    for (const unsigned value : {alpha ? 64u : 63u, 1u, alpha ? 48u : 47u, 1u, 0u, 1u, 0u, 1u}) u32(clap,value);
+    props.push_back({"clap",std::move(clap)}); crop_property = static_cast<unsigned>(props.size());
+  }
   if (rotate) { props.push_back({"irot",Bytes{std::byte{1}}}); rotation_property = static_cast<unsigned>(props.size()); }
   require(props.size() < 128, "Test HEIF property index overflow"); ipco.payload = serialize(props);
   auto& ipma = find(properties,"ipma"); require(read(ipma.payload,0,4) == 0, "Pinned HEIF ipma version changed");
@@ -448,7 +480,12 @@ Bytes heif_fixture(bool iso, bool apple, bool corrupt = false, bool rotate = fal
   }
   require(!base_properties.empty(), "Missing primary property associations");
   auto aux_properties = base_properties; aux_properties.push_back(std::byte(128 | aux_property)); associations.emplace_back(aux_id,std::move(aux_properties));
-  if (iso) associations.emplace_back(tmap_id,rotate ? Bytes{std::byte(128 | rotation_property)} : Bytes{});
+  if (iso) {
+    Bytes rendition;
+    for (const auto property : {alternate_color_property, crop_property, rotation_property})
+      if (property) rendition.push_back(std::byte(128 | property));
+    associations.emplace_back(tmap_id,std::move(rendition));
+  }
   ipma.payload = Bytes(4); u32(ipma.payload,static_cast<std::uint32_t>(associations.size()));
   for (const auto& [id,data] : associations) { u16(ipma.payload,id); ipma.payload.push_back(std::byte(data.size())); append(ipma.payload,data); }
   iprp.payload = serialize(properties);
@@ -469,7 +506,7 @@ Bytes heif_fixture(bool iso, bool apple, bool corrupt = false, bool rotate = fal
   auto base_location = std::ranges::find_if(locations,[&](const auto& loc) { return loc.id == base_id; });
   require(base_location != locations.end(), "Missing primary HEVC location");
   auto auxiliary_location = *base_location; auxiliary_location.id = aux_id; locations.push_back(std::move(auxiliary_location));
-  if (metadata.empty()) metadata = iso_tmap_metadata();
+  if (metadata.empty()) metadata = iso_tmap_metadata(hdr_base);
   if (corrupt) metadata[0] = std::byte{1};
   auto write_locations = [&](std::int64_t delta, std::uint32_t offset) {
     Bytes payload; append(payload,View{iloc.payload}.first(6)); u16(payload,static_cast<unsigned>(locations.size()) + (iso ? 1 : 0));
@@ -493,6 +530,188 @@ Bytes heif_fixture(bool iso, bool apple, bool corrupt = false, bool rotate = fal
   if (iso) top.push_back({"mdat",std::move(metadata)});
   return serialize(top);
 }
+std::uint16_t rgba_sample(const awj::ImageBuffer& image, std::size_t x, std::size_t y, std::size_t channel) {
+  const auto at = awj::image_sample_coordinates(image,x,y);
+  const auto* pixel = image.planes[0].bytes.data() + at[1] * image.planes[0].stride + (at[0] * 4 + channel) * (image.bit_depth / 8);
+  if (image.bit_depth == 8) return std::to_integer<std::uint8_t>(*pixel);
+  std::uint16_t value{}; std::memcpy(&value,pixel,2); return value;
+}
+bool same_rgba(const awj::ImageBuffer& a, const awj::ImageBuffer& b) {
+  if (a.width != b.width || a.height != b.height || a.bit_depth != b.bit_depth ||
+      a.pixel_format != awj::PixelFormat::rgba || b.pixel_format != awj::PixelFormat::rgba ||
+      a.sample_representation != b.sample_representation) return false;
+  for (std::size_t y = 0; y < a.height; ++y) for (std::size_t x = 0; x < a.width; ++x)
+    for (std::size_t c = 0; c < 4; ++c) if (rgba_sample(a,x,y,c) != rgba_sample(b,x,y,c)) return false;
+  return true;
+}
+void same_alpha(const awj::ImageBuffer& a, const awj::ImageBuffer& b) {
+  require(a.width == b.width && a.height == b.height && a.alpha_mode != awj::AlphaMode::none &&
+      b.alpha_mode != awj::AlphaMode::none,"Paired alpha dimensions/mode differ");
+  for (std::size_t y = 0; y < a.height; ++y) for (std::size_t x = 0; x < a.width; ++x) {
+    const auto pa = int(rgba_sample(a,x,y,3)) * (a.bit_depth == 8 ? 257 : 1);
+    const auto pb = int(rgba_sample(b,x,y,3)) * (b.bit_depth == 8 ? 257 : 1);
+    require(std::abs(pa-pb) <= 257,"Gain-map rendition changed source alpha");
+  }
+}
+
+#include "iso_gain_map_icc_fixture.h"
+#include "iso_gain_map_grid_fixture.h"
+
+awj::ImageBuffer rgba_rendition(bool hdr, int transfer) {
+  const int depth = hdr ? 16 : 8;
+  awj::ImageBuffer image{.width = 4, .height = 3, .pixel_format = awj::PixelFormat::rgba,
+      .alpha_mode = awj::AlphaMode::straight, .bit_depth = depth,
+      .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = depth,
+          .color_primaries = hdr ? 9 : 1, .transfer_characteristics = hdr ? transfer : 13,
+          .matrix_coefficients = 0, .color_range = 1, .has_hdr_metadata = hdr}};
+  image.planes.push_back({Bytes(4 * 3 * 4 * (depth / 8)), std::size_t(4 * 4 * (depth / 8))});
+  const unsigned sdr[]{24,170,40};
+  for (std::size_t y = 0; y < 3; ++y) for (std::size_t x = 0; x < 4; ++x) for (std::size_t c = 0; c < 4; ++c) {
+    const auto value = c == 3 ? std::min(hdr ? 65535u : 255u, unsigned(x+1) * (hdr ? 16384u : 64u))
+        : hdr ? 57000u + unsigned(c) * 1000u : sdr[c];
+    auto* out = image.planes[0].bytes.data() + y * image.planes[0].stride + (x * 4 + c) * (depth / 8);
+    if (depth == 8) *out = std::byte(value);
+    else { const auto v = static_cast<std::uint16_t>(value); std::memcpy(out,&v,2); }
+  }
+  return image;
+}
+void fp16_original_space_contract() {
+  // 旧 map 只能在原运算域使用；安全 FP16 子集与同域整数参照应一致。
+  std::unique_ptr<avifGainMap, decltype(&avifGainMapDestroy)> metadata{avifGainMapCreate(), avifGainMapDestroy};
+  require(metadata && bool(awj::heif_detail::parse_iso_metadata(iso_tmap_metadata(), *metadata)),
+      "Cannot create FP16 gain-map metadata");
+  awj::ImageBuffer base{.width = 1, .height = 1, .pixel_format = awj::PixelFormat::rgba,
+      .alpha_mode = awj::AlphaMode::none, .bit_depth = 16,
+      .sample_representation = awj::SampleRepresentation::ieee_half_float,
+      .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+          .color_primaries = 12, .transfer_characteristics = 8, .matrix_coefficients = 0, .color_range = 1,
+          .linear_reference_white_nits = 203.0F}};
+  const std::array<std::uint16_t, 4> half{0x3400, 0x3800, 0x3c00, 0x3c00};
+  base.planes.push_back({Bytes(8), 8});
+  std::memcpy(base.planes[0].bytes.data(), half.data(), 8);
+  awj::ImageBuffer map{.width = 1, .height = 1, .pixel_format = awj::PixelFormat::rgba};
+  map.planes.push_back({Bytes{std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}, 4});
+  auto reference = base;
+  reference.sample_representation = awj::SampleRepresentation::unorm;
+  const std::array<std::uint16_t, 4> integer{16384, 32768, 65535, 65535};
+  std::memcpy(reference.planes[0].bytes.data(), integer.data(), 8);
+  auto rendered = take(awj::compose_iso_gain_map(base, map, *metadata));
+  auto expected = take(awj::compose_iso_gain_map(reference, map, *metadata));
+  require(rendered.width == 1 && rendered.height == 1 && rendered.bit_depth == 16,
+      "FP16 original-domain rendering changed layout");
+  for (std::size_t c = 0; c < 4; ++c) {
+    std::uint16_t a{}, b{};
+    std::memcpy(&a, rendered.planes[0].bytes.data() + c * 2, 2);
+    std::memcpy(&b, expected.planes[0].bytes.data() + c * 2, 2);
+    require(std::abs(int(a) - int(b)) <= 4, "FP16 gain map changed the original RGB operation space");
+  }
+  for (const auto bits : {0x8000u, 0xb400u, 0x4000u, 0x7c00u, 0x7e00u}) {
+    auto invalid = base;
+    const auto value = static_cast<std::uint16_t>(bits);
+    std::memcpy(invalid.planes[0].bytes.data(), &value, 2);
+    require(!awj::compose_iso_gain_map(invalid, map, *metadata),
+        "Invalid or extended FP16 samples were silently clipped by the old gain map");
+  }
+  auto unknown_white = base;
+  unknown_white.source_info->linear_reference_white_nits.reset();
+  require(!awj::compose_iso_gain_map(unknown_white, map, *metadata), "Unknown FP16 white scale was guessed");
+  unknown_white.source_info->linear_reference_white_nits = 80.0F;
+  require(!awj::compose_iso_gain_map(unknown_white, map, *metadata), "scRGB 80-nit samples used the ISO 203-nit scale");
+  auto geometry = base;
+  geometry.geometry = awj::ImageGeometry{.stored_width = 1, .stored_height = 1, .crop_width = 1, .crop_height = 1};
+  require(!awj::compose_iso_gain_map(geometry, map, *metadata), "FP16 geometry changed color space before the old map");
+}
+
+void bidirectional_render_contract() {
+  using Mode = awj::GainMapDecodeMode;
+  awj::ImageBuffer gain{.width = 2, .height = 2, .pixel_format = awj::PixelFormat::rgba,
+      .planes = {{Bytes(16,std::byte{255}),8}}};
+  for (const bool hdr_base : {false,true}) for (const int transfer : {16,18}) {
+    auto base = rgba_rendition(hdr_base,transfer);
+    std::unique_ptr<avifGainMap,decltype(&avifGainMapDestroy)> metadata(avifGainMapCreate(),avifGainMapDestroy);
+    require(metadata && bool(awj::heif_detail::parse_iso_metadata(iso_tmap_metadata(hdr_base),*metadata)),"Cannot create bidirectional ISO metadata");
+    metadata->altColorPrimaries = hdr_base ? AVIF_COLOR_PRIMARIES_BT709 : AVIF_COLOR_PRIMARIES_BT2020;
+    metadata->altTransferCharacteristics = hdr_base ? AVIF_TRANSFER_CHARACTERISTICS_SRGB : static_cast<avifTransferCharacteristics>(transfer);
+    auto high = take(awj::render_iso_gain_map(base,gain,*metadata,Mode::hdr_only));
+    auto low = take(awj::render_iso_gain_map(base,gain,*metadata,Mode::sdr_only));
+    auto both = take(awj::render_iso_gain_map(base,gain,*metadata,Mode::preserve_both));
+    require(!high.gain_map_alternative && !low.gain_map_alternative && both.gain_map_alternative,
+        "Common renderer ignored rendition selection");
+    require(high.image.source_info && low.image.source_info && high.image.source_info->has_hdr_metadata &&
+        !low.image.source_info->has_hdr_metadata && high.image.source_info->color_primaries == 9 &&
+        high.image.source_info->transfer_characteristics == (hdr_base ? transfer : 16) &&
+        low.image.source_info->color_primaries == 1 && low.image.source_info->transfer_characteristics == 13,
+        "Common renderer lost bidirectional CICP interpretation");
+    require(same_rgba(hdr_base ? high.image : low.image,base),"Renderer brightened an existing HDR base or changed an existing SDR base");
+    require(same_rgba(both.image,high.image) && same_rgba(both.gain_map_alternative->image,low.image) &&
+        both.gain_map_alternative->main_hdr_headroom_log2 == 2 &&
+        both.gain_map_alternative->alternate_hdr_headroom_log2 == 0,"Common renderer lost or reversed a headroom endpoint");
+    same_alpha(high.image,low.image);
+    // 两个输入方向与所有呈现模式都必须保留取消契约，不能因保留原端点而绕过。
+    std::stop_source cancellation; cancellation.request_stop();
+    for (const auto mode : {Mode::hdr_only,Mode::sdr_only,Mode::preserve_both}) {
+      auto canceled = awj::render_iso_gain_map(base,gain,*metadata,mode,cancellation.get_token());
+      require(!canceled && canceled.error().find("取消") != std::string::npos,"Common ISO renderer ignored cancellation");
+    }
+    auto canceled_compute = awj::compute_iso_gain_map(both.image,*both.gain_map_alternative,2,2,8,cancellation.get_token());
+    require(!canceled_compute && canceled_compute.error().find("取消") != std::string::npos,"ISO gain-map computation ignored cancellation");
+    auto rebuilt = take(awj::compute_iso_gain_map(both.image,*both.gain_map_alternative,2,2,8));
+    require(rebuilt->image && rebuilt->image->width == 2 && rebuilt->image->height == 2 &&
+        std::uint64_t(rebuilt->baseHdrHeadroom.n) * rebuilt->alternateHdrHeadroom.d >
+            std::uint64_t(rebuilt->alternateHdrHeadroom.n) * rebuilt->baseHdrHeadroom.d &&
+        rebuilt->altColorPrimaries == AVIF_COLOR_PRIMARIES_BT709 &&
+        rebuilt->altTransferCharacteristics == AVIF_TRANSFER_CHARACTERISTICS_SRGB,
+        "Recomputed ISO map is not HDR-main/SDR-alternate");
+    auto reserved_transfer = base;
+    reserved_transfer.source_info->transfer_characteristics = 3;
+    for (const auto mode : {Mode::hdr_only,Mode::sdr_only,Mode::preserve_both})
+      require(!awj::render_iso_gain_map(reserved_transfer,gain,*metadata,mode),"Reserved CICP transfer silently fell back to BT.709");
+    metadata->gainMapGamma[0].d = 0;
+    for (const auto mode : {Mode::hdr_only,Mode::sdr_only,Mode::preserve_both})
+      require(!awj::render_iso_gain_map(base,gain,*metadata,mode),"Rendition selection bypassed invalid ISO metadata");
+  }
+}
+void heif_rendition_modes(const Sandbox& sandbox) {
+  using Mode = awj::GainMapDecodeMode;
+  struct Case { int transfer; const char* name; bool rotate; bool crop; };
+  for (const auto test : {Case{16,"rainbow-451x461.heic",false,false},
+      Case{18,"rainbow-451x461.heic",true,false}, Case{16,"rainbow-451x461.heic",false,true},
+      Case{18,"with-alpha-512x512.heic",false,true}}) {
+    const auto bytes = heif_fixture(true,false,false,test.rotate,test.name,false,{},test.transfer,test.crop);
+    const auto file = sandbox.save("hdr-base-" + std::to_string(test.transfer) + "-" + std::to_string(test.rotate) +
+        "-" + std::to_string(test.crop) + ".heic",bytes);
+    awj::HeifImageDecoder decoder;
+    auto high = take(decoder.decode_memory(bytes,"HEIF HDR base",{.copy_metadata_payloads = false,.gain_map_mode = Mode::hdr_only}));
+    auto low = take(decoder.decode_memory(bytes,"HEIF SDR rendition",{.copy_metadata_payloads = false,.gain_map_mode = Mode::sdr_only}));
+    auto both = take(decoder.decode_memory(bytes,"HEIF paired renditions",{.copy_metadata_payloads = false,.gain_map_mode = Mode::preserve_both}));
+    auto retained = take(decoder.decode_memory(bytes,"HEIF optional metadata",{.copy_metadata_payloads = true,.gain_map_mode = Mode::preserve_both}));
+    require(!high.gain_map_alternative && !low.gain_map_alternative && both.gain_map_alternative && retained.gain_map_alternative,
+        "HEIF ignored hdr_only/sdr_only/preserve_both or stripped the essential pair");
+    require(high.image.source_info && low.image.source_info && high.image.source_info->source_has_gain_map &&
+        high.image.source_info->has_hdr_metadata && high.image.source_info->color_primaries == 9 &&
+        high.image.source_info->transfer_characteristics == test.transfer &&
+        !low.image.source_info->has_hdr_metadata && low.image.source_info->color_primaries == 1 &&
+        low.image.source_info->transfer_characteristics == 13,"HEIF HDR-base/SDR-alternate CICP reversed or guessed");
+    require(same_rgba(high.image,both.image) && same_rgba(low.image,both.gain_map_alternative->image) &&
+        same_rgba(both.image,retained.image) && same_rgba(both.gain_map_alternative->image,retained.gain_map_alternative->image),
+        "HEIF rendition/optional metadata mode changed endpoint pixels or geometry");
+    require(both.gain_map_alternative->main_hdr_headroom_log2 == 2 &&
+        both.gain_map_alternative->alternate_hdr_headroom_log2 == 0,"HEIF reversed high-to-low headroom");
+    auto dimensions = take(decoder.probe_dimensions(file));
+    const bool alpha = std::string_view{test.name}.find("alpha") != std::string_view::npos;
+    const auto expected_width = test.crop ? (alpha ? 64u : 63u) : test.rotate ? 461u : 451u;
+    const auto expected_height = test.crop ? (alpha ? 48u : 47u) : test.rotate ? 451u : 461u;
+    require(high.image.width == expected_width && high.image.height == expected_height &&
+        low.image.width == expected_width && low.image.height == expected_height &&
+        dimensions.width == expected_width && dimensions.height == expected_height,
+        "HEIF crop/rotation did not transform both renditions and the probe together");
+    if (alpha) same_alpha(high.image,low.image);
+    awj::ImageDecoder& file_api = decoder;
+    auto disk = take(file_api.decode(file,{.copy_metadata_payloads = false,.gain_map_mode = Mode::preserve_both}));
+    require(disk.gain_map_alternative && same_rgba(disk.image,both.image) &&
+        same_rgba(disk.gain_map_alternative->image,both.gain_map_alternative->image),"HEIF file mode dropped an endpoint");
+  }
+}
 void heif_matrix(const Sandbox& sandbox) {
   awj::HeifImageDecoder decoder;
   auto pure = heif_fixture(true,false), apple_iso = heif_fixture(true,true);
@@ -505,6 +724,9 @@ void heif_matrix(const Sandbox& sandbox) {
   const auto legacy_file = sandbox.save("legacy.heic",legacy), corrupt_file = sandbox.save("corrupt-iso-apple.heic",corrupt);
   check_codec(decoder,legacy,legacy_file,Outcome::rejected); check_registry(legacy_file,Outcome::rejected);
   check_codec(decoder,corrupt,corrupt_file,Outcome::rejected); check_registry(corrupt_file,Outcome::rejected);
+  for (const auto mode : {awj::GainMapDecodeMode::sdr_only,awj::GainMapDecodeMode::preserve_both})
+    for (const auto* invalid : {&legacy,&corrupt})
+      check_image(decoder.decode_memory(*invalid,"terminal HEIF rendition gate",{.gain_map_mode = mode}),Outcome::rejected);
   auto rotated = heif_fixture(true,true,false,true);
   const auto rotated_file = sandbox.save("iso-tmap-rotated.heic",rotated);
   check_codec(decoder,rotated,rotated_file,Outcome::iso); check_registry(rotated_file,Outcome::iso);
@@ -622,9 +844,25 @@ void avif_matrix(const Sandbox& sandbox) {
     auto retained = take(decoder->decode_memory(bytes,name,{.copy_metadata_payloads = true}));
     require(result->image.metadata.empty() && result->image.width == retained.image.width && result->image.height == retained.image.height &&
         result->image.planes.front().bytes == retained.image.planes.front().bytes, "Dropping optional metadata changed ISO AVIF pixels or orientation");
+    std::unique_ptr<avifDecoder,decltype(&avifDecoderDestroy)> primary(avifDecoderCreate(),avifDecoderDestroy);
+    require(bool(primary), "Cannot create primary color parser");
+    primary->imageContentToDecode = AVIF_IMAGE_CONTENT_COLOR_AND_ALPHA | AVIF_IMAGE_CONTENT_GAIN_MAP;
+    require(avifDecoderSetIOMemory(primary.get(),reinterpret_cast<const std::uint8_t*>(bytes.data()),bytes.size()) == AVIF_RESULT_OK &&
+        avifDecoderParse(primary.get()) == AVIF_RESULT_OK && primary->image && primary->image->gainMap,
+        "Cannot inspect pinned ISO AVIF primary color metadata");
+    const auto& source = *primary->image;
+    const auto& map = *source.gainMap;
+    require(map.baseHdrHeadroom.d && map.alternateHdrHeadroom.d, "Invalid primary headroom fraction");
+    const bool preserve_hdr_base = (source.transferCharacteristics == 16 || source.transferCharacteristics == 18) &&
+        std::uint64_t(map.baseHdrHeadroom.n) * map.alternateHdrHeadroom.d >=
+            std::uint64_t(map.alternateHdrHeadroom.n) * map.baseHdrHeadroom.d;
+    // HDR 主图保留原 CICP；只有从另一端重建 HDR 时才规范为 BT.2020/PQ。
+    const int expected_primaries = preserve_hdr_base ? source.colorPrimaries : 9;
+    const int expected_transfer = preserve_hdr_base ? source.transferCharacteristics : 16;
     require(result->image.source_info && result->image.source_info->source_has_gain_map &&
-        result->image.source_info->color_primaries == 9 && result->image.source_info->transfer_characteristics == 16,
-        "ISO AVIF gain map or HDR color tags were lost");
+        result->image.source_info->color_primaries == expected_primaries &&
+        result->image.source_info->transfer_characteristics == expected_transfer,
+        "ISO AVIF gain map or selected HDR endpoint color tags were lost");
     if (std::string_view{name}.find("alpha") != std::string_view::npos)
       require(result->image.alpha_mode != awj::AlphaMode::none, "ISO AVIF alpha was lost");
   }
@@ -640,10 +878,44 @@ void avif_matrix(const Sandbox& sandbox) {
 }
 } // namespace
 
-int main() {
+int main(int argc, char** argv) {
   try {
+    if (argc == 3 && std::string_view{argv[1]} == "--validate-icc-metadata") {
+      // 只接受独立色彩配置；此入口不打开图像、不创建像素或执行转换。
+      const auto bytes = load(fs::path{argv[2]});
+      const auto color = take(awj::gain_map_detail::icc_iso_color(bytes, {}));
+      std::printf("{\"kind\":\"icc-metadata-only\",\"bytes\":%zu,\"primaries\":%d,\"transfer\":%d,\"pixel_decode\":false,\"image_conversion\":false}\n",
+          bytes.size(), color.primaries, color.transfer);
+      return 0;
+    }
+    if (argc == 3 && std::string_view{argv[1]} == "--export-icc-fixture") {
+      icc_fixture::export_only(fs::path{argv[2]});
+      return 0;
+    }
+    const bool icc_only = argc == 2 && std::string_view{argv[1]} == "--icc-only";
+    const bool grid_only = argc == 2 && std::string_view{argv[1]} == "--grid-12-4-only";
+    if (argc != 1 && !icc_only && !grid_only) {
+      std::fprintf(stderr, "用法：awj_iso_gain_map_tests [--icc-only | --grid-12-4-only | --export-icc-fixture <全新目录> | --validate-icc-metadata <独立ICC>]\n");
+      return 2;
+    }
     const Sandbox sandbox;
-    avif_diagnostic_contract(); jpeg_matrix(sandbox); heif_matrix(sandbox); avif_matrix(sandbox);
+    const auto stage = [](const char* name) { std::fprintf(stderr, "ISO 验证阶段：%s\n", name); std::fflush(stderr); };
+    if (grid_only) {
+      stage("heif-12-plus-4-grid"); grid12_fixture::contract(sandbox);
+      return 0;
+    }
+    if (icc_only) {
+      stage("heif-icc-grid"); icc_fixture::contract(sandbox);
+      return 0;
+    }
+    stage("fp16-original-space"); fp16_original_space_contract();
+    stage("bidirectional-render"); bidirectional_render_contract();
+    stage("avif-diagnostics"); avif_diagnostic_contract();
+    stage("jpeg"); jpeg_matrix(sandbox);
+    stage("heif"); heif_matrix(sandbox);
+    stage("heif-renditions"); heif_rendition_modes(sandbox);
+    stage("heif-icc-grid"); icc_fixture::contract(sandbox);
+    stage("avif"); avif_matrix(sandbox);
     return 0;
   } catch (const std::exception& error) {
     std::fprintf(stderr,"ISO 21496-1 contract: %s\n",error.what());

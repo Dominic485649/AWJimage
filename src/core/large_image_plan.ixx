@@ -14,11 +14,22 @@ import awj.encoding_defaults;
 
 export namespace awj {
 
+enum class ImageDynamicRangeHint { unknown, sdr, hdr };
+
 struct ImageDimensions {
   std::uint32_t width{};
   std::uint32_t height{};
   std::uint64_t pixel_count{};
   bool opaque_sdr8_yuv420{};
+  int source_bit_depth{};
+  bool source_has_alpha{};
+  ImageDynamicRangeHint source_dynamic_range{ImageDynamicRangeHint::unknown};
+  bool source_has_gain_map{};
+  std::uint32_t gain_map_width{};
+  std::uint32_t gain_map_height{};
+  std::uint64_t decoded_storage_bytes{};
+  // 顺序验证主图/alternate ICC 时最大的单个配置字节数，不是二者之和。
+  std::uint64_t source_icc_bytes{};
 };
 
 enum class LargeImageClass { ordinary, large_mode_required };

@@ -13,6 +13,7 @@
 
 import awj.bmp_codec;
 import awj.image;
+import awj.large_image_plan;
 
 namespace {
 
@@ -181,7 +182,9 @@ int decode_and_check(const std::filesystem::path& path,
   awj::BmpImageDecoder decoder;
   auto dimensions = decoder.probe_dimensions(path);
   if (!dimensions || dimensions->width != expected_width ||
-      dimensions->height != expected_height) {
+      dimensions->height != expected_height || dimensions->source_bit_depth != 8 ||
+      dimensions->source_dynamic_range != awj::ImageDynamicRangeHint::sdr ||
+      dimensions->decoded_storage_bytes != static_cast<std::uint64_t>(expected_width) * expected_height * 4) {
     std::error_code ec;
     std::filesystem::remove(path, ec);
     return fail(dimensions ? "BMP dimensions invalid." : dimensions.error());

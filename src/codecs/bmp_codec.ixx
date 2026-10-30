@@ -737,9 +737,16 @@ class BmpImageDecoder final : public ImageDecoder {
       if (!header) {
         return std::unexpected{header.error()};
       }
-      return decoder_common::make_image_dimensions_checked(header->width,
-                                                           header->height,
-                                                           "BMP");
+      auto dimensions = decoder_common::make_image_dimensions_checked(header->width, header->height, "BMP");
+      if (dimensions) {
+        dimensions->source_bit_depth = 8;
+        dimensions->source_has_alpha = header->has_alpha_mask || header->bits_per_pixel == 32;
+        // 当前 BMP 解码路径只物化普通 RGBA8，不附加 HDR 语义或 ICC 数学变换。
+        dimensions->source_dynamic_range = ImageDynamicRangeHint::sdr;
+        const auto pixels = static_cast<std::uint64_t>(header->width) * header->height;
+        dimensions->decoded_storage_bytes = pixels > UINT64_MAX / 4 ? UINT64_MAX : pixels * 4;
+      }
+      return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"BMP 尺寸探测内存不足。"};
     } catch (const std::length_error&) {

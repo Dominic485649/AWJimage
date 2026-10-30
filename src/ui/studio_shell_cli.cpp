@@ -121,6 +121,8 @@ std::vector<std::wstring> cli_arguments_from_config(
     push_cli_option(args, L"--cpu-affinity", cpus);
   }
   push_cli_option(args, L"--memory-limit", bytes_argument(cfg.memory_limit_bytes));
+  args.push_back(cfg.unlock_memory_limit ? L"--unlock-memory-limit"
+                                         : L"--no-unlock-memory-limit");
   switch (cfg.image_size_limit.mode) {
     case awj::ImageSizeLimitMode::none:
       push_cli_option(args, L"--image-size-limit", std::wstring{L"none"});

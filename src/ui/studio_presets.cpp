@@ -75,6 +75,7 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
         default_parameter_params_for_index(i);
   }
   apply_parameter_params_to_ui(app, state.builtin_params[0], 0);
+  app.set_unlock_memory_limit(false);
   app.set_unlock_max_input_file_bytes(false);
   app.set_size_limit_index(0);
   app.set_max_width_text({});
@@ -436,6 +437,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.collision_mode = collision_from_index(app.get_collision_index());
   cfg.visual_quality_gpu = app.get_visual_quality_gpu();
   cfg.visual_quality_fallback = app.get_visual_quality_fallback();
+  cfg.unlock_memory_limit = app.get_unlock_memory_limit();
   cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();
   awj::encoding_defaults::unlock_max_input_file_bytes.store(cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
   cfg.strip_metadata = app.get_strip_metadata();

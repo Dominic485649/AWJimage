@@ -52,6 +52,8 @@ struct DecoderRegistryOptions {
   int decode_threads{1};
   std::stop_token stop_token{};
   bool native_pixels{};
+  GainMapDecodeMode gain_map_mode{GainMapDecodeMode::hdr_only};
+  DecodeDiagnostics* diagnostics{};
 };
 
 struct DecoderSelection {
@@ -188,17 +190,40 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
-    auto enhanced = decode_jpeg_gain_map(path, options.stop_token, options.decode_threads);
+    if (options.diagnostics) {
+      *options.diagnostics = DecodeDiagnostics{.stage = "decode.gain-map-probe"};
+    }
+    auto enhanced = decode_jpeg_gain_map(path, options.stop_token, options.decode_threads, options.gain_map_mode);
     if (!enhanced) return std::unexpected{enhanced.error()};
-    if (*enhanced) return std::move(**enhanced);
+    if (*enhanced) {
+      if (options.diagnostics) {
+        capture_decode_source(*options.diagnostics, (**enhanced).image);
+        options.diagnostics->decoder_id = (**enhanced).decoder_id;
+        options.diagnostics->stage = "complete";
+      }
+      return std::move(**enhanced);
+    }
+    if (options.diagnostics) options.diagnostics->stage = "decode.select";
     auto selected = select_decoder_for_path(path, options);
     if (!selected) {
       return std::unexpected{selected.error()};
     }
 
-    auto decoded = selected->decoder->decode(path, DecodeOptions{.native_pixels = options.native_pixels});
+    if (options.diagnostics) {
+      options.diagnostics->decoder_id = selected->decoder->id();
+      options.diagnostics->stage = "decode.pixels";
+    }
+    auto decoded = selected->decoder->decode(path, DecodeOptions{
+        .native_pixels = options.native_pixels, .gain_map_mode = options.gain_map_mode,
+        .diagnostics = options.diagnostics, .stop_token = options.stop_token});
     if (decoded) {
       decoded->used_fallback = decoded->used_fallback || selected->fallback;
+      if (options.diagnostics) {
+        if (!options.diagnostics->source_info) capture_decode_source(*options.diagnostics, decoded->image);
+        options.diagnostics->decoder_id = decoded->decoder_id.empty()
+            ? std::string{selected->decoder->id()} : decoded->decoder_id;
+        options.diagnostics->stage = "complete";
+      }
       return decoded;
     }
 
@@ -221,6 +246,11 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
         auto jpeg_turbo_decoded = jpeg_turbo.decoder->decode(path);
         if (jpeg_turbo_decoded) {
           jpeg_turbo_decoded->used_fallback = true;
+          if (options.diagnostics) {
+            *options.diagnostics = DecodeDiagnostics{.decoder_id = jpeg_turbo_decoded->decoder_id,
+                                                      .stage = "complete"};
+            capture_decode_source(*options.diagnostics, jpeg_turbo_decoded->image);
+          }
           return jpeg_turbo_decoded;
         }
         primary_error = decoder_registry_detail::with_jpeg_turbo_fallback_error(
@@ -240,6 +270,11 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
           "原生解码失败", primary_error, "WIC 兜底", fallback_decoded.error())};
     }
     fallback_decoded->used_fallback = true;
+    if (options.diagnostics) {
+      *options.diagnostics = DecodeDiagnostics{.decoder_id = fallback_decoded->decoder_id,
+                                                .stage = "complete"};
+      capture_decode_source(*options.diagnostics, fallback_decoded->image);
+    }
     return fallback_decoded;
   } catch (const std::bad_alloc&) {
     return std::unexpected{"解码输入图片时内存不足。"};

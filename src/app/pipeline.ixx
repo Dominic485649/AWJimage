@@ -99,6 +99,8 @@ std::uintmax_t saturated_add_uintmax(std::uintmax_t value,
 struct ClassifiedImageFile {
   ImageFile file{};
   std::uint64_t estimated_bytes{1};
+  ImageDimensions dimensions{};
+  bool grid{};
 };
 
 struct ClassifiedWork {
@@ -193,43 +195,290 @@ bool avif_capability_available_for_large_mode(
   return capability.enabled;
 }
 
+struct ImageMemoryEstimate {
+  std::uint64_t bytes{1};
+  std::uint64_t source_resident_bytes{};
+  std::uint64_t decode_bytes{};
+  std::uint64_t prepare_bytes{};
+  std::uint64_t encode_bytes{};
+  std::uint64_t metric_bytes{};
+  std::uint64_t output_bytes{};
+  std::uint32_t source_width{};
+  std::uint32_t source_height{};
+  std::uint32_t target_width{};
+  std::uint32_t target_height{};
+  bool source_has_gain_map{};
+  std::string_view profile{"dimensions-unknown"};
+};
+
+ImageDimensions target_dimensions_for_config(ImageDimensions source,
+                                              const AppConfig& cfg) noexcept {
+  if (const auto target = limited_dimensions(source.width, source.height, cfg)) {
+    source.width = static_cast<std::uint32_t>(target->first);
+    source.height = static_cast<std::uint32_t>(target->second);
+  }
+  source.pixel_count = static_cast<std::uint64_t>(source.width) * source.height;
+  return source;
+}
+
+// Reservations describe simultaneous live storage, not an allocator/RSS cap.
+// Workspace headroom is deliberately branch-specific: the 2026-10-27 single-
+// thread samples expose both SDR/HDR over-reservation and WebP/JXL undercounts;
+// they do not establish universal compression ratios or multi-thread hard bounds.
+ImageMemoryEstimate estimated_regular_memory(
+    ImageDimensions dimensions, const AppConfig& cfg,
+    std::uint64_t compressed_bytes = 0, bool grid = false) noexcept {
+  using hdr_cost::add;
+  using hdr_cost::multiply;
+  constexpr std::uint64_t mib = 1024ull * 1024;
+  const auto target = target_dimensions_for_config(dimensions, cfg);
+  ImageMemoryEstimate estimate{};
+  estimate.source_width = dimensions.width;
+  estimate.source_height = dimensions.height;
+  estimate.target_width = target.width;
+  estimate.target_height = target.height;
+  estimate.source_has_gain_map = dimensions.source_has_gain_map;
+  if (!dimensions.width || !dimensions.height) {
+    estimate.bytes = std::numeric_limits<std::uint64_t>::max();
+    estimate.profile = "dimensions-invalid";
+    return estimate;
+  }
+
+  const auto display_pixels = multiply(dimensions.width, dimensions.height);
+  // 裁切后的显示尺寸可能远小于完整解码画布；像素存储画像仍包含完整 coded canvas。
+  const auto storage_pixel_bytes = dimensions.source_bit_depth > 8 ? 8u : 4u;
+  const auto stored_pixels = dimensions.decoded_storage_bytes / storage_pixel_bytes;
+  const auto n = std::max(display_pixels, stored_pixels);
+  const auto t = multiply(target.width, target.height);
+  const auto padded = hdr_cost::padded_pixels(target.width, target.height, 64);
+  const auto workers = static_cast<std::uint64_t>(std::max(1, cfg.max_jobs));
+  // 覆盖各阶段有界 worker 控制及 scratch；Gain Map compute 每 worker 80,000 B，apply 16,384 B。
+  const auto worker_scratch = multiply(workers, 256 * 1024);
+  const bool known_depth = dimensions.source_bit_depth > 0;
+  const bool sdr = dimensions.source_dynamic_range == ImageDynamicRangeHint::sdr &&
+                   !dimensions.source_has_gain_map;
+  const bool sdr8 = sdr && known_depth && dimensions.source_bit_depth <= 8;
+  const bool possible_alpha = dimensions.source_has_alpha || !known_depth ||
+                             dimensions.source_dynamic_range == ImageDynamicRangeHint::unknown;
+  const bool visual_quality = cfg.visual_quality.has_value() && !grid;
+  const bool native_sdr420 = sdr8 && !possible_alpha && dimensions.opaque_sdr8_yuv420;
+  const auto native420 = add(n, multiply(multiply((static_cast<std::uint64_t>(dimensions.width) + 1) / 2,
+      (static_cast<std::uint64_t>(dimensions.height) + 1) / 2), 2));
+  const auto fallback_source = sdr && known_depth
+      ? (native_sdr420 ? native420 : multiply(n, dimensions.source_bit_depth > 8 ? 8 : 4))
+      : multiply(n, 16); // Unknown is not evidence of SDR or integer storage.
+  auto source = dimensions.decoded_storage_bytes
+      ? std::max(dimensions.decoded_storage_bytes,
+                 multiply(n, dimensions.source_bit_depth > 8 ? 2 : 1))
+      : fallback_source;
+  // Metric decode requests packed pixels rather than native YUV storage.
+  if (visual_quality)
+    source = std::max(source, multiply(n, sdr && known_depth
+        ? (dimensions.source_bit_depth > 8 ? 8 : 4) : 16));
+  const bool dual = dimensions.source_has_gain_map &&
+      (cfg.output_format == OutputFormat::avif || cfg.output_format == OutputFormat::jxl ||
+       (cfg.output_format == OutputFormat::jpgli && cfg.jpeg_hdr != JpegHdrMode::sdr));
+  auto decode_workspace = multiply(n, sdr8 ? 8 : 16);
+  std::uint64_t decode_auxiliary{};
+  if (dimensions.source_has_gain_map) {
+    const auto gain_pixels = dimensions.gain_map_width && dimensions.gain_map_height
+        ? multiply(dimensions.gain_map_width, dimensions.gain_map_height) : n;
+    // 只有双端输出在解码后保留 alternate。aux 像素及单呈现的另一端只计解码峰值。
+    const bool sdr_only = cfg.output_format == OutputFormat::webp ||
+        (cfg.output_format == OutputFormat::jpgli && cfg.jpeg_hdr == JpegHdrMode::sdr);
+    source = multiply(n, sdr_only ? 8 : 16);
+    if (dual) source = add(source, multiply(n, 8));
+    decode_auxiliary = add(dual ? 0 : multiply(n, 8), multiply(gain_pixels, 8));
+    decode_workspace = add(decode_workspace, multiply(n, 12));
+  }
+  estimate.source_resident_bytes = source;
+  // Containers can retain the complete compressed file and metadata/input
+  // copies, including motion bytes not yet excluded by structured reads.
+  const auto common = add(source, multiply(compressed_bytes, 2));
+  estimate.decode_bytes = add(add(add(common, decode_auxiliary), decode_workspace), add(16 * mib, worker_scratch));
+  const bool hdr_jpeg = cfg.output_format == OutputFormat::jpgli &&
+      cfg.jpeg_hdr != JpegHdrMode::sdr &&
+      (!sdr || cfg.jpeg_hdr == JpegHdrMode::hdr ||
+       cfg.transfer_characteristics == 16 || cfg.transfer_characteristics == 18);
+  const int target_depth = cfg.output_format == OutputFormat::webp ||
+                                   (cfg.output_format == OutputFormat::jpgli && !hdr_jpeg)
+      ? 8 : cfg.bit_depth.value_or(cfg.output_format == OutputFormat::avif
+          ? (dimensions.source_has_gain_map || dimensions.source_bit_depth > 10 ? 12 : 10)
+          : cfg.output_format == OutputFormat::jxl ? 16 : cfg.output_format == OutputFormat::png ? (sdr ? 8 : 16) : 8);
+  const auto normalized = multiply(t, hdr_jpeg ? 8 : (target_depth > 8 ? 8 : 4));
+  // Map regeneration keeps a target SDR endpoint and full-size auxiliary map;
+  // neither alternate bit depth is available in the probe, so allow 16-bit
+  // RGBA storage for each. libavif's three full-resolution float channels are
+  // generation scratch, not scratch to add to the subsequent codec phase.
+  const auto dual_resident = dual ? multiply(t, 16) : 0;
+  const auto dual_compute = dual ? multiply(t, 3 * sizeof(float)) : 0;
+  const auto tone_scratch = !sdr && !dimensions.source_has_gain_map
+      ? hdr_cost::tone_scratch_bytes(workers) : 0;
+  // A non-metric geometry view retains its original planes. Metric resize of a
+  // plain image materializes packed pixels and replaces those planes; reserve
+  // old+new during resize, not the released source again throughout encoding.
+  // Gain Map endpoint ownership is conservatively retained until both finish.
+  const bool physical_resize = visual_quality && !dimensions.source_has_gain_map &&
+      (target.width != dimensions.width || target.height != dimensions.height);
+  const auto resized_source = physical_resize ? multiply(t, sdr && known_depth
+      ? (dimensions.source_bit_depth > 8 ? 8 : 4) : 16) : source;
+  const auto encoder_common = add(resized_source, multiply(compressed_bytes, 2));
+  const auto prepare_live = add(add(encoder_common, normalized), add(dual_resident, tone_scratch));
+  estimate.prepare_bytes = add(add(prepare_live, dual_compute), add(8 * mib, worker_scratch));
+  if (physical_resize)
+    estimate.prepare_bytes = std::max(estimate.prepare_bytes,
+        add(add(common, resized_source), add(8 * mib, worker_scratch)));
+  source = resized_source;
+
+  auto output_bound = add(multiply(t, target_depth > 8 ? 8 : 4), 64 * 1024);
+  auto encoder_live = add(add(encoder_common, normalized), dual_resident);
+  std::uint64_t fixed = 16 * mib;
+  std::uint64_t codec_workspace{};
+  switch (cfg.output_format) {
+    case OutputFormat::avif: {
+      const bool ordinary_sdr = sdr8 && cfg.quality < 100 && !visual_quality &&
+          cfg.alpha_policy != AlphaModePolicy::force && !cfg.color_primaries &&
+          !cfg.transfer_characteristics && !cfg.matrix_coefficients && !cfg.color_range &&
+          cfg.avif_color_representation != AvifColorRepresentation::rgb_identity &&
+          cfg.bit_depth.value_or(10) <= 10 &&
+          (cfg.chroma_mode == ChromaMode::auto_keep || cfg.chroma_mode == ChromaMode::yuv420);
+      const bool fast = ordinary_sdr && native_sdr420;
+      estimate.profile = grid
+          ? (dual ? "avif-grid-dual-gain-map" : fast ? "avif-grid-native-sdr420"
+                  : ordinary_sdr ? "avif-grid-sdr8" : "avif-grid-general")
+          : (dual ? "avif-dual-gain-map" : fast ? "avif-native-sdr420"
+                  : ordinary_sdr ? "avif-sdr8" : "avif-general");
+      // Native opaque 420 avoids general RGBA/HDR/alpha normalization. Other
+      // confirmed SDR8 inputs still need conversion, but not HDR-sized scratch.
+      codec_workspace = multiply(padded, fast ? 56 : ordinary_sdr ? 80 : 112);
+      if (fast) encoder_live = add(common, multiply(t, target_depth > 8 ? 3 : 2));
+      encoder_live = add(encoder_live, multiply(padded, fast ? 2 : (target_depth > 8 ? 8 : 4)));
+      output_bound = add(multiply(padded, fast ? 4 : ordinary_sdr ? 6 : 8), 64 * 1024);
+      fixed = add(32 * mib, multiply(workers - 1, mib));
+      break;
+    }
+    case OutputFormat::png: {
+      estimate.profile = target_depth > 8 ? "png-rgba16" : "png-rgba8";
+      const auto raw = multiply(t, target_depth > 8 ? 8 : 4);
+      // High-entropy deflate can approach raw scanline size. Account for
+      // filters/chunks and old+new vector capacity, not the easy-image ratio.
+      output_bound = add(add(raw, raw / 16), add(target.height, 64 * 1024));
+      const auto row = multiply(target.width, target_depth > 8 ? 8 : 4);
+      codec_workspace = add(2 * mib, multiply(row, 7));
+      fixed = 8 * mib;
+      break;
+    }
+    case OutputFormat::webp: {
+      const bool lossless = cfg.visual_quality.value_or(cfg.quality) >= 100;
+      estimate.profile = lossless ? "webp-lossless" : possible_alpha ? "webp-alpha" : "webp-sdr";
+      const auto picture = multiply(t, lossless || possible_alpha ? 4 : 2);
+      codec_workspace = add(picture, multiply(t, lossless ? 40 : possible_alpha ? 28 : 12));
+      break;
+    }
+    case OutputFormat::jxl: {
+      const bool lossless = cfg.visual_quality.value_or(cfg.quality) >= 100;
+      estimate.profile = dual ? "jxl-dual-gain-map" : target_depth > 8 ? "jxl-high-depth"
+                          : possible_alpha ? "jxl-sdr-alpha" : "jxl-sdr-rgb";
+      const std::uint64_t scratch_per_pixel = target_depth > 8 ? (possible_alpha ? 112 : 80)
+          : possible_alpha ? (lossless ? 88 : 72) : (lossless ? 64 : 48);
+      // Opaque input can retain an additional RGB packing buffer alongside
+      // source/normalized RGBA and libjxl's copied input and encoder workspace.
+      const auto rgb = possible_alpha ? 0 : multiply(t, target_depth > 8 ? 6 : 3);
+      codec_workspace = add(rgb, multiply(t, scratch_per_pixel));
+      fixed = add(32 * mib, multiply(workers - 1, 2 * mib));
+      break;
+    }
+    case OutputFormat::jpgli: {
+      estimate.profile = hdr_jpeg ? (dual ? "jpegli-hdr-gain-map" : "jpegli-hdr-or-unknown")
+          : sdr ? "jpegli-sdr" : dimensions.source_has_gain_map ? "jpegli-source-sdr-presentation"
+          : "jpegli-tonemapped-or-unknown-sdr";
+      estimate.encode_bytes = hdr_jpeg
+          ? hdr_cost::jpeg_working_set_bytes(target.width, target.height, compressed_bytes, workers, source)
+          : hdr_cost::jpeg_sdr_working_set_bytes(target.width, target.height, compressed_bytes,
+                                                source, native_sdr420);
+      output_bound = add(multiply(hdr_cost::padded_pixels(target.width, target.height, 16), 6), 64 * 1024);
+      fixed = hdr_jpeg ? 32 * mib : 8 * mib;
+      break;
+    }
+  }
+  if (dual) output_bound = add(output_bound, multiply(t, 4));
+  if (grid) encoder_live = add(encoder_live, multiply(padded, 8));
+  const auto encode_phase = add(add(encoder_live, codec_workspace), multiply(output_bound, 3));
+  estimate.encode_bytes = std::max(estimate.encode_bytes, add(encode_phase, add(fixed, worker_scratch)));
+  if (dual && cfg.output_format != OutputFormat::jpgli) {
+    // A retained main stream and map codec storage can coexist, but the main
+    // and auxiliary codec workspaces are sequential, not additive.
+    const auto auxiliary = add(add(encoder_live, multiply(t, 96)), multiply(output_bound, 3));
+    estimate.encode_bytes = std::max(estimate.encode_bytes, add(auxiliary, add(fixed, worker_scratch)));
+  }
+  estimate.output_bytes = add(add(encoder_live, multiply(output_bound, 3)), add(fixed, worker_scratch));
+  if (visual_quality) {
+    const auto metric = visual_quality_working_set_bytes_for_dimensions(target);
+    // The cached reference and best encoded candidate survive candidate encode;
+    // candidate decode and the full metric pyramids peak in a different phase.
+    estimate.encode_bytes = add(estimate.encode_bytes, add(metric / 2, output_bound));
+    const auto candidate = multiply(t, target_depth > 8 ? 8 : 4);
+    estimate.metric_bytes = add(add(encoder_live, add(metric, candidate)),
+                                add(multiply(output_bound, 3), add(16 * mib, worker_scratch)));
+  }
+  // LCMS 校验只复制当前一个受上限约束的 ICC；主图和另一端顺序验证。
+  // 按 probe 的实际 profile 峰值计费，无 ICC 不加固定大块，标量表由既有 scratch 覆盖。
+  const auto icc_validation = dimensions.source_has_gain_map ? dimensions.source_icc_bytes : 0;
+  estimate.decode_bytes = add(estimate.decode_bytes, icc_validation);
+  estimate.prepare_bytes = add(estimate.prepare_bytes, icc_validation);
+  estimate.bytes = std::max({estimate.decode_bytes, estimate.prepare_bytes,
+      estimate.encode_bytes, estimate.metric_bytes, estimate.output_bytes});
+  return estimate;
+}
+
 std::uint64_t estimated_regular_working_set_bytes(
     ImageDimensions dimensions, const AppConfig& cfg,
     std::uint64_t compressed_bytes = 0) noexcept {
-  if (cfg.output_format == OutputFormat::avif) {
-    const bool opaque_sdr_420 = dimensions.opaque_sdr8_yuv420 &&
-        cfg.quality < 100 && !cfg.visual_quality && cfg.alpha_policy != AlphaModePolicy::force &&
-        !cfg.color_primaries && !cfg.transfer_characteristics && !cfg.matrix_coefficients && !cfg.color_range &&
-        cfg.avif_color_representation != AvifColorRepresentation::rgb_identity &&
-        cfg.bit_depth.value_or(10) <= 10 &&
-        (cfg.chroma_mode == ChromaMode::auto_keep || cfg.chroma_mode == ChromaMode::yuv420);
-    const auto encoding = avif_encode_working_set_bytes_for_dimensions(dimensions, compressed_bytes, opaque_sdr_420);
-    if (!cfg.visual_quality) return encoding;
-    const auto metrics = visual_quality_working_set_bytes_for_dimensions(dimensions);
-    const auto maximum = std::numeric_limits<std::uint64_t>::max();
-    return encoding > maximum - metrics ? maximum : encoding + metrics;
-  }
-  if (cfg.output_format == OutputFormat::jpgli) {
-    // Probe dimensions do not yet identify HDR reliably (forced SDR can still
-    // need HDR tone buffers). Reserve the maximum simultaneously-live HDR JPEG
-    // phase with the encoder helper; admission still admits files dynamically.
-    const auto hdr = hdr_cost::jpeg_working_set_bytes(dimensions.width, dimensions.height,
-        compressed_bytes, static_cast<std::uint64_t>(std::max(1, cfg.max_jobs)));
-    return cfg.visual_quality
-        ? std::max(hdr, visual_quality_working_set_bytes_for_dimensions(dimensions)) : hdr;
-  }
-  if (cfg.visual_quality) {
-    return visual_quality_working_set_bytes_for_dimensions(dimensions);
-  }
-  if (cfg.output_format == OutputFormat::png) {
-    // Includes 16-bit decoded samples and the growing encoded byte vector.
-    // ponytail: conservative dimension estimate; refine from measurements.
-    constexpr auto overhead = 32ull * 1024 * 1024;
-    const auto rgba = decoded_rgba_bytes_for_dimensions(dimensions);
-    const auto maximum = std::numeric_limits<std::uint64_t>::max();
-    return rgba > (maximum - overhead) / 8 ? maximum : rgba * 8 + overhead;
-  }
-  return decoded_rgba_bytes_for_dimensions(dimensions);
+  return estimated_regular_memory(dimensions, cfg, compressed_bytes).bytes;
+}
+
+void clear_unstarted_execution_metrics(EncodeResult& result) noexcept {
+  result.encoder_threads = 0;
+  result.gain_map_render_workers = result.gain_map_compute_workers = 0;
+  result.heif_tile_parallelism = result.heif_codec_thread_budget = 0;
+  result.base_decode_seconds = result.auxiliary_decode_seconds = result.gain_map_render_seconds =
+      result.gain_map_compute_seconds = result.color_convert_seconds = 0.0;
+  result.seconds = result.decode_seconds = result.prepare_seconds = result.encode_seconds =
+      result.avif_rgb_to_yuv_seconds = result.avif_add_image_seconds = result.avif_finish_seconds =
+      result.avif_output_copy_seconds = result.write_seconds = result.visual_quality_search_seconds =
+      result.visual_quality_candidate_encode_seconds = result.visual_quality_candidate_decode_seconds =
+      result.visual_quality_candidate_io_seconds = result.visual_quality_luma_seconds =
+      result.gmsd_seconds = result.ms_ssim_seconds = result.visual_quality_metric_seconds = 0.0;
+}
+
+void record_memory_diagnostics(EncodeResult& result, const AppConfig& cfg,
+                                MemoryStatus status, std::uint64_t effective_limit,
+                                const ImageMemoryEstimate& estimate) {
+  result.memory_budget_bytes = effective_limit;
+  result.memory_budget_mode = memory_limit_mode(cfg);
+  result.memory_budget_source = memory_limit_source(cfg, status);
+  result.estimated_working_set_bytes = estimate.bytes;
+  result.memory_estimate_profile = estimate.profile;
+  result.memory_source_width = estimate.source_width;
+  result.memory_source_height = estimate.source_height;
+  result.memory_target_width = estimate.target_width;
+  result.memory_target_height = estimate.target_height;
+  result.memory_source_has_gain_map = estimate.source_has_gain_map;
+}
+
+// Backend results replace the pending result. Move the original admission
+// snapshot (including its original system-memory source), never a new sample.
+void inherit_memory_diagnostics(EncodeResult& result, EncodeResult& pending) noexcept {
+  result.memory_budget_bytes = pending.memory_budget_bytes;
+  result.memory_budget_mode = std::move(pending.memory_budget_mode);
+  result.memory_budget_source = std::move(pending.memory_budget_source);
+  result.estimated_working_set_bytes = pending.estimated_working_set_bytes;
+  result.memory_estimate_profile = std::move(pending.memory_estimate_profile);
+  result.memory_source_width = pending.memory_source_width;
+  result.memory_source_height = pending.memory_source_height;
+  result.memory_target_width = pending.memory_target_width;
+  result.memory_target_height = pending.memory_target_height;
+  result.memory_source_has_gain_map = pending.memory_source_has_gain_map;
 }
 
 std::expected<ClassifiedWork, std::string> classify_work_for_avif(
@@ -247,15 +496,17 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
       for (const auto& image : files) {
         // Unknown decoded dimensions must not admit several compressed-small
         // images together. Reserve the whole budget until decode completes.
-        auto estimated_bytes = std::max<std::uint64_t>(memory_limit,
-            std::max<std::uintmax_t>(1, image.bytes));
+        ClassifiedImageFile candidate{
+            .file = image,
+            .estimated_bytes = std::max<std::uint64_t>(memory_limit,
+                std::max<std::uintmax_t>(1, image.bytes))};
         if (auto dimensions =
                 probe_image_dimensions_for_path(image.path, decoder_options)) {
-          estimated_bytes =
+          candidate.dimensions = *dimensions;
+          candidate.estimated_bytes =
               estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes);
         }
-        classified.ordinary.push_back(ClassifiedImageFile{
-            .file = image, .estimated_bytes = estimated_bytes});
+        classified.ordinary.push_back(std::move(candidate));
       }
       return classified;
     }
@@ -279,18 +530,20 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
                 std::max<std::uintmax_t>(1, image.bytes))});
         continue;
       }
-      auto decision = classify_large_image(*dimensions, grid_available);
+      const auto target = target_dimensions_for_config(*dimensions, cfg);
+      auto decision = classify_large_image(target, grid_available);
       if (decision.klass == LargeImageClass::large_mode_required && grid_available) {
         auto animated = input_uses_animation_reader(image.path);
         if (!animated) return std::unexpected{animated.error()};
-        if (*animated) decision = classify_large_image(*dimensions, false);
+        if (*animated) decision = classify_large_image(target, false);
       }
       switch (decision.klass) {
         case LargeImageClass::ordinary:
           classified.ordinary.push_back(ClassifiedImageFile{
               .file = image,
               .estimated_bytes =
-                  estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes)});
+                  estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes),
+              .dimensions = *dimensions});
           break;
         case LargeImageClass::large_mode_required:
           classified.large_mode.push_back(
@@ -334,10 +587,11 @@ std::uint64_t typical_decoded_bytes_per_file(
   }
 }
 
-std::uint64_t estimated_large_working_set_bytes(const BatchLargeImageItem& item) noexcept;
+std::uint64_t estimated_large_working_set_bytes(
+    const BatchLargeImageItem& item, const AppConfig& cfg) noexcept;
 
 std::expected<void, std::string> reject_over_memory_budget(
-    ClassifiedWork& classified, std::uint64_t memory_limit) {
+    ClassifiedWork& classified, std::uint64_t memory_limit, const AppConfig& cfg) {
   if (memory_limit == 0) {
     return {};
   }
@@ -376,10 +630,12 @@ std::expected<void, std::string> reject_over_memory_budget(
     std::vector<BatchLargeImageItem> retained;
     retained.reserve(classified.large_mode.size());
     for (auto& image : classified.large_mode) {
-      const auto estimate = estimated_large_working_set_bytes(image);
+      const auto estimate = estimated_large_working_set_bytes(image, cfg);
       if (estimate > memory_limit)
         classified.memory_rejected.push_back({.file = std::move(image.file),
-                                               .estimated_bytes = estimate});
+                                               .estimated_bytes = estimate,
+                                               .dimensions = image.dimensions,
+                                               .grid = true});
       else retained.push_back(std::move(image));
     }
     classified.large_mode = std::move(retained);
@@ -430,15 +686,15 @@ std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
 }
 
 std::uint64_t estimated_large_working_set_bytes(
-    const BatchLargeImageItem& item) noexcept {
-  return avif_encode_working_set_bytes_for_dimensions(item.dimensions, item.file.bytes);
+    const BatchLargeImageItem& item, const AppConfig& cfg) noexcept {
+  return estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true).bytes;
 }
 
 std::uint64_t largest_large_mode_working_set(
-    const std::vector<BatchLargeImageItem>& items) noexcept {
+    const std::vector<BatchLargeImageItem>& items, const AppConfig& cfg) noexcept {
   std::uint64_t estimate = 1;
   for (const auto& item : items) {
-    estimate = std::max(estimate, estimated_large_working_set_bytes(item));
+    estimate = std::max(estimate, estimated_large_working_set_bytes(item, cfg));
   }
   return estimate;
 }
@@ -462,7 +718,7 @@ std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
       auto& group = groups[it->second];
       group.weight = saturated_add_uintmax(group.weight, item.file.bytes);
       group.estimated_bytes =
-          std::max(group.estimated_bytes, estimated_large_working_set_bytes(item));
+          std::max(group.estimated_bytes, estimated_large_working_set_bytes(item, cfg));
       group.items.push_back(item);
     }
   } catch (const std::bad_alloc&) {
@@ -557,6 +813,22 @@ void best_effort(Function&& fn) noexcept {
     fn();
   } catch (...) {
   }
+}
+
+void log_item_failure_noexcept(FileLogger& logger, const EncodeResult& result) noexcept {
+  if (result.ok || !result.processed || result.canceled) return;
+  best_effort([&] {
+    if (!logger.enabled()) return;
+    if (result.decode_stage.empty()) {
+      logger.warn(format_result_line(result));
+      return;
+    }
+    logger.warn(std::format(
+        "{} [decoder={}, decode_stage={}, source_metadata_available={}, source_icc={}]",
+        format_result_line(result), result.decoder_id.empty() ? "unknown" : result.decoder_id,
+        result.decode_stage, result.source_metadata_available,
+        result.source_metadata_available ? (result.source_has_icc ? "true" : "false") : "unknown"));
+  });
 }
 
 void emit_item_started_noexcept(
@@ -724,7 +996,9 @@ WorkExecutionResult encode_work_groups(
                                          progress_total, progress);
               auto result = native_backend.encode(image, stop_token);
               const auto result_index = result.index;
+              inherit_memory_diagnostics(result, results[result_index]);
               results[result_index] = std::move(result);
+              log_item_failure_noexcept(logger, results[result_index]);
               const auto done = completed.fetch_add(1) + 1;
               try {
                 BatchProgress event{
@@ -796,6 +1070,8 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
                                     const BatchLargeImageItem& item,
                                     ResourcePlan resource_plan,
                                     std::stop_token stop_token) {
+  if (cfg.unlock_memory_limit) resource_plan.memory_limit_bytes = 0;
+  const auto estimate = estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true);
   EncodeResult failed{
       .index = item.file.index,
       .input_path = item.file.path,
@@ -806,19 +1082,21 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
       .final_encoder_quality = cfg.quality,
       .speed = cfg.speed.value_or(default_speed_for(cfg.output_format)),
       .processed = true};
+  clear_unstarted_execution_metrics(failed);
+  record_memory_diagnostics(failed, cfg, {}, resource_plan.memory_limit_bytes, estimate);
   if (stop_token.stop_requested()) {
     failed.canceled = true;
     failed.message = "任务已取消。";
     return failed;
   }
 
-  AppConfig large_cfg = cfg;
-  const auto required_memory = estimated_large_working_set_bytes(item);
+  const auto required_memory = estimate.bytes;
   if (resource_plan.memory_limit_bytes > 0 && required_memory > resource_plan.memory_limit_bytes) {
     failed.message = std::format("AOM Grid 预估工作集 {} 超过内存预算 {}。",
         format_size(required_memory), format_size(resource_plan.memory_limit_bytes));
     return failed;
   }
+  AppConfig large_cfg = cfg;
   large_cfg.output_format = OutputFormat::avif;
   large_cfg.input_path = item.file.path;
   large_cfg.visual_quality.reset();
@@ -832,9 +1110,10 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
       failed.message = "当前构建没有可用的 AOM Grid 编码器。";
       return failed;
     }
+    const auto target = target_dimensions_for_config(item.dimensions, cfg);
     auto planned = plan_grid(GridPlanRequest{
-        .width = item.dimensions.width,
-        .height = item.dimensions.height,
+        .width = target.width,
+        .height = target.height,
         .mode = GridMode::auto_grid,
         .clamped_padding_enabled = large_cfg.experimental_clamped_grid_padding});
     if (!planned) {
@@ -843,7 +1122,9 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
     }
     large_cfg.avif_encoder = AvifEncoderMode::aom;
     NativeBackend backend{large_cfg, logger, resource_plan};
-    return backend.encode_avif_grid(item.file, *planned, stop_token);
+    auto result = backend.encode_avif_grid(item.file, *planned, stop_token);
+    inherit_memory_diagnostics(result, failed);
+    return result;
   } catch (const std::exception&) {
     failed.message = "自动大图工作线程异常。";
     return failed;
@@ -972,7 +1253,9 @@ WorkExecutionResult encode_large_work_groups(
               auto result = encode_large_mode_item(
                   effective_cfg, logger, item, resource_plan, stop_token);
               const auto result_index = result.index;
+              inherit_memory_diagnostics(result, results[result_index]);
               results[result_index] = std::move(result);
+              log_item_failure_noexcept(logger, results[result_index]);
               const auto done = completed.fetch_add(1) + 1;
               try {
                 BatchProgress event{
@@ -1161,9 +1444,8 @@ std::expected<BatchSummary, std::string> run_batch(
           .decision = std::move(decision)};
       const auto output_dir = output_dir_for(cfg);
       FileLogger logger{output_dir, cfg.write_log};
-      const auto configured_memory_limit =
-          cfg.memory_limit_bytes == 0 ? automatic_memory_limit(current_memory_status())
-                                      : cfg.memory_limit_bytes;
+      const auto memory_status = current_memory_status();
+      const auto configured_memory_limit = effective_memory_limit(cfg, memory_status);
       pipeline_detail::best_effort([&] {
         emit_progress(progress,
                       BatchProgress{.kind = BatchEventKind::message,
@@ -1172,19 +1454,21 @@ std::expected<BatchSummary, std::string> run_batch(
                                     .large_image = item,
                                     .text = pipeline_detail::large_image_action_text(item)});
       });
+      const auto estimate = pipeline_detail::estimated_regular_memory(
+          item.dimensions, cfg, item.file.bytes, true);
       const auto large_resource_plan = plan_large_mode_resources(
           plan_resources(ResourcePlanRequest{
               .automatic_thread_budget = cfg.max_jobs,
               .file_count = 1,
               .memory_limit_bytes = configured_memory_limit,
-              .estimated_bytes_per_file =
-                  pipeline_detail::estimated_large_working_set_bytes(item)}),
-          1,
-          pipeline_detail::estimated_large_working_set_bytes(item));
+              .estimated_bytes_per_file = estimate.bytes}),
+          1, estimate.bytes);
       pipeline_detail::emit_item_started_noexcept(
           cfg, item.file, 0, 1, progress);
       auto result = pipeline_detail::encode_large_mode_item(
           cfg, logger, item, large_resource_plan, stop_token);
+      pipeline_detail::record_memory_diagnostics(
+          result, cfg, memory_status, configured_memory_limit, estimate);
       pipeline_detail::best_effort([&] {
         emit_progress(progress,
                       BatchProgress{.kind = BatchEventKind::item_finished,
@@ -1289,16 +1573,14 @@ std::expected<BatchSummary, std::string> run_batch(
       });
     }
 
-    const auto configured_memory_limit =
-        cfg.memory_limit_bytes == 0
-            ? automatic_memory_limit(current_memory_status())
-            : cfg.memory_limit_bytes;
+    const auto memory_status = current_memory_status();
+    const auto configured_memory_limit = effective_memory_limit(cfg, memory_status);
     auto classified = pipeline_detail::classify_work_for_avif(cfg, files, configured_memory_limit);
     if (!classified) {
       return std::unexpected{classified.error()};
     }
     if (auto memory_filter = pipeline_detail::reject_over_memory_budget(
-            *classified, configured_memory_limit);
+            *classified, configured_memory_limit, cfg);
         !memory_filter) {
       return std::unexpected{memory_filter.error()};
     }
@@ -1324,7 +1606,7 @@ std::expected<BatchSummary, std::string> run_batch(
         .memory_limit_bytes = configured_memory_limit,
         .estimated_bytes_per_file = ordinary_estimated_bytes_per_file});
     const auto large_largest_working_set =
-        pipeline_detail::largest_large_mode_working_set(classified->large_mode);
+        pipeline_detail::largest_large_mode_working_set(classified->large_mode, cfg);
     const auto large_base_resource_plan = plan_resources(ResourcePlanRequest{
         .automatic_thread_budget = cfg.max_jobs,
         .file_count = pipeline_detail::count_to_int_saturated(
@@ -1394,10 +1676,23 @@ std::expected<BatchSummary, std::string> run_batch(
                        .quality_overridden_by_visual_quality =
                            cfg.visual_quality.has_value(),
                        .message = "未处理。"};
+      pipeline_detail::clear_unstarted_execution_metrics(results[image.index]);
     }
+    const auto record_classified = [&](const pipeline_detail::ClassifiedImageFile& image) {
+      auto estimate = image.dimensions.width && image.dimensions.height
+          ? pipeline_detail::estimated_regular_memory(image.dimensions, cfg, image.file.bytes, image.grid)
+          : pipeline_detail::ImageMemoryEstimate{};
+      estimate.bytes = image.estimated_bytes;
+      pipeline_detail::record_memory_diagnostics(
+          results[image.file.index], cfg, memory_status, configured_memory_limit, estimate);
+    };
+    for (const auto& image : classified->ordinary) record_classified(image);
+    for (const auto& image : classified->memory_rejected) record_classified(image);
 
     for (const auto& item : classified->large_mode) {
       auto& result = results[item.file.index];
+      pipeline_detail::record_memory_diagnostics(result, cfg, memory_status, configured_memory_limit,
+          pipeline_detail::estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true));
       result.processed = false;
       result.message = pipeline_detail::large_image_report_message(item);
     }

@@ -646,9 +646,6 @@ bool image_has_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
 }
 
 bool sdr_only_format_conversion_needed(OutputFormat format, const ImageBuffer& image) noexcept {
-  if (format == OutputFormat::png && image.source_info && image.source_info->source_has_gain_map) {
-    return true;
-  }
   if (format != OutputFormat::webp && format != OutputFormat::jpgli) {
     return false;
   }
@@ -705,21 +702,24 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
 std::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
                                                        const AppConfig& cfg) {
   const auto dims = limited_dimensions(decoded.image.width, decoded.image.height, cfg);
-  if (!dims) {
+  if (!dims) return {};
+  const auto resize = [&](ImageBuffer& image) -> std::expected<void, std::string> {
+    if (!cfg.visual_quality) {
+      if (!image.geometry) image.geometry = ImageGeometry{
+          .stored_width = image.width, .stored_height = image.height,
+          .crop_width = image.width, .crop_height = image.height};
+      image.width = dims->first; image.height = dims->second;
+      return {};
+    }
+    auto resized = resize_rgba_image_nearest(image, dims->first, dims->second);
+    if (!resized) return std::unexpected{resized.error()};
+    image = std::move(*resized);
     return {};
+  };
+  if (auto resized = resize(decoded.image); !resized) return resized;
+  if (decoded.gain_map_alternative) {
+    if (auto resized = resize(decoded.gain_map_alternative->image); !resized) return resized;
   }
-  if (!cfg.visual_quality) {
-    if (!decoded.image.geometry) decoded.image.geometry = ImageGeometry{
-        .stored_width = decoded.image.width, .stored_height = decoded.image.height,
-        .crop_width = decoded.image.width, .crop_height = decoded.image.height};
-    decoded.image.width = dims->first; decoded.image.height = dims->second;
-    return {};
-  }
-  auto resized = resize_rgba_image_nearest(decoded.image, dims->first, dims->second);
-  if (!resized) {
-    return std::unexpected{resized.error()};
-  }
-  decoded.image = std::move(*resized);
   return {};
 }
 
@@ -837,6 +837,14 @@ bool has_user_color_settings(const AppConfig& cfg) noexcept {
   return has_user_cicp_settings(cfg);
 }
 
+bool requested_color_conversion_needed(const ImageBuffer& image, const AppConfig& cfg) noexcept {
+  if (!cfg.color_primaries && !cfg.transfer_characteristics) return false;
+  const auto& info = image.source_info;
+  return image.sample_representation == SampleRepresentation::ieee_half_float || !info ||
+      (cfg.color_primaries && info->color_primaries != cfg.color_primaries) ||
+      (cfg.transfer_characteristics && info->transfer_characteristics != cfg.transfer_characteristics);
+}
+
 bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
                                        const fs::path& path) {
   return avif_lossless_requested(cfg) && avif_lossless_passthrough_source(path) &&
@@ -848,8 +856,8 @@ bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
 
 bool jxl_jpeg_bitstream_transcode_allowed(const AppConfig& cfg,
                                           const fs::path& path) {
-  return cfg.jxl_jpeg_lossless && cfg.output_format == OutputFormat::jxl && jxl_jpeg_bitstream_source(path) &&
-         !cfg.strip_metadata && !has_user_color_settings(cfg);
+  return cfg.jxl_jpeg_lossless && cfg.output_format == OutputFormat::jxl && cfg.bit_depth == 8 &&
+         jxl_jpeg_bitstream_source(path) && !cfg.strip_metadata && !has_user_color_settings(cfg);
 }
 
 bool encoder_supports_alpha(AvifEncoderMode mode) noexcept {
@@ -938,28 +946,27 @@ void populate_source_image_diagnostics(NativeEncodeSettings& settings,
   }
 }
 
-void populate_regular_color_decision(NativeEncodeSettings& settings, const AppConfig& cfg) {
-  if (cfg.strip_metadata) {
-    settings.applied_icc = settings.source_has_icc ? "stripped" : "none";
-    settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "stripped" : "none";
-    settings.color_metadata_source = "stripped";
-    settings.color_reason = "用户请求移除元数据";
-    return;
-  }
+void populate_rendition_diagnostics(NativeEncodeSettings& settings, const ImageBuffer& image, bool hdr) {
+  settings.rendition.selected = hdr ? "hdr" : "sdr";
+  settings.rendition.origin = rendition_origin_name(image.source_info
+      ? image.source_info->rendition_origin : RenditionOrigin::input);
+  settings.rendition.reference_chroma = source_chroma_name(image);
+  settings.rendition.reference_bit_depth = rendition_reference_depth(image);
+  settings.rendition.reused_sdr = !hdr && image.source_info && image.source_info->source_has_gain_map;
+}
 
-  settings.applied_icc = settings.source_has_icc ? "kept" : "none";
-  settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? "not-written" : "none";
-  if (settings.source_has_icc) {
-    settings.color_metadata_source = "source-icc";
-    settings.color_reason = "使用源图 ICC profile 写入编码器元数据";
-  } else {
-    settings.color_metadata_source = "encoder-default";
-    settings.color_reason = settings.source_has_hdr_metadata || settings.source_color_primaries ||
-                                    settings.source_transfer_characteristics ||
-                                    settings.source_matrix_coefficients || settings.source_color_range
-                                ? "当前编码器未写入源图 CICP/HDR 元数据，使用编码器默认值"
-                                : "源图色彩元数据未知，使用编码器默认值";
-  }
+void populate_regular_color_decision(NativeEncodeSettings& settings, const AppConfig& cfg) {
+  settings.applied_color_primaries = choose_color_value(cfg.color_primaries, settings.source_color_primaries);
+  settings.applied_transfer_characteristics = choose_color_value(cfg.transfer_characteristics, settings.source_transfer_characteristics);
+  settings.applied_matrix_coefficients = choose_color_value(cfg.matrix_coefficients, settings.source_matrix_coefficients);
+  settings.applied_color_range = choose_color_value(cfg.color_range, settings.source_color_range);
+  const bool overridden = cfg.color_primaries || cfg.transfer_characteristics;
+  settings.applied_icc = settings.source_has_icc ? (overridden ? "not-written" : "kept") : "none";
+  settings.applied_hdr_metadata = settings.source_has_hdr_metadata ? (cfg.strip_metadata ? "kept-essential-color" : "kept") : "none";
+  settings.color_metadata_source = overridden ? "user-cicp-settings" : settings.source_has_icc ? "source-icc" : "source-cicp";
+  settings.color_reason = cfg.strip_metadata
+      ? "移除可选元数据，保留解释所选呈现所必需的 ICC/CICP"
+      : "继承所选呈现的色彩解释，不因 SDR/HDR 改变编码精度";
 }
 
 void populate_jxl_jpeg_bitstream_source_diagnostics(NativeEncodeSettings& settings,
@@ -1015,7 +1022,7 @@ std::string applied_hdr_metadata_name(const NativeEncodeSettings& settings,
     return "none";
   }
   if (strip_metadata) {
-    return "stripped";
+    return "kept-essential-color";
   }
   if (source_hdr_content_light_kept(settings, strip_metadata, user_color_settings) ||
       source_hdr_cicp_kept(settings, strip_metadata, user_color_settings)) {
@@ -1030,23 +1037,6 @@ std::string applied_hdr_metadata_name(const NativeEncodeSettings& settings,
 }
 
 void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cfg) {
-  if (cfg.strip_metadata) {
-    settings.applied_color_primaries = cfg.color_primaries;
-    settings.applied_transfer_characteristics = cfg.transfer_characteristics;
-    settings.applied_matrix_coefficients = cfg.matrix_coefficients;
-    settings.applied_color_range = cfg.color_range;
-    settings.applied_icc = settings.source_has_icc ? "stripped" : "none";
-    settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg);
-    if (has_user_color_settings(cfg)) {
-      settings.color_metadata_source = "user-cicp-settings";
-      settings.color_reason = "已移除源图元数据，并使用用户 color/HDR 设置";
-    } else {
-      settings.color_metadata_source = "stripped";
-      settings.color_reason = "用户请求移除元数据";
-    }
-    return;
-  }
-
   settings.applied_color_primaries = choose_color_value(cfg.color_primaries,
                                                         settings.source_color_primaries);
   settings.applied_transfer_characteristics = choose_color_value(cfg.transfer_characteristics,
@@ -1058,7 +1048,7 @@ void populate_color_decision(NativeEncodeSettings& settings, const AppConfig& cf
 
   const bool user_color_settings = has_user_color_settings(cfg);
   settings.applied_icc = settings.source_has_icc
-                             ? (user_color_settings ? "not-written" : "kept")
+                             ? (cfg.color_primaries || cfg.transfer_characteristics ? "not-written" : "kept")
                              : "none";
   settings.applied_hdr_metadata = applied_hdr_metadata_name(settings, cfg);
   if (user_color_settings) {
@@ -1537,6 +1527,10 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.applied_speed = has_speed_mapping ? native.diagnostics.speed_mapping.codec_value : -1;
   result.encoder_threads = native.diagnostics.encoder_threads;
   result.memory_budget_bytes = native.diagnostics.memory_budget_bytes;
+  result.rendition = native.diagnostics.rendition;
+  result.gain_map_compute_seconds = native.diagnostics.timing.gain_map_compute_seconds;
+  result.gain_map_compute_workers = native.diagnostics.timing.gain_map_compute_workers;
+  result.color_convert_seconds = native.diagnostics.timing.color_convert_seconds;
   result.decode_seconds = native.diagnostics.timing.decode_seconds;
   result.prepare_seconds = native.diagnostics.timing.prepare_seconds;
   result.encode_seconds = native.diagnostics.timing.encode_seconds;
@@ -1680,8 +1674,41 @@ void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResul
   result.visual_quality_gpu_path = diagnostics.visual_quality_gpu_path;
   result.visual_quality_gpu_fallback_reason = diagnostics.visual_quality_gpu_fallback_reason;
   result.speed = settings.speed;
-  result.encoder_threads = settings.resources.encoder_threads_per_file;
+  // 这里只拷贝准备阶段配置。实际线程数由已启动编码器的结果填写。
+  result.encoder_threads = 0;
   result.memory_budget_bytes = settings.resources.memory_limit_bytes;
+  result.rendition = settings.rendition;
+}
+
+// 原输入的已确认事实与后续工作像素、编码器准备参数分开，失败也不能丢失。
+void copy_decode_diagnostics(const DecodeDiagnostics& diagnostics, EncodeResult& result) {
+  if (!diagnostics.decoder_id.empty()) result.decoder_id = diagnostics.decoder_id;
+  result.decode_stage = diagnostics.stage;
+  result.source_metadata_available = diagnostics.source_info.has_value();
+  result.base_decode_seconds = diagnostics.timing.base_decode_seconds;
+  result.auxiliary_decode_seconds = diagnostics.timing.auxiliary_decode_seconds;
+  result.gain_map_render_seconds = diagnostics.timing.gain_map_render_seconds;
+  result.gain_map_render_workers = diagnostics.timing.gain_map_render_workers;
+  result.heif_tile_parallelism = diagnostics.heif_tile_workers;
+  result.heif_codec_thread_budget = diagnostics.heif_codec_threads;
+  if (!diagnostics.source_info) return;
+  const auto& source = *diagnostics.source_info;
+  result.source_chroma = chroma_name_from_pixel_format(source.pixel_format);
+  result.source_bit_depth = source.bit_depth > 0 ? std::optional<int>{source.bit_depth} : std::nullopt;
+  result.source_color_primaries = source.color_primaries;
+  result.source_transfer_characteristics = source.transfer_characteristics;
+  result.source_matrix_coefficients = source.matrix_coefficients;
+  result.source_color_range = source.color_range;
+  result.source_has_icc = diagnostics.source_has_icc;
+  result.source_has_hdr_metadata = source.has_hdr_metadata;
+  result.source_has_alpha_channel = diagnostics.source_has_alpha_channel;
+  result.source_alpha_mode = alpha_mode_name(diagnostics.source_alpha_mode);
+  if (!source.color_metadata_source.empty()) result.color_metadata_source = source.color_metadata_source;
+  if (result.ok && diagnostics.icc_normalized_to_cicp) {
+    if (result.applied_icc == "none" || result.applied_icc == "stripped")
+      result.applied_icc = "normalized-to-cicp";
+    result.color_reason = "源 ICC 已按数学等价 CICP 规范化，保留 Gain Map 原运算空间；" + result.color_reason;
+  }
 }
 
 }  // namespace native_backend_detail
@@ -1852,7 +1879,7 @@ class NativeBackend final {
     if (limited_dimensions(container_info->width, container_info->height, cfg_)) {
       return std::nullopt;
     }
-    if (!container_info->source_info ||
+    if (!container_info->source_info || container_info->source_info->bit_depth < 10 ||
         (container_info->source_info->pixel_format != PixelFormat::yuv420 &&
          container_info->source_info->pixel_format != PixelFormat::yuv422 &&
          container_info->source_info->pixel_format != PixelFormat::yuv444) ||
@@ -1918,7 +1945,7 @@ class NativeBackend final {
     result.integration_mode = "jxl-jpeg-bitstream-transcode";
     result.final_encoder_quality = 100;
     result.lossless = true;
-    result.encoder_threads = resources_.encoder_threads_per_file;
+    result.encoder_threads = 0;
     result.memory_budget_bytes = resources_.memory_limit_bytes;
 
     auto settings = native_backend_detail::settings_from_config(cfg_, resources_);
@@ -1997,13 +2024,15 @@ class NativeBackend final {
   }
 
   [[nodiscard]] std::expected<DecodedInput, std::string> decode_input(
-      const ImageFile& image, std::stop_token stop_token) const {
+      const ImageFile& image, std::stop_token stop_token, DecodeDiagnostics& diagnostics) const {
     auto decoded = decode_image_for_path(
         image.path,
         DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback,
                                .decode_threads = resources_.encoder_threads_per_file,
                                .stop_token = stop_token,
-                               .native_pixels = !cfg_.visual_quality});
+                               .native_pixels = !cfg_.visual_quality,
+                               .gain_map_mode = gain_map_mode_for_output(cfg_.output_format, cfg_.jpeg_hdr),
+                               .diagnostics = &diagnostics});
     if (!decoded) {
       return std::unexpected{redact_path_for_user(decoded.error(), image.path)};
     }
@@ -2022,6 +2051,16 @@ class NativeBackend final {
       EncodeOverrides overrides) const {
     PreparedEncoding prepared{};
     prepared.settings = native_backend_detail::settings_from_config(cfg_, resources_);
+    // decoded_input 在同步编码及所有已 join 的候选搜索结束前拥有两端图像。
+    prepared.settings.gain_map_alternative = decoded.gain_map_alternative ? &*decoded.gain_map_alternative : nullptr;
+    const auto hdr_signal = hdr::has_explicit_hdr_signal(decoded.image);
+    if (!hdr_signal) return prepare_failed(hdr_signal.error(), prepared.settings);
+    if (cfg_.output_format == OutputFormat::jpgli && cfg_.jpeg_hdr == JpegHdrMode::hdr && !*hdr_signal)
+      return prepare_failed("--jpeg-hdr hdr 需要原输入的明确 HDR 呈现，不能仅重标 SDR。", prepared.settings);
+    const auto depth = resolve_rendition_bit_depth(cfg_.output_format, decoded.image, *hdr_signal, cfg_.bit_depth);
+    if (!depth) return prepare_failed(depth.error(), prepared.settings);
+    prepared.settings.bit_depth = *depth;
+    native_backend_detail::populate_rendition_diagnostics(prepared.settings, decoded.image, *hdr_signal);
     const auto requested_avif_encoder = overrides.avif_encoder.value_or(cfg_.avif_encoder);
     prepared.settings.requested_avif_encoder = requested_avif_encoder;
     prepared.settings.requested_chroma_mode = cfg_.chroma_mode;
@@ -2132,37 +2171,9 @@ class NativeBackend final {
             chroma_mode_name(selection_requested_chroma));
       }
 
-      std::optional<int> selection_requested_bit_depth{};
-      if (cfg_.bit_depth) {
-        selection_requested_bit_depth = cfg_.bit_depth;
-        prepared.settings.bit_depth_reason = "用户明确请求 bit-depth";
-      } else if (decoded.image.source_info && decoded.image.source_info->source_has_gain_map) {
-        selection_requested_bit_depth = 10;
-        prepared.settings.bit_depth_reason = "Gain Map 增强默认输出 HDR10 AVIF";
-      } else if (avif_lossless) {
-        selection_requested_bit_depth =
-            native_backend_detail::lossless_source_bit_depth(decoded.image);
-        if (selection_requested_bit_depth &&
-            *selection_requested_bit_depth < 10) {
-          selection_requested_bit_depth = 10;
-          prepared.settings.bit_depth_reason =
-              "无损 auto 将低于 10-bit 的源图提升为 10-bit 输出";
-        } else {
-          prepared.settings.bit_depth_reason =
-              native_backend_detail::lossless_uses_decoded_bit_depth(
-                  decoded.image)
-                  ? "无损模式继承解码后的 bit-depth"
-                  : "无损模式继承源图 bit-depth";
-        }
-      } else if (prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth >= 10) {
-        selection_requested_bit_depth = prepared.settings.source_bit_depth;
-        prepared.settings.bit_depth_reason = std::format(
-            "lossy preserved source {}-bit depth", *prepared.settings.source_bit_depth);
-      }
-      if (!avif_lossless && !selection_requested_bit_depth &&
-          prepared.settings.source_bit_depth && *prepared.settings.source_bit_depth == 8) {
-        prepared.settings.bit_depth_reason = "有损 auto 可能将 8-bit 源图升至编码器首选 bit-depth";
-      }
+      const std::optional<int> selection_requested_bit_depth = prepared.settings.bit_depth;
+      prepared.settings.bit_depth_reason = cfg_.bit_depth ? "用户明确请求 bit-depth"
+          : "按所选呈现有效精度自动选择 AVIF 10/12-bit，不按容器原底图降精度";
       // The codec's single-image bounds apply to a Grid cell, not the canvas.
       const auto encode_width = prepared.settings.avif_grid_plan
           ? prepared.settings.avif_grid_plan->tile_width : static_cast<std::uint32_t>(decoded.image.width);
@@ -2285,32 +2296,15 @@ class NativeBackend final {
           return prepare_failed(alpha_decision.error(), prepared.settings);
         }
         native_backend_detail::populate_regular_color_decision(prepared.settings, cfg_);
-        if (cfg_.output_format == OutputFormat::png && !cfg_.strip_metadata &&
-            prepared.settings.applied_icc != "kept" && decoded.image.source_info &&
-            (decoded.image.source_info->color_primaries ||
-             decoded.image.source_info->transfer_characteristics)) {
-          prepared.settings.applied_color_primaries = decoded.image.source_info->color_primaries;
-          prepared.settings.applied_transfer_characteristics = decoded.image.source_info->transfer_characteristics;
-          prepared.settings.applied_matrix_coefficients = 0;
-          prepared.settings.applied_color_range = decoded.image.source_info->color_range.value_or(1);
-          prepared.settings.applied_hdr_metadata = decoded.image.source_info->has_hdr_metadata ? "kept" : "none";
-          prepared.settings.color_metadata_source = "png-cicp";
-          prepared.settings.color_reason = "使用 PNG cICP 写入源图色彩/HDR 元数据";
-        }
         if (cfg_.output_format == OutputFormat::png) {
-          const bool enhanced = decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
-          const int png_storage_depth = decoded.image.bit_depth > 8 ? 16 : 8;
-          if (cfg_.bit_depth && (enhanced ? (*cfg_.bit_depth != 8 && *cfg_.bit_depth != 16) : *cfg_.bit_depth != png_storage_depth)) {
-            return prepare_failed(
-                std::format("PNG 当前按 {}-bit 存储位深写入；请留空 bit-depth，或使用匹配的 {}。",
-                            png_storage_depth, png_storage_depth),
-                prepared.settings);
-          }
-          prepared.settings.bit_depth = enhanced ? cfg_.bit_depth.value_or(8) : png_storage_depth;
-          prepared.settings.bit_depth_reason = cfg_.bit_depth
-                                                   ? "用户明确请求 PNG 8/16-bit 存储位深"
-                                                   : "PNG 使用源精度匹配的 8/16-bit 存储位深";
+          prepared.settings.applied_matrix_coefficients = 0;
+          prepared.settings.applied_color_range = 1;
+          prepared.settings.bit_depth_reason = cfg_.bit_depth ? "用户明确请求 PNG 8/16-bit"
+              : *hdr_signal ? "所选 HDR 呈现默认 PNG 16-bit" : "PNG 兼容性优先：SDR 默认 8-bit";
         }
+        if (cfg_.output_format == OutputFormat::jxl)
+          prepared.settings.bit_depth_reason = cfg_.bit_depth ? "用户明确请求 JXL 码流位深"
+              : "所选呈现默认 JXL 16-bit，与 SDR/HDR 判断独立";
         if (cfg_.output_format == OutputFormat::jpgli) {
           prepared.settings.user_chroma =
               chroma_mode_name(prepared.settings.requested_chroma_mode);
@@ -2319,8 +2313,9 @@ class NativeBackend final {
               cfg_.bit_depth ? "用户明确请求 JPG 8-bit 输出"
                              : "JPG 输出 JPEG 兼容 8-bit precision";
           // Fix the sampling before any RGB/tone-map conversion loses the source layout.
+          const bool hdr_jpeg = *hdr_signal && cfg_.jpeg_hdr != JpegHdrMode::sdr;
           prepared.settings.chroma_mode =
-              cfg_.chroma_mode == ChromaMode::auto_keep && !cfg_.jpegli_xyb
+              cfg_.chroma_mode == ChromaMode::auto_keep && !cfg_.jpegli_xyb && !hdr_jpeg
                   ? jpeg_auto_chroma(decoded.image)
                   : cfg_.chroma_mode;
           if (!cfg_.jpegli_xyb) {
@@ -2369,6 +2364,32 @@ class NativeBackend final {
       return std::unexpected{"任务已取消。"};
     }
     auto effective_settings = settings;
+    double color_convert_seconds = -1.0;
+    if (cfg_.color_primaries || cfg_.transfer_characteristics) {
+      const auto conversion_started = native_backend_detail::Clock::now();
+      if (native_backend_detail::image_has_metadata(decoded.image, MetadataKind::icc)) {
+        auto verified = gain_map_detail::resolve_iso_color(decoded.image, stop_token);
+        if (!verified) return std::unexpected{verified.error()};
+        gain_map_detail::normalize_iso_base(decoded.image, *verified);
+      }
+      if (native_backend_detail::requested_color_conversion_needed(decoded.image, cfg_)) {
+        auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{
+            .format = PixelFormat::rgba, .bit_depth = 16,
+            .preserve_alpha = effective_settings.applied_alpha == "kept",
+            .color_primaries = cfg_.color_primaries,
+            .transfer_characteristics = cfg_.transfer_characteristics}, stop_token, effective_settings.resources);
+        if (!converted) return std::unexpected{converted.error()};
+        decoded.image = std::move(*converted);
+      }
+      if (decoded.image.source_info) {
+        effective_settings.applied_color_primaries = decoded.image.source_info->color_primaries;
+        effective_settings.applied_transfer_characteristics = decoded.image.source_info->transfer_characteristics;
+        effective_settings.applied_icc = "none";
+        effective_settings.source_content_light = decoded.image.source_info->content_light;
+        effective_settings.color_reason = "按明确源色彩实际转换像素，必要颜色信令不随 strip 删除";
+      }
+      color_convert_seconds = native_backend_detail::elapsed_seconds(conversion_started);
+    }
     if (cfg_.output_format == OutputFormat::jpgli) {
       auto signal = hdr::has_explicit_hdr_signal(decoded.image);
       if (!signal) return std::unexpected{signal.error()};
@@ -2388,8 +2409,11 @@ class NativeBackend final {
           if (!transformed) return std::unexpected{transformed.error()};
           rgb = std::move(*transformed);
         }
-        auto result = encode_hdr_jpeg(rgb ? *rgb : decoded.image, settings, stop_token);
-        if (result) result->diagnostics.timing.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+        auto result = encode_hdr_jpeg(rgb ? *rgb : decoded.image, effective_settings, stop_token);
+        if (result) {
+          result->diagnostics.timing.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+          result->diagnostics.timing.color_convert_seconds = color_convert_seconds;
+        }
         return result;
       }
 #endif
@@ -2411,10 +2435,13 @@ class NativeBackend final {
         effective_settings.applied_hdr_metadata = "sdr-tone-map";
         effective_settings.color_metadata_source = "hdr-sdr-srgb";
         effective_settings.encoder_fallback_reason = "HDR -> SDR tone-map";
-        effective_settings.color_reason = "目标格式不支持 HDR，已转换为 SDR sRGB";
+        effective_settings.color_reason = "目标格式不支持 HDR，且没有可复用的 SDR 端点，已转换为 SDR sRGB";
+        effective_settings.rendition.selected = "sdr";
+        effective_settings.rendition.origin = "tone-mapped";
+        effective_settings.rendition.tone_mapped = true;
+        effective_settings.rendition.reused_sdr = false;
       } else effective_settings.bit_depth_reason = "目标格式只支持 8-bit，已按 SDR 缩减位深";
     } else if (decoded.image.sample_representation == SampleRepresentation::ieee_half_float) {
-      if (cfg_.output_format != OutputFormat::avif) effective_settings.bit_depth = 16;
       effective_settings.applied_color_primaries = 9;
       effective_settings.applied_transfer_characteristics = 16;
       effective_settings.applied_matrix_coefficients = 9;
@@ -2437,26 +2464,6 @@ class NativeBackend final {
       search_reference = std::move(*converted); effective_image = &*search_reference;
       effective_settings.tone_map_to_sdr_pixels = false;
     }
-    if (cfg_.output_format == OutputFormat::avif &&
-        source_has_gain_map) {
-      if ((cfg_.color_primaries && *cfg_.color_primaries != 9) ||
-          (cfg_.transfer_characteristics && *cfg_.transfer_characteristics != 16))
-        return std::unexpected{"Gain Map: HDR 重建输出使用 BT.2020/PQ，不能仅通过 CICP 覆盖为其他原色或传递函数。"};
-      // CICP defines the pixels themselves, even when optional metadata is stripped.
-      effective_settings.applied_color_primaries = 9;
-      effective_settings.applied_transfer_characteristics = 16;
-      effective_settings.applied_matrix_coefficients = settings.applied_matrix_coefficients == 0 ? 0 : cfg_.matrix_coefficients.value_or(9);
-      effective_settings.applied_color_range = cfg_.color_range.value_or(1);
-      effective_settings.applied_icc = "none";
-      effective_settings.applied_hdr_metadata = "gain-map-reconstructed";
-      effective_settings.source_content_light = effective_image->source_info->content_light;
-      effective_settings.color_metadata_source = "gain-map-bt2020-pq";
-      effective_settings.color_reason = "Gain Map 重建输出 BT.2020/PQ；剥离可选 metadata 不改变像素色彩标签";
-      if (!cfg_.bit_depth) {
-        effective_settings.bit_depth = 10;
-        effective_settings.bit_depth_reason = "Gain Map 合成 HDR 默认输出 10-bit AVIF";
-      }
-    }
     if (cfg_.visual_quality) {
       auto output_decoder = native_backend_detail::decoder_for_output_format(
           cfg_.output_format, effective_settings.resources.encoder_threads_per_file);
@@ -2473,6 +2480,7 @@ class NativeBackend final {
       search->encode_result.diagnostics.timing.encode_seconds =
           search->encode_result.diagnostics.timing.visual_quality_candidate_encode_seconds;
       search->encode_result.visual_quality_target_met = search->target_met;
+      search->encode_result.diagnostics.timing.color_convert_seconds = color_convert_seconds;
       return std::move(search->encode_result);
     }
 
@@ -2481,6 +2489,7 @@ class NativeBackend final {
     if (encoded) {
       encoded->diagnostics.timing.encode_seconds =
           native_backend_detail::elapsed_seconds(encode_started);
+      encoded->diagnostics.timing.color_convert_seconds = color_convert_seconds;
     }
     return encoded;
   }
@@ -2543,6 +2552,25 @@ class NativeBackend final {
           native_backend_detail::format_timing_seconds(result.visual_quality_metric_seconds),
           native_backend_detail::format_timing_seconds(result.write_seconds));
     });
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return std::format(
+          "native rendition: item={:04} selected={} origin={} reference_depth={} reference_chroma={} reused_sdr={} tone_mapped={} gain_map={} map={}x{} map_depth={}",
+          result.index + 1, result.rendition.selected, result.rendition.origin,
+          result.rendition.reference_bit_depth.value_or(0), result.rendition.reference_chroma,
+          result.rendition.reused_sdr, result.rendition.tone_mapped, result.rendition.gain_map_generated,
+          result.rendition.gain_map_width, result.rendition.gain_map_height, result.rendition.gain_map_bit_depth);
+    });
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return std::format(
+          "native HDR breakdown: item={:04} base_decode={}s aux_decode={}s map_render={}s map_compute={}s color_convert={}s render_workers={} compute_workers={} heif_tile_budget={} heif_codec_budget={}",
+          result.index + 1, native_backend_detail::format_timing_seconds(result.base_decode_seconds),
+          native_backend_detail::format_timing_seconds(result.auxiliary_decode_seconds),
+          native_backend_detail::format_timing_seconds(result.gain_map_render_seconds),
+          native_backend_detail::format_timing_seconds(result.gain_map_compute_seconds),
+          native_backend_detail::format_timing_seconds(result.color_convert_seconds),
+          result.gain_map_render_workers, result.gain_map_compute_workers,
+          result.heif_tile_parallelism, result.heif_codec_thread_budget);
+    });
     if (result.visual_quality_search_seconds >= 0.0) {
       native_backend_detail::log_info_noexcept(logger_, [&] {
         return std::format(
@@ -2581,6 +2609,15 @@ class NativeBackend final {
   EncodeResult encode_with_overrides(const ImageFile& image,
                                      EncodeOverrides overrides,
                                      std::stop_token stop_token = {}) const {
+    const auto started = native_backend_detail::Clock::now();
+    auto result = encode_with_overrides_impl(image, std::move(overrides), stop_token);
+    if (result.processed && !result.ok) result.seconds = native_backend_detail::elapsed_seconds(started);
+    return result;
+  }
+
+  EncodeResult encode_with_overrides_impl(const ImageFile& image,
+                                          EncodeOverrides overrides,
+                                          std::stop_token stop_token) const {
     try {
       const auto started = std::chrono::steady_clock::now();
       auto result = initialize_result(image);
@@ -2619,7 +2656,11 @@ class NativeBackend final {
         const auto decode_started = native_backend_detail::Clock::now();
         auto opened = open_animation(image.path,
             resources_.memory_limit_bytes / std::max(1, resources_.file_parallelism), stop_token);
-        if (!opened) return animation_failed(opened.error());
+        if (!opened) {
+          result.decode_stage = "animation.probe";
+          result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
+          return animation_failed(opened.error());
+        }
         if (*opened) {
           if (cfg_.visual_quality && *cfg_.visual_quality < 100 && (*opened)->info().durations.size() > 1) {
             return animation_failed("动画 AVIF 暂不支持视觉质量搜索；请使用编码质量预设。动画不会降为单图。");
@@ -2670,9 +2711,11 @@ class NativeBackend final {
         return std::move(*transcode);
       }
 
+      DecodeDiagnostics decode_diagnostics;
       const auto decode_started = native_backend_detail::Clock::now();
-      auto decoded_input = decode_input(image, stop_token);
+      auto decoded_input = decode_input(image, stop_token, decode_diagnostics);
       result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
+      native_backend_detail::copy_decode_diagnostics(decode_diagnostics, result);
       if (!decoded_input) {
         mark_failed(result, decoded_input.error());
         return result;
@@ -2687,6 +2730,7 @@ class NativeBackend final {
       result.prepare_seconds = native_backend_detail::elapsed_seconds(prepare_started);
       if (!prepared) {
         native_backend_detail::copy_settings_diagnostics(prepared.error().settings, result);
+        native_backend_detail::copy_decode_diagnostics(decode_diagnostics, result);
         mark_failed(result, prepared.error().message);
         return result;
       }
@@ -2701,6 +2745,7 @@ class NativeBackend final {
       result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
       if (!encoded) {
         native_backend_detail::copy_settings_diagnostics(prepared->settings, result);
+        native_backend_detail::copy_decode_diagnostics(decode_diagnostics, result);
         if (stop_token.stop_requested()) {
           cancel_if_requested(result, stop_token);
         } else {
@@ -2716,6 +2761,7 @@ class NativeBackend final {
       auto finished = finalize_result(std::move(result), std::move(*encoded), decoded_input->decoded,
                              decoded_input->decoder_used_fallback,
                              std::move(prepared->avif_bit_depth_reason), started, stop_token);
+      native_backend_detail::copy_decode_diagnostics(decode_diagnostics, finished);
       if (finished.ok && cfg_.output_format != OutputFormat::avif) {
         auto sequence = input_uses_animation_reader(image.path);
         if (sequence && *sequence) {

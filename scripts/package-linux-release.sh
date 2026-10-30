@@ -148,7 +148,11 @@ slint_commit=$(lock_value slint commit)
 heif_version=$(lock_value libheif tag)
 de265_version=$(lock_value libde265 tag)
 ultrahdr_version=$(lock_value libultrahdr tag)
-[[ -n "$baseline$libavif_commit$jpegli_commit$slint_commit" ]] || die 'could not read build pins'
+placebo_version=$(lock_value libplacebo version)
+archive_version=$(lock_value libarchive version)
+winit_version=$(lock_value winit version)
+winit_commit=$(lock_value winit commit)
+[[ -n "$baseline$libavif_commit$jpegli_commit$slint_commit$placebo_version$archive_version$winit_commit" ]] || die 'could not read build pins'
 package="$output_dir/package/AWJ_Linux"
 archive="$output_dir/AWJ_Linux.7z"
 mkdir -p "$package"
@@ -160,7 +164,8 @@ cp -- "$repo/LICENSE" "$package/LICENSE"
     "Source Fingerprint: $source_fingerprint" 'Architecture: x64' 'Minimum CPU: x86-64-v3' \
     'Release IPO/LTO: ON' 'C++ Runtime: libc++' 'Platform: Linux' "Vcpkg baseline: $baseline" \
     "libavif commit: $libavif_commit" "Jpegli commit: $jpegli_commit" "Slint commit: $slint_commit" \
-    'libplacebo: v7.360.1' 'libarchive: v3.8.9' \
+    "libplacebo: v$placebo_version" "libarchive: v$archive_version" \
+    "winit: $winit_version ($winit_commit; project-local DPI backport)" \
     "libheif: ${heif_version#v} (decoder-only; libde265 backend)" \
     "libde265: ${de265_version#v} (decoder library only)" \
     "libultrahdr: ${ultrahdr_version#v} (internal ISO 21496-1 computation engine)" \

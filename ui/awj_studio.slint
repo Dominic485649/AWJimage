@@ -75,6 +75,7 @@ export component AwjStudio inherits Window {
     in-out property <int> alpha-policy-index: 1;
     in-out property <string> threads-text: "";
     in-out property <string> memory-limit-text: "";
+    in-out property <bool> unlock-memory-limit: false;
     in-out property <bool> unlock-max-input-file-bytes: false;
     in-out property <int> size-limit-index: 0;
     in-out property <string> max-width-text: "";
@@ -633,6 +634,7 @@ export component AwjStudio inherits Window {
     scale-percent-text <=> root.scale-percent-text;
     max-width-text <=> root.max-width-text;
     memory-limit-text <=> root.memory-limit-text;
+    unlock-memory-limit: root.unlock-memory-limit;
     open-preset-editor() => { root.preset-editor-delete-confirmation = false; root.open-preset-editor(); }
     open-preset-delete-confirmation() => { root.preset-editor-delete-confirmation = true; root.open-preset-editor(); }
     install-context-menu-requested() => { root.install-context-menu-requested(); }
@@ -934,6 +936,7 @@ export component AwjStudio inherits Window {
     theme-selection-requested(a0, a1, a2) => { root.theme-selection-requested(a0, a1, a2); }
     ui-font-index <=> root.ui-font-index;
     ui-font-options : root.ui-font-options;
+    unlock-memory-limit <=> root.unlock-memory-limit;
     unlock-max-input-file-bytes <=> root.unlock-max-input-file-bytes;
     update-channel-index <=> root.update-channel-index;
     update-channel-selection-requested(a0) => { root.update-channel-selection-requested(a0); }

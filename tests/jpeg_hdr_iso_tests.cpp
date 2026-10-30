@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <expected>
 #include <iostream>
@@ -12,6 +13,7 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <ultrahdr_api.h>
@@ -23,6 +25,7 @@ import awj.codec;
 import awj.config;
 import awj.hdr_tonemap;
 import awj.image;
+import awj.jpeg_codec;
 import awj.jpeg_hdr_codec;
 
 namespace {
@@ -158,6 +161,91 @@ int check_image(const awj::ImageBuffer& image, awj::NativeEncodeSettings setting
   return 0;
 }
 
+awj::GainMapAlternative independent_sdr(std::size_t width, std::size_t height) {
+  awj::ImageBuffer image{.width = width, .height = height, .pixel_format = awj::PixelFormat::rgba,
+      .bit_depth = 8, .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba,
+          .bit_depth = 8, .color_primaries = 1, .transfer_characteristics = 13,
+          .matrix_coefficients = 0, .color_range = 1}};
+  image.planes.push_back({std::vector<std::byte>(width * height * 4), width * 4});
+  for (std::size_t y = 0; y < height; ++y) for (std::size_t x = 0; x < width; ++x) {
+    const auto rgb = x < width / 2 ? std::array{24u, 180u, 40u} : std::array{35u, 45u, 210u};
+    auto* pixel = image.planes[0].bytes.data() + y * image.planes[0].stride + x * 4;
+    for (std::size_t c = 0; c < 3; ++c) pixel[c] = std::byte(rgb[c]);
+    pixel[3] = std::byte{255};
+  }
+  return {.image = std::move(image), .main_hdr_headroom_log2 = std::log2(1000.0F / 203.0F),
+      .alternate_hdr_headroom_log2 = 0};
+}
+float rgb_distance(const awj::ImageBuffer& a, const awj::ImageBuffer& b) {
+  if (a.width != b.width || a.height != b.height || a.bit_depth != 8 || b.bit_depth != 8 ||
+      a.pixel_format != awj::PixelFormat::rgba || b.pixel_format != awj::PixelFormat::rgba)
+    return std::numeric_limits<float>::infinity();
+  float total{}; std::size_t count{};
+  for (std::size_t y = 2; y + 2 < a.height; ++y) for (std::size_t x = 2; x + 2 < a.width; ++x) {
+    if (x + 2 >= a.width / 2 && x < a.width / 2 + 2) continue;
+    const auto* pa = a.planes[0].bytes.data() + y * a.planes[0].stride + x * 4;
+    const auto* pb = b.planes[0].bytes.data() + y * b.planes[0].stride + x * 4;
+    for (std::size_t c = 0; c < 3; ++c) {
+      total += std::abs(std::to_integer<int>(pa[c]) - std::to_integer<int>(pb[c])); ++count;
+    }
+  }
+  return count ? total / static_cast<float>(count) : std::numeric_limits<float>::infinity();
+}
+int check_existing_sdr_pair(awj::NativeEncodeSettings settings) {
+  auto source = fixture(1000, {1, 1, 1}, 32, 24);
+  auto alternative = independent_sdr(source.width, source.height);
+  const auto source_bytes = source.planes[0].bytes, sdr_bytes = alternative.image.planes[0].bytes;
+  auto prepared = awj::hdr::prepare_tone_map(source);
+  if (!prepared) return fail(prepared.error());
+  auto old_tone = awj::hdr::tone_map_to_sdr_srgb(source, *prepared, 8, {}, settings.resources);
+  if (!old_tone) return fail(old_tone.error());
+  if (rgb_distance(alternative.image, *old_tone) < 50)
+    return fail("Existing-SDR fixture is too similar to a newly tone-mapped HDR base.");
+  settings.quality = 100;
+  settings.chroma_mode = awj::ChromaMode::yuv444;
+  settings.gain_map_alternative = &alternative;
+  awj::JpegImageDecoder decoder;
+  for (const bool strip : {false, true}) {
+    settings.strip_metadata = strip;
+    auto encoded = awj::encode_hdr_jpeg(source, settings);
+    if (!encoded) return fail(encoded.error());
+    auto parsed = probe(encoded->encoded.bytes);
+    if (!parsed || !uhdr_dec_get_gainmap_metadata(parsed->get()))
+      return fail("Optional metadata stripping removed the necessary ISO JPEG pair.");
+    auto low = decoder.decode_memory(encoded->encoded.bytes, "existing SDR JPEG base",
+        {.copy_metadata_payloads = false, .gain_map_mode = awj::GainMapDecodeMode::sdr_only});
+    auto high = decoder.decode_memory(encoded->encoded.bytes, "existing SDR JPEG HDR",
+        {.copy_metadata_payloads = false, .gain_map_mode = awj::GainMapDecodeMode::hdr_only});
+    auto both = decoder.decode_memory(encoded->encoded.bytes, "existing SDR JPEG pair",
+        {.copy_metadata_payloads = false, .gain_map_mode = awj::GainMapDecodeMode::preserve_both});
+    if (!low || !high || !both) return fail(!low ? low.error() : !high ? high.error() : both.error());
+    if (low->gain_map_alternative || high->gain_map_alternative || !both->gain_map_alternative)
+      return fail("JPEG rendition selection did not honor hdr_only/sdr_only/preserve_both.");
+    if (!low->image.source_info || low->image.source_info->has_hdr_metadata ||
+        low->image.source_info->color_primaries != 1 || low->image.source_info->transfer_characteristics != 13 ||
+        !high->image.source_info || !high->image.source_info->has_hdr_metadata ||
+        (high->image.source_info->color_primaries != 1 && high->image.source_info->color_primaries != 9 &&
+         high->image.source_info->color_primaries != 12) || high->image.source_info->transfer_characteristics != 8 ||
+        high->image.sample_representation != awj::SampleRepresentation::ieee_half_float)
+      return fail("JPEG SDR-base/HDR-map CICP direction changed.");
+    const auto& retained = *both->gain_map_alternative;
+    if (retained.main_hdr_headroom_log2 <= retained.alternate_hdr_headroom_log2 ||
+        retained.alternate_hdr_headroom_log2 != 0 ||
+        retained.image.planes[0].bytes != low->image.planes[0].bytes ||
+        both->image.planes[0].bytes != high->image.planes[0].bytes)
+      return fail("JPEG preserve_both lost an endpoint or reversed ISO headroom.");
+    if (rgb_distance(low->image, alternative.image) > 6 || rgb_distance(low->image, *old_tone) < 40)
+      return fail("JPEG encoder replaced the source's green/blue SDR with a new gray tone map.");
+    if (source.planes[0].bytes != source_bytes || alternative.image.planes[0].bytes != sdr_bytes)
+      return fail("Borrowed HDR/SDR pair was modified by JPEG encoding.");
+  }
+  auto mismatched = alternative;
+  --mismatched.image.width;
+  settings.gain_map_alternative = &mismatched;
+  if (awj::encode_hdr_jpeg(source, settings)) return fail("Mismatched source SDR was silently replaced by a new tone map.");
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -168,6 +256,7 @@ int main() {
   settings.resources = {.file_parallelism = 1, .encoder_threads_per_file = 2, .global_thread_budget = 2,
       .memory_limit_bytes = 0}; // Unlimited is not a zero-byte allowance.
   awj::jpeg_hdr_detail::EngineThreadLimit test_threads(1);
+  if (const auto result = check_existing_sdr_pair(settings)) return result;
   for (const float peak : {0.0F, 80.0F, 100.0F, 203.0F, 215.0F, 1000.0F, 10000.0F}) {
     if (const auto result = check_image(fixture(peak), settings)) return result;
   }
@@ -186,7 +275,8 @@ int main() {
   if (!gray_encoded || gray_encoded->diagnostics.applied_chroma != "444") return fail("HDR gray auto was not frozen to base 444 before RGBA relabeling.");
   auto source_422 = fixture(215); source_422.source_info->pixel_format = awj::PixelFormat::yuv422;
   auto encoded_422 = awj::encode_hdr_jpeg(source_422, settings);
-  if (!encoded_422 || encoded_422->diagnostics.applied_chroma != "422") return fail("HDR base auto lost source 422.");
+  if (!encoded_422 || encoded_422->diagnostics.applied_chroma != "444" || !encoded_422->diagnostics.rendition.tone_mapped)
+    return fail("Generated SDR JPEG base did not use its RGB/444 rendition instead of HDR-source 422.");
 
   auto over = awj::encode_hdr_jpeg(fixture(10001), settings);
   if (over || over.error().find("10000") == std::string::npos) return fail("Out-of-engine-range HDR JPEG did not explicitly reject 10000-nit overflow.");

@@ -654,6 +654,21 @@ execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libavif_SOURCE_DIR}
 if(NOT AWJ_AVIF_ANIMATION_PATCH_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to apply libavif animation memory accounting patch")
 endif()
+execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libavif_SOURCE_DIR}
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_primary_item.cmake"
+    RESULT_VARIABLE AWJ_AVIF_PRIMARY_PATCH_RESULT)
+if(NOT AWJ_AVIF_PRIMARY_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply pinned libavif independent-primary adapter")
+endif()
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_gain_map_threads.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/codecs/avif_gain_map_thread_adapter.h")
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${libavif_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_gain_map_threads.cmake"
+    RESULT_VARIABLE AWJ_AVIF_GAIN_THREADS_PATCH_RESULT)
+if(NOT AWJ_AVIF_GAIN_THREADS_PATCH_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to apply pinned libavif gain-map CPU/cancellation adapter")
+endif()
 
 # ISO 21496-1 JPEG, using the pinned libultrahdr numerical/container engine.
 # Write switches alone do not disable the upstream decoder's XMP fallback.
@@ -752,6 +767,34 @@ set(SLINT_FEATURE_ACCESSIBILITY ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_VELLO OFF CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_SOFTWARE ON CACHE BOOL "" FORCE)
 set(SLINT_FEATURE_RENDERER_FEMTOVG ON CACHE BOOL "" FORCE)
+string(JSON AWJ_WINIT_URL GET "${AWJ_CODEC_DEPENDENCIES}" winit url)
+string(JSON AWJ_WINIT_SHA256 GET "${AWJ_CODEC_DEPENDENCIES}" winit sha256)
+set(AWJ_WINIT_ARCHIVE "" CACHE FILEPATH "已校验的官方 winit 归档，可离线复用")
+set(AWJ_WINIT_DOWNLOAD_DIR "${FETCHCONTENT_BASE_DIR}/awj-winit-download")
+set(AWJ_WINIT_TEST_ARCHIVE "${AWJ_WINIT_DOWNLOAD_DIR}/winit-0.30.13.tar.gz")
+if(AWJ_WINIT_ARCHIVE)
+    file(SHA256 "${AWJ_WINIT_ARCHIVE}" AWJ_WINIT_ARCHIVE_SHA256)
+    if(NOT AWJ_WINIT_ARCHIVE_SHA256 STREQUAL AWJ_WINIT_SHA256)
+        message(FATAL_ERROR "winit source archive differs from the version lock")
+    endif()
+    set(AWJ_WINIT_URL "${AWJ_WINIT_ARCHIVE}")
+    set(AWJ_WINIT_TEST_ARCHIVE "${AWJ_WINIT_ARCHIVE}")
+endif()
+FetchContent_Declare(awj_winit_sources
+    URL "${AWJ_WINIT_URL}"
+    DOWNLOAD_DIR "${AWJ_WINIT_DOWNLOAD_DIR}"
+    URL_HASH "SHA256=${AWJ_WINIT_SHA256}"
+    DOWNLOAD_NAME winit-0.30.13.tar.gz
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE
+    SOURCE_SUBDIR awj-source-only)
+FetchContent_MakeAvailable(awj_winit_sources)
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${awj_winit_sources_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_winit_dpi.cmake"
+    COMMAND_ERROR_IS_FATAL ANY)
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${awj_winit_sources_SOURCE_DIR}"
+    "-DEXPECTED_ARCHIVE_SHA256=${AWJ_WINIT_SHA256}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/verify_winit_source.cmake"
+    COMMAND_ERROR_IS_FATAL ANY)
 FetchContent_Declare(Slint
     GIT_REPOSITORY ${AWJ_SLINT_GIT_REPOSITORY}
     GIT_TAG ${AWJ_SLINT_GIT_TAG}
@@ -759,16 +802,19 @@ FetchContent_Declare(Slint
     SOURCE_SUBDIR api/cpp
     PATCH_COMMAND ${CMAKE_COMMAND}
         "-DSOURCE_DIR=<SOURCE_DIR>"
+        "-DAWJ_WINIT_SOURCE_DIR=${awj_winit_sources_SOURCE_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake")
 # FetchContent source overrides bypass PATCH_COMMAND; apply the same contract.
 if(FETCHCONTENT_SOURCE_DIR_SLINT)
     execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${FETCHCONTENT_SOURCE_DIR_SLINT}"
+        "-DAWJ_WINIT_SOURCE_DIR=${awj_winit_sources_SOURCE_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake"
         COMMAND_ERROR_IS_FATAL ANY)
 endif()
 FetchContent_MakeAvailable(Slint)
 # 已缓存的 FetchContent 源码不会因脚本内容变化而重跑 PATCH_COMMAND。
 execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${slint_SOURCE_DIR}"
+    "-DAWJ_WINIT_SOURCE_DIR=${awj_winit_sources_SOURCE_DIR}"
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_slint_static_import.cmake"
     COMMAND_ERROR_IS_FATAL ANY)
 if(AVIF_STATIC_SLINT)
@@ -927,6 +973,51 @@ target_sources(awj_native_visual_search
         FILE_SET awj_native_visual_search_modules TYPE CXX_MODULES FILES
             src/core/native_visual_search.ixx)
 
+# gain_map/compressed_icc 是同一固定 libjxl 版本的官方 extras API，vcpkg 的
+# tools=OFF 不安装其实现。仅编译这两个原始 utility TU，不重建或替换核心 codec。
+string(JSON AWJ_JXL_SUPPORT_SHA256 GET "${AWJ_CODEC_DEPENDENCIES}" libjxl sha256)
+set(AWJ_JXL_GAIN_MAP_ARCHIVE "" CACHE FILEPATH "Fixed libjxl source archive already downloaded by vcpkg")
+if(NOT AWJ_JXL_GAIN_MAP_ARCHIVE)
+    foreach(AWJ_JXL_DOWNLOAD_DIR IN ITEMS "${VCPKG_DOWNLOADS}" "$ENV{VCPKG_DOWNLOADS}" "${VCPKG_ROOT}/downloads")
+        if(EXISTS "${AWJ_JXL_DOWNLOAD_DIR}/libjxl-libjxl-v0.12.0.tar.gz")
+            set(AWJ_JXL_GAIN_MAP_ARCHIVE "${AWJ_JXL_DOWNLOAD_DIR}/libjxl-libjxl-v0.12.0.tar.gz" CACHE FILEPATH "Fixed libjxl source archive already downloaded by vcpkg" FORCE)
+            break()
+        endif()
+    endforeach()
+endif()
+if(AWJ_JXL_GAIN_MAP_ARCHIVE)
+    if(NOT EXISTS "${AWJ_JXL_GAIN_MAP_ARCHIVE}")
+        message(FATAL_ERROR "Explicit AWJ_JXL_GAIN_MAP_ARCHIVE does not exist")
+    endif()
+    file(SHA256 "${AWJ_JXL_GAIN_MAP_ARCHIVE}" AWJ_JXL_ARCHIVE_ACTUAL)
+    if(NOT AWJ_JXL_ARCHIVE_ACTUAL STREQUAL AWJ_JXL_SUPPORT_SHA256)
+        message(FATAL_ERROR "Local libjxl archive differs from the codec version lock")
+    endif()
+    set(AWJ_JXL_SUPPORT_URL "${AWJ_JXL_GAIN_MAP_ARCHIVE}")
+else()
+    # 全新构建仍可从既有版本锁取归档；本次受限环境显式使用已核对的本地缓存。
+    string(JSON AWJ_JXL_SUPPORT_URL GET "${AWJ_CODEC_DEPENDENCIES}" libjxl url)
+endif()
+FetchContent_Declare(awj_jxl_gainmap_sources
+    URL "${AWJ_JXL_SUPPORT_URL}"
+    URL_HASH "SHA256=${AWJ_JXL_SUPPORT_SHA256}"
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    SOURCE_SUBDIR awj-source-only-no-cmake-entrypoint)
+FetchContent_MakeAvailable(awj_jxl_gainmap_sources)
+foreach(AWJ_JXL_UTILITY IN ITEMS lib/extras/gain_map.cc lib/extras/compressed_icc.cc)
+    string(JSON AWJ_JXL_UTILITY_EXPECTED GET "${AWJ_CODEC_DEPENDENCIES}" libjxl gain_map_utility_sha256 "${AWJ_JXL_UTILITY}")
+    file(SHA256 "${awj_jxl_gainmap_sources_SOURCE_DIR}/${AWJ_JXL_UTILITY}" AWJ_JXL_UTILITY_ACTUAL)
+    if(NOT AWJ_JXL_UTILITY_ACTUAL STREQUAL AWJ_JXL_UTILITY_EXPECTED)
+        message(FATAL_ERROR "libjxl utility ${AWJ_JXL_UTILITY} differs from pinned source")
+    endif()
+endforeach()
+add_library(awj_jxl_gainmap_support STATIC
+    "${awj_jxl_gainmap_sources_SOURCE_DIR}/lib/extras/gain_map.cc"
+    "${awj_jxl_gainmap_sources_SOURCE_DIR}/lib/extras/compressed_icc.cc")
+avif_enable_common_options(awj_jxl_gainmap_support)
+target_include_directories(awj_jxl_gainmap_support PRIVATE "${awj_jxl_gainmap_sources_SOURCE_DIR}")
+target_link_libraries(awj_jxl_gainmap_support PUBLIC JXL::jxl)
+
 add_library(awj_native_codecs STATIC)
 avif_enable_common_options(awj_native_codecs)
 target_link_libraries(awj_native_codecs PUBLIC
@@ -936,6 +1027,7 @@ target_link_libraries(awj_native_codecs PUBLIC
     WebP::webpdemux
     WebP::libwebpmux
     JXL::jxl
+    awj_jxl_gainmap_support
     PNG::PNG
     JPEG::JPEG
     GIF::GIF
@@ -1161,6 +1253,55 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_avif_aom_codec_tests)
     target_link_libraries(awj_avif_aom_codec_tests PRIVATE awj_avif_base_codec)
 
+    add_executable(awj_avif_hybrid_tests tests/avif_hybrid_tests.cpp)
+    avif_enable_common_options(awj_avif_hybrid_tests)
+    target_link_libraries(awj_avif_hybrid_tests PRIVATE awj_avif_base_codec)
+
+    add_executable(awj_avif_gain_map_tests tests/avif_gain_map_tests.cpp)
+    avif_enable_common_options(awj_avif_gain_map_tests)
+    target_link_libraries(awj_avif_gain_map_tests PRIVATE awj_avif_base_codec)
+
+    # Isolated libavif math tests: no application modules/encoders are required.
+    # A second, symbol-renamed C translation unit permits deterministic faults
+    # without exposing any failure-injection switches in the production library.
+    set(AWJ_GAIN_FAULT_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/awj_gain_map_fault_injection.c")
+    file(GENERATE OUTPUT "${AWJ_GAIN_FAULT_SOURCE}" CONTENT
+"#define AWJ_AVIF_GAIN_MAP_TESTING 1
+#define avifRGBImageApplyGainMap awjTestOfficialRGBApply
+#define avifImageApplyGainMap awjTestOfficialApply
+#define avifFindMinMaxWithoutOutliers awjTestOfficialRange
+#define avifGainMapValidateMetadata awjTestOfficialValidate
+#define avifSameGainMapMetadata awjTestOfficialSameMetadata
+#define avifSameGainMapAltMetadata awjTestOfficialSameAltMetadata
+#define avifRGBImageComputeGainMap awjTestOfficialRGBCompute
+#define avifImageComputeGainMap awjTestOfficialCompute
+#define awjAvifRGBImageApplyGainMap awjTestRGBApply
+#define awjAvifRGBImageComputeGainMap awjTestRGBCompute
+#include \"${libavif_SOURCE_DIR}/src/gainmap.c\"
+")
+    # 根测试目标必须加载 C 编译器配置，不能仅依赖子目录启用的 C。
+    enable_language(C)
+    if(AVIF_RELEASE_IPO_SUPPORTED)
+        check_ipo_supported(RESULT AWJ_GAIN_MAP_C_IPO_SUPPORTED
+            OUTPUT AWJ_GAIN_MAP_C_IPO_ERROR LANGUAGES C)
+        if(NOT AWJ_GAIN_MAP_C_IPO_SUPPORTED)
+            message(FATAL_ERROR "Gain Map C test IPO is unavailable: ${AWJ_GAIN_MAP_C_IPO_ERROR}")
+        endif()
+    endif()
+    add_executable(awj_gain_map_parallel_tests tests/gain_map_parallel_tests.cpp "${AWJ_GAIN_FAULT_SOURCE}")
+    avif_enable_common_options(awj_gain_map_parallel_tests)
+    set_target_properties(awj_gain_map_parallel_tests PROPERTIES C_STANDARD 11 C_STANDARD_REQUIRED ON)
+    target_link_libraries(awj_gain_map_parallel_tests PRIVATE avif)
+    if(WIN32)
+        target_link_libraries(awj_gain_map_parallel_tests PRIVATE psapi)
+    endif()
+    add_test(NAME gain_map_parallel_core COMMAND awj_gain_map_parallel_tests)
+    add_test(NAME avif_gain_map_threads_patch_contract COMMAND "${CMAKE_COMMAND}"
+        "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/gain-map-threads-patch-contract"
+        "-DLIBAVIF_SOURCE_DIR=${libavif_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/avif_gain_map_threads_patch_tests.cmake")
+    set_tests_properties(gain_map_parallel_core avif_gain_map_threads_patch_contract PROPERTIES TIMEOUT 180)
+
     add_executable(awj_iso_gain_map_tests tests/iso_gain_map_tests.cpp)
     avif_enable_common_options(awj_iso_gain_map_tests)
     target_link_libraries(awj_iso_gain_map_tests PRIVATE awj_native_codecs)
@@ -1261,6 +1402,9 @@ if(BUILD_TESTING)
         awj_webp_codec_tests
         awj_png_codec_tests
         awj_avif_aom_codec_tests
+        awj_avif_gain_map_tests
+        awj_gain_map_parallel_tests
+        awj_avif_hybrid_tests
         awj_iso_gain_map_tests
         awj_avif_registry_tests
         awj_jxl_codec_tests
@@ -1311,14 +1455,24 @@ if(BUILD_TESTING)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
     add_test(NAME png_codec_core COMMAND awj_png_codec_tests)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
+    add_test(NAME avif_gain_map_core COMMAND awj_avif_gain_map_tests)
+    set_tests_properties(avif_gain_map_core PROPERTIES TIMEOUT 120)
+    add_test(NAME avif_hybrid_core COMMAND awj_avif_hybrid_tests "${CMAKE_CURRENT_BINARY_DIR}/hybrid-results")
+    set_tests_properties(avif_hybrid_core PROPERTIES TIMEOUT 120)
     add_test(NAME iso_gain_map_core COMMAND awj_iso_gain_map_tests)
+    add_test(NAME heif_grid_12_4 COMMAND awj_iso_gain_map_tests --grid-12-4-only)
     add_test(NAME ultrahdr_iso_patch_contract COMMAND "${CMAKE_COMMAND}"
         "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/ultrahdr-iso-patch-test"
         "-DPATCH_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_iso_only.cmake"
         "-DTHREAD_PATCH_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_threads.cmake"
         "-DLIBULTRAHDR_SOURCE_DIR=${libultrahdr_SOURCE_DIR}"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/ultrahdr_iso_patch_tests.cmake")
-    set_tests_properties(iso_gain_map_core ultrahdr_iso_patch_contract PROPERTIES TIMEOUT 120)
+    add_test(NAME avif_primary_item_patch_contract COMMAND "${CMAKE_COMMAND}"
+        "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/avif-primary-item-patch-test"
+        "-DPATCH_SCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_primary_item.cmake"
+        "-DLIBAVIF_SOURCE_DIR=${libavif_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/avif_primary_item_patch_tests.cmake")
+    set_tests_properties(iso_gain_map_core ultrahdr_iso_patch_contract avif_primary_item_patch_contract PROPERTIES TIMEOUT 120)
     add_test(NAME avif_registry_core COMMAND awj_avif_registry_tests)
     add_test(NAME jxl_codec_core COMMAND awj_jxl_codec_tests)
     add_test(NAME bmp_codec_core COMMAND awj_bmp_codec_tests)
@@ -1682,8 +1836,15 @@ if(BUILD_TESTING)
     awj_set_runtime_directory(awj_ui_smoke_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     add_test(NAME slint_patch_contract COMMAND "${CMAKE_COMMAND}"
         "-DSLINT_SOURCE_DIR=${slint_SOURCE_DIR}"
+        "-DAWJ_WINIT_SOURCE_DIR=${awj_winit_sources_SOURCE_DIR}"
         "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/slint-patch-test"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/slint_patch_tests.cmake")
+    add_test(NAME winit_dpi_patch_contract COMMAND "${CMAKE_COMMAND}"
+        "-DWINIT_SOURCE_ARCHIVE=${AWJ_WINIT_TEST_ARCHIVE}"
+        "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/winit-dpi-patch-test"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/winit_dpi_patch_tests.cmake")
+    add_test(NAME ui_memory_budget_unlock COMMAND awj_ui_smoke_tests --memory-budget-unlock)
+    set_tests_properties(ui_memory_budget_unlock PROPERTIES TIMEOUT 120)
     add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
     add_test(NAME ui_queue_stress COMMAND awj_ui_smoke_tests --queue-stress)
     set_tests_properties(ui_queue_stress PROPERTIES TIMEOUT 120)

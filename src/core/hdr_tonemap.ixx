@@ -243,6 +243,13 @@ std::expected<SourceTransform, std::string> make_source_transform(const ImageBuf
   } else if (*kind == SignalKind::hlg) {
     result.color_space.hdr.max_luma = PL_COLOR_HLG_PEAK;
   }
+  if (*kind == SignalKind::hlg) {
+    float peak{};
+    const pl_nominal_luma_params params{.color = &result.color_space, .metadata = PL_HDR_METADATA_HDR10,
+        .scaling = PL_HDR_NITS, .out_max = &peak};
+    pl_color_space_nominal_luma_ex(&params);
+    result.color_space.hdr.max_luma = peak;
+  }
   return result;
 }
 
@@ -286,7 +293,10 @@ std::expected<std::array<float, 3>, std::string> linear_nits(
   } else {
     pl_color_linearize(&transform.color_space, rgb.data());
     if (!finite_rgb(rgb)) return std::unexpected{"libplacebo HDR 线性化产生了非有限值。"};
-    for (auto& value : rgb) value = pl_hdr_rescale(PL_HDR_NORM, PL_HDR_NITS, value);
+    // 锁定版本的 HLG 线性化返回相对于显示峰值的值，PQ 才是 203-nit 归一标尺。
+    for (auto& value : rgb) value = transform.kind == SignalKind::hlg
+        ? value * transform.color_space.hdr.max_luma
+        : pl_hdr_rescale(PL_HDR_NORM, PL_HDR_NITS, value);
   }
   if (!finite_rgb(rgb)) return std::unexpected{"HDR 参考白亮度缩放产生了非有限值。"};
   return rgb;
@@ -835,7 +845,8 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
   ImageSourceInfo source_info{.pixel_format = PixelFormat::rgba, .bit_depth = output_depth,
       .color_primaries = 1, .transfer_characteristics = 13, .matrix_coefficients = 0,
       .color_range = 1, .has_hdr_metadata = false,
-      .color_metadata_source = "hdr-sdr-libplacebo-spline-perceptual"};
+      .color_metadata_source = "hdr-sdr-libplacebo-spline-perceptual",
+      .rendition_origin = RenditionOrigin::tone_mapped};
   const auto alpha_mode = image.alpha_mode == AlphaMode::premultiplied ? AlphaMode::straight : image.alpha_mode;
   auto output = make_rgba_image(image.width, image.height, std::move(*pixels), alpha_mode,
       output_depth, SampleRepresentation::unorm, std::move(source_info), "HDR -> SDR");

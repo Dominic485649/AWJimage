@@ -38,6 +38,19 @@ namespace animation_detail {
 
 constexpr std::size_t max_frames = 100000;
 
+bool exceeds_budget(std::uint64_t bytes, std::uint64_t budget) noexcept {
+  return budget != 0 && bytes > budget;
+}
+
+bool fits_working_set(std::uint64_t owned, std::uint64_t buffer_bytes,
+    std::uint64_t copies, std::uint64_t budget) noexcept {
+  // Only the original limit can mean unlimited. A finite exhausted remainder
+  // stays zero available bytes; it is never passed on as a new unlimited limit.
+  if (copies && buffer_bytes > (std::numeric_limits<std::uint64_t>::max() - owned) / copies)
+    return false;
+  return budget == 0 || (owned <= budget && (!copies || buffer_bytes <= (budget - owned) / copies));
+}
+
 struct FrameSpec {
   std::size_t x{}, y{}, width{}, height{};
   unsigned dispose{}, blend{};
@@ -66,13 +79,15 @@ class Canvas {
   bool has_last{};
 
   std::expected<void, std::string> initialize(const AnimationInfo& info, int depth) {
-    auto bytes = decoder_common::checked_image_bytes(info.width * 4 * (depth == 16 ? 2 : 1), info.height, "动画画布");
+    auto stride = decoder_common::checked_rgba_stride(info.width, "动画画布", depth == 16 ? 2 : 1);
+    if (!stride) return std::unexpected{stride.error()};
+    auto bytes = decoder_common::checked_image_bytes(*stride, info.height, "动画画布");
     if (!bytes) return std::unexpected{bytes.error()};
     auto pixels = decoder_common::make_byte_buffer(*bytes, "动画画布");
     if (!pixels) return std::unexpected{pixels.error()};
     image = ImageBuffer{.width = info.width, .height = info.height,
         .pixel_format = PixelFormat::rgba, .alpha_mode = AlphaMode::straight, .bit_depth = depth};
-    image.planes.push_back({std::move(*pixels), info.width * 4 * (depth == 16 ? 2 : 1)});
+    image.planes.push_back({std::move(*pixels), *stride});
     fill(FrameSpec{.width = info.width, .height = info.height}, background);
     return {};
   }
@@ -267,7 +282,7 @@ class GifReader final : public AnimationReader {
         specs.push_back(spec);
         if (!duration.numerator) { duration.numerator = 1; details.zero_delay_adjusted = true; }
         details.durations.push_back(duration);
-        if (bytes.capacity() + icc.capacity() + index_bytes(specs, details) > budget)
+        if (exceeds_budget(bytes.capacity() + icc.capacity() + index_bytes(specs, details), budget))
           return std::unexpected{"GIF 帧索引超出内存预算。"};
         control = {};
         duration = {0, 100};
@@ -277,9 +292,12 @@ class GifReader final : public AnimationReader {
     details.repetitions = loop.value_or(0);
     details.decoder_id = "giflib-animation";
     canvas.background = specs.front().transparent >= 0 ? std::array<std::uint16_t, 4>{} : opaque_background;
-    const auto raw_bytes = static_cast<std::uint64_t>(details.width) * details.height * 4;
+    auto stride = decoder_common::checked_rgba_stride(details.width, "GIF 动画");
+    if (!stride) return std::unexpected{stride.error()};
+    auto raw_bytes = decoder_common::checked_image_bytes(*stride, details.height, "GIF 动画");
+    if (!raw_bytes) return std::unexpected{raw_bytes.error()};
     const auto owned = bytes.capacity() + icc.capacity() + index_bytes(specs, details);
-    if (owned > budget || raw_bytes > (budget - owned) / 3)
+    if (!fits_working_set(owned, *raw_bytes, 3, budget))
       return std::unexpected{"GIF 画布/局部帧/PREVIOUS 超出内存预算。"};
     auto initialized = canvas.initialize(details, 8);
     if (!initialized) return initialized;
@@ -350,102 +368,57 @@ class ApngReader final : public AnimationReader {
   }
 
   std::expected<void, std::string> open(std::stop_token stop) {
-    if (bytes.size() < 33 || std::memcmp(bytes.data(), "\x89PNG\r\n\x1a\n", 8)) return std::unexpected{"APNG 签名无效。"};
-    std::uint32_t count = 0;
-    std::uint64_t sequence = 0;
-    bool actl = false, idat = false, idat_closed = false, ended = false, first_uses_idat = false;
-    std::size_t chunks{};
-    std::optional<std::size_t> current;
+    png_detail::PngAnimationLayout layout;
     auto append_data = [&](std::span<const std::byte> data) {
-      auto& parts = specs[*current].data;
+      auto& parts = specs.back().data;
       const auto old_capacity = parts.capacity();
       parts.push_back(data);
       span_bytes += (parts.capacity() - old_capacity) * sizeof(std::span<const std::byte>);
     };
-    for (std::size_t pos = 8; pos < bytes.size();) {
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-      if (++chunks > 1000000) return std::unexpected{"APNG chunk 数量超过上限。"};
-      if (bytes.size() - pos < 12) return std::unexpected{"APNG chunk 截断。"};
-      const auto size = png_detail::read_be_u32(bytes, pos);
-      if (size > bytes.size() - pos - 12) return std::unexpected{"APNG chunk 越界。"};
-      const std::string_view type{reinterpret_cast<const char*>(bytes.data() + pos + 4), 4};
-      const auto payload = std::span<const std::byte>{bytes}.subspan(pos + 8, size);
-      if (idat && type != "IDAT") idat_closed = true;
-      if (png_detail::png_chunk_crc(type, payload) != png_detail::read_be_u32(bytes, pos + 8 + size))
-        return std::unexpected{"APNG chunk CRC 错误。"};
+    auto scanned = png_detail::visit_png_chunks(bytes, "APNG",
+        [&](std::string_view type, std::span<const std::byte> prefix,
+            std::uint32_t size, std::uint64_t payload_offset) -> std::expected<void, std::string> {
+      if (auto accepted = layout.accept(type, prefix, size, payload_offset); !accepted) return accepted;
+      const auto offset = static_cast<std::size_t>(payload_offset);
+      const auto payload = std::span<const std::byte>{bytes}.subspan(offset, size);
       if (type == "IHDR") {
-        if (pos != 8 || size != 13) return std::unexpected{"APNG IHDR 无效。"};
         std::copy(payload.begin(), payload.end(), ihdr.begin());
-        details.width = png_detail::read_be_u32(payload, 0);
-        details.height = png_detail::read_be_u32(payload, 4);
-        auto dimensions = decoder_common::make_image_dimensions_checked(details.width, details.height, "APNG");
-        if (!dimensions) return std::unexpected{dimensions.error()};
+        details.width = layout.width; details.height = layout.height;
       } else if (type == "acTL") {
-        if (actl || idat || size != 8) return std::unexpected{"APNG acTL 位置或长度无效。"};
-        actl = true;
-        count = png_detail::read_be_u32(payload, 0);
-        const auto plays = png_detail::read_be_u32(payload, 4);
-        if (!count || count > max_frames || plays > static_cast<unsigned>(std::numeric_limits<int>::max()))
-          return std::unexpected{"APNG 帧数/loop 超出上限。"};
-        details.repetitions = plays ? static_cast<int>(plays) - 1 : -1;
+        details.repetitions = layout.plays ? static_cast<int>(layout.plays) - 1 : -1;
       } else if (type == "fcTL") {
-        if (!actl || size != 26 || png_detail::read_be_u32(payload, 0) != sequence++)
-          return std::unexpected{"APNG fcTL 顺序或长度无效。"};
-        if (current && specs[*current].data.empty()) return std::unexpected{"APNG 帧缺少数据。"};
-        if (specs.size() == count) return std::unexpected{"APNG 帧数超过 acTL 声明。"};
         FrameSpec spec{.x = png_detail::read_be_u32(payload, 12), .y = png_detail::read_be_u32(payload, 16),
             .width = png_detail::read_be_u32(payload, 4), .height = png_detail::read_be_u32(payload, 8),
             .dispose = std::to_integer<unsigned>(payload[24]), .blend = std::to_integer<unsigned>(payload[25])};
-        if (!valid_rect(spec, details) || spec.dispose > 2 || spec.blend > 1)
-          return std::unexpected{"APNG frame rect/blend/dispose 无效。"};
-        if (specs.empty() && !idat) {
-          first_uses_idat = true;
-          if (spec.x || spec.y || spec.width != details.width || spec.height != details.height)
-            return std::unexpected{"APNG IDAT 首帧必须与默认 PNG 画布一致。"};
-        }
         // PREVIOUS on the first frame is defined as BACKGROUND.
         if (specs.empty() && spec.dispose == 2) spec.dispose = 1;
-        auto u16 = [&](std::size_t offset) { return (std::to_integer<unsigned>(payload[offset]) << 8) | std::to_integer<unsigned>(payload[offset + 1]); };
+        auto u16 = [&](std::size_t pos) { return (std::to_integer<unsigned>(payload[pos]) << 8) | std::to_integer<unsigned>(payload[pos + 1]); };
         FrameDuration duration{u16(20), u16(22)};
         if (!duration.denominator) duration.denominator = 100;
         if (!duration.numerator) { duration = {1, 1000}; details.zero_delay_adjusted = true; }
         details.durations.push_back(duration);
         specs.push_back(std::move(spec));
-        current = specs.size() - 1;
       } else if (type == "IDAT") {
-        if (idat_closed) return std::unexpected{"APNG IDAT 必须连续。"};
-        if (current && (!first_uses_idat || *current != 0)) return std::unexpected{"APNG IDAT 出现在非默认帧。"};
-        idat = true;
-        if (current) append_data(payload);
+        if (layout.first_uses_idat) append_data(payload);
       } else if (type == "fdAT") {
-        if (!idat || !current || size < 4 || (first_uses_idat && *current == 0) ||
-            png_detail::read_be_u32(payload, 0) != sequence++) return std::unexpected{"APNG fdAT 顺序无效。"};
         append_data(payload.subspan(4));
-      } else if (type == "IEND") {
-        if (size || !idat || pos + 12 != bytes.size()) return std::unexpected{"APNG IEND 无效。"};
-        ended = true;
-        break;
-      } else {
-        // Preserve global decoding/color chunks; animation controls are excluded.
-        if (type == "PLTE" || type == "tRNS" || type == "iCCP" || type == "sRGB" ||
-            type == "gAMA" || type == "cHRM" || type == "cICP" || type == "cLLI" || type == "sBIT" || type == "eXIf")
-        {
-          if (idat && type != "eXIf") return std::unexpected{"APNG 色彩/解码 chunk 必须位于 IDAT 前。"};
-          if (inherited.size() + size + 12 > encoding_defaults::codec_metadata_max_bytes + 1024)
-            return std::unexpected{"APNG 全局 metadata 过大。"};
-          inherited.insert(inherited.end(), bytes.begin() + pos, bytes.begin() + pos + size + 12);
-        }
-        else if ((type[0] & 32) == 0) return std::unexpected{"APNG 使用未知关键 chunk。"};
+      } else if (png_detail::is_global_decoding_chunk(type)) {
+        if (inherited.size() + size + 12ull > encoding_defaults::codec_metadata_max_bytes + 1024ull)
+          return std::unexpected{"APNG 全局 metadata 过大。"};
+        inherited.insert(inherited.end(), bytes.begin() + offset - 8, bytes.begin() + offset + size + 4);
       }
-      if (memory_usage_bytes() > budget) return std::unexpected{"APNG 帧索引超出内存预算。"};
-      pos += size + 12;
-    }
-    if (!actl || !ended || specs.size() != count || specs.empty() || specs.back().data.empty())
-      return std::unexpected{"APNG 帧数据/计数不完整。"};
-    const auto raw_bytes = static_cast<std::uint64_t>(details.width) * details.height * (ihdr[8] == std::byte{16} ? 8 : 4);
+      if (exceeds_budget(memory_usage_bytes(), budget)) return std::unexpected{"APNG 帧索引超出内存预算。"};
+      return {};
+    }, stop);
+    if (!scanned) return std::unexpected{scanned.error()};
+    if (!layout.uses_animation_reader())
+      return std::unexpected{"PNG 含独立默认静态图像或不含动画，应使用 PNG 静态 decoder。"};
+    auto stride = decoder_common::checked_rgba_stride(details.width, "APNG", ihdr[8] == std::byte{16} ? 2 : 1);
+    if (!stride) return std::unexpected{stride.error()};
+    auto raw_bytes = decoder_common::checked_image_bytes(*stride, details.height, "APNG");
+    if (!raw_bytes) return std::unexpected{raw_bytes.error()};
     // A synthesized frame duplicates compressed payloads while libpng decodes it.
-    const auto owned = memory_usage_bytes();
-    if (owned > budget || raw_bytes > (budget - owned) / 4)
+    if (!fits_working_set(memory_usage_bytes(), *raw_bytes, 4, budget))
       return std::unexpected{"APNG 画布/局部帧/PREVIOUS 超出内存预算。"};
     details.decoder_id = "libpng-apng";
     return {};
@@ -455,10 +428,17 @@ class ApngReader final : public AnimationReader {
     if (index == specs.size()) return false;
     if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
     const auto& spec = specs[index];
+    std::uint64_t encoded_size = 45 + inherited.size();
+    const auto limit = encoding_defaults::effective_max_input_file_bytes();
+    for (auto data : spec.data) {
+      if (encoded_size > limit - 12 || data.size() > limit - encoded_size - 12)
+        return std::unexpected{"APNG 合成帧 buffer 超过当前运行时上限。"};
+      encoded_size += data.size() + 12;
+    }
+    if (encoded_size > std::numeric_limits<std::size_t>::max())
+      return std::unexpected{"APNG 合成帧 buffer 尺寸溢出。"};
     std::vector<std::byte> frame_png(bytes.begin(), bytes.begin() + 8);
-    std::size_t encoded_size = 45 + inherited.size();
-    for (auto data : spec.data) encoded_size += data.size() + 12;
-    frame_png.reserve(encoded_size);
+    frame_png.reserve(static_cast<std::size_t>(encoded_size));
     auto header = ihdr;
     for (std::size_t i = 0; i < 4; ++i) {
       header[i] = std::byte{static_cast<unsigned char>((spec.width >> (24 - i * 8)) & 255)};
@@ -500,27 +480,40 @@ struct WebpReader final : AnimationReader {
   const AnimationInfo& info() const noexcept override { return description; }
   const ImageBuffer& frame() const noexcept override { return current; }
   std::uint64_t memory_usage_bytes() const noexcept override {
-    return bytes.size() + static_cast<std::uint64_t>(description.width) * description.height * 20;
+    std::uint64_t size = bytes.capacity() + static_cast<std::uint64_t>(description.width) * description.height * 20 +
+        description.durations.capacity() * sizeof(FrameDuration);
+    for (const auto& block : current.metadata) size += block.bytes.capacity();
+    return size;
   }
-  std::expected<void, std::string> open() {
+  std::expected<void, std::string> open(std::stop_token stop = {}) {
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    WebPBitstreamFeatures features{};
+    if (WebPGetFeatures(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), &features) != VP8_STATUS_OK ||
+        !features.has_animation || features.width <= 0 || features.height <= 0)
+      return std::unexpected{"WebP 动画尺寸/容器无效。"};
+    auto stride = decoder_common::checked_rgba_stride(static_cast<std::size_t>(features.width), "WebP 动画");
+    if (!stride) return std::unexpected{stride.error()};
+    auto raw_bytes = decoder_common::checked_image_bytes(*stride, static_cast<std::size_t>(features.height), "WebP 动画");
+    if (!raw_bytes) return std::unexpected{raw_bytes.error()};
+    if (!fits_working_set(bytes.capacity(), *raw_bytes, 16, budget))
+      return std::unexpected{"WebP 动画工作区超出内存预算。"};
     WebPAnimDecoderOptions options{};
     if (!WebPAnimDecoderOptionsInit(&options)) return std::unexpected{"初始化 WebP 动画失败。"};
     options.color_mode = MODE_RGBA; options.use_threads = 0;
     const WebPData data{reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()};
     decoder.reset(WebPAnimDecoderNew(&data, &options));
     WebPAnimInfo info{};
-    if (!decoder || !WebPAnimDecoderGetInfo(decoder.get(), &info) || !info.frame_count || info.frame_count > max_frames)
+    if (!decoder || !WebPAnimDecoderGetInfo(decoder.get(), &info) || !info.frame_count || info.frame_count > max_frames ||
+        info.canvas_width != static_cast<unsigned>(features.width) || info.canvas_height != static_cast<unsigned>(features.height))
       return std::unexpected{"WebP 动画容器无效。"};
     description.width = info.canvas_width; description.height = info.canvas_height;
-    if (bytes.size() > budget || !info.canvas_width || !info.canvas_height ||
-        info.canvas_width > (budget - bytes.size()) / 64 / info.canvas_height)
-      return std::unexpected{"WebP 动画工作区超出内存预算。"};
     description.decoder_id = "libwebp-animation";
     description.repetitions = info.loop_count ? static_cast<int>(info.loop_count) - 1 : -1;
     const auto* demux = WebPAnimDecoderGetDemuxer(decoder.get());
     WebPIterator iterator{};
     if (!WebPDemuxGetFrame(demux, 1, &iterator)) return std::unexpected{"WebP 动画缺少帧。"};
     do {
+      if (stop.stop_requested()) { WebPDemuxReleaseIterator(&iterator); return std::unexpected{"任务已取消。"}; }
       if (iterator.duration < 0) { WebPDemuxReleaseIterator(&iterator); return std::unexpected{"WebP 动画时长无效。"}; }
       description.durations.push_back({static_cast<std::uint32_t>(std::max(iterator.duration, 1)), 1000});
       if (!iterator.duration) description.zero_delay_adjusted = true;
@@ -531,9 +524,14 @@ struct WebpReader final : AnimationReader {
     current.pixel_format = PixelFormat::rgba; current.alpha_mode = AlphaMode::straight;
     current.source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba, .bit_depth = 8};
     if (auto metadata = webp_detail::copy_metadata(current, bytes); !metadata) return metadata;
-    auto pixels = decoder_common::make_byte_buffer(info.canvas_width * std::size_t{4} * info.canvas_height, "WebP 动画");
+    auto owned = bytes.capacity() + description.durations.capacity() * sizeof(FrameDuration);
+    for (const auto& block : current.metadata) owned += block.bytes.capacity();
+    if (!fits_working_set(owned, *raw_bytes, 16, budget))
+      return std::unexpected{"WebP 动画 metadata/工作区超出内存预算。"};
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    auto pixels = decoder_common::make_byte_buffer(*raw_bytes, "WebP 动画");
     if (!pixels) return std::unexpected{pixels.error()};
-    current.planes.push_back({std::move(*pixels), info.canvas_width * std::size_t{4}});
+    current.planes.push_back({std::move(*pixels), *stride});
     return {};
   }
   std::expected<bool, std::string> next(std::stop_token stop) override {
@@ -550,11 +548,13 @@ struct WebpReader final : AnimationReader {
 };
 } // namespace animation_detail
 
-std::expected<bool, std::string> input_uses_animation_reader(const fs::path& path) {
+std::expected<bool, std::string> input_uses_animation_reader(
+    const fs::path& path, std::stop_token stop = {}) {
+  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
   const auto extension = decoder_common::lower_extension(path);
   if (extension == L".gif") return true;
   if (extension == L".png" || extension == L".apng")
-    return png_detail::file_contains_animation_control_chunk(path);
+    return png_detail::file_contains_animation_control_chunk(path, stop);
   if (extension == L".avif" || extension == L".avifs") return avif_has_sequence(path);
   if (extension == L".webp") {
     std::ifstream file(path, std::ios::binary);
@@ -568,10 +568,11 @@ std::expected<bool, std::string> input_uses_animation_reader(const fs::path& pat
   return false;
 }
 
+// budget == 0 disables only working-set admission, not input/buffer safety limits.
 std::expected<std::unique_ptr<AnimationReader>, std::string> open_animation(
     const fs::path& path, std::uint64_t budget, std::stop_token stop = {}) {
   if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-  auto animated = input_uses_animation_reader(path);
+  auto animated = input_uses_animation_reader(path, stop);
   if (!animated) return std::unexpected{animated.error()};
   if (!*animated) return std::unique_ptr<AnimationReader>{};
   const auto extension = decoder_common::lower_extension(path);
@@ -580,14 +581,17 @@ std::expected<std::unique_ptr<AnimationReader>, std::string> open_animation(
   std::error_code size_error;
   const auto file_size = fs::file_size(path, size_error);
   if (size_error) return std::unexpected{"无法读取动画输入大小。"};
-  if (file_size > budget) return std::unexpected{"动画压缩输入超出内存预算。"};
+  if (file_size > encoding_defaults::effective_max_input_file_bytes())
+    return std::unexpected{"动画压缩输入超过当前运行时上限。"};
+  if (animation_detail::exceeds_budget(file_size, budget)) return std::unexpected{"动画压缩输入超出内存预算。"};
   auto bytes = decoder_common::read_file_bytes(path, "动画");
   if (!bytes) return std::unexpected{bytes.error()};
-  if (bytes->size() > budget) return std::unexpected{"动画压缩输入超出内存预算。"};
+  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (animation_detail::exceeds_budget(bytes->capacity(), budget)) return std::unexpected{"动画压缩输入超出内存预算。"};
   if (extension == L".webp") {
     auto reader = std::make_unique<animation_detail::WebpReader>();
     reader->bytes = std::move(*bytes); reader->budget = budget;
-    auto opened = reader->open();
+    auto opened = reader->open(stop);
     if (!opened) return std::unexpected{opened.error()};
     return std::unique_ptr<AnimationReader>{std::move(reader)};
   }

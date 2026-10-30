@@ -48,6 +48,29 @@ constexpr std::uint64_t jpeg_source_reservation_bytes(std::uint64_t width,
   return add(std::max(source_bytes, rgba16), rgba16);
 }
 
+// Ordinary SDR JPEGli has no canonical HDR reference, gain generation or ISO
+// wrapper. Include coefficient storage, normalization and entropy/output growth
+// separately from that HDR pipeline. This remains a reservation estimate, not
+// a libjpeg allocation limit; 4:4:4 and progressive coefficient storage need
+// headroom even for an easily compressed image.
+constexpr std::uint64_t jpeg_sdr_working_set_bytes(
+    std::uint64_t width, std::uint64_t height, std::uint64_t compressed_bytes = 0,
+    std::uint64_t source_bytes = 0, bool native_yuv420 = false) noexcept {
+  if (!width || !height) return UINT64_MAX;
+  const auto n = multiply(width, height);
+  const auto padded = padded_pixels(width, height, 16);
+  const auto source = source_bytes ? source_bytes : multiply(n, 4);
+  const auto normalized = multiply(padded, native_yuv420 ? 2 : 4);
+  const auto coefficients = multiply(padded, 12);
+  const auto stream = multiply(padded, native_yuv420 ? 4 : 6);
+  const auto encode = add(add(source, normalized), add(coefficients, stream));
+  // Growing libjpeg output and a metadata rewrite can retain old/new streams;
+  // these copies need not coexist with the coefficient workspace after finish.
+  const auto output = add(add(source, normalized), multiply(stream, 3));
+  return add(add(std::max(encode, output), 8ull * 1024 * 1024),
+             multiply(compressed_bytes, 2));
+}
+
 // A reservation estimate for the maximum simultaneously-live HDR JPEG phase,
 // not an allocator/RSS hard bound. Keep the phases in step with jpeg_hdr_codec:
 // canonical/reference are freed before gain JPEG encoding; raw gain pixels are

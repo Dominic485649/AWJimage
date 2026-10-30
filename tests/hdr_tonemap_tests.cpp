@@ -152,6 +152,19 @@ struct Oracle {
     std::array<float, 3> rgb{input_sample(image, x, y, 0), input_sample(image, x, y, 1), input_sample(image, x, y, 2)};
     if (image.sample_representation == awj::SampleRepresentation::ieee_half_float) {
       for (auto& c : rgb) c *= image.source_info->linear_reference_white_nits.value_or(80.0F);
+    } else if (color.transfer == PL_COLOR_TRC_HLG) {
+      // BT.2100 OETF^-1 和显示 OOTF 的独立标尺，不能复用缺少峰值缩放的库函数。
+      const float peak = std::clamp(color.hdr.max_luma, PL_COLOR_HDR_BLACK, 10000.0F);
+      const float gamma = 1.2F * std::pow(1.111F, std::log2(peak / 1000.0F));
+      // 锁定新版的无限对比度哨兵不再作为非零信号黑点参与 HLG OETF。
+      constexpr float black = 0.0F;
+      for (auto& c : rgb) {
+        c = (1.0F - black) * c + black;
+        c = c > 0.5F ? std::exp((c - 0.55991073F) / 0.17883277F) + 0.28466892F : 4.0F * c * c;
+      }
+      const float y = xyz.m[1][0] * rgb[0] + xyz.m[1][1] * rgb[1] + xyz.m[1][2] * rgb[2];
+      const float scale = std::pow(std::max(y / 12.0F, 0.0F), gamma - 1.0F);
+      for (auto& c : rgb) c = (scale * c / 12.0F) * peak;
     } else {
       pl_color_linearize(&color, rgb.data());
       for (auto& c : rgb) c = pl_hdr_rescale(PL_HDR_NORM, PL_HDR_NITS, c);
@@ -209,15 +222,19 @@ struct Oracle {
       const auto scale = oracle_tone_scalar(luma[1], tone) / luma[1];
       for (auto& c : rgb) c *= scale;
     }
-    // Independent CPU oracle: v7.360.1 tone_mapping.c:131-169. In
-    // particular, no application RGB/IPT conversion or batch helper is used.
-    pl_matrix3x3_apply(&rgb_to_lms, rgb.data());
-    for (auto& c : rgb) c = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, c);
-    pl_matrix3x3_apply(&pl_ipt_lms2ipt, rgb.data());
-    pl_gamut_map_sample(rgb.data(), &gamut);
-    pl_matrix3x3_apply(&pl_ipt_ipt2lms, rgb.data());
-    for (auto& c : rgb) c = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, c);
-    pl_matrix3x3_apply(&lms_to_rgb, rgb.data());
+    // 同色域合法显示体积应是恒等映射；新版近似 PQ 往返不作为黑点参考。
+    // 其余情况仍独立调用公开标量接口，不复用应用转换或批处理 helper。
+    const bool identity = pl_gamut_map_params_noop(&gamut) &&
+        std::ranges::all_of(rgb, [](float c) { return c >= 0.0F && c <= 100.0F; });
+    if (!identity) {
+      pl_matrix3x3_apply(&rgb_to_lms, rgb.data());
+      for (auto& c : rgb) c = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, c);
+      pl_matrix3x3_apply(&pl_ipt_lms2ipt, rgb.data());
+      pl_gamut_map_sample(rgb.data(), &gamut);
+      pl_matrix3x3_apply(&pl_ipt_ipt2lms, rgb.data());
+      for (auto& c : rgb) c = pl_hdr_rescale(PL_HDR_PQ, PL_HDR_NITS, c);
+      pl_matrix3x3_apply(&lms_to_rgb, rgb.data());
+    }
     for (auto& c : rgb) {
       c = std::clamp(c / 100.0F, 0.0F, 1.0F);
       c = c <= 0.0031308F ? 12.92F * c : 1.055F * std::pow(c, 1.0F / 2.4F) - 0.055F;
@@ -239,8 +256,12 @@ int quantized_oracle_check(const awj::ImageBuffer& input, const awj::ImageBuffer
       if (!std::isfinite(reference[c])) return fail("Independent scalar oracle is not finite.");
       if (output.bit_depth == 16) {
         std::uint16_t actual{}; std::memcpy(&actual, row + (x * 4 + c) * 2, 2);
-        if (std::abs(actual / 65535.0F - reference[c]) > 2.0e-4F + 0.5F / 65535.0F)
+        if (std::abs(actual / 65535.0F - reference[c]) > 2.0e-4F + 0.5F / 65535.0F) {
+          std::cerr << "tone pixel=" << x << ',' << y << " channel=" << c << " actual=" << actual / 65535.0F
+                    << " reference=" << reference[c] << " primaries=" << input.source_info->color_primaries.value_or(0)
+                    << " transfer=" << input.source_info->transfer_characteristics.value_or(0) << '\n';
           return fail("16-bit tone/gamut exceeds independent sRGB oracle tolerance.");
+        }
       } else {
         const auto dither = (static_cast<float>(bayer[(y % 4) * 4 + x % 4]) - 7.5F) / 16.0F;
         const auto expected = static_cast<int>(std::clamp(std::floor(reference[c] * 255.0F + 0.5F + dither), 0.0F, 255.0F));
@@ -404,6 +425,12 @@ int check_fixture(const awj::ImageBuffer& source) {
 }  // namespace
 
 int main() {
+  auto hlg_white = transfer_fixture(18);
+  auto hlg_transform = awj::hdr::hdr_detail::make_source_transform(hlg_white);
+  if (!hlg_transform) return fail(hlg_transform.error());
+  const auto hlg_nits = awj::hdr::hdr_detail::linear_nits({1.0F, 1.0F, 1.0F}, *hlg_transform);
+  if (!hlg_nits || std::abs((*hlg_nits)[0] - hlg_transform->color_space.hdr.max_luma) > 0.01F)
+    return fail("HLG white was treated as 203-nit normalized light instead of the declared display peak.");
   for (std::uint32_t bits = 0; bits <= 65535; ++bits) {
     const auto reference = half_reference(static_cast<std::uint16_t>(bits));
     const auto value = awj::hdr::hdr_detail::binary16_to_float(static_cast<std::uint16_t>(bits));

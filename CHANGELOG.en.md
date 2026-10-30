@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.2.6 - 2026-10-29
+
+### Unreleased candidate
+
+- Use the system-suggested destination position for Windows 11 cross-monitor DPI changes while preserving explicit client sizes and legacy-system behavior, avoiding repeated scaling caused by old-monitor position correction. Do not lock the scale factor to mask the issue.
+- Backport Slint's Windows update-region repaint fix for stale or blank content after DPI changes and restoration. Preserve partial rendering when Windows has not invalidated a region.
+- Persist logical window dimensions, accept valid positive scales below 100%, safely fall back for invalid scales, and clamp before rounding.
+- Update libheif to 1.23.7, libaom to 3.15.2, libjpeg-turbo to 3.2.1, LibRaw to 0.22.3, libarchive to 3.8.10, the libplacebo CPU subset to 7.387.0, and Linux curl to 8.23.0, with pinned source, port and patch identities.
+- Keep the HDR-main/existing-SDR reverse gain-map policy. AWJ does not control third-party viewer or screenshot rendition selection and tone mapping; do not compensate by darkening HDR or changing required color tags.
+
+- Separate the session working-set unlock from input/buffer size protection. Preserve manual budgets and pass the actual unlock state through Windows, Linux and worker processes without saving it in presets.
+- Plan memory from source profiles, target dimensions and simultaneously live stages. Distinguish SDR/HDR JPEGli, account for WebP/JXL workspaces, high-entropy PNG output, paired gain-map renditions and resizing. Record budget mode/source, estimate profile and source/target sizes in CSV, including the real budget on preflight failures.
+- Preserve both renditions of valid ISO gain-map inputs. Re-encode AVIF/JXL with an HDR main image and an alternate-reconstruction map. Re-encode JPEGli using the existing SDR rendition as its base and a newly generated HDR gain map. WebP/PNG select the existing SDR rendition and tone-map only when no SDR endpoint exists.
+- Preserve HDR-base/SDR-alternate direction and explicit headroom instead of unconditionally enhancing or discarding one endpoint. Regenerated pairs do not claim sample-exact losslessness. Unsupported ICC math spaces and corrupt functional gain metadata remain explicit errors.
+- Prefer an independent APNG default image over motion. Select independent AVIF stills from parsed primary/sample storage relationships while preserving pure sequences. Reject ambiguous or invalid relationships instead of silently falling back to animation.
+- Preserve existing formal packages, signed metadata and automatic-update state. This entry describes an unreleased candidate, not a formal release or a claim of complete platform validation.
+
 ## 1.2.5 - 2026-10-24
 
 ### UI fixes

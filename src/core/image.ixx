@@ -41,6 +41,13 @@ enum class SampleRepresentation {
   ieee_half_float,
 };
 
+// 解码时选择呈现，不把 Gain Map 一律视为增亮操作。
+enum class GainMapDecodeMode {
+  hdr_only,
+  sdr_only,
+  preserve_both,
+};
+
 enum class MetadataKind {
   icc,
   exif,
@@ -62,6 +69,30 @@ struct HdrContentLightMetadata {
   std::uint16_t max_pall{};
 };
 
+enum class RenditionOrigin { input, gain_map_base, gain_map_reconstructed, tone_mapped };
+
+constexpr std::string_view rendition_origin_name(RenditionOrigin origin) noexcept {
+  switch (origin) {
+    case RenditionOrigin::gain_map_base: return "gain-map-base";
+    case RenditionOrigin::gain_map_reconstructed: return "gain-map-reconstructed";
+    case RenditionOrigin::tone_mapped: return "tone-mapped";
+    default: return "input";
+  }
+}
+
+struct RenditionDiagnostics {
+  std::string selected{};
+  std::string origin{};
+  std::string reference_chroma{};
+  std::optional<int> reference_bit_depth{};
+  bool reused_sdr{};
+  bool tone_mapped{};
+  bool gain_map_generated{};
+  std::uint32_t gain_map_width{};
+  std::uint32_t gain_map_height{};
+  int gain_map_bit_depth{};
+};
+
 struct ImageSourceInfo {
   PixelFormat pixel_format{PixelFormat::unknown};
   int bit_depth{};
@@ -75,6 +106,7 @@ struct ImageSourceInfo {
   // Linear FP16 values are relative to this diffuse white, not necessarily scRGB's 80 nits.
   std::optional<float> linear_reference_white_nits{};
   bool source_has_gain_map{};
+  RenditionOrigin rendition_origin{RenditionOrigin::input};
 };
 
 // Precision of the current unorm samples, independent of their 8/16-bit storage.
@@ -147,10 +179,18 @@ struct EncodedImage {
   std::string codec_name{};
 };
 
+// 主图与另一呈现都由解码结果拥有。主图采用较高动态范围；另一呈现通常是 SDR。
+struct GainMapAlternative {
+  ImageBuffer image{};
+  float main_hdr_headroom_log2{};
+  float alternate_hdr_headroom_log2{};
+};
+
 struct ImageDecodeResult {
   ImageBuffer image{};
   std::string decoder_id{};
   bool used_fallback{};
+  std::optional<GainMapAlternative> gain_map_alternative{};
 };
 
 struct ImageWriteTarget {

@@ -1,7 +1,7 @@
 vcpkg_download_distfile(ARCHIVE
-    URLS "https://storage.googleapis.com/aom-releases/libaom-3.15.1.tar.gz"
-    FILENAME "libaom-3.15.1.tar.gz"
-    SHA512 0e1f93b0ddff4754d408e48adc2c4c0985db2f3b55aa89706e8584c9a386bafd2217a2dd4e4b08dfe82be85208038f2b3ae5a8ba908b6b04396ee612840a5cc5
+    URLS "https://storage.googleapis.com/aom-releases/libaom-3.15.2.tar.gz"
+    FILENAME "libaom-3.15.2.tar.gz"
+    SHA512 4ba185a642c9dd32d1ab708916a5aed1a65d3cd6d2599d632f33c83849e6702ca91528ad09a007eb39ac2723f0b10de9a7905ed26abfef42a164f13e21aacb7a
 )
 
 vcpkg_extract_source_archive(
