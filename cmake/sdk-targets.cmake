@@ -81,6 +81,12 @@ if(MSVC)
 else()
     target_compile_options(awj_sdk PRIVATE -Wall -Wextra -Wpedantic)
     target_link_options(awj_sdk PRIVATE "LINKER:--version-script=${AWJ_SDK_SOURCE_ROOT}/src/sdk/exports.map")
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        # 与应用 Release 的静态运行库策略一致；导出表将 SDK 私有 C++ 符号全部本地化。
+        # 避免静态 libc++ 宿主同时装载另一份动态 libc++，在 main 前发生 locale 初始化冲突。
+        target_link_options(awj_sdk PRIVATE
+            $<$<CONFIG:Release>:-static-libstdc++> $<$<CONFIG:Release>:-static-libgcc>)
+    endif()
     set_property(TARGET awj_sdk APPEND PROPERTY LINK_DEPENDS "${AWJ_SDK_SOURCE_ROOT}/src/sdk/exports.map")
 endif()
 if(AWJ_SDK_NATIVE_CODECS)

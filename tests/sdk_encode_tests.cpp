@@ -1,5 +1,10 @@
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#include <unistd.h>
+#endif
 #include "awj/awj.h"
 #include <array>
 #include <cstdio>
@@ -33,7 +38,15 @@ int main() {
   awj_context* context{}; CHECK(awj_context_create(nullptr, &context) == AWJ_OK);
   constexpr uint32_t width = 8, height = 6, stride = 40;
   constexpr size_t size = (height - 1) * stride + width * 4;
-  auto* pixels = static_cast<uint8_t*>(VirtualAlloc(nullptr, 4096, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)); CHECK(pixels);
+#ifdef _WIN32
+  constexpr size_t page = 4096;
+  auto* pixels = static_cast<uint8_t*>(VirtualAlloc(nullptr, page, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)); CHECK(pixels);
+#else
+  const auto page_size = ::sysconf(_SC_PAGESIZE); CHECK(page_size >= static_cast<long>(size));
+  const auto page = static_cast<size_t>(page_size);
+  auto* pixels = static_cast<uint8_t*>(::mmap(nullptr, page, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0));
+  CHECK(pixels != MAP_FAILED);
+#endif
   std::array<uint8_t, size> original{};
   for (uint32_t y = 0; y < height; ++y) for (uint32_t x = 0; x < width; ++x) {
     auto* pixel = original.data() + y * stride + x * 4;
@@ -41,7 +54,11 @@ int main() {
     pixel[2] = static_cast<uint8_t>(x * 7 + y * 13); pixel[3] = static_cast<uint8_t>(128 + x * 11);
   }
   std::memcpy(pixels, original.data(), size);
-  DWORD protection{}; CHECK(VirtualProtect(pixels, 4096, PAGE_READONLY, &protection));
+#ifdef _WIN32
+  DWORD protection{}; CHECK(VirtualProtect(pixels, page, PAGE_READONLY, &protection));
+#else
+  CHECK(::mprotect(pixels, page, PROT_READ) == 0);
+#endif
   awj_frame_desc desc; awj_frame_desc_init(&desc); desc.width = width; desc.height = height; color(desc);
   desc.color.alpha = AWJ_ALPHA_STRAIGHT; desc.planes[0] = {pixels, size, 0, stride};
   awj_frame* frame{}; CHECK(awj_frame_create(context, &desc, nullptr, &frame) == AWJ_OK);
@@ -84,7 +101,11 @@ int main() {
     CHECK(std::memcmp(flipped->image.planes[0].read_bytes().data() + y * flipped->image.planes[0].stride, pixels + (height - y - 1) * stride, width * 4) == 0);
   awj_result_release(result); awj_frame_release(frame);
   CHECK(std::memcmp(pixels, original.data(), size) == 0);
+#ifdef _WIN32
   CHECK(VirtualFree(pixels, 0, MEM_RELEASE));
+#else
+  CHECK(::munmap(pixels, page) == 0);
+#endif
 
   // 常见 FFmpeg CPU 布局，包括奇数 NV12/P010 和 10/16-bit planar。
   for (uint32_t format : {AWJ_BGRA8, AWJ_RGB8, AWJ_GRAY8, AWJ_GRAY16, AWJ_RGBA16, AWJ_YUV420P, AWJ_YUV422P, AWJ_YUV444P, AWJ_NV12, AWJ_P010}) {
