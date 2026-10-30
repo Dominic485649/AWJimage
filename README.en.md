@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.2.5**.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.3.0 (unreleased development)**; published downloads remain those listed on Releases.
 
 ## Formats
 
@@ -32,6 +32,8 @@ Drop images or folders into the queue, select an output directory and format, th
 
 The queue shows source sizes and output sizes after successful conversion. Drag a header divider to resize only the column on its left. Column widths stay fixed when the window is resized; use the bottom scrollbar to view overflowing columns. Right-click the header to choose visible columns. Widths and visibility are retained for the current session.
 
+Reimport completed images without clearing the queue. Entries not reimported retain their completed results; new and reimported entries become pending. Deduplicate normalized paths at the last valid import position without changing output-collision policies. Importing remains locked during encoding and cancellation cleanup.
+
 Settings are stored in `AWJ.jsonc` beside the application. User presets live in `preset/*.jsonc`. The queue initially uses the built-in defaults. Selecting a user preset stores its filename in `queue_preset_file` and restores that selection on the next launch. Selecting the built-in defaults clears the saved selection; deleted or invalid presets also fall back to the built-in defaults.
 
 ## CLI
@@ -51,6 +53,10 @@ Use `AWJ.com` on Windows; replace it with `./AWJ` on Linux.
 ```
 
 `--threads auto` reserves desktop capacity from the allowed logical CPUs. `--threads N` uses a total encoding thread budget of N (1–128) without that reservation; file concurrency and per-image encoder threads share this budget and remain subject to the memory budget. `--cpu-affinity` uses zero-based logical CPU IDs and can only narrow the currently allowed set. Windows IDs refer to the current processor group.
+
+## C ABI SDK (unreleased)
+
+Other applications can submit CPU, shared-memory, FFmpeg or Windows D3D11 frames through the same C headers for memory encoding. There is no public C++ ABI or built-in capture session/player. Implementation uses C++23 and targets Clang 21+; Windows and Linux are separate builds, while HarmonyOS still requires the real SDK/device. See the [SDK documentation](docs/sdk.md) for copying, color, lifetime and platform contracts. Ordinary pipes and GPU readback are not end-to-end zero-copy paths.
 
 ## Build
 
