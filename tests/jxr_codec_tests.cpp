@@ -1,5 +1,6 @@
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <wrl/client.h>
 
 import awj.jxr_codec;
+import awj.image;
 
 namespace {
 
@@ -38,7 +40,8 @@ struct ComInit {
   }
 };
 
-bool write_test_jxr(const std::filesystem::path& path, bool hdr = false) {
+bool write_test_jxr(const std::filesystem::path& path, int bit_depth = 8) {
+  const bool high_depth = bit_depth > 8;
   ComPtr<IWICImagingFactory> factory;
   HRESULT hr = CoCreateInstance(CLSID_WICImagingFactory,
                                 nullptr,
@@ -78,18 +81,26 @@ bool write_test_jxr(const std::filesystem::path& path, bool hdr = false) {
   if (FAILED(hr)) {
     return false;
   }
-  hr = frame->SetSize(2, hdr ? 1 : 2);
+  hr = frame->SetSize(2, high_depth ? 1 : 2);
   if (FAILED(hr)) {
     return false;
   }
-  WICPixelFormatGUID format = hdr ? GUID_WICPixelFormat64bppRGBA
-                                  : GUID_WICPixelFormat24bppBGR;
+  WICPixelFormatGUID format = bit_depth == 32 ? GUID_WICPixelFormat128bppRGBAFloat
+                             : high_depth ? GUID_WICPixelFormat64bppRGBA
+                                          : GUID_WICPixelFormat24bppBGR;
   const WICPixelFormatGUID requested_format = format;
   hr = frame->SetPixelFormat(&format);
   if (FAILED(hr) || !IsEqualGUID(format, requested_format)) {
     return false;
   }
-  if (hdr) {
+  if (bit_depth == 32) {
+    float pixels[] = {-.25F, 2.0F, 4.0F, 1.0F, .125F, 1.5F, .5F, 1.0F};
+    hr = frame->WritePixels(1, 32, static_cast<UINT>(sizeof(pixels)),
+                            reinterpret_cast<BYTE*>(pixels));
+    if (FAILED(hr) || FAILED(frame->Commit())) return false;
+    return SUCCEEDED(encoder->Commit());
+  }
+  if (high_depth) {
     std::uint16_t pixels[] = {
         0, 32768, 65535, 65535,
         65535, 0, 32768, 65535,
@@ -160,11 +171,13 @@ int main() {
   const auto wdp = temp / "awj-jxr-codec-test.wdp";
   const auto hdp = temp / "awj-jxr-codec-test.hdp";
   const auto hdr_jxr = temp / "awj-jxr-codec-test-hdr.jxr";
+  const auto float_jxr = temp / "awj-jxr-codec-test-float.jxr";
   std::error_code ec;
   std::filesystem::remove(jxr, ec);
   std::filesystem::remove(wdp, ec);
   std::filesystem::remove(hdp, ec);
   std::filesystem::remove(hdr_jxr, ec);
+  std::filesystem::remove(float_jxr, ec);
 
   if (!write_test_jxr(jxr)) {
     return fail("Could not create temporary JPEG XR test input.");
@@ -190,11 +203,28 @@ int main() {
   if (const auto code = decode_and_check(hdp); code != 0) {
     return code;
   }
-  if (!write_test_jxr(hdr_jxr, true)) {
+  if (!write_test_jxr(hdr_jxr, 16)) {
     return fail("Could not create temporary HDR JPEG XR test input.");
   }
   if (const auto code = decode_and_check(hdr_jxr, 1, 16); code != 0) {
     return code;
+  }
+
+  if (!write_test_jxr(float_jxr, 32)) return fail("Could not create floating-point JPEG XR input.");
+  auto floating = awj::JxrImageDecoder{}.decode(float_jxr);
+  if (!floating || floating->used_fallback || floating->image.bit_depth != 16 ||
+      floating->image.sample_representation != awj::SampleRepresentation::ieee_half_float ||
+      !floating->image.source_info || !floating->image.source_info->has_hdr_metadata ||
+      floating->image.source_info->color_primaries != 1 ||
+      floating->image.source_info->transfer_characteristics != 8 ||
+      floating->image.planes.empty() || floating->image.planes[0].bytes.size() < 16) {
+    return fail(floating ? "Floating-point JXR lost its linear scRGB representation." : floating.error());
+  }
+  std::uint16_t samples[8]{};
+  std::memcpy(samples, floating->image.planes[0].bytes.data(), sizeof(samples));
+  if (!(samples[0] & 0x8000) || samples[1] <= 0x3c00 || samples[1] >= 0x7c00 ||
+      samples[2] <= 0x3c00 || samples[2] >= 0x7c00) {
+    return fail("Floating-point JXR highlights or negative values were clipped through UNORM.");
   }
 
   // Each thread owns its factory; a borrowed STA must not outlive the caller's COM scope.
@@ -218,5 +248,6 @@ int main() {
   std::filesystem::remove(wdp, ec);
   std::filesystem::remove(hdp, ec);
   std::filesystem::remove(hdr_jxr, ec);
+  std::filesystem::remove(float_jxr, ec);
   return 0;
 }

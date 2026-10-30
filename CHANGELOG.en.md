@@ -9,6 +9,7 @@
 - Persist logical window dimensions, accept valid positive scales below 100%, safely fall back for invalid scales, and clamp before rounding.
 - Update libheif to 1.23.7, libaom to 3.15.2, libjpeg-turbo to 3.2.1, LibRaw to 0.22.3, libarchive to 3.8.10, the libplacebo CPU subset to 7.387.0, and Linux curl to 8.23.0, with pinned source, port and patch identities.
 - Keep the HDR-main/existing-SDR reverse gain-map policy. AWJ does not control third-party viewer or screenshot rendition selection and tone mapping; do not compensate by darkening HDR or changing required color tags.
+- Fix Windows WIC/JXR floating-point RGB decoding. Normalize 16/32-bit float sources into the existing linear FP16 working representation instead of clipping highlights and negative values through UNORM. Float conversion failures no longer silently fall back to SDR; unsupported color contexts fail explicitly.
 
 - Separate the session working-set unlock from input/buffer size protection. Preserve manual budgets and pass the actual unlock state through Windows, Linux and worker processes without saving it in presets.
 - Plan memory from source profiles, target dimensions and simultaneously live stages. Distinguish SDR/HDR JPEGli, account for WebP/JXL workspaces, high-entropy PNG output, paired gain-map renditions and resizing. Record budget mode/source, estimate profile and source/target sizes in CSV, including the real budget on preflight failures.

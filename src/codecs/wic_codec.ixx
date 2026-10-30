@@ -204,8 +204,15 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
 }
 
 
-bool is_rgba_half_format(const WICPixelFormatGUID& format) noexcept {
-  return IsEqualGUID(format, GUID_WICPixelFormat64bppRGBAHalf) != FALSE;
+bool is_rgb_float_format(const WICPixelFormatGUID& format) noexcept {
+  return IsEqualGUID(format, GUID_WICPixelFormat48bppRGBHalf) ||
+         IsEqualGUID(format, GUID_WICPixelFormat64bppRGBHalf) ||
+         IsEqualGUID(format, GUID_WICPixelFormat64bppRGBAHalf) ||
+         IsEqualGUID(format, GUID_WICPixelFormat64bppPRGBAHalf) ||
+         IsEqualGUID(format, GUID_WICPixelFormat96bppRGBFloat) ||
+         IsEqualGUID(format, GUID_WICPixelFormat128bppRGBFloat) ||
+         IsEqualGUID(format, GUID_WICPixelFormat128bppRGBAFloat) ||
+         IsEqualGUID(format, GUID_WICPixelFormat128bppPRGBAFloat);
 }
 
 struct PixelFormatDetails {
@@ -418,9 +425,17 @@ class WicImageDecoder final : public ImageDecoder {
       const auto source_details =
           wic_detail::source_info_from_pixel_format(*frame_source->factory, source_pixel_format);
       auto output_source_info = source_details.source_info;
-      const bool source_is_rgba_half = wic_detail::is_rgba_half_format(source_pixel_format);
-      const bool wants_high_depth = source_is_rgba_half || output_source_info.bit_depth > 8;
-      const auto target_format = source_is_rgba_half ? GUID_WICPixelFormat64bppRGBAHalf
+      // 浮点 RGB 统一保留为现有 FP16 工作像素，不能先经 UNORM 裁切高光和负值。
+      const bool source_is_rgb_float = wic_detail::is_rgb_float_format(source_pixel_format);
+      if (source_is_rgb_float && !IsEqualGUID(source_pixel_format, GUID_WICPixelFormat64bppRGBAHalf)) {
+        UINT context_count = 0;
+        hr = frame_source->frame->GetColorContexts(0, nullptr, &context_count);
+        if (FAILED(hr) || context_count != 0) {
+          return std::unexpected{"WIC 浮点 RGB 的色彩上下文无法安全解释，不能默认按 scRGB 解码。"};
+        }
+      }
+      const bool wants_high_depth = source_is_rgb_float || output_source_info.bit_depth > 8;
+      const auto target_format = source_is_rgb_float ? GUID_WICPixelFormat64bppRGBAHalf
                                  : (wants_high_depth ? GUID_WICPixelFormat64bppRGBA
                                                      : GUID_WICPixelFormat32bppRGBA);
       int output_bit_depth = wants_high_depth ? 16 : 8;
@@ -436,7 +451,7 @@ class WicImageDecoder final : public ImageDecoder {
       hr = converter->Initialize(frame_source->frame.get(), target_format,
                                  WICBitmapDitherTypeNone, nullptr, 0.0,
                                  WICBitmapPaletteTypeCustom);
-      if (FAILED(hr) && wants_high_depth) {
+      if (FAILED(hr) && wants_high_depth && !source_is_rgb_float) {
         output_bit_depth = 8;
         output_source_info.bit_depth = 8;
         output_source_info.has_hdr_metadata = false;
@@ -472,7 +487,7 @@ class WicImageDecoder final : public ImageDecoder {
         return std::unexpected{std::format("WIC 复制像素失败: {}", wic_detail::hresult_message(hr))};
       }
 
-      const bool retained_scrgb_half = source_is_rgba_half && output_bit_depth == 16;
+      const bool retained_scrgb_half = source_is_rgb_float && output_bit_depth == 16;
       if (retained_scrgb_half) {
         output_source_info.pixel_format = PixelFormat::rgba;
         output_source_info.bit_depth = 16;

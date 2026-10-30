@@ -7,6 +7,7 @@
 - **按目标格式选择正确呈现**：正向 Gain Map 输入以重建后的 HDR 为基准，反向 Gain Map 输入以原 HDR 主图为基准；输出 SDR 时优先使用输入已有的 SDR 端点，避免再次 tone-map。
 - **保留 HDR / SDR 双呈现**：输入同时具有两端时，AVIF / JXL 重新编码 HDR 主图与用于恢复 SDR 的反向 Gain Map；HDR JPG 使用已有 SDR 端点生成 8-bit SDR 主图与 HDR Gain Map，并依据最终 JPG 主图的回解结果重算增益图。仅有 HDR 的输入转 AVIF / JXL 时，不额外生成原本不存在的 SDR 端点。
 - **修复 HEIC Gain Map 的颜色信令兼容性**：正确区分输入 ICC / NCLX 与解码库补出的默认标签，避免合法 ICC 主图被误标或误判冲突；补充关键阶段诊断。损坏或无法安全解释的功能性增益元数据仍明确报错，不静默丢弃。
+- **修复 Windows 浮点 HDR JXR**：补齐 16/32-bit 浮点 RGB 格式识别，沿用 FP16 线性工作像素，在其可表达范围内保留高光与负值，不再先转换为整数 SDR 后裁切。浮点转换失败或新格式的色彩上下文无法安全解释时明确报错，不静默降级。
 - **保留必要颜色信息**：清理普通元数据时，仍保留正确解码所需的颜色信息与功能性 Gain Map。重新生成增益图与有损编码不承诺两端逐像素无损。
 
 ## 位深与格式处理
@@ -32,7 +33,7 @@
 
 ## 验证与兼容性说明
 
-- 已交付的本地候选完成 Windows **27 项**、Linux **23 项**定向测试，以及两平台各 **33 项**公开 CLI 转换验证。Linux 产物的独立 FFmpeg 检查在 Windows 执行，不表示运行了无关全量回归。
+- 定向验证覆盖编解码、内存与线程、HDR 数学、ISO Gain Map、位深 / 采样、原生 UI 与公开原始 HDR JXR。实际重跑及旧测试复用范围由正式产物的验收记录说明；Linux 产物的独立 FFmpeg 检查在 Windows 执行，不表示运行了无关全量回归。
 - 跨屏验证包含 **8 组受控系统切换**和 **8 组合成移动状态**；真人鼠标拖动原始场景、独立 DWM 画面和全部输入 / 拖放坐标尚未完成复验，不宣称所有显示器组合的问题均已根治。
 - HDR 呈现仍取决于查看器、显示链与格式支持。本版本不承诺修复第三方查看器或截图工具的 HDR / SDR 自动选层及 tone-map，也不会以调暗 HDR 或修改必要颜色标签补偿外部显示。
 - Windows 要求支持 **AVX2** 的 CPU，Linux 要求 **x86-64-v3**。Windows 图形界面和右键转换需要将 `AWJ.exe` 与 `AWJ.com` 放在同一目录。
@@ -49,6 +50,7 @@ This version improves HDR / gain-map conversion, memory planning and bounded par
 - **Select the appropriate rendition for the destination**: use reconstructed HDR for forward gain maps and the original HDR main image for reverse gain maps. Prefer an existing SDR endpoint for SDR output instead of tone-mapping it again.
 - **Preserve paired renditions**: when both endpoints exist, AVIF / JXL re-encode an HDR main image and a reverse gain map for SDR reconstruction. HDR JPG uses the existing SDR endpoint for its 8-bit base and recomputes the HDR gain map against the decoded final JPG base. HDR-only inputs do not acquire a synthesized SDR endpoint when converted to AVIF / JXL.
 - **Fix HEIC gain-map color signaling compatibility**: distinguish original ICC / NCLX metadata from decoder-generated defaults, avoiding false labels and conflicts for valid ICC inputs. Improve stage diagnostics while continuing to reject corrupt or unsafe functional metadata explicitly.
+- **Fix floating-point HDR JXR on Windows**: recognize 16/32-bit floating-point RGB formats and normalize them into the existing linear FP16 working representation, retaining highlights and negative values within its range instead of clipping through integer SDR. Unsupported color contexts and failed float conversion produce explicit errors rather than silent SDR fallback.
 - **Retain essential color data**: stripping ordinary metadata does not remove required color signaling or functional gain maps. Regenerated maps and lossy encoding do not promise sample-exact preservation of both endpoints.
 
 ### Bit depth and format handling
@@ -74,7 +76,7 @@ Update and pin libheif **1.23.7**, libaom **3.15.2**, libjpeg-turbo **3.2.1**, L
 
 ### Validation and compatibility
 
-- The delivered local candidate completed **27 targeted Windows tests**, **23 targeted Linux tests**, and **33 public CLI conversion cases per platform**. Independent FFmpeg checks of Linux outputs ran on Windows. This is not a claim of a full unrelated regression run.
+- Targeted validation covers codecs, memory and thread budgets, HDR math, ISO gain maps, depth/chroma, native UI and a public original HDR JXR. Formal acceptance records identify checks rerun and earlier tests reused. Independent FFmpeg checks of Linux outputs run on Windows; this does not claim a full unrelated regression run.
 - DPI checks cover **8 controlled monitor-switch cases** and **8 synthetic move-state cases**. The original human mouse-drag scenario, independent DWM captures and all input/drop coordinates have not been revalidated; this does not establish that every monitor combination is fixed.
 - Third-party viewers and screenshot tools still determine HDR / SDR rendition selection and tone mapping. This version does not claim to repair those external display paths or compensate by darkening HDR or changing required color tags.
 - Windows requires **AVX2**; Linux requires **x86-64-v3**. Keep `AWJ.exe` and `AWJ.com` together for the Windows GUI and context-menu converter.

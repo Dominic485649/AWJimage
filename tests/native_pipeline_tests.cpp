@@ -239,7 +239,8 @@ bool same_sdr_pixels(const awj::ImageBuffer& a, const awj::ImageBuffer& b, unsig
     }
   return true;
 }
-int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem::path& output, awj::FileLogger& logger) {
+int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem::path& output, awj::FileLogger& logger,
+                        int source_depth = 16) {
   struct ComScope {
     HRESULT hr{CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)};
     ~ComScope() { if (SUCCEEDED(hr)) CoUninitialize(); }
@@ -251,18 +252,24 @@ int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem
   ComPtr<IWICBitmapEncoder> writer;
   ComPtr<IWICBitmapFrameEncode> frame;
   ComPtr<IPropertyBag2> options;
-  const auto input = root / "synthetic-scrgb-half.jxr";
+  const auto input = root / std::format("synthetic-scrgb-float{}.jxr", source_depth);
   if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
       FAILED(factory->CreateStream(&stream)) || FAILED(stream->InitializeFromFilename(input.c_str(), GENERIC_WRITE)) ||
       FAILED(factory->CreateEncoder(GUID_ContainerFormatWmp, nullptr, &writer)) ||
       FAILED(writer->Initialize(stream.Get(), WICBitmapEncoderNoCache)) ||
       FAILED(writer->CreateNewFrame(&frame, &options)) || FAILED(frame->Initialize(options.Get())) ||
       FAILED(frame->SetSize(2, 2))) return fail("Cannot prepare the synthetic FP16 JPEG XR fixture.");
-  WICPixelFormatGUID format = GUID_WICPixelFormat64bppRGBAHalf;
+  const auto requested_format = source_depth == 32 ? GUID_WICPixelFormat128bppRGBAFloat
+                                                    : GUID_WICPixelFormat64bppRGBAHalf;
+  WICPixelFormatGUID format = requested_format;
   std::uint16_t pixels[]{0, 0, 0, 0x3c00, 0x3c00, 0x3800, 0x3400, 0x3c00,
       0x4000, 0x4000, 0x4000, 0x3c00, 0x4400, 0x3c00, 0x3800, 0x3c00};
-  if (FAILED(frame->SetPixelFormat(&format)) || !IsEqualGUID(format, GUID_WICPixelFormat64bppRGBAHalf) ||
-      FAILED(frame->WritePixels(2, 16, static_cast<UINT>(sizeof(pixels)), reinterpret_cast<BYTE*>(pixels))) ||
+  float float_pixels[]{0, 0, 0, 1, 1, .5F, .25F, 1, 2, 2, 2, 1, 4, 1, .5F, 1};
+  const UINT stride = source_depth == 32 ? 32 : 16;
+  const UINT bytes = static_cast<UINT>(source_depth == 32 ? sizeof(float_pixels) : sizeof(pixels));
+  auto* data = source_depth == 32 ? reinterpret_cast<BYTE*>(float_pixels) : reinterpret_cast<BYTE*>(pixels);
+  if (FAILED(frame->SetPixelFormat(&format)) || !IsEqualGUID(format, requested_format) ||
+      FAILED(frame->WritePixels(2, stride, bytes, data)) ||
       FAILED(frame->Commit()) || FAILED(writer->Commit())) return fail("Cannot write synthetic FP16 samples.");
   frame.Reset(); writer.Reset(); stream.Reset();
   auto original = awj::JxrImageDecoder{}.decode(input);
@@ -273,7 +280,7 @@ int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem
     auto cfg = awj::default_app_config();
     cfg.output_format = awj::OutputFormat::png; cfg.quality = 100; cfg.bit_depth = 16;
     cfg.color_primaries = primaries; cfg.strip_metadata = true;
-    cfg.output_dir = output / std::format("explicit-fp16-{}", primaries);
+    cfg.output_dir = output / std::format("explicit-float{}-{}", source_depth, primaries);
     awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
     auto result = backend.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)});
     if (!result.ok || result.applied_color_primaries != primaries || result.applied_transfer_characteristics != 16)
@@ -311,7 +318,7 @@ int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem
   }
   auto unsupported = awj::default_app_config();
   unsupported.output_format = awj::OutputFormat::png; unsupported.transfer_characteristics = 8;
-  unsupported.output_dir = output / "explicit-fp16-unsupported-linear";
+  unsupported.output_dir = output / std::format("explicit-float{}-unsupported-linear", source_depth);
   awj::NativeBackend backend{unsupported, logger, {.encoder_threads_per_file = 1, .global_thread_budget = 1}};
   if (backend.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)}).ok)
     return fail("Explicit extended linear HDR output silently became PQ.");
@@ -591,6 +598,7 @@ int main() {
 
   awj::FileLogger logger{output, false};
   if (const auto checked = explicit_fp16_color(root, output, logger)) return checked;
+  if (const auto checked = explicit_fp16_color(root, output, logger, 32)) return checked;
   if (const auto checked = existing_sdr_targets(root, output, logger)) return checked;
   if (const auto checked = hdr_color_policy(root, output, logger)) return checked;
   if (const auto checked = poster_pipeline(root, output, logger)) return checked;
