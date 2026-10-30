@@ -1,4 +1,7 @@
 #include <cstddef>
+#include <cstdint>
+#include <array>
+#include <lcms2.h>
 #include <cstdio>
 #include <filesystem>
 #include <fstream>
@@ -134,5 +137,35 @@ int main() {
                         : decoded.error());
   }
 
+  // 选择源 SDR 后仍须保存其真实色彩解释，strip 不能把线性或广色域样本假作 sRGB。
+  for (const bool strip : {false, true}) {
+    awj::ImageBuffer linear{.width = 1, .height = 1, .pixel_format = awj::PixelFormat::rgba,
+        .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 8,
+            .color_primaries = 1, .transfer_characteristics = 8, .matrix_coefficients = 0,
+            .color_range = 1, .source_has_gain_map = true},
+        .planes = {{{std::byte{128}, std::byte{128}, std::byte{128}, std::byte{255}}, 4}}};
+    awj::NativeEncodeSettings settings{.output_format = awj::OutputFormat::webp, .quality = 100, .speed = 10,
+        .strip_metadata = strip};
+    auto result = encoder.encode(linear, settings);
+    if (!result) return fail(result.error());
+    auto restored = decoder.decode_memory(result->encoded.bytes, "existing SDR color", {.copy_metadata_payloads = true});
+    if (!restored) return fail(restored.error());
+    const awj::MetadataBlock* icc = nullptr;
+    for (const auto& block : restored->image.metadata) if (block.kind == awj::MetadataKind::icc) icc = &block;
+    if (!icc || restored->image.planes[0].bytes[0] != std::byte{128})
+      return fail("WebP changed the existing SDR pixels or discarded their essential ICC");
+    std::unique_ptr<void, decltype(&cmsCloseProfile)> input_profile{
+        cmsOpenProfileFromMem(icc->bytes.data(), static_cast<cmsUInt32Number>(icc->bytes.size())), &cmsCloseProfile};
+    std::unique_ptr<void, decltype(&cmsCloseProfile)> output_profile{cmsCreate_sRGBProfile(), &cmsCloseProfile};
+    if (!input_profile || !output_profile) return fail("WebP essential SDR ICC cannot be read");
+    std::unique_ptr<void, decltype(&cmsDeleteTransform)> transform{cmsCreateTransform(input_profile.get(), TYPE_RGB_8,
+        output_profile.get(), TYPE_RGB_8, INTENT_RELATIVE_COLORIMETRIC, 0), &cmsDeleteTransform};
+    if (!transform) return fail("WebP essential SDR ICC cannot be color-converted");
+    const std::array<unsigned char, 3> source{128, 128, 128};
+    std::array<unsigned char, 3> output{};
+    cmsDoTransform(transform.get(), source.data(), output.data(), 1);
+    if (output[0] < 180 || output[0] > 194 || output[1] != output[0] || output[2] != output[0])
+      return fail("WebP relabeled linear SDR as sRGB instead of preserving its true transfer");
+  }
   return 0;
 }

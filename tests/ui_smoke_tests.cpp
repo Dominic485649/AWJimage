@@ -308,6 +308,59 @@ std::optional<slint::testing::ElementHandle> find_one(
   return match;
 }
 
+int verify_memory_budget_unlock() {
+  using Role = slint::language::AccessibleRole;
+  slint::testing::init();
+  for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (const int theme : {1, 2})
+    for (const bool english : {false, true}) {
+      auto app = AwjStudio::create();
+      if (!slint::select_bundled_translation(english ? "en" : ""))
+        return fail(std::format("内存解锁测试缺少界面翻译：{}", english ? "en" : "zh"));
+      app->set_theme_index(theme); app->set_language_index(english ? 1 : 0);
+      app->window().window_handle().set_const_scale_factor(scale);
+      const slint::PhysicalSize window_size{{static_cast<std::uint32_t>(std::lround(1220 * scale)),
+                                              static_cast<std::uint32_t>(std::lround(2000 * scale))}};
+      app->window().set_size(window_size);
+      if (app->window().size().width != window_size.width || app->window().size().height != window_size.height ||
+          std::fabs(app->window().scale_factor() - scale) > 0.001f)
+        return fail("内存解锁测试的窗口尺寸或显示缩放不符");
+      app->set_memory_limit_text("2.25"); app->set_menu_memory_limit_text("3.75");
+      app->set_selected_page(2); app->show();
+      const auto unlock = find_one(app, english ? "Lift the working-set memory budget" : "解除工作集内存预算", Role::Checkbox);
+      const auto input = find_one(app, english ? "Lift the 20 GiB input/buffer protection" : "解除 20 GiB 输入/缓冲区保护", Role::Checkbox);
+      if (!unlock || !input || app->get_unlock_memory_limit() || app->get_unlock_max_input_file_bytes()) {
+        for (const auto& checkbox : slint::testing::ElementHandle::find_by_element_type_name(app, "CheckBox")) {
+          const auto label = checkbox.accessible_label();
+          if (!label) continue;
+          const auto position = checkbox.absolute_position();
+          const auto size = checkbox.size();
+          std::printf("内存开关诊断 label=%s x=%.1f y=%.1f width=%.1f height=%.1f\n",
+              label->data(), double(position.x), double(position.y), double(size.width), double(size.height));
+        }
+        return fail(std::format("内存开关初态校验失败：scale={} theme={} language={} unlock-control={} input-control={} unlock-value={} input-value={}",
+            scale, theme, english ? "en" : "zh", unlock.has_value(), input.has_value(),
+            app->get_unlock_memory_limit(), app->get_unlock_max_input_file_bytes()));
+      }
+      unlock->invoke_accessible_default_action();
+      if (!app->get_unlock_memory_limit() || app->get_unlock_max_input_file_bytes() ||
+          app->get_memory_limit_text() != "2.25" || app->get_menu_memory_limit_text() != "3.75")
+        return fail("memory unlock lost manual values or toggled input protection");
+      input->invoke_accessible_default_action();
+      if (!app->get_unlock_memory_limit() || !app->get_unlock_max_input_file_bytes())
+        return fail("input protection changed the working-set unlock");
+      unlock->invoke_accessible_default_action();
+      if (app->get_unlock_memory_limit() || !app->get_unlock_max_input_file_bytes() ||
+          app->get_memory_limit_text() != "2.25" || app->get_menu_memory_limit_text() != "3.75")
+        return fail("turning off memory unlock did not preserve manual budgets");
+      app->set_running(true);
+      if (unlock->accessible_enabled().value_or(true) || input->accessible_enabled().value_or(true))
+        return fail("resource safety controls remained editable during a run");
+      app->hide();
+      std::printf("memory-unlock scale=%.2f theme=%d language=%s result=passed\n", double(scale), theme, english ? "en" : "zh");
+    }
+  return 0;
+}
+
 int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
                                  float window_width, bool english) {
   app->window().set_size(slint::LogicalSize({window_width, 560.0f}));
@@ -612,7 +665,7 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
               check("线程", "Threads", Role::TextInput, true) ||
               check("内存限制", "Memory limit", Role::TextInput, true) ||
               check("右键菜单选项", "Context menu options", Role::Text, page == 1) ||
-              check("位深", "Bit depth", Role::TextInput, format == 0) ||
+              check("位深", "Bit depth", Role::TextInput, format == 0 || format == 2 || format == 4) ||
               check("色度采样", "Chroma subsampling", Role::Combobox, format == 0 || format == 3) ||
               check("JPG 渐进级别", "JPG progressive level", Role::Combobox, format == 3) ||
               check("启用 XYB", "Enable XYB", Role::Checkbox, format == 3)) return 1;
@@ -1989,6 +2042,7 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view{argv[1]} == "--memory-budget-unlock") return verify_memory_budget_unlock();
   if (const int result = verify_native_file_payload(); result != 0) return result;
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
@@ -2039,8 +2093,24 @@ int main(int argc, char** argv) {
   if (argc == 4 && std::string_view{argv[1]} == "--font-rendering-snapshots") {
     return verify_font_rendering_snapshots(std::filesystem::path{argv[2]}, std::stof(argv[3]));
   }
-  if ((argc == 2 || argc == 3) && std::string_view{argv[1]} == "--resize-window") {
+  if ((argc == 2 || argc == 3) &&
+      (std::string_view{argv[1]} == "--resize-window" ||
+       std::string_view{argv[1]} == "--dpi-window" ||
+       std::string_view{argv[1]} == "--dpi-physical-window")) {
+    const bool dpi_fixture = std::string_view{argv[1]} != "--resize-window";
+    bool saw_opengl = false;
+    [[maybe_unused]] bool notifier_supported = false;
     auto app = AwjStudio::create();
+    if (dpi_fixture) {
+      notifier_supported = !app->window().set_rendering_notifier(
+          [&](slint::RenderingState, slint::GraphicsAPI api) {
+            saw_opengl = saw_opengl || api == slint::GraphicsAPI::NativeOpenGL;
+          });
+      if (std::string_view{argv[1]} == "--dpi-physical-window")
+        app->window().set_size(slint::PhysicalSize{{1500, 960}});
+      else
+        app->window().set_size(slint::LogicalSize{{1000.0f, 640.0f}});
+    }
     app->set_theme_index(argc == 3 ? std::stoi(argv[2]) : 1);
     std::string text;
     for (int line = 0; line < 48; ++line) text += "窗口缩放测试 / Native resize rendering check.\n";
@@ -2051,6 +2121,9 @@ int main(int argc, char** argv) {
     app->set_show_update_changelog(true);
     bool invalid_frame = false;
     bool reported_window = false;
+#ifdef _WIN32
+    int stale_dpi_frames = 0;
+#endif
     slint::Timer frames;
     frames.start(slint::TimerMode::Repeated, std::chrono::milliseconds{200}, [&] {
 #ifdef _WIN32
@@ -2058,8 +2131,37 @@ int main(int argc, char** argv) {
         std::printf("resize-window,%p\n", static_cast<void*>(app->window().win32_hwnd()));
         reported_window = true;
       }
+      if (app->window().win32_hwnd() && IsIconic(app->window().win32_hwnd())) return;
 #endif
       const auto size = app->window().size();
+      if (size.width == 0 || size.height == 0) return;
+#ifdef _WIN32
+      if (dpi_fixture) {
+        const auto hwnd = app->window().win32_hwnd();
+        RECT client{};
+        const auto dpi = GetDpiForWindow(hwnd);
+        const double scale = app->window().scale_factor();
+        const bool native_valid = GetClientRect(hwnd, &client) != FALSE && dpi != 0;
+        const bool consistent = native_valid && std::isfinite(scale) && scale > 0 &&
+            std::fabs(scale - static_cast<double>(dpi) / 96.0) < 0.001 &&
+            client.right - client.left == static_cast<LONG>(size.width) &&
+            client.bottom - client.top == static_cast<LONG>(size.height);
+        std::printf("dpi-frame,%llu,%.6f,%u,%u,%u,%ld,%ld,%d,%d,%s\n",
+                    static_cast<unsigned long long>(GetTickCount64()), scale, dpi,
+                    size.width, size.height, client.right - client.left,
+                    client.bottom - client.top, saw_opengl, notifier_supported,
+                    consistent ? "consistent" : "pending");
+        std::fflush(stdout);
+        if (!consistent) {
+          if (++stale_dpi_frames >= 10) {
+            invalid_frame = true;
+            slint::quit_event_loop();
+          }
+          return;
+        }
+        stale_dpi_frames = 0;
+      }
+#endif
       const auto snapshot = app->window().take_snapshot();
       const auto current_size = app->window().size();
       if (size.width != current_size.width || size.height != current_size.height) return;
@@ -2089,7 +2191,8 @@ int main(int argc, char** argv) {
       return slint::CloseRequestResponse::HideWindow;
     });
     slint::Timer timeout;
-    timeout.start(slint::TimerMode::SingleShot, std::chrono::seconds{30}, [&] {
+    timeout.start(slint::TimerMode::SingleShot,
+                  std::chrono::seconds{dpi_fixture ? 90 : 30}, [&] {
       app->hide();
       slint::quit_event_loop();
     });

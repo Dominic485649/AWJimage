@@ -9,7 +9,9 @@
 #include <fstream>
 #include <format>
 #include <iterator>
+#include <limits>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -88,12 +90,19 @@ std::string read_text(const std::filesystem::path& path) {
 
 int main() {
   {
-    auto dimensions = awj::make_image_dimensions(4096, 4096);
+    constexpr std::uint64_t mib = 1024ull * 1024;
+    constexpr std::uint64_t n = 2048ull * 1536;
+    auto dimensions = awj::make_image_dimensions(2048, 1536);
     dimensions.opaque_sdr8_yuv420 = true;
-    const auto defaults = awj::default_app_config();
-    const auto conservative = awj::avif_encode_working_set_bytes_for_dimensions(dimensions);
-    if (awj::pipeline_detail::estimated_regular_working_set_bytes(dimensions, defaults) >= conservative)
-      return fail("Known ordinary SDR420 did not use its calibrated memory profile");
+    dimensions.source_bit_depth = 8;
+    dimensions.source_dynamic_range = awj::ImageDynamicRangeHint::sdr;
+    dimensions.decoded_storage_bytes = n * 3 / 2;
+    auto defaults = awj::default_app_config();
+    defaults.max_jobs = 1;
+    const auto baseline = awj::pipeline_detail::estimated_regular_memory(dimensions, defaults);
+    if (baseline.profile != "avif-native-sdr420" ||
+        baseline.bytes >= awj::avif_encode_working_set_bytes_for_dimensions(dimensions))
+      return fail("Confirmed ordinary SDR420 did not use its own memory profile");
     for (int mode = 0; mode < 10; ++mode) {
       auto cfg = defaults;
       switch (mode) {
@@ -108,9 +117,138 @@ int main() {
         case 8: cfg.chroma_mode = awj::ChromaMode::yuv444; break;
         case 9: cfg.avif_color_representation = awj::AvifColorRepresentation::rgb_identity; break;
       }
-      if (awj::pipeline_detail::estimated_regular_working_set_bytes(dimensions, cfg) < conservative)
+      const auto guarded = awj::pipeline_detail::estimated_regular_memory(dimensions, cfg);
+      if (guarded.profile == "avif-native-sdr420" || guarded.bytes < baseline.bytes)
         return fail("HDR, alpha or overridden output used an ordinary SDR memory profile");
     }
+    auto unknown = dimensions;
+    unknown.source_bit_depth = 0;
+    unknown.source_dynamic_range = awj::ImageDynamicRangeHint::unknown;
+    unknown.decoded_storage_bytes = 0;
+    const auto fallback = awj::pipeline_detail::estimated_regular_memory(unknown, defaults);
+    if (fallback.profile != "avif-general" || fallback.bytes < baseline.bytes)
+      return fail("An old native420 flag or missing hints silently treated unknown input as SDR");
+
+    auto rgb = dimensions;
+    rgb.opaque_sdr8_yuv420 = false;
+    rgb.decoded_storage_bytes = n * 4;
+    const auto ordinary = awj::pipeline_detail::estimated_regular_memory(rgb, defaults);
+    if (ordinary.profile != "avif-sdr8" || ordinary.bytes >=
+        awj::avif_encode_working_set_bytes_for_dimensions(rgb))
+      return fail("Known SDR packed input still paid the complete unknown/HDR AVIF cost");
+    auto thumbnail_cfg = defaults;
+    thumbnail_cfg.image_size_limit.mode = awj::ImageSizeLimitMode::manual;
+    thumbnail_cfg.image_size_limit.max_long_edge = 512;
+    const auto thumbnail = awj::pipeline_detail::estimated_regular_memory(rgb, thumbnail_cfg);
+    if (thumbnail.target_width != 512 || thumbnail.target_height != 384 ||
+        thumbnail.source_width != 2048 || thumbnail.source_height != 1536 ||
+        thumbnail.source_resident_bytes != ordinary.source_resident_bytes ||
+        thumbnail.decode_bytes != ordinary.decode_bytes ||
+        thumbnail.encode_bytes >= ordinary.encode_bytes ||
+        thumbnail.bytes != std::max({thumbnail.decode_bytes, thumbnail.prepare_bytes,
+            thumbnail.encode_bytes, thumbnail.metric_bytes, thumbnail.output_bytes}))
+      return fail("Thumbnail planning dropped source residency or used source-sized encoding/summed phases");
+
+    auto gain = dimensions; // An accidental native420 flag must not beat Gain Map semantics.
+    gain.source_has_gain_map = true;
+    gain.source_bit_depth = 10;
+    gain.source_dynamic_range = awj::ImageDynamicRangeHint::hdr;
+    gain.decoded_storage_bytes = n * 8;
+    gain.gain_map_width = 512;
+    gain.gain_map_height = 384;
+    const auto dual = awj::pipeline_detail::estimated_regular_memory(gain, defaults);
+    auto missing_map_geometry = gain;
+    missing_map_geometry.gain_map_width = missing_map_geometry.gain_map_height = 0;
+    const auto full_map = awj::pipeline_detail::estimated_regular_memory(missing_map_geometry, defaults);
+    if (dual.profile != "avif-dual-gain-map" || dual.source_resident_bytes < n * 24 ||
+        dual.prepare_bytes < dual.source_resident_bytes + n * 12 ||
+        full_map.bytes < dual.bytes || full_map.decode_bytes <= dual.decode_bytes ||
+        full_map.source_resident_bytes != dual.source_resident_bytes)
+      return fail("Gain Map planning lost an endpoint, decode-only auxiliary lifetime or conservative geometry");
+
+    auto jpeg = defaults;
+    jpeg.output_format = awj::OutputFormat::jpgli;
+    const auto sdr_jpeg = awj::pipeline_detail::estimated_regular_memory(rgb, jpeg);
+    const auto unknown_jpeg = awj::pipeline_detail::estimated_regular_memory(unknown, jpeg);
+    if (sdr_jpeg.profile != "jpegli-sdr" || sdr_jpeg.bytes >= unknown_jpeg.bytes)
+      return fail("Ordinary SDR JPEGli still reserved the complete HDR pipeline");
+    jpeg.jpeg_hdr = awj::JpegHdrMode::sdr;
+    if (awj::pipeline_detail::estimated_regular_memory(gain, jpeg).profile != "jpegli-source-sdr-presentation")
+      return fail("Forced SDR Gain Map output did not plan the saved source SDR presentation");
+
+    auto png = defaults;
+    png.output_format = awj::OutputFormat::png;
+    const auto rgba8 = awj::pipeline_detail::estimated_regular_memory(rgb, png);
+    auto high_depth = rgb;
+    high_depth.source_bit_depth = 16;
+    high_depth.source_has_alpha = true;
+    high_depth.decoded_storage_bytes = n * 8;
+    const auto rgba16 = awj::pipeline_detail::estimated_regular_memory(high_depth, png);
+    auto explicit_png16 = png;
+    explicit_png16.bit_depth = 16;
+    const auto requested16 = awj::pipeline_detail::estimated_regular_memory(high_depth, explicit_png16);
+    if (rgba8.profile != "png-rgba8" || rgba8.bytes >= 128 * mib ||
+        rgba16.profile != "png-rgba8" || rgba16.bytes <= rgba8.bytes || rgba16.bytes < 73 * mib ||
+        requested16.profile != "png-rgba16" || requested16.encode_bytes <= rgba16.encode_bytes)
+      return fail("PNG planning ignored SDR auto8, retained 16-bit source storage or explicit16 output");
+    const auto hdr_single = awj::pipeline_detail::estimated_regular_memory(gain, png);
+    if (hdr_single.source_resident_bytes >= dual.source_resident_bytes ||
+        hdr_single.source_resident_bytes < n * 16)
+      return fail("HDR-only PNG retained an unused alternate endpoint or dropped its selected HDR storage");
+
+    auto alpha = rgb;
+    alpha.source_has_alpha = true;
+    auto webp = defaults;
+    webp.output_format = awj::OutputFormat::webp;
+    auto jxl = defaults;
+    jxl.output_format = awj::OutputFormat::jxl;
+    if (awj::pipeline_detail::estimated_regular_memory(alpha, webp).bytes < 115 * mib ||
+        awj::pipeline_detail::estimated_regular_memory(rgb, jxl).bytes < 188 * mib ||
+        awj::pipeline_detail::estimated_regular_memory(alpha, jxl).bytes < 261 * mib ||
+        awj::pipeline_detail::estimated_regular_memory(gain, jxl).profile != "jxl-dual-gain-map")
+      return fail("WebP/JXL planning is below the recorded 3MP workload or lost dual presentation");
+    auto threaded = jxl;
+    threaded.max_jobs = 8;
+    if (awj::pipeline_detail::estimated_regular_memory(alpha, threaded).bytes <=
+        awj::pipeline_detail::estimated_regular_memory(alpha, jxl).bytes)
+      return fail("Codec thread headroom did not participate in memory admission");
+    auto metrics = defaults;
+    metrics.visual_quality = 90;
+    const auto measured_target = awj::pipeline_detail::estimated_regular_memory(rgb, metrics);
+    if (!measured_target.metric_bytes || measured_target.encode_bytes <= ordinary.encode_bytes)
+      return fail("Cached metric reference/best-candidate storage was omitted from candidate encoding");
+    auto metric_thumbnail_cfg = metrics;
+    metric_thumbnail_cfg.image_size_limit = thumbnail_cfg.image_size_limit;
+    const auto metric_thumbnail = awj::pipeline_detail::estimated_regular_memory(rgb, metric_thumbnail_cfg);
+    auto padded_source = rgb;
+    padded_source.decoded_storage_bytes = n * 8;
+    const auto padded_thumbnail = awj::pipeline_detail::estimated_regular_memory(padded_source, metric_thumbnail_cfg);
+    if (metric_thumbnail.metric_bytes >= measured_target.metric_bytes ||
+        padded_thumbnail.decode_bytes <= metric_thumbnail.decode_bytes ||
+        padded_thumbnail.encode_bytes != metric_thumbnail.encode_bytes)
+      return fail("Physical metric resize retained already released source padding or source-sized metric workspaces");
+    auto icc_dimensions = rgb;
+    icc_dimensions.source_icc_bytes = 660;
+    const auto ordinary_icc_hint = awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults);
+    if (ordinary_icc_hint.decode_bytes != ordinary.decode_bytes ||
+        ordinary_icc_hint.prepare_bytes != ordinary.prepare_bytes)
+      return fail("非 Gain Map 输入错误地支付了新增 ICC 校验暂存。");
+    icc_dimensions.source_has_gain_map = true;
+    const auto icc_estimate = awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults);
+    icc_dimensions.source_icc_bytes = 0;
+    const auto no_icc_estimate = awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults);
+    if (icc_estimate.decode_bytes != no_icc_estimate.decode_bytes + 660 ||
+        icc_estimate.prepare_bytes != no_icc_estimate.prepare_bytes + 660 ||
+        icc_estimate.encode_bytes != no_icc_estimate.encode_bytes)
+      return fail("Gain Map ICC 校验没有按实际单 profile 字节计入对应阶段。");
+    icc_dimensions.source_icc_bytes = UINT64_MAX;
+    if (awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults).bytes != UINT64_MAX)
+      return fail("ICC profile 字节计费溢出后错误准入。");
+    auto overflow = awj::make_image_dimensions(UINT32_MAX, UINT32_MAX);
+    if (awj::pipeline_detail::estimated_regular_memory(overflow, defaults).bytes != UINT64_MAX ||
+        awj::pipeline_detail::estimated_regular_memory(rgb, png, UINT64_MAX).bytes != UINT64_MAX ||
+        awj::pipeline_detail::estimated_regular_memory({}, defaults).bytes != UINT64_MAX)
+      return fail("Image working-set dimensions/input arithmetic overflowed or admitted empty geometry");
   }
   const auto root = std::filesystem::temp_directory_path() / "awjimage-pipeline-security-tests";
   std::error_code ec;
@@ -118,6 +256,55 @@ int main() {
   std::filesystem::create_directories(root, ec);
   if (ec) {
     return fail("failed to create temp root.");
+  }
+  {
+    const auto input = root / "memory-unlock.webp";
+    if (auto written = write_webp(input); !written) return fail(written.error());
+    for (const auto configured : {0ull, 64ull * 1024 * 1024}) {
+      auto cfg = awj::default_app_config();
+      cfg.input_path = input;
+      cfg.output_dir = root / std::format("memory-unlock-{}", configured);
+      cfg.output_format = awj::OutputFormat::png;
+      cfg.quality = 100;
+      cfg.max_jobs = 1;
+      cfg.memory_limit_bytes = configured;
+      cfg.unlock_memory_limit = true;
+      cfg.write_summary = true;
+      bool traced = false;
+      auto summary = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+        if (event.kind == awj::BatchEventKind::item_finished) {
+          const auto& result = event.result;
+          traced = result.ok && result.memory_budget_bytes == 0 &&
+              result.memory_budget_mode == "unlocked" && result.memory_budget_source == "session_unlock" &&
+              result.estimated_working_set_bytes > 0 && !result.memory_estimate_profile.empty() &&
+              result.memory_source_width == 2 && result.memory_source_height == 2 &&
+              result.memory_target_width == 2 && result.memory_target_height == 2;
+        }
+      });
+      const auto csv = read_text(cfg.output_dir / "summary.csv");
+      if (!summary || summary->ok_count != 1 || !traced ||
+          csv.find("memory_budget_bytes,memory_budget_mode,memory_budget_source,estimated_working_set_bytes") == std::string::npos ||
+          csv.find(",0,unlocked,session_unlock,") == std::string::npos)
+        return fail("Successful session-unlocked work lost zero budget, mode/source or estimate CSV diagnostics.");
+      cfg.output_format = awj::OutputFormat::avif;
+      cfg.studio_large_action = L"grid";
+      cfg.output_dir = root / std::format("manual-memory-unlock-{}", configured);
+      std::stop_source cancel;
+      cancel.request_stop();
+      bool manual_traced = false;
+      auto manual = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+        if (event.kind == awj::BatchEventKind::item_finished) {
+          const auto& result = event.result;
+          manual_traced = result.canceled && result.memory_budget_bytes == 0 &&
+              result.memory_budget_mode == "unlocked" && result.memory_budget_source == "session_unlock" &&
+              result.estimated_working_set_bytes > 0 && result.encoder_threads == 0 &&
+              result.seconds == 0 && result.decode_seconds == 0 && result.encode_seconds == 0;
+        }
+      }, cancel.get_token());
+      if (!manual || !manual->canceled || !manual_traced ||
+          read_text(cfg.output_dir / "summary.csv").find(",0,unlocked,session_unlock,") == std::string::npos)
+        return fail("Manual Grid worker reinterpreted unlocked zero as automatic or fabricated unstarted measurements.");
+    }
   }
   {
     const auto source = make_test_image();
@@ -172,7 +359,7 @@ int main() {
         return fail(context + ": backend conversion failed: " + result.message);
       auto restored = awj::PngImageDecoder{}.decode(result.output_path);
       if (!restored) return fail(context + ": " + restored.error());
-      const int storage_depth = depth > 8 ? 16 : 8;
+      const int storage_depth = 8; // 所选呈现为 SDR，PNG 自动位深固定为兼容的 8-bit。
       const auto png_bytes = read_text(result.output_path);
       if (restored->image.width != source.width || restored->image.height != source.height ||
           restored->image.bit_depth != storage_depth || png_bytes.size() < 25 ||
@@ -203,16 +390,27 @@ int main() {
   }
   {
     auto cfg = awj::default_app_config();
-    cfg.output_dir = root;
+    cfg.output_dir = root / "grid-memory-preflight";
+    cfg.memory_limit_bytes = 64ull * 1024 * 1024;
     awj::FileLogger logger{root, false};
     awj::BatchLargeImageItem oversized{
         .file = {.path = root / "nonexistent-huge-input.png"},
         .dimensions = awj::make_image_dimensions(65537, 4096),
         .decision = {.available_grid = true}};
     const auto result = awj::pipeline_detail::encode_large_mode_item(cfg, logger, oversized,
-        {.memory_limit_bytes = 64ull * 1024 * 1024}, {});
-    if (result.ok || result.message.find("超过内存预算") == std::string::npos)
-      return fail("Grid did not reject its working set before decoding input");
+        {.memory_limit_bytes = cfg.memory_limit_bytes}, {});
+    if (result.ok || result.message.find("超过内存预算") == std::string::npos ||
+        result.memory_budget_bytes != cfg.memory_limit_bytes || result.memory_budget_mode != "manual" ||
+        result.memory_budget_source != "configuration" ||
+        result.estimated_working_set_bytes <= result.memory_budget_bytes ||
+        result.memory_source_width != 65537 || result.memory_source_height != 4096 ||
+        result.encoder_threads != 0 || result.seconds != 0 || result.decode_seconds != 0 ||
+        result.prepare_seconds != 0 || result.encode_seconds != 0 || result.write_seconds != 0)
+      return fail("Grid preflight failed to record its actual budget/estimate or fabricated encoder work");
+    if (auto csv = awj::write_csv(cfg.output_dir, std::span<const awj::EncodeResult>{&result, 1}); !csv)
+      return fail(csv.error());
+    if (read_text(cfg.output_dir / "summary.csv").find(",67108864,manual,configuration,") == std::string::npos)
+      return fail("Budget rejection CSV silently emitted zero instead of the actual manual budget");
   }
   {
     auto wide = make_test_image();
@@ -237,9 +435,36 @@ int main() {
     cfg.memory_limit_bytes = 2ull * 1024 * 1024 * 1024;
     cfg.chroma_mode = awj::ChromaMode::yuv444;
     cfg.write_summary = true;
-    auto summary = awj::run_batch(cfg);
+    auto rejected_cfg = cfg;
+    rejected_cfg.output_dir = root / "auto-grid-memory-reject";
+    rejected_cfg.memory_limit_bytes = 64ull * 1024 * 1024;
+    bool rejected_before_start = false;
+    int rejected_started = 0;
+    auto rejected_summary = awj::run_batch(rejected_cfg, [&](const awj::BatchProgress& event) {
+      if (event.kind == awj::BatchEventKind::item_started) ++rejected_started;
+      if (event.kind == awj::BatchEventKind::item_finished) {
+        const auto& result = event.result;
+        rejected_before_start = !result.ok && result.memory_budget_bytes == rejected_cfg.memory_limit_bytes &&
+            result.memory_budget_mode == "manual" && result.memory_budget_source == "configuration" &&
+            result.estimated_working_set_bytes > result.memory_budget_bytes &&
+            result.memory_estimate_profile.starts_with("avif-grid") &&
+            result.memory_source_width == 65537 && result.memory_source_height == 64 &&
+            result.encoder_threads == 0 && result.decode_seconds == 0 && result.encode_seconds == 0;
+      }
+    });
+    if (!rejected_summary || rejected_summary->failed_count != 1 || !rejected_before_start || rejected_started ||
+        read_text(rejected_cfg.output_dir / "summary.csv").find(",67108864,manual,configuration,") == std::string::npos)
+      return fail("Batch admission rejection lost its Grid estimate/budget or reported encoder work before start");
+    bool successful_trace = false;
+    auto summary = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+      if (event.kind == awj::BatchEventKind::item_finished)
+        successful_trace = event.result.ok && event.result.memory_budget_bytes == cfg.memory_limit_bytes &&
+            event.result.memory_budget_mode == "manual" && event.result.memory_budget_source == "configuration" &&
+            event.result.memory_estimate_profile.starts_with("avif-grid") &&
+            event.result.estimated_working_set_bytes > 0;
+    });
     if (!summary) return fail(summary.error());
-    if (summary->ok_count != 1) return fail("automatic Grid encode failed: " + read_text(cfg.output_dir / "summary.csv"));
+    if (summary->ok_count != 1 || !successful_trace) return fail("automatic Grid encode failed or lost memory diagnostics: " + read_text(cfg.output_dir / "summary.csv"));
     auto decoded = awj::make_avif_image_decoder(1)->decode(cfg.output_dir / "auto-grid.avif");
     if (!summary || summary->ok_count != 1 || !decoded || decoded->image.width != 65537 || decoded->image.height != 64)
       return fail(decoded ? "automatic Grid changed original dimensions" : decoded.error());
@@ -496,9 +721,17 @@ int main() {
   invalid_batch_cfg.output_format = awj::OutputFormat::avif;
   invalid_batch_cfg.max_jobs = 2;
   invalid_batch_cfg.quality = 90;
-  invalid_batch_cfg.write_log = false;
+  invalid_batch_cfg.write_log = true;
   invalid_batch_cfg.write_summary = true;
-  const auto invalid_batch_summary = awj::run_batch(invalid_batch_cfg);
+  awj::EncodeResult invalid_decode_result;
+  bool saw_invalid_decode = false;
+  const auto invalid_batch_summary = awj::run_batch(invalid_batch_cfg, [&](const awj::BatchProgress& event) {
+    if (event.kind == awj::BatchEventKind::item_finished &&
+        event.result.input_path.filename() == "empty.webp") {
+      invalid_decode_result = event.result;
+      saw_invalid_decode = true;
+    }
+  });
   if (!invalid_batch_summary || invalid_batch_summary->ok_count != 1 ||
       invalid_batch_summary->failed_count != 1 ||
       !std::filesystem::exists(invalid_batch_output / "valid.avif")) {
@@ -509,8 +742,26 @@ int main() {
   const auto invalid_batch_csv =
       read_text(invalid_batch_output / "summary.csv");
   if (invalid_batch_csv.find("empty.webp") == std::string::npos ||
-      invalid_batch_csv.find("failed") == std::string::npos) {
-    return fail("invalid AVIF batch input was not recorded as one failed item.");
+      invalid_batch_csv.find("failed") == std::string::npos ||
+      invalid_batch_csv.find("decode_stage,source_metadata_available,selected_rendition,rendition_origin") == std::string::npos ||
+      invalid_batch_csv.find("heif_tile_parallelism,heif_codec_thread_budget,awj_version\n") == std::string::npos) {
+    return fail("invalid AVIF batch input was not recorded with its diagnostic columns.");
+  }
+  if (!saw_invalid_decode || invalid_decode_result.ok || !invalid_decode_result.processed ||
+      invalid_decode_result.decode_stage.empty() || invalid_decode_result.source_metadata_available ||
+      invalid_decode_result.seconds <= 0 || invalid_decode_result.decode_seconds < 0 ||
+      invalid_decode_result.encoder_threads != 0 || invalid_decode_result.output_bytes != 0 ||
+      invalid_decode_result.encode_seconds >= 0) {
+    return fail("解码失败丢失执行阶段/真实耗时，或冒填尚未开始的编码与源元数据。");
+  }
+  const auto invalid_batch_log = read_text(invalid_batch_output / "log" / "awj.log");
+  const auto failure_position = invalid_batch_log.find("[FAIL]");
+  if (failure_position == std::string::npos ||
+      invalid_batch_log.find("[FAIL]", failure_position + 1) != std::string::npos ||
+      invalid_batch_log.find("empty.webp", failure_position) == std::string::npos ||
+      invalid_batch_log.find("decode_stage=" + invalid_decode_result.decode_stage, failure_position) == std::string::npos ||
+      invalid_batch_log.find("source_icc=unknown", failure_position) == std::string::npos) {
+    return fail("普通解码失败没有恰好写入一条带真实阶段的文件日志，或把未知 ICC 误记为不存在。");
   }
 
 #ifdef _WIN32

@@ -513,6 +513,24 @@ bool opaque_sdr8_yuv420_header(const jpeg_decompress_struct& cinfo) noexcept {
   return true;
 }
 
+void fill_memory_profile(ImageDimensions& dimensions, int precision, bool has_icc,
+                         bool opaque_sdr8_yuv420) noexcept {
+  dimensions.source_bit_depth = precision;
+  dimensions.source_has_alpha = false;
+  dimensions.source_dynamic_range = !has_icc ? ImageDynamicRangeHint::sdr : ImageDynamicRangeHint::unknown;
+  dimensions.opaque_sdr8_yuv420 = opaque_sdr8_yuv420;
+  const auto pixels = static_cast<std::uint64_t>(dimensions.width) * dimensions.height;
+  const auto bytes_per_pixel = precision > 8 ? 8u : 4u;
+  dimensions.decoded_storage_bytes = pixels > UINT64_MAX / bytes_per_pixel ? UINT64_MAX : pixels * bytes_per_pixel;
+}
+
+void fill_memory_profile(const jpeg_decompress_struct& cinfo, ImageDimensions& dimensions) noexcept {
+  bool has_icc = false;
+  for (auto* marker = cinfo.marker_list; marker; marker = marker->next)
+    has_icc |= marker->marker == JPEG_APP0 + 2 && has_icc_signature(*marker);
+  fill_memory_profile(dimensions, cinfo.data_precision, has_icc, opaque_sdr8_yuv420_header(cinfo));
+}
+
 }  // namespace jpeg_detail
 
 class JpegImageDecoder final : public ImageDecoder {
@@ -578,7 +596,7 @@ class JpegImageDecoder final : public ImageDecoder {
       }
       auto dimensions = decoder_common::make_image_dimensions_checked(cinfo.image_width,
                                                            cinfo.image_height, "JPEG");
-      if (dimensions) dimensions->opaque_sdr8_yuv420 = jpeg_detail::opaque_sdr8_yuv420_header(cinfo);
+      if (dimensions) jpeg_detail::fill_memory_profile(cinfo, *dimensions);
       return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"JPEG 尺寸探测内存不足。"};
@@ -619,10 +637,13 @@ class JpegImageDecoder final : public ImageDecoder {
       // Run before constructing the libjpeg longjmp context. Recognized legacy
       // or invalid ISO HDR is terminal, including this direct-codec entry point.
       {
-        auto enhanced = decode_jpeg_gain_map(bytes);
+        auto enhanced = decode_jpeg_gain_map(bytes, {}, 1, options.gain_map_mode);
         if (!enhanced) return std::unexpected{enhanced.error()};
         if (*enhanced) {
-          if (!copy_metadata) (**enhanced).image.metadata.clear();
+          if (!copy_metadata) {
+            (**enhanced).image.metadata.clear();
+            if ((**enhanced).gain_map_alternative) (**enhanced).gain_map_alternative->image.metadata.clear();
+          }
           return std::move(**enhanced);
         }
       }

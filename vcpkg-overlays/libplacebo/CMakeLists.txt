@@ -8,15 +8,15 @@ endif()
 set(PL_GENERATED_INCLUDE "${CMAKE_CURRENT_BINARY_DIR}/generated")
 file(MAKE_DIRECTORY "${PL_GENERATED_INCLUDE}/libplacebo")
 set(majorver 7)
-set(apiver 360)
-set(buildver "v7.360.1")
+set(apiver 387)
+set(buildver "v7.387.0")
 set(extra_defs "#undef PL_HAVE_D3D11\n#undef PL_HAVE_DOVI\n#undef PL_HAVE_GLSLANG\n#undef PL_HAVE_LCMS\n#undef PL_HAVE_LIBDOVI\n#undef PL_HAVE_OPENGL\n#undef PL_HAVE_SHADERC\n#undef PL_HAVE_VK_PROC_ADDR\n#undef PL_HAVE_VULKAN\n#undef PL_HAVE_XXHASH")
 configure_file("${LIBPLACEBO_SOURCE_DIR}/src/include/libplacebo/config.h.in"
                "${PL_GENERATED_INCLUDE}/libplacebo/config.h" @ONLY)
 configure_file("${LIBPLACEBO_SOURCE_DIR}/src/version.h.in"
                "${CMAKE_CURRENT_BINARY_DIR}/version.h" @ONLY)
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/config_internal.h"
-"#pragma once\n#define BUILD_API_VER 360\n#define BUILD_FIX_VER 1\n#undef PL_DEBUG_ABORT\n#undef PL_HAVE_DBGHELP\n#undef PL_HAVE_EXECINFO\n#undef PL_HAVE_UNWIND\n#define BUILD_VERSION \"v7.360.1\"\n")
+"#pragma once\n#define BUILD_API_VER 387\n#define BUILD_FIX_VER 0\n#undef PL_DEBUG_ABORT\n#undef PL_HAVE_DBGHELP\n#undef PL_HAVE_EXECINFO\n#undef PL_HAVE_UNWIND\n#define BUILD_VERSION \"v7.387.0\"\n")
 
 add_library(placebo STATIC
     "${LIBPLACEBO_SOURCE_DIR}/src/common.c"

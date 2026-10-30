@@ -193,9 +193,14 @@ $PinnedFetchContentCommits = @{
 $PinnedFetchContentPatchedFiles = @{
     "libavif" = @(
         " M include/avif/avif.h",
-        " M src/write.c"
+        " M src/gainmap.c",
+        " M src/read.c",
+        " M src/write.c",
+        "?? include/avif/awj_gain_map.h"
     )
     "slint"   = @(
+        " M Cargo.toml",
+        " M Cargo.lock",
         " M api/cpp/Cargo.toml",
         " M api/cpp/include/private/slint_config.h",
         " M api/cpp/include/private/slint_models.h",
@@ -354,6 +359,7 @@ libplacebo: $LibplaceboVersion
 libheif: $($CodecLock.libheif.tag.TrimStart('v')) (decoder-only; libde265 backend)
 libde265: $($CodecLock.libde265.tag.TrimStart('v')) (decoder library only)
 libultrahdr: $($CodecLock.libultrahdr.tag.TrimStart('v')) (CPU HDR JPEG and gain maps)
+winit: $($CodecLock.winit.version) ($($CodecLock.winit.commit); project-local DPI backport)
 
 FetchContent Dependencies (actual commits):
   libavif:     $LibavifCommit
@@ -424,6 +430,7 @@ $LockHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Tex
     git_head=$GitHead; source_dirty=[bool]$GitDirty; dependency_lock_sha256=$LockHash
     profile=[ordered]@{build_type='Release'; minimum_cpu='AVX2'; ipo=[bool]$EnableLto; static_runtime=[bool]$UseStaticRuntime; triplet=$VcpkgTriplet}
     runtime_output_root=$RuntimeOutputRoot; build_directory=$BuildDir; binaries=@($BinaryEvidence)
+    winit=[ordered]@{version=$CodecLock.winit.version; commit=$CodecLock.winit.commit; source_archive_sha256=$CodecLock.winit.sha256; backport_commits=@($CodecLock.winit.backport_commits)}
     verification=[ordered]@{compiled_source_verified=$true; binary_version=$true}
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputDir 'build-evidence.json') -Encoding utf8
 Write-Host ""

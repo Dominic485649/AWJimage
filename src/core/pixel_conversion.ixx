@@ -38,6 +38,8 @@ struct PixelConversionRequest {
   int color_range{1};
   bool preserve_alpha{true};
   bool tone_map_to_sdr{};
+  std::optional<int> color_primaries{};
+  std::optional<int> transfer_characteristics{};
 };
 
 bool is_yuv_format(PixelFormat format) noexcept {
@@ -50,6 +52,8 @@ bool pixels_match(const ImageBuffer& image, const PixelConversionRequest& reques
       image.sample_representation == SampleRepresentation::unorm && !request.tone_map_to_sdr && !image.geometry &&
       image.alpha_mode != AlphaMode::premultiplied &&
       (request.preserve_alpha || image.alpha_mode == AlphaMode::none) &&
+      (!request.color_primaries || (image.source_info && image.source_info->color_primaries == request.color_primaries)) &&
+      (!request.transfer_characteristics || (image.source_info && image.source_info->transfer_characteristics == request.transfer_characteristics)) &&
       (!is_yuv_format(request.format) || (image.source_info &&
        image.source_info->matrix_coefficients.value_or(6) == request.matrix_coefficients &&
        image.source_info->color_range.value_or(1) == request.color_range));
@@ -215,41 +219,90 @@ struct Reader {
   }
 };
 
-// Only linear FP16 -> HDR10 materialization remains local. SDR tone/gamut
-// processing below uses awj.hdr_tonemap's prepared, resource-bounded engine.
+// 仅在要求真实颜色转换或物化FP16时启用；普通布局／位深转换不改变传递函数。
 struct HdrMap {
   hdr::hdr_detail::SourceTransform source{};
   pl_matrix3x3 matrix{};
+  pl_color_space output_space{};
+  float (*to_linear)(float){};
+  float (*from_linear)(float){};
+  int primaries{9};
+  int transfer{16};
   bool enabled{};
+  bool source_hdr{};
+  bool target_hdr{};
 
   std::expected<std::array<float, 4>, std::string> operator()(std::array<float, 4> rgba) const {
     for (float value : rgba) if (!std::isfinite(value)) return std::unexpected{"像素输入含非有限值。"};
     if (!enabled) return rgba;
-    auto rgb = hdr::hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, source);
-    if (!rgb) return std::unexpected{rgb.error()};
-    pl_matrix3x3_apply(&matrix, rgb->data());
-    if (!hdr::hdr_detail::finite_rgb(*rgb)) return std::unexpected{"HDR10 原色矩阵产生了非有限值。"};
-    for (std::size_t c = 0; c < 3; ++c) {
-      rgba[c] = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, (*rgb)[c]);
-      if (!std::isfinite(rgba[c])) return std::unexpected{"HDR10 PQ 编码产生了非有限值。"};
-    }
+    std::array<float, 3> rgb{rgba[0], rgba[1], rgba[2]};
+    if (source_hdr) {
+      auto nits = hdr::hdr_detail::linear_nits(rgb, source);
+      if (!nits) return std::unexpected{nits.error()};
+      rgb = *nits;
+    } else for (auto& value : rgb) value = to_linear(value) * 203.0F;
+    pl_matrix3x3_apply(&matrix, rgb.data());
+    if (!hdr::hdr_detail::finite_rgb(rgb)) return std::unexpected{"颜色转换矩阵产生了非有限值。"};
+    if (target_hdr && transfer == 18) {
+      for (auto& value : rgb) value = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_NORM, std::max(value, 0.0F));
+      // 锁定 libplacebo 的逆 HLG OOTF 在零亮度会产生 inf*0；使用黑点的连续极限。
+      if (rgb[0] == 0.0F && rgb[1] == 0.0F && rgb[2] == 0.0F) rgb.fill(0.0F);
+      else pl_color_delinearize(&output_space, rgb.data());
+    } else for (auto& value : rgb) value = target_hdr
+        ? pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, value) : from_linear(value / 203.0F);
+    if (!hdr::hdr_detail::finite_rgb(rgb)) return std::unexpected{"目标传递函数产生了非有限值。"};
+    std::copy(rgb.begin(), rgb.end(), rgba.begin());
     return rgba;
   }
 };
 
-std::expected<HdrMap, std::string> hdr_map(const Reader& reader, std::stop_token stop) {
+std::expected<HdrMap, std::string> hdr_map(const Reader& reader,
+    const PixelConversionRequest& request, std::stop_token stop) {
   if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
   HdrMap result{};
-  if (reader.image.sample_representation != SampleRepresentation::ieee_half_float) return result;
-  auto source = hdr::hdr_detail::make_source_transform(reader.image);
-  if (!source) return std::unexpected{source.error()};
-  const auto* output = pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020);
-  if (!output) return std::unexpected{"目标原色不可用。"};
-  result.source = *source; result.enabled = true;
-  result.matrix = pl_raw_primaries_equal(source->primaries, output)
+  const bool floating = reader.image.sample_representation == SampleRepresentation::ieee_half_float;
+  const auto info = reader.image.source_info;
+  const bool changed = (request.color_primaries && (!info || info->color_primaries != request.color_primaries)) ||
+      (request.transfer_characteristics && (!info || info->transfer_characteristics != request.transfer_characteristics));
+  if (!floating && !changed) return result;
+  auto signal = hdr::has_explicit_hdr_signal(reader.image);
+  if (!signal) return std::unexpected{signal.error()};
+  result.source_hdr = *signal;
+  const pl_raw_primaries* input = nullptr;
+  if (*signal) {
+    auto source = hdr::hdr_detail::make_source_transform(reader.image);
+    if (!source) return std::unexpected{source.error()};
+    result.source = *source;
+    input = source->primaries;
+  } else {
+    if (!info || !info->color_primaries || !info->transfer_characteristics)
+      return std::unexpected{"颜色转换缺少明确的源原色／传递函数，拒绝只重标标签。"};
+    const int tc = *info->transfer_characteristics;
+    if (!(tc == 1 || (tc >= 4 && tc <= 15) || tc == 17))
+      return std::unexpected{"颜色转换不支持该 SDR 传递函数。"};
+    result.to_linear = avifTransferCharacteristicsGetGammaToLinearFunction(static_cast<avifTransferCharacteristics>(tc));
+    input = hdr::hdr_detail::primaries_from_cicp(*info->color_primaries);
+  }
+  result.primaries = request.color_primaries.value_or(floating ? 9 : info->color_primaries.value_or(0));
+  result.transfer = request.transfer_characteristics.value_or(floating ? 16 : info->transfer_characteristics.value_or(0));
+  const auto* output = hdr::hdr_detail::primaries_from_cicp(result.primaries);
+  if (!input || !output) return std::unexpected{"颜色转换不支持该源／目标原色。"};
+  result.target_hdr = result.transfer == 16 || result.transfer == 18;
+  if (!result.target_hdr && *signal) return std::unexpected{"HDR 转 SDR 需要明确的 tone-map，不能仅覆盖传递函数。"};
+  if (!result.target_hdr) {
+    if (!(result.transfer == 1 || (result.transfer >= 4 && result.transfer <= 15) || result.transfer == 17))
+      return std::unexpected{"颜色转换不支持该目标传递函数。"};
+    result.from_linear = avifTransferCharacteristicsGetLinearToGammaFunction(static_cast<avifTransferCharacteristics>(result.transfer));
+  }
+  result.output_space.primaries = result.primaries == 9 ? PL_COLOR_PRIM_BT_2020
+      : result.primaries == 12 ? PL_COLOR_PRIM_DISPLAY_P3 : PL_COLOR_PRIM_BT_709;
+  result.output_space.transfer = PL_COLOR_TRC_HLG;
+  result.output_space.hdr.max_luma = PL_COLOR_HLG_PEAK;
+  result.enabled = true;
+  result.matrix = pl_raw_primaries_equal(input, output)
       ? pl_matrix3x3{.m = {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}}}
-      : pl_get_color_mapping_matrix(source->primaries, output, PL_INTENT_RELATIVE_COLORIMETRIC);
-  if (!hdr::hdr_detail::finite_matrix(result.matrix)) return std::unexpected{"HDR10 原色矩阵包含非有限值。"};
+      : pl_get_color_mapping_matrix(input, output, PL_INTENT_RELATIVE_COLORIMETRIC);
+  if (!hdr::hdr_detail::finite_matrix(result.matrix)) return std::unexpected{"颜色矩阵包含非有限值。"};
   return result;
 }
 
@@ -426,7 +479,10 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
         if (!prepared) return std::unexpected{prepared.error()};
         auto mapped = hdr::tone_map_to_sdr_srgb(source, *prepared, depth, stop, tone_resources);
         if (!mapped) return std::unexpected{mapped.error()};
-        if (request.format == PixelFormat::rgba && request.bit_depth == depth) {
+        const bool remaining_color_conversion =
+            (request.color_primaries && mapped->source_info->color_primaries != request.color_primaries) ||
+            (request.transfer_characteristics && mapped->source_info->transfer_characteristics != request.transfer_characteristics);
+        if (request.format == PixelFormat::rgba && request.bit_depth == depth && !remaining_color_conversion) {
           if (!request.preserve_alpha) {
             mapped->alpha_mode = AlphaMode::none;
             for (std::size_t y = 0; y < mapped->height; ++y) {
@@ -447,7 +503,7 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
         return convert_image_pixels(*mapped, destination, stop, resources);
       }
     }
-    auto mapping = pixel_detail::hdr_map(reader, stop);
+    auto mapping = pixel_detail::hdr_map(reader, request, stop);
     if (!mapping) return std::unexpected{mapping.error()};
     ImageBuffer output{.width = source.width, .height = source.height, .pixel_format = request.format,
         .alpha_mode = request.preserve_alpha && source.alpha_mode != AlphaMode::none ? AlphaMode::straight : AlphaMode::none,
@@ -456,11 +512,12 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
     output.source_info->matrix_coefficients = is_yuv_format(request.format) ? request.matrix_coefficients : 0;
     output.source_info->color_range = request.color_range;
     if (mapping->enabled) {
-      output.source_info->color_primaries = 9;
-      output.source_info->transfer_characteristics = 16;
-      output.source_info->has_hdr_metadata = true;
+      output.source_info->color_primaries = mapping->primaries;
+      output.source_info->transfer_characteristics = mapping->transfer;
+      output.source_info->has_hdr_metadata = mapping->target_hdr;
       output.source_info->content_light.reset();
-      output.source_info->color_metadata_source = "scrgb-linear-to-bt2020-pq";
+      output.source_info->color_metadata_source = source.sample_representation == SampleRepresentation::ieee_half_float
+          ? "scrgb-linear-to-bt2020-pq" : "converted-cicp-pixels";
       std::erase_if(output.metadata, [](const MetadataBlock& block) { return block.kind == MetadataKind::icc; });
     }
     const bool yuv = is_yuv_format(request.format);

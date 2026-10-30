@@ -1,6 +1,7 @@
 module;
 
 #include <algorithm>
+#include <chrono>
 #include <bit>
 #include <cmath>
 #include <cstddef>
@@ -23,6 +24,7 @@ module;
 #include <avif/internal.h>
 #include <libheif/heif_items.h>
 #include <libheif/heif_properties.h>
+#include <libheif/heif_tiling.h>
 #include "heif_gain_map_adapter.h"
 
 export module awj.heif_codec;
@@ -35,6 +37,7 @@ import awj.gain_map;
 import awj.hdr_tonemap;
 import awj.image;
 import awj.pixel_conversion;
+import awj.resource_planner;
 import awj.large_image_plan;
 
 export namespace awj {
@@ -141,17 +144,20 @@ ImageSourceInfo source_info_from_handle(const heif_image_handle* handle) noexcep
   return source;
 }
 
-void fill_missing_nclx_from_decoded(ImageSourceInfo& source, const heif_image* image) noexcept {
+void fill_missing_nclx_from_decoded(ImageSourceInfo& source, const heif_image* image,
+                                    bool has_input_icc = false) noexcept {
   heif_color_profile_nclx* raw_nclx = nullptr;
   const auto error = heif_image_get_nclx_color_profile(image, &raw_nclx);
   NclxPtr nclx{raw_nclx};
   if (error.code != heif_error_Ok || !nclx) {
     return;
   }
-  if (!source.color_primaries) {
+  // ICC 自己解释 RGB 色度和曲线。解码库补出的默认 NCLX 不等于输入信令，
+  // 不能据此把 ICC 主图误标为 sRGB，或制造与真实 ICC 的假冲突。
+  if (!has_input_icc && !source.color_primaries) {
     source.color_primaries = cicp_value(static_cast<int>(nclx->color_primaries));
   }
-  if (!source.transfer_characteristics) {
+  if (!has_input_icc && !source.transfer_characteristics) {
     source.transfer_characteristics =
         cicp_value(static_cast<int>(nclx->transfer_characteristics));
   }
@@ -161,10 +167,30 @@ void fill_missing_nclx_from_decoded(ImageSourceInfo& source, const heif_image* i
   if (!source.color_range) {
     source.color_range = nclx->full_range_flag ? 1 : 0;
   }
-  if (source.color_metadata_source.empty()) {
+  if (!has_input_icc && source.color_metadata_source.empty()) {
     source.color_metadata_source = "heif-nclx";
   }
   source.has_hdr_metadata = source.has_hdr_metadata || hdr_cicp(source);
+}
+
+void begin_decode_diagnostics(DecodeDiagnostics* diagnostics, std::string_view stage) {
+  if (diagnostics) {
+    *diagnostics = DecodeDiagnostics{.decoder_id = "libheif-libde265", .stage = std::string{stage}};
+  }
+}
+
+void capture_handle_diagnostics(DecodeDiagnostics* diagnostics, const heif_image_handle* handle) {
+  if (!diagnostics) return;
+  diagnostics->source_info = source_info_from_handle(handle);
+  diagnostics->source_has_icc = heif_image_handle_get_raw_color_profile_size(handle) != 0;
+  diagnostics->source_has_alpha_channel = heif_image_handle_has_alpha_channel(handle) != 0;
+  diagnostics->source_alpha_mode = !diagnostics->source_has_alpha_channel ? AlphaMode::none :
+      heif_image_handle_is_premultiplied_alpha(handle) ? AlphaMode::premultiplied : AlphaMode::straight;
+  if (diagnostics->source_has_icc) {
+    auto& source = *diagnostics->source_info;
+    source.color_metadata_source = source.color_primaries || source.transfer_characteristics
+        ? "heif-icc+nclx" : "heif-icc";
+  }
 }
 
 std::expected<void, std::string> append_metadata(ImageBuffer& image, MetadataKind kind,
@@ -343,14 +369,15 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
                                                            int decode_threads,
                                                            bool copy_metadata_payloads,
                                                            std::stop_token stop_token = {}, bool ignore_transformations = false,
-                                                           bool native_pixels = false) {
+                                                           bool native_pixels = false, bool preserve_icc_signal = false) {
   if (stop_token.stop_requested()) {
     return std::unexpected{"任务已取消。"};
   }
   const int threads = std::clamp(decode_threads, 1,
                                  encoding_defaults::max_automatic_thread_budget);
-  // libde265 owns the per-image budget; parallel tiles must not multiply it.
+  // 此处接收已扣除外层 tile 并行后的 codec 预算，不能再次乘上文件预算。
   auto source_info = source_info_from_handle(handle);
+  const bool has_input_icc = heif_image_handle_get_raw_color_profile_size(handle) != 0;
   const bool has_alpha = heif_image_handle_has_alpha_channel(handle) != 0;
   const bool premultiplied = has_alpha &&
                              heif_image_handle_is_premultiplied_alpha(handle) != 0;
@@ -393,7 +420,7 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
     return std::unexpected{
         std::format("HEIC 解码失败: {}: {}", source_name, error_text(decode_error))};
   }
-  fill_missing_nclx_from_decoded(source_info, decoded.get());
+  fill_missing_nclx_from_decoded(source_info, decoded.get(), preserve_icc_signal && has_input_icc);
 
   if (native_pixels && (heif_image_get_colorspace(decoded.get()) == heif_colorspace_YCbCr ||
       heif_image_get_colorspace(decoded.get()) == heif_colorspace_monochrome)) {
@@ -416,7 +443,7 @@ std::expected<ImageDecodeResult, std::string> decode_handle(const heif_image_han
     if (!avifGetYUVColorSpaceInfo(&view, &color)) {
       decoded.reset();
       return decode_handle(handle, source_name, decode_threads, copy_metadata_payloads,
-                           stop_token, ignore_transformations, false);
+                           stop_token, ignore_transformations, false, preserve_icc_signal);
     }
     std::vector<std::byte> scaled_alpha;
     const std::array<heif_channel, 4> channels{heif_channel_Y, heif_channel_Cb, heif_channel_Cr, heif_channel_Alpha};
@@ -841,7 +868,9 @@ std::expected<ImageDimensions, std::string> gain_map_dimensions(
 
 std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::byte> bytes,
     std::string_view source_name, int decode_threads, bool copy_metadata_payloads, std::stop_token stop_token = {},
-    bool native_pixels = false) {
+    bool native_pixels = false, GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only,
+    DecodeDiagnostics* diagnostics = nullptr) {
+  if (diagnostics) diagnostics->stage = "heif.metadata";
   ContextPtr context{heif_context_alloc()};
   if (!context) return std::unexpected{"无法创建 libheif context。"};
   heif_context_set_max_decoding_threads(context.get(), 0);
@@ -852,21 +881,58 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::
       return std::unexpected{"Gain Map: ISO 21496-1: " + primary.error()};
     return std::unexpected{primary.error()};
   }
+  capture_handle_diagnostics(diagnostics, primary->get());
+  const auto decode_with_budget = [&](const heif_image_handle* handle, bool copy, bool ignore, bool native,
+                                      bool preserve_icc, bool auxiliary = false) {
+    heif_image_tiling tiling{};
+    tiling.version = 1;
+    const auto layout = heif_image_handle_get_image_tiling(handle, 0, &tiling);
+    const auto plan = layout.code == heif_error_Ok
+        ? plan_heif_decode_threads(decode_threads, static_cast<std::uint64_t>(tiling.num_columns) * tiling.num_rows,
+            static_cast<std::uint64_t>(tiling.tile_width) * tiling.tile_height)
+        : plan_heif_decode_threads(decode_threads, 1, 0);
+    heif_context_set_max_decoding_threads(context.get(), plan.tile_parallelism > 1 ? plan.tile_parallelism : 0);
+    if (diagnostics && !auxiliary) {
+      diagnostics->heif_tile_workers = plan.tile_parallelism;
+      diagnostics->heif_codec_threads = plan.codec_threads;
+    }
+    const auto started = std::chrono::steady_clock::now();
+    auto decoded = decode_handle(handle, source_name, plan.codec_threads, copy, stop_token, ignore, native, preserve_icc);
+    if (diagnostics) {
+      auto& elapsed = auxiliary ? diagnostics->timing.auxiliary_decode_seconds : diagnostics->timing.base_decode_seconds;
+      elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    }
+    return decoded;
+  };
   auto selected = select_gain_map(context.get(), primary->get());
   if (!selected) return std::unexpected{selected.error()};
   const auto base_id = selected->base_id;
   const auto tmap_id = selected->tmap_id;
   const auto auxiliary_id = selected->auxiliary_id;
-  if (!auxiliary_id) return decode_handle(primary->get(), source_name, decode_threads, copy_metadata_payloads,
-                                        stop_token, false, native_pixels);
+  if (!auxiliary_id) {
+    if (diagnostics) diagnostics->stage = "heif.base-decode";
+    auto decoded = decode_with_budget(primary->get(), copy_metadata_payloads, false, native_pixels, false);
+    if (decoded && diagnostics) diagnostics->stage = "complete";
+    return decoded;
+  }
+  if (diagnostics) {
+    diagnostics->decoder_id = "libheif-iso21496-1-gain-map-enhanced";
+    diagnostics->stage = "heif.gain-map.base-decode";
+    diagnostics->source_info->source_has_gain_map = true;
+    diagnostics->source_info->has_hdr_metadata = diagnostics->source_info->has_hdr_metadata ||
+        selected->metadata->baseHdrHeadroom.n != 0 || selected->metadata->alternateHdrHeadroom.n != 0;
+  }
   heif_image_handle* raw_auxiliary = nullptr;
   auto aux_error = heif_context_get_image_handle(context.get(), *auxiliary_id, &raw_auxiliary);
   if (aux_error.code != heif_error_Ok || !raw_auxiliary) return std::unexpected{"Gain Map: ISO 21496-1 HEIF: 无法取得 gain map 图像。"};
   HandlePtr auxiliary{raw_auxiliary};
-  auto base = decode_handle(primary->get(), source_name, decode_threads, true, stop_token, true);
+  // Gain Map 主图必须使用原始 ICC/NCLX 信令，不能补入解码库生成的默认 RGB 标签。
+  auto base = decode_with_budget(primary->get(), true, true, false, true);
   if (!base) return std::unexpected{"Gain Map: ISO 21496-1: " + base.error()};
-  auto gain = decode_handle(auxiliary.get(), source_name, decode_threads, false, stop_token, true);
+  if (diagnostics) diagnostics->stage = "heif.gain-map.map-decode";
+  auto gain = decode_with_budget(auxiliary.get(), false, true, false, false, true);
   if (!gain) return std::unexpected{"Gain Map: ISO 21496-1: " + gain.error()};
+  if (diagnostics) diagnostics->stage = "heif.gain-map.transforms";
   const auto auxiliary_transforms = heif_item_get_transformation_properties(context.get(), *auxiliary_id, nullptr, 0);
   if (auxiliary_transforms < 0) return std::unexpected{"Gain Map: ISO 21496-1 HEIF: auxiliary 变换属性无效。"};
   // Auxiliary-local transforms define its own displayed sample canvas. Otherwise
@@ -878,21 +944,37 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(std::span<const std::
       return std::unexpected{transformed.error()};
   }
   make_alpha_straight(base->image);
-  auto composed = compose_iso_gain_map(base->image, gain->image, *selected->metadata);
+  if (diagnostics) diagnostics->stage = "heif.gain-map.render";
+  const int thread_budget = std::clamp(decode_threads, 1, encoding_defaults::max_automatic_thread_budget);
+  const ResourcePlan render_resources{.encoder_threads_per_file = thread_budget, .global_thread_budget = thread_budget};
+  auto composed = render_iso_gain_map(std::move(base->image), gain->image, *selected->metadata,
+      gain_map_mode, stop_token, render_resources, diagnostics ? &diagnostics->timing : nullptr);
   if (!composed) return std::unexpected{composed.error()};
-  if (!auxiliary_transforms) {
-    if (auto transformed = apply_transformations(context.get(), base_id, *composed, false); !transformed)
+  if (diagnostics) {
+    diagnostics->icc_normalized_to_cicp = diagnostics->source_has_icc;
+    diagnostics->stage = "heif.gain-map.transforms";
+  }
+  const auto transform = [&](ImageBuffer& image) -> std::expected<void, std::string> {
+    if (!auxiliary_transforms) {
+      if (auto transformed = apply_transformations(context.get(), base_id, image, false); !transformed)
+        return std::unexpected{transformed.error()};
+    }
+    if (tmap_id) {
+      if (auto transformed = apply_transformations(context.get(), *tmap_id, image, false); !transformed)
+        return std::unexpected{transformed.error()};
+    }
+    if (auto transformed = gain_map_detail::apply_exif_orientation(image); !transformed) return transformed;
+    if (!copy_metadata_payloads) image.metadata.clear();
+    return {};
+  };
+  if (auto transformed = transform(composed->image); !transformed) return std::unexpected{transformed.error()};
+  if (composed->gain_map_alternative) {
+    if (auto transformed = transform(composed->gain_map_alternative->image); !transformed)
       return std::unexpected{transformed.error()};
   }
-  if (tmap_id) {
-    if (auto transformed = apply_transformations(context.get(), *tmap_id, *composed, false); !transformed)
-      return std::unexpected{transformed.error()};
-  }
-  if (auto transformed = gain_map_detail::apply_exif_orientation(*composed); !transformed)
-    return std::unexpected{transformed.error()};
-  if (!copy_metadata_payloads) composed->metadata.clear();
-  return ImageDecodeResult{.image = std::move(*composed),
-      .decoder_id = "libheif-iso21496-1-gain-map-enhanced"};
+  composed->decoder_id = "libheif-iso21496-1-gain-map-enhanced";
+  if (diagnostics) diagnostics->stage = "complete";
+  return composed;
 }
 
 }  // namespace heif_detail
@@ -930,7 +1012,42 @@ class HeifImageDecoder final : public ImageDecoder {
       }
       auto selected = heif_detail::select_gain_map(context.get(), handle->get());
       if (!selected) return std::unexpected{selected.error()};
-      return heif_detail::gain_map_dimensions(context.get(), handle->get(), *selected);
+      auto dimensions = heif_detail::gain_map_dimensions(context.get(), handle->get(), *selected);
+      if (!dimensions) return dimensions;
+      const auto source = heif_detail::source_info_from_handle(handle->get());
+      dimensions->source_bit_depth = source.bit_depth;
+      dimensions->source_has_alpha = heif_image_handle_has_alpha_channel(handle->get()) != 0;
+      dimensions->source_icc_bytes = heif_image_handle_get_raw_color_profile_size(handle->get());
+      const bool has_icc = dimensions->source_icc_bytes != 0;
+      dimensions->source_dynamic_range = source.has_hdr_metadata ? ImageDynamicRangeHint::hdr :
+          !has_icc && source.transfer_characteristics && *source.transfer_characteristics != 0 &&
+                  *source.transfer_characteristics != 2 ? ImageDynamicRangeHint::sdr : ImageDynamicRangeHint::unknown;
+      dimensions->source_has_gain_map = selected->auxiliary_id.has_value();
+      if (selected->auxiliary_id) {
+        dimensions->source_bit_depth = 16;
+        const auto& metadata = *selected->metadata;
+        dimensions->source_dynamic_range = metadata.baseHdrHeadroom.n || metadata.alternateHdrHeadroom.n ||
+                source.has_hdr_metadata ? ImageDynamicRangeHint::hdr : ImageDynamicRangeHint::sdr;
+        heif_image_handle* raw_map = nullptr;
+        const auto error = heif_context_get_image_handle(context.get(), *selected->auxiliary_id, &raw_map);
+        heif_detail::HandlePtr map{raw_map};
+        if (error.code != heif_error_Ok || !map) return std::unexpected{"Gain Map: ISO 21496-1: 无法读取辅助图尺寸。"};
+        const int map_width = heif_image_handle_get_ispe_width(map.get());
+        const int map_height = heif_image_handle_get_ispe_height(map.get());
+        if (map_width <= 0 || map_height <= 0) return std::unexpected{"Gain Map: ISO 21496-1: 辅助图尺寸无效。"};
+        dimensions->gain_map_width = static_cast<std::uint32_t>(map_width);
+        dimensions->gain_map_height = static_cast<std::uint32_t>(map_height);
+      }
+      dimensions->opaque_sdr8_yuv420 = !dimensions->source_has_gain_map && !has_icc &&
+          dimensions->source_dynamic_range == ImageDynamicRangeHint::sdr && source.bit_depth == 8 &&
+          source.pixel_format == PixelFormat::yuv420 && !dimensions->source_has_alpha;
+      const int coded_width = heif_image_handle_get_ispe_width(handle->get());
+      const int coded_height = heif_image_handle_get_ispe_height(handle->get());
+      if (coded_width <= 0 || coded_height <= 0) return std::unexpected{"HEIC 编码尺寸无效。"};
+      const auto pixels = static_cast<std::uint64_t>(coded_width) * coded_height;
+      const auto bytes_per_pixel = dimensions->source_bit_depth > 8 ? 8u : 4u;
+      dimensions->decoded_storage_bytes = pixels > UINT64_MAX / bytes_per_pixel ? UINT64_MAX : pixels * bytes_per_pixel;
+      return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"HEIC 尺寸探测内存不足。"};
     } catch (const std::length_error&) {
@@ -944,8 +1061,10 @@ class HeifImageDecoder final : public ImageDecoder {
       std::span<const std::byte> bytes, std::string_view source_name,
       DecodeOptions options = {}) const override {
     try {
+      heif_detail::begin_decode_diagnostics(options.diagnostics, "heif.metadata");
       return heif_detail::decode_bytes(bytes, source_name, decode_threads_,
-                                       options.copy_metadata_payloads.value_or(false), stop_token_, options.native_pixels);
+                                       options.copy_metadata_payloads.value_or(false), stop_token_, options.native_pixels,
+                                       options.gain_map_mode, options.diagnostics);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"HEIC 解码内存不足。"};
     } catch (const std::length_error&) {
@@ -959,12 +1078,14 @@ class HeifImageDecoder final : public ImageDecoder {
 
   std::expected<ImageDecodeResult, std::string> decode(const fs::path& path, DecodeOptions options) const override {
     try {
+      heif_detail::begin_decode_diagnostics(options.diagnostics, "heif.read");
       auto bytes = decoder_common::read_file_bytes(path, "HEIC");
       if (!bytes) {
         return std::unexpected{bytes.error()};
       }
-      return heif_detail::decode_bytes(*bytes, display_path_for_user(path), decode_threads_, true,
-                                       stop_token_, options.native_pixels);
+      return heif_detail::decode_bytes(*bytes, display_path_for_user(path), decode_threads_,
+                                       options.copy_metadata_payloads.value_or(true),
+                                       stop_token_, options.native_pixels, options.gain_map_mode, options.diagnostics);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"HEIC 解码内存不足。"};
     } catch (const std::length_error&) {

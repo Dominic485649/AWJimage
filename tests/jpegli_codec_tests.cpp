@@ -7,8 +7,10 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -200,14 +202,116 @@ int verify_auto_sampling(const awj::JpegliImageEncoder& encoder) {
   return 0;
 }
 
+int verify_icc_fragment_limit(awj::JpegliImageEncoder& encoder) {
+  constexpr auto maximum = awj::jpegli_detail::jpeg_icc_profile_max_bytes;
+  static_assert(maximum == 16707345u);
+  if (awj::jpegli_detail::jpeg_icc_size_supported(0) ||
+      !awj::jpegli_detail::jpeg_icc_size_supported(maximum - 1) ||
+      !awj::jpegli_detail::jpeg_icc_size_supported(maximum) ||
+      awj::jpegli_detail::jpeg_icc_size_supported(maximum + 1) ||
+      awj::jpegli_detail::jpeg_icc_size_supported(std::numeric_limits<std::size_t>::max()))
+    return fail("JPEG ICC 的255分片边界计算错误。");
+  auto image = make_test_image(false);
+  image.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 8,
+      .color_primaries = 12, .transfer_characteristics = 13, .matrix_coefficients = 0, .color_range = 1};
+  image.metadata.push_back({awj::MetadataKind::icc, std::vector<std::byte>(maximum + 1)});
+  for (const bool essential : {false, true}) {
+    image.source_info->source_has_gain_map = essential;
+    for (const bool strip : {false, true}) {
+      auto encoded = encoder.encode(image, jpegli_settings(90, strip));
+      if (encoded || encoded.error().find("255") == std::string::npos) {
+        return fail("JPEG 将超过255片的 ICC 交给 C API，或没有明确拒绝。");
+      }
+    }
+  }
+  image.source_info->source_has_gain_map = false;
+  image.source_info->color_primaries = 1;
+  if (!encoder.encode(image, jpegli_settings(90, true)))
+    return fail("普通 sRGB JPEG 无需保留已清除的大型可选 ICC。");
+  image.source_info->source_has_gain_map = true;
+  image.source_info->color_primaries = 12;
+  auto yuv = awj::convert_image_pixels(image, {.format = awj::PixelFormat::yuv444,
+      .bit_depth = 8, .matrix_coefficients = 6, .color_range = 1, .preserve_alpha = false});
+  if (!yuv) return fail(yuv.error());
+  auto rejected = encoder.encode(*yuv, jpegli_settings(90, true));
+  if (rejected || rejected.error().find("255") == std::string::npos)
+    return fail("原生 YUV JPEG 的必要 ICC 路径未检查255分片上限。");
+  std::puts("JPEG ICC 255-fragment bounds, essential retain/strip and ordinary stripping passed.");
+  return 0;
+}
+
+int verify_gain_map_sdr_icc(awj::JpegliImageEncoder& encoder) {
+  auto image = make_test_image(false);
+  image.alpha_mode = awj::AlphaMode::none;
+  image.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 8,
+      .color_primaries = 12, .transfer_characteristics = 13, .matrix_coefficients = 0, .color_range = 1,
+      .color_metadata_source = "source-icc-verified-cicp", .source_has_gain_map = true};
+  image.metadata.push_back({awj::MetadataKind::exif, {std::byte{'I'}, std::byte{'I'}, std::byte{42}, std::byte{0}}});
+  image.metadata.push_back({awj::MetadataKind::xmp, {std::byte{'<'}, std::byte{'x'}, std::byte{'/'}, std::byte{'>'}}});
+  const auto original = image.planes.front().bytes;
+  std::vector<std::byte> generated_profile;
+  for (const bool gain_map : {false, true}) for (const bool native_yuv : {false, true}) {
+    auto input = image;
+    input.source_info->source_has_gain_map = gain_map;
+    if (native_yuv) {
+      auto converted = awj::convert_image_pixels(input, {.format = awj::PixelFormat::yuv444,
+          .bit_depth = 8, .matrix_coefficients = 6, .color_range = 1, .preserve_alpha = false});
+      if (!converted) return fail(converted.error());
+      input = std::move(*converted);
+    }
+    for (const bool strip : {false, true}) {
+      auto settings = jpegli_settings(100, strip);
+      settings.source_has_icc = false;
+      settings.applied_icc = "none";
+      settings.chroma_mode = awj::ChromaMode::yuv444;
+      auto encoded = encoder.encode(input, settings);
+      if (!encoded) return fail(encoded.error());
+      auto decoded = awj::JpegliImageDecoder{}.decode_memory(encoded->encoded.bytes, "gain-map-sdr-icc");
+      if (!decoded) return fail(decoded.error());
+      const auto& metadata = decoded->image.metadata;
+      const auto icc = std::ranges::find_if(metadata, [](const auto& block) { return block.kind == awj::MetadataKind::icc; });
+      if (icc == metadata.end() || icc->bytes.size() < 132 ||
+          std::ranges::count_if(metadata, [](const auto& block) { return block.kind == awj::MetadataKind::icc; }) != 1 ||
+          encoded->diagnostics.applied_icc != "generated-essential-sdr-cicp" ||
+          encoded->diagnostics.applied_color_primaries != 12 || encoded->diagnostics.applied_transfer_characteristics != 13)
+        return fail("已有 P3 SDR 的普通 JPEG 丢失必要 ICC 或实际色彩诊断。");
+      if (has_metadata_kind(decoded->image, awj::MetadataKind::exif) != !strip ||
+          has_metadata_kind(decoded->image, awj::MetadataKind::xmp) != !strip || image.planes.front().bytes != original)
+        return fail("JPEG 必要 ICC 的保留意外改变可选元数据清除或调用方像素。");
+      generated_profile = icc->bytes;
+    }
+  }
+  auto borrowed = image;
+  borrowed.metadata.push_back({awj::MetadataKind::icc, generated_profile});
+  auto settings = jpegli_settings(100, true);
+  auto encoded = encoder.encode(borrowed, settings);
+  if (!encoded) return fail(encoded.error());
+  auto decoded = awj::JpegliImageDecoder{}.decode_memory(encoded->encoded.bytes, "borrowed-essential-sdr-icc");
+  if (!decoded) return fail(decoded.error());
+  const auto icc = std::ranges::find_if(decoded->image.metadata, [](const auto& block) { return block.kind == awj::MetadataKind::icc; });
+  if (icc == decoded->image.metadata.end() || icc->bytes != generated_profile || encoded->diagnostics.applied_icc != "essential-sdr-rendition")
+    return fail("JPEG 未借用并原样保留已有 SDR 的必要 ICC。");
+  settings.jpegli_xyb = true;
+  if (encoder.encode(image, settings)) return fail("非 sRGB 的 Gain Map SDR 被错误套用 XYB 内置 ICC。");
+  std::stop_source cancelled;
+  cancelled.request_stop();
+  settings.jpegli_xyb = false;
+  if (encoder.encode(image, settings, cancelled.get_token())) return fail("必要 SDR ICC 编码忽略取消。");
+  std::puts("JPEGli Gain Map SDR essential ICC, RGBA/YUV, strip and cancellation passed.");
+  return 0;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
 #ifdef _WIN32
   SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
 #endif
 
   awj::JpegliImageEncoder encoder;
+  if (const int result = verify_icc_fragment_limit(encoder)) return result;
+  if (const int result = verify_gain_map_sdr_icc(encoder)) return result;
+  if (argc == 2 && std::string_view{argv[1]} == "--gain-map-color-only") return 0;
   if (const int result = verify_auto_sampling(encoder)) return result;
   auto encoded = encoder.encode(make_test_image(true), jpegli_settings(42, false));
   if (!encoded) {
@@ -324,8 +428,14 @@ int main() {
   const auto explicit_420_dimensions = decoder.probe_dimensions(path);
   std::filesystem::remove(path, ec);
   if (!explicit_420_dimensions || !explicit_420_dimensions->opaque_sdr8_yuv420 ||
-      !jpeg_sof_matches(advanced->encoded.bytes, awj::ChromaMode::yuv420))
+      !jpeg_sof_matches(advanced->encoded.bytes, awj::ChromaMode::yuv420)) {
+    if (!explicit_420_dimensions) std::fprintf(stderr, "JPEGli 探测失败：%s\n", explicit_420_dimensions.error().c_str());
+    else std::fprintf(stderr, "JPEGli 探测诊断：depth=%d range=%d opaque420=%d storage=%llu sof420=%d\n",
+        explicit_420_dimensions->source_bit_depth, static_cast<int>(explicit_420_dimensions->source_dynamic_range),
+        int(explicit_420_dimensions->opaque_sdr8_yuv420), static_cast<unsigned long long>(explicit_420_dimensions->decoded_storage_bytes),
+        int(jpeg_sof_matches(advanced->encoded.bytes, awj::ChromaMode::yuv420)));
     return fail("Explicit plain SDR420 JPG was not recognized by memory preflight/SOF.");
+  }
   auto advanced_decoded = decoder.decode_memory(
       std::span<const std::byte>{advanced->encoded.bytes}, "jpglI-advanced-test");
   if (!advanced_decoded || advanced_decoded->image.width != 3 ||
@@ -396,11 +506,34 @@ int main() {
         auto original_sampling = hdr;
         original_sampling.source_info->pixel_format = source;
         auto sample = awj::encode_hdr_jpeg(original_sampling, opts);
-        const auto expected = awj::jpeg_auto_chroma(original_sampling);
+        const auto expected = awj::ChromaMode::yuv444;
         if (!sample || !jpeg_sof_matches(sample->encoded.bytes, expected) ||
-            sample->diagnostics.requested_chroma != "auto" ||
+            sample->diagnostics.requested_chroma != "auto" || !sample->diagnostics.rendition.tone_mapped ||
             sample->diagnostics.applied_chroma != awj::chroma_mode_name(expected))
-          return fail(sample ? "HDR JPEG resolved base sampling after tone-map lost source provenance." : sample.error());
+          return fail(sample ? "Generated SDR JPEG base followed HDR-container sampling instead of its RGB rendition." : sample.error());
+        auto existing_sdr = make_sampling_image();
+        existing_sdr.width = hdr.width; existing_sdr.height = hdr.height;
+        existing_sdr.planes[0].stride = hdr.width * 4;
+        existing_sdr.planes[0].bytes.assign(hdr.width * hdr.height * 4, std::byte{0});
+        for (std::size_t i = 0; i < hdr.width * hdr.height; ++i) {
+          existing_sdr.planes[0].bytes[i * 4 + 1] = std::byte{200};
+          existing_sdr.planes[0].bytes[i * 4 + 3] = std::byte{255};
+        }
+        existing_sdr.source_info = awj::ImageSourceInfo{.pixel_format = source, .bit_depth = 8,
+            .color_primaries = 1, .transfer_characteristics = 13, .matrix_coefficients = 6, .color_range = 1,
+            .source_has_gain_map = true, .rendition_origin = awj::RenditionOrigin::gain_map_reconstructed};
+        awj::GainMapAlternative existing{.image = std::move(existing_sdr),
+            .main_hdr_headroom_log2 = 2, .alternate_hdr_headroom_log2 = 0};
+        const auto original_sdr = existing.image.planes[0].bytes;
+        auto paired_options = opts;
+        paired_options.gain_map_alternative = &existing;
+        auto paired = awj::encode_hdr_jpeg(hdr, paired_options);
+        const auto sdr_sampling = awj::jpeg_auto_chroma(existing.image);
+        if (!paired || !jpeg_sof_matches(paired->encoded.bytes, sdr_sampling) ||
+            paired->diagnostics.applied_chroma != awj::chroma_mode_name(sdr_sampling) ||
+            !paired->diagnostics.rendition.reused_sdr || paired->diagnostics.rendition.tone_mapped ||
+            existing.image.planes[0].bytes != original_sdr)
+          return fail(paired ? "Existing SDR JPEG base lost its own sampling or was tone-mapped again." : paired.error());
       }
       auto invalid_chroma = opts;
       invalid_chroma.chroma_mode = awj::ChromaMode::yuv400;

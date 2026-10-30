@@ -137,7 +137,7 @@ int main() try {
       "shell preset lost format resources or menu options");
 #else
   check(!shell.config.visual_quality && shell.config.max_jobs == awj::default_max_jobs() &&
-      shell.config.memory_limit_bytes == 0, "Linux shell resource behavior changed");
+      shell.config.memory_limit_bytes == 1536ull * 1024 * 1024 && !shell.config.unlock_memory_limit, "Linux shell lost the preset memory budget");
 #endif
   const auto reread = require(awj::load_user_preset_file(original_path));
   check(reread.formats[0].chroma_mode == awj::ChromaMode::yuv400 &&

@@ -38,6 +38,7 @@ export component ParameterForm inherits VerticalLayout {
     in-out property <string> scale-percent-text;
     in-out property <string> max-width-text;
     in-out property <string> memory-limit-text;
+    in property <bool> unlock-memory-limit;
     callback open-preset-editor();
     callback open-preset-delete-confirmation();
     callback install-context-menu-requested();
@@ -196,7 +197,7 @@ export component ParameterForm inherits VerticalLayout {
             lead-color: root.hint-orange;
             accent: @tr("极高压缩率 · 支持 HDR · 最高 12-bit");
             accent-color: root.hint-blue;
-            detail: @tr("AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，自动按源选择 4:2:0 / 4:2:2 / 4:4:4，RGB、灰度与未知源使用三分量 4:4:4，并支持 ISO 21496-1 HDR Gain Map。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。");
+            detail: @tr("AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，自动按源选择 4:2:0 / 4:2:2 / 4:4:4，RGB、灰度与未知源使用三分量 4:4:4，并支持 ISO 21496-1 HDR Gain Map。PNG 默认 SDR 8-bit、HDR 16-bit；q100 无损编码目标像素，q1–99 降低 RGB 有效精度。");
             detail-color: root.text-muted;
         }
     }
@@ -211,7 +212,7 @@ export component ParameterForm inherits VerticalLayout {
             horizontal-stretch: 1;
             lead: root.format-index == 3 ? @tr("1–100，越大质量越高；JPG 始终有损") : @tr("1–100，越大质量越高；100 为无损");
             lead-color: root.hint-violet;
-            detail: @tr("AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 默认走无损转封装。");
+            detail: @tr("AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 仅在 8-bit 输出计划相符时使用可逆转封装，默认 16-bit 重编码。");
             detail-color: root.text-muted;
         }
     }
@@ -270,14 +271,14 @@ export component ParameterForm inherits VerticalLayout {
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("内存"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        LineEdit { accessible-label: @tr("内存限制"); text <=> root.memory-limit-text; placeholder-text: @tr("例如 4（单位 GiB）"); input-type: number; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("内存限制"); text <=> root.memory-limit-text; placeholder-text: @tr("例如 4（单位 GiB）"); input-type: number; enabled: !root.running && !root.unlock-memory-limit; width: root.parameter-control-width; height: root.parameter-control-height; }
         ParamHint {
             horizontal-stretch: 1;
-            lead: @tr("留空 = 自动");
+            lead: root.unlock-memory-limit ? @tr("当前会话已解除预算") : @tr("留空 = 自动");
             lead-color: root.hint-cyan;
-            accent: @tr("min(总内存 80%, 可用 50%)");
+            accent: root.unlock-memory-limit ? @tr("保留手动值") : @tr("min(总内存 80%, 可用 50%)");
             accent-color: root.hint-blue;
-            detail: @tr("填数字即为内存占用上限，单位 GiB。设置页可以解除内存限制，解除后覆盖这一项。");
+            detail: @tr("填数字即为工作集准入预算，单位 GiB，并非进程内存硬上限。设置页的“解除工作集内存预算”优先于自动或手动预算，仅当前会话生效，保留手动值。");
             detail-color: root.text-muted;
         }
     }
@@ -355,19 +356,21 @@ export component ParameterForm inherits VerticalLayout {
         Rectangle { horizontal-stretch: 1; background: transparent; }
     }
 
-    if root.format-index == 0 || root.format-index == 3: Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
+    if root.format-index == 0 || root.format-index == 2 || root.format-index == 3 || root.format-index == 4: Text { text: @tr("格式高级选项"); height: 30px; color: root.text-strong; font-size: 15px; font-weight: 800; vertical-alignment: center; }
 
-    if root.format-index == 0: HorizontalLayout {
+    if root.format-index == 0 || root.format-index == 2 || root.format-index == 4: HorizontalLayout {
         min-height: 64px;
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("位深"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        LineEdit { accessible-label: @tr("位深"); text <=> root.bit-depth-text; placeholder-text: @tr("保持原片"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("位深"); text <=> root.bit-depth-text; placeholder-text: @tr("留空自动选择"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
         ParamHint {
             horizontal-stretch: 1;
-            lead: @tr("自动至少 10-bit");
+            lead: root.format-index == 4 ? @tr("SDR 8 / HDR 16-bit") : root.format-index == 2 ? @tr("自动 16-bit") : @tr("自动至少 10-bit");
             lead-color: root.hint-orange;
-            detail: @tr("源 ≤10-bit 提升到 10-bit，源 ≥12-bit 收到 12-bit；显式填写则以填写值为准。AVIF 支持 8 / 10 / 12-bit。");
+            detail: root.format-index == 4 ? @tr("PNG 兼容性优先：SDR 默认 8-bit，HDR 默认 16-bit。可显式填写 8/16；SDR 16-bit 可能影响兼容性。")
+                : root.format-index == 2 ? @tr("JXL 默认 16-bit，可显式填写 8/10/12/16；JPG 可逆转封装仅在 8-bit 输出计划相符时使用。")
+                : @tr("按所选呈现选择 10/12-bit；Gain Map 重建图与原底图分别作为基准，显式 8/10/12 优先。");
             detail-color: root.text-muted;
         }
     }
@@ -517,6 +520,7 @@ export component ParameterPage inherits Rectangle {
     in-out property <string> scale-percent-text;
     in-out property <string> max-width-text;
     in-out property <string> memory-limit-text;
+    in property <bool> unlock-memory-limit;
     callback open-preset-editor();
     callback open-preset-delete-confirmation();
     callback install-context-menu-requested();
@@ -593,6 +597,7 @@ export component ParameterPage inherits Rectangle {
             scale-percent-text <=> root.scale-percent-text;
             max-width-text <=> root.max-width-text;
             memory-limit-text <=> root.memory-limit-text;
+            unlock-memory-limit: root.unlock-memory-limit;
             panel-bg : root.panel-bg;
             panel-border : root.panel-border;
             parameter-control-height : root.parameter-control-height;

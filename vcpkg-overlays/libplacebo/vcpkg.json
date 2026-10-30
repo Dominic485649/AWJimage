@@ -1,6 +1,6 @@
 {
   "name": "libplacebo",
-  "version": "7.360.1",
+  "version": "7.387.0",
   "description": "libplacebo CPU colorspace, tone-mapping and gamut-mapping APIs",
   "homepage": "https://code.videolan.org/videolan/libplacebo",
   "license": "LGPL-2.1-or-later",

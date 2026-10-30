@@ -17,6 +17,7 @@
 #include "studio_shell_cli.h"
 #include "menu_transaction_state.hpp"
 #include "studio_ui_util.h"
+#include "window_geometry.h"
 
 import awj.core;
 import awj.encoding_defaults;
@@ -27,21 +28,15 @@ namespace awj::studio {
 std::pair<int, int> current_studio_window_size(const AwjStudio& app) noexcept {
   try {
     const auto physical_size = app.window().size();
-    const auto scale = std::max(app.window().scale_factor(), 1.0f);
-    const auto width = physical_size.width == 0
-                           ? awj::studio_defaults::default_window_width
-                           : std::lround(static_cast<double>(physical_size.width) /
-                                         scale);
-    const auto height = physical_size.height == 0
-                            ? awj::studio_defaults::default_window_height
-                            : std::lround(
-                                  static_cast<double>(physical_size.height) / scale);
-    return {std::clamp(static_cast<int>(width),
-                       awj::studio_defaults::min_window_width,
-                       awj::studio_defaults::max_window_width),
-            std::clamp(static_cast<int>(height),
-                       awj::studio_defaults::min_window_height,
-                       awj::studio_defaults::max_window_height)};
+    const double scale = app.window().scale_factor();
+    return {logical_window_extent(physical_size.width, scale,
+                                  awj::studio_defaults::default_window_width,
+                                  awj::studio_defaults::min_window_width,
+                                  awj::studio_defaults::max_window_width),
+            logical_window_extent(physical_size.height, scale,
+                                  awj::studio_defaults::default_window_height,
+                                  awj::studio_defaults::min_window_height,
+                                  awj::studio_defaults::max_window_height)};
   } catch (...) {
     return {static_cast<int>(awj::studio_defaults::default_window_width),
             static_cast<int>(awj::studio_defaults::default_window_height)};

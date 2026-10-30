@@ -1956,6 +1956,8 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
       push_flag(args, app->get_visual_quality_fallback(),
                 L"--visual-quality-fallback", L"--no-visual-quality-fallback");
     }
+    push_flag(args, app->get_unlock_memory_limit(), L"--unlock-memory-limit",
+              L"--no-unlock-memory-limit");
     if (app->get_unlock_max_input_file_bytes()) {
       args.push_back(L"--unlock-max-input-file-bytes");
     }
@@ -2704,6 +2706,7 @@ void initialize_ui(AwjStudio& app) {
   app.set_quality_text(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
   app.set_template_text(to_shared(std::string{awj::encoding_defaults::default_output_template_text}));
   app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
+  app.set_unlock_memory_limit(false);
   app.set_unlock_max_input_file_bytes(false);
   app.set_status_text(to_shared("就绪"));
 }

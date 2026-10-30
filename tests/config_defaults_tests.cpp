@@ -2,6 +2,9 @@
 #include <format>
 #include <fstream>
 #include <iostream>
+#include <limits>
+
+#include "../src/ui/window_geometry.h"
 #include <string>
 #include <vector>
 
@@ -20,6 +23,26 @@ int fail(const char* message) {
 }  // namespace
 
 int main() {
+  using awj::studio::logical_window_extent;
+  for (const auto scale : {0.5, 0.75, 1.0, 1.25, 1.5, 2.0}) {
+    if (logical_window_extent(static_cast<std::uint32_t>(1200 * scale),
+                              scale, 1171, 747, 16384) != 1200)
+      return fail("窗口逻辑尺寸没有按实际正缩放比例保存。");
+  }
+  for (const auto scale : {0.0, -1.0, std::numeric_limits<double>::infinity(),
+                            std::numeric_limits<double>::quiet_NaN()}) {
+    if (logical_window_extent(1200, scale, 1171, 747, 16384) != 1200)
+      return fail("无效窗口缩放比例没有安全回退。");
+  }
+  if (logical_window_extent(0, 1.5, 1171, 747, 16384) != 1171 ||
+      logical_window_extent(1, 1.0, 1171, 747, 16384) != 747 ||
+      logical_window_extent(1501, 1.25, 1171, 747, 16384) != 1201 ||
+      logical_window_extent(std::numeric_limits<std::uint32_t>::max(),
+                            1.0, 1171, 747, 16384) != 16384 ||
+      logical_window_extent(1200, std::numeric_limits<double>::denorm_min(),
+                            1171, 747, 16384) != 16384)
+    return fail("窗口逻辑尺寸的缺省、取整或限幅边界失效。");
+
   static_assert(static_cast<int>(awj::ChromaMode::auto_keep) == 0 &&
                 static_cast<int>(awj::ChromaMode::yuv444) == 1 &&
                 static_cast<int>(awj::ChromaMode::yuv422) == 2 &&
@@ -161,6 +184,29 @@ int main() {
       awj::encoding_defaults::default_memory_limit_bytes) {
     return fail("default memory limit mismatch.");
   }
+  if (defaults.unlock_memory_limit || defaults.unlock_max_input_file_bytes)
+    return fail("Session memory/input unlocks must default to false.");
+  for (const auto& args : {
+      std::vector<std::wstring>{L"--memory-limit", L"3GiB", L"--unlock-memory-limit"},
+      std::vector<std::wstring>{L"--unlock-memory-limit", L"--memory-limit", L"3GiB"},
+      std::vector<std::wstring>{L"--shell-convert", L"--memory-limit", L"3GiB", L"--unlock-memory-limit"}}) {
+    const auto unlocked = awj::parse_arguments(args);
+    if (!unlocked || !unlocked->config.unlock_memory_limit ||
+        unlocked->config.unlock_max_input_file_bytes ||
+        unlocked->config.memory_limit_bytes != 3ull * 1024 * 1024 * 1024)
+      return fail("Memory unlock lost its manual value, argument-order independence or separate input policy.");
+  }
+  const auto shell_relocked = awj::parse_arguments({L"--shell-convert", L"--memory-limit", L"3GiB",
+      L"--unlock-memory-limit", L"--no-unlock-memory-limit"});
+  if (!shell_relocked || shell_relocked->config.unlock_memory_limit ||
+      shell_relocked->config.memory_limit_bytes != 3ull * 1024 * 1024 * 1024)
+    return fail("Shell conversion discarded the configured value when the session was relocked.");
+  const auto relocked = awj::parse_arguments({L"--memory-limit", L"0", L"--unlock-memory-limit",
+      L"--no-unlock-memory-limit", L"--unlock-max-input-file-bytes"});
+  if (!relocked || relocked->config.unlock_memory_limit ||
+      !relocked->config.unlock_max_input_file_bytes || relocked->config.memory_limit_bytes != 0)
+    return fail("Explicit relock or legacy zero=auto/input-unlock independence changed.");
+
   if (defaults.encode_timeout_minutes !=
       awj::encoding_defaults::default_encode_timeout_minutes) {
     return fail("default encode timeout mismatch.");
@@ -286,6 +332,17 @@ int main() {
   if (parsed || parsed.error().find("PNG 不支持 --speed") == std::string::npos) {
     return fail("CLI should reject speed for PNG.");
   }
+
+  for (int depth : {8, 10, 12, 16}) {
+    parsed = awj::parse_arguments({L"--format", L"jxl", L"--bit-depth", std::to_wstring(depth)});
+    if (!parsed || parsed->config.bit_depth != depth) return fail("JXL explicit supported depth was not preserved.");
+  }
+  parsed = awj::parse_arguments({L"--format", L"jxl", L"--bit-depth", L"9"});
+  if (parsed) return fail("JXL accepted an unsupported explicit bit depth.");
+  parsed = awj::parse_arguments({L"--format", L"png", L"--bit-depth", L"16"});
+  if (!parsed || parsed->config.bit_depth != 16) return fail("PNG explicit16 was lost to automatic SDR8 policy.");
+  parsed = awj::parse_arguments({L"--format", L"png", L"--bit-depth", L"10"});
+  if (parsed) return fail("PNG accepted unsupported10-bit storage.");
 
   parsed = awj::parse_arguments({L"--shell-convert", L"--format", L"png",
                                  L"C:\\img\\a.webp", L"C:\\img\\b.webp",
@@ -463,11 +520,23 @@ int main() {
   png_config.output_format = awj::OutputFormat::png;
   png_config.quality = 23;
   png_config.visual_quality = 55;
+  png_config.unlock_memory_limit = true;
+  png_config.unlock_max_input_file_bytes = true;
+  png_config.memory_limit_bytes = 3ull * 1024 * 1024 * 1024;
   const auto png_preset_format = awj::preset_format_from_config(png_config);
   if (png_preset_format.quality != 23 || png_preset_format.visual_quality) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
     return fail("PNG preset serialization discarded ordinary quality or retained visual search.");
   }
+  auto session_preset = awj::default_user_preset();
+  session_preset.formats.back() = png_preset_format;
+  const auto restored_session_config = awj::config_from_user_preset(session_preset, awj::OutputFormat::png);
+  if (restored_session_config.unlock_memory_limit || restored_session_config.unlock_max_input_file_bytes ||
+      restored_session_config.memory_limit_bytes != png_config.memory_limit_bytes) {
+    std::filesystem::remove(preset_test_path, preset_test_ec);
+    return fail("A session unlock persisted into presets or erased the saved manual budget.");
+  }
+
   awj::UserPreset reserved_name = awj::default_user_preset();
   reserved_name.name = "CON";
   if (awj::validate_user_preset(reserved_name)) {

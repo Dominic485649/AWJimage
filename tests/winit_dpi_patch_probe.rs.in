@@ -1,0 +1,116 @@
+// Synthetic contract tests of snippets extracted from the patched production files.
+// No windows are created. This does not substitute for a real cross-monitor drag.
+#![allow(non_snake_case)]
+use std::sync::{Arc, Mutex};
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PhysicalSize<T> { width: T, height: T }
+impl PhysicalSize<u32> {
+    fn to_logical<T>(&self, scale: f64) -> PhysicalSize<f64> {
+        let _ = std::marker::PhantomData::<T>;
+        PhysicalSize { width: self.width as f64 / scale, height: self.height as f64 / scale }
+    }
+}
+impl PhysicalSize<f64> {
+    fn to_physical<T>(&self, scale: f64) -> PhysicalSize<u32> {
+        let _ = std::marker::PhantomData::<T>;
+        PhysicalSize { width: (self.width * scale).round() as u32, height: (self.height * scale).round() as u32 }
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RECT { left: i32, top: i32, right: i32, bottom: i32 }
+struct WindowFlags { margins: Option<(i32, i32, i32, i32)> }
+impl WindowFlags {
+    fn adjust_rect(&self, _: (), rect: RECT) -> Option<RECT> {
+        self.margins.map(|(left, top, right, bottom)| RECT {
+            left: rect.left - left, top: rect.top - top,
+            right: rect.right + right, bottom: rect.bottom + bottom,
+        })
+    }
+}
+fn modern(build: Option<u32>) -> bool { @AWJ_BUILD_PREDICATE@ }
+fn choose_size(old_physical_inner_size: PhysicalSize<u32>, old_scale_factor: f64,
+               new_scale_factor: f64, allow_resize: bool, request: Option<PhysicalSize<u32>>) -> PhysicalSize<u32> {
+    @AWJ_SIZE_POLICY@
+    let new_inner_size = Arc::new(Mutex::new(new_physical_inner_size));
+    // Simulate a ScaleFactorChanged callback writing to the existing shared size.
+    if let Some(request) = request { *new_inner_size.lock().unwrap() = request; }
+    @AWJ_WRITER_READ@
+    new_physical_inner_size
+}
+fn geometry(suggested_rect: RECT, new_physical_inner_size: PhysicalSize<u32>, window_flags: WindowFlags) -> RECT {
+    let window = ();
+    let new_outer_rect: RECT;
+    @AWJ_MODERN_RECT@
+    new_outer_rect
+}
+
+#[repr(C)]
+struct OSVERSIONINFOW {
+    dwOSVersionInfoSize: u32, dwMajorVersion: u32, dwMinorVersion: u32,
+    dwBuildNumber: u32, dwPlatformId: u32, szCSDVersion: [u16; 128],
+}
+type NTSTATUS = i32;
+thread_local! { static VERSION: std::cell::Cell<(bool, i32, u32, u32, u32)> = const { std::cell::Cell::new((true, 0, 10, 0, 22000)) }; }
+unsafe extern "system" fn fake_version(info: *mut OSVERSIONINFOW) -> NTSTATUS {
+    let info = unsafe { &mut *info };
+    // A zero/incorrect size must fail just as an invalid native input would.
+    if info.dwOSVersionInfoSize != std::mem::size_of::<OSVERSIONINFOW>() as u32 { return -1; }
+    let (_, status, major, minor, build) = VERSION.get();
+    info.dwMajorVersion = major; info.dwMinorVersion = minor; info.dwBuildNumber = build;
+    status
+}
+macro_rules! get_function {
+    ("ntdll.dll", RtlGetVersion) => { VERSION.get().0.then_some(fake_version as RtlGetVersion) };
+}
+fn query_version() -> Option<u32> { @AWJ_VERSION_QUERY@ }
+
+#[test]
+fn modern_gate_and_initialized_version_query() {
+    assert!(!modern(None));
+    for build in [7601, 9600, 17763, 19045, 21999] { assert!(!modern(Some(build))); }
+    for build in [22000, 22631, 26100, 26300] { assert!(modern(Some(build))); }
+    for (input, expected) in [
+        ((true, 0, 10, 0, 26300), Some(26300)),
+        ((true, 0, 10, 0, 19045), Some(19045)),
+        ((true, 0, 6, 3, 9600), None),
+        ((true, -1, 10, 0, 26300), None),
+        ((false, 0, 10, 0, 26300), None),
+    ] { VERSION.set(input); assert_eq!(query_version(), expected); }
+}
+#[test]
+fn explicit_writer_size_and_destination_position_survive() {
+    let selected = choose_size(PhysicalSize { width: 800, height: 600 }, 1.0, 1.5, true,
+                               Some(PhysicalSize { width: 913, height: 617 }));
+    assert_eq!(selected, PhysicalSize { width: 913, height: 617 });
+    // Suggested dimensions deliberately disagree with the explicit request.
+    let rect = geometry(RECT { left: -1600, top: -200, right: -300, bottom: 800 }, selected,
+                        WindowFlags { margins: Some((12, 45, 13, 14)) });
+    assert_eq!(rect, RECT { left: -1600, top: -200, right: -662, bottom: 476 });
+}
+#[test]
+fn fullscreen_maximized_restore_does_not_double_scale() {
+    let old = PhysicalSize { width: 1200, height: 900 };
+    assert_eq!(choose_size(old, 1.0, 1.5, false, None), old);
+    let requested = PhysicalSize { width: 777, height: 555 };
+    assert_eq!(choose_size(old, 1.0, 1.5, false, Some(requested)), requested);
+}
+#[test]
+fn repeated_100_150_percent_roundtrips_preserve_logical_size() {
+    let initial = PhysicalSize { width: 800, height: 600 };
+    let mut size = initial;
+    for _ in 0..100 {
+        size = choose_size(size, 1.0, 1.5, true, None);
+        assert_eq!(size, PhysicalSize { width: 1200, height: 900 });
+        size = choose_size(size, 1.5, 1.0, true, None);
+        assert_eq!(size, initial);
+    }
+}
+#[test]
+fn undecorated_and_adjust_failure_keep_client_size() {
+    let suggested = RECT { left: 1920, top: 25, right: 3000, bottom: 900 };
+    for margins in [Some((0, 0, 0, 0)), None] {
+        assert_eq!(geometry(suggested, PhysicalSize { width: 800, height: 600 }, WindowFlags { margins }),
+                   RECT { left: 1920, top: 25, right: 2720, bottom: 625 });
+    }
+}

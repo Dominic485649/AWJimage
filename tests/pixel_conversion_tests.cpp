@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <avif/avif.h>
+#include "codec_color_fixture.h"
 
 import awj.image;
 import awj.pixel_conversion;
@@ -321,9 +322,175 @@ int check_hdr_recursive_budget() {
   return 0;
 }
 
+int check_requested_color_conversion() {
+  auto source = rgba();
+  source.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 8,
+      .color_primaries = 12, .transfer_characteristics = 13, .matrix_coefficients = 0, .color_range = 1};
+  const auto original = source.planes[0].bytes;
+  const awj::PixelConversionRequest request{.bit_depth = 16, .color_primaries = 9, .transfer_characteristics = 16};
+  auto converted = awj::convert_image_pixels(source, request);
+  if (!converted || !converted->source_info || converted->source_info->color_primaries != 9 ||
+      converted->source_info->transfer_characteristics != 16 || !converted->source_info->has_hdr_metadata ||
+      source.planes[0].bytes != original)
+    return fail(converted ? "Requested color conversion did not preserve ownership/color semantics." : converted.error().c_str());
+  // 标准sRGB EOTF、P3-D65到BT.2020矩阵和PQ OETF，独立于生产转换函数。
+  constexpr double matrix[3][3]{{0.7538330344, 0.1985973691, 0.0475695965},
+      {0.0457438489, 0.9417772198, 0.0124789313}, {-0.0012103404, 0.0176017173, 0.9836086231}};
+  for (std::size_t y = 0; y < source.height; ++y) for (std::size_t x = 0; x < source.width; ++x) {
+    double linear[3]{};
+    for (int c = 0; c < 3; ++c) {
+      const double v = std::to_integer<unsigned>(source.planes[0].bytes[y * source.planes[0].stride + x * 4 + c]) / 255.0;
+      linear[c] = (v <= 0.04045 ? v / 12.92 : std::pow((v + 0.055) / 1.055, 2.4)) * 203.0;
+    }
+    for (int c = 0; c < 3; ++c) {
+      const double nits = std::max(0.0, matrix[c][0] * linear[0] + matrix[c][1] * linear[1] + matrix[c][2] * linear[2]);
+      const double p = std::pow(nits / 10000.0, 2610.0 / 16384.0);
+      const double expected = std::pow((3424.0 / 4096.0 + 2413.0 / 128.0 * p) /
+          (1.0 + 2392.0 / 128.0 * p), 2523.0 / 32.0);
+      std::uint16_t sample{};
+      std::memcpy(&sample, converted->planes[0].bytes.data() + y * converted->planes[0].stride + (x * 4 + c) * 2, 2);
+      if (std::abs(sample / 65535.0 - expected) > 4.0 / 65535.0)
+        return fail("CICP override changed only labels, or diverged from independent P3/sRGB-to-2020/PQ math.");
+    }
+  }
+  auto unknown = rgba();
+  if (awj::convert_image_pixels(unknown, request)) return fail("Unknown source color was guessed during conversion.");
+  if (awj::convert_image_pixels(*converted, {.bit_depth = 16, .transfer_characteristics = 13}))
+    return fail("HDR was converted to SDR by relabeling instead of an explicit tone map.");
+  return 0;
+}
+
+std::uint16_t sample16(const awj::ImageBuffer& image, std::size_t pixel, std::size_t channel) {
+  std::uint16_t value{};
+  std::memcpy(&value, image.planes[0].bytes.data() + (pixel / image.width) * image.planes[0].stride +
+      (pixel % image.width * 4 + channel) * 2, 2);
+  return value;
+}
+
+double pq_reference(double nits) {
+  const double p = std::pow(std::max(0.0, nits) / 10000.0, 2610.0 / 16384.0);
+  return std::pow((3424.0 / 4096.0 + 2413.0 / 128.0 * p) /
+      (1.0 + 2392.0 / 128.0 * p), 2523.0 / 32.0);
+}
+
+int check_hlg_and_tone_color_boundaries() {
+  awj::ImageBuffer white{.width = 2, .height = 2, .pixel_format = awj::PixelFormat::rgba,
+      .alpha_mode = awj::AlphaMode::straight, .bit_depth = 16,
+      .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+          .color_primaries = 9, .transfer_characteristics = 18, .matrix_coefficients = 0,
+          .color_range = 1, .has_hdr_metadata = true}};
+  white.planes = {{std::vector<std::byte>(32, std::byte{255}), 16}};
+  auto pq = awj::convert_image_pixels(white, {.bit_depth = 16, .transfer_characteristics = 16});
+  if (!pq) return fail(pq.error().c_str());
+  for (std::size_t pixel = 0; pixel < 4; ++pixel) for (std::size_t c = 0; c < 3; ++c)
+    if (std::abs(sample16(*pq, pixel, c) / 65535.0 - pq_reference(1000.0)) > 4.0 / 65535.0)
+      return fail("HLG white-to-PQ lost the 1000-nit peak scale.");
+
+  auto source = rgba();
+  source.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 8,
+      .color_primaries = 9, .transfer_characteristics = 13, .matrix_coefficients = 0, .color_range = 1};
+  constexpr std::array<std::array<unsigned, 3>, 4> colors{{{0, 0, 0}, {4, 4, 4}, {100, 0, 0}, {255, 255, 255}}};
+  for (std::size_t pixel = 0; pixel < source.width * source.height; ++pixel) {
+    for (std::size_t c = 0; c < 3; ++c) source.planes[0].bytes[pixel * 4 + c] = std::byte(colors[pixel % 4][c]);
+    source.planes[0].bytes[pixel * 4 + 3] = std::byte{255};
+  }
+  auto hlg = awj::convert_image_pixels(source, {.bit_depth = 16, .transfer_characteristics = 18});
+  if (!hlg) return fail(hlg.error().c_str());
+  for (std::size_t pixel = 0; pixel < source.width * source.height; ++pixel) {
+    double nits[3]{};
+    for (int c = 0; c < 3; ++c) {
+      const double v = colors[pixel % 4][c] / 255.0;
+      nits[c] = 203.0 * (v <= .04045 ? v / 12.92 : std::pow((v + .055) / 1.055, 2.4));
+    }
+    // BT.2100 1000-nit 逆 OOTF/OETF；与生产 libplacebo 调用独立。
+    const double luma = .2627 * nits[0] + .6780 * nits[1] + .0593 * nits[2];
+    // v7.387.0 将 HDR_BLACK 当作无限对比度哨兵，信号黑点实际为零。
+    constexpr double black = 0.0;
+    for (std::size_t c = 0; c < 3; ++c) {
+      const double linear = luma > 0 ? nits[c] / 1000.0 * std::pow(luma / 1000.0, (1.0 - 1.2) / 1.2) : 0;
+      const double signal = linear <= 1.0 / 12.0 ? std::sqrt(3.0 * linear)
+          : .17883277 * std::log(12.0 * linear - .28466892) + .55991073;
+      const double expected = luma > 0 ? std::clamp((signal - black) / (1.0 - black), 0.0, 1.0) : 0;
+      if (std::abs(sample16(*hlg, pixel, c) / 65535.0 - expected) > 4.0 / 65535.0) {
+        std::fprintf(stderr, "HLG pixel=%zu channel=%zu actual=%.9g reference=%.9g luma_nits=%.9g black=%.9g\n",
+            pixel, c, sample16(*hlg, pixel, c) / 65535.0, expected, luma, black);
+        return fail("Target HLG black/gray/primary differs from the independent inverse OOTF/OETF.");
+      }
+    }
+  }
+  auto black_pq = white;
+  black_pq.source_info->transfer_characteristics = 16;
+  for (std::size_t pixel = 0; pixel < 4; ++pixel) for (std::size_t c = 0; c < 3; ++c) {
+    const std::uint16_t zero{}; std::memcpy(black_pq.planes[0].bytes.data() + (pixel * 4 + c) * 2, &zero, 2);
+  }
+  auto black_hlg = awj::convert_image_pixels(black_pq, {.bit_depth = 16, .transfer_characteristics = 18});
+  if (!black_hlg) return fail(black_hlg.error().c_str());
+  for (std::size_t pixel = 0; pixel < 4; ++pixel) for (std::size_t c = 0; c < 3; ++c)
+    if (sample16(*black_hlg, pixel, c) != 0) return fail("PQ black did not map to finite HLG black.");
+
+  auto linear = scrgb();
+  for (int depth : {8, 16}) {
+    auto mapped = awj::convert_image_pixels(linear, {.bit_depth = depth, .tone_map_to_sdr = true});
+    if (!mapped) return fail(mapped.error().c_str());
+    auto reference = awj::convert_image_pixels(*mapped, {.bit_depth = depth, .color_primaries = 12, .transfer_characteristics = 4});
+    auto direct = awj::convert_image_pixels(linear, {.bit_depth = depth, .tone_map_to_sdr = true,
+        .color_primaries = 12, .transfer_characteristics = 4});
+    if (!reference || !direct || !same_planes(*reference, *direct) ||
+        direct->source_info->color_primaries != 12 || direct->source_info->transfer_characteristics != 4)
+      return fail("RGBA tone-map fast path ignored the remaining target CICP request.");
+  }
+  for (int primaries : {1, 12}) {
+    auto explicit_half = awj::convert_image_pixels(linear, {.bit_depth = 16, .color_primaries = primaries});
+    if (!explicit_half || explicit_half->source_info->color_primaries != primaries ||
+        explicit_half->source_info->transfer_characteristics != 16)
+      return fail("FP16 materialization ignored an explicit source-matching primaries request.");
+  }
+  if (awj::convert_image_pixels(linear, {.bit_depth = 16, .transfer_characteristics = 8}))
+    return fail("Unsupported extended linear HDR output silently became PQ.");
+  return 0;
+}
+
+int check_icc_native_yuv_conversion() {
+  auto profile = awj::test::display_p3_srgb_icc();
+  if (!profile) return fail(profile.error().c_str());
+  for (auto format : {awj::PixelFormat::yuv420, awj::PixelFormat::yuv422, awj::PixelFormat::yuv444})
+    for (const auto values : {std::array<unsigned, 3>{16, 128, 128}, std::array<unsigned, 3>{235, 128, 128},
+                             std::array<unsigned, 3>{81, 90, 240}}) {
+      awj::ImageBuffer native{.width = 4, .height = 4, .pixel_format = format, .bit_depth = 8,
+          .source_info = awj::ImageSourceInfo{.pixel_format = format, .bit_depth = 8,
+              .matrix_coefficients = 6, .color_range = 0}};
+      const std::size_t cw = format == awj::PixelFormat::yuv444 ? 4 : 2;
+      const std::size_t ch = format == awj::PixelFormat::yuv420 ? 2 : 4;
+      native.planes = {{std::vector<std::byte>(16, std::byte(values[0])), 4},
+          {std::vector<std::byte>(cw * ch, std::byte(values[1])), cw},
+          {std::vector<std::byte>(cw * ch, std::byte(values[2])), cw}};
+      native.metadata.push_back({awj::MetadataKind::icc, *profile});
+      auto packed = awj::convert_image_pixels(native, {.bit_depth = 16});
+      if (!packed) return fail(packed.error().c_str());
+      auto verified = awj::gain_map_detail::resolve_iso_color(native, {});
+      if (!verified) return fail(verified.error().c_str());
+      awj::gain_map_detail::normalize_iso_base(native, *verified);
+      awj::gain_map_detail::normalize_iso_base(*packed, *verified);
+      if (native.source_info->matrix_coefficients != 6 || native.source_info->color_range != 0)
+        return fail("ICC equivalence normalization relabeled native YUV planes as RGB.");
+      const awj::PixelConversionRequest request{.bit_depth = 16, .color_primaries = 9, .transfer_characteristics = 16};
+      auto direct = awj::convert_image_pixels(native, request);
+      auto reference = awj::convert_image_pixels(*packed, request);
+      if (!direct || !reference) return fail(!direct ? direct.error().c_str() : reference.error().c_str());
+      for (std::size_t pixel = 0; pixel < 16; ++pixel) for (std::size_t c = 0; c < 3; ++c)
+        if (std::abs(static_cast<int>(sample16(*direct, pixel, c)) - static_cast<int>(sample16(*reference, pixel, c))) > 4 ||
+            (values[0] == 16 && sample16(*direct, pixel, c) > 1))
+          return fail("Native YUV ICC override corrupted limited black or differed from an RGB-first reference.");
+    }
+  return 0;
+}
+
 } // namespace
 
 int main() {
+  if (const auto result = check_requested_color_conversion()) return result;
+  if (const auto result = check_hlg_and_tone_color_boundaries()) return result;
+  if (const auto result = check_icc_native_yuv_conversion()) return result;
   if (const auto result = check_hdr_recursive_budget()) return result;
   if (const auto result = check_hdr_geometry()) return result;
   const auto source = rgba();

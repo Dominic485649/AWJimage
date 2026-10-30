@@ -31,6 +31,7 @@ module;
 #include <vector>
 
 #include <avif/avif.h>
+#include "avif_primary_item_adapter.h"
 
 module awj.avif_aom_codec;
 
@@ -351,7 +352,7 @@ std::expected<void, std::string> ensure_metadata_size(std::size_t size,
 std::expected<void, std::string> apply_icc_profile(avifImage& avif_image,
                                                    const ImageBuffer& image,
                                                    const NativeEncodeSettings& settings) {
-  if (settings.strip_metadata || settings.applied_icc != "kept") {
+  if (settings.applied_icc != "kept") {
     return {};
   }
   const auto* icc = first_icc_metadata(image);
@@ -777,7 +778,27 @@ struct GridTileContext {
   ChromaMode applied_chroma{};
   bool lossless{};
   int bit_depth{};
+  const avifGainMap* gain_map{};
 };
+
+std::expected<void, std::string> attach_grid_gain_map(
+    avifImage& tile, const avifGainMap* global, const avifCropRect& crop) {
+  if (!global) return {};
+  if (!global->image || global->altICC.data || global->altICC.size)
+    return std::unexpected{"Gain Map: ISO 21496-1: Grid 全局增益图状态无效。"};
+  IsoGainMapPtr map{avifGainMapCreate(), &avifGainMapDestroy};
+  if (!map) return std::unexpected{"Gain Map: ISO 21496-1: 无法创建 Grid cell metadata。"};
+  // 固定版本中仅 image/altICC 拥有动态存储，后者已明确排除。所有 cell 共享同一套数值元数据。
+  *map = *global;
+  map->image = avifImageCreateEmpty();
+  if (!map->image) return std::unexpected{"Gain Map: ISO 21496-1: 无法创建 Grid gain view。"};
+  const auto result = avifImageSetViewRect(map->image, global->image, &crop);
+  if (result != AVIF_RESULT_OK)
+    return std::unexpected{"Gain Map: ISO 21496-1: Grid 增益图裁切失败: " + std::string{avifResultToString(result)}};
+  map->altPlaneCount = 3;
+  tile.gainMap = map.release();
+  return {};
+}
 
 std::expected<AvifImage, std::string> prepare_grid_tile(
     const GridTileContext& context,
@@ -824,6 +845,7 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
     auto metadata = tile_index == 0 ? apply_avif_metadata(*tile, image, settings)
         : apply_icc_and_content_light_metadata(*tile, image, settings);
     if (!metadata) return std::unexpected{metadata.error()};
+    if (auto gain = attach_grid_gain_map(*tile, context.gain_map, crop); !gain) return std::unexpected{gain.error()};
     return tile;
   }
   if (src_x > std::numeric_limits<std::size_t>::max() / 4 ||
@@ -877,6 +899,9 @@ std::expected<AvifImage, std::string> prepare_grid_tile(
     return std::unexpected{std::format("AVIF grid tile RGB 转 YUV 失败: {}",
                                       avifResultToString(result))};
   }
+  const avifCropRect crop{static_cast<std::uint32_t>(src_x), static_cast<std::uint32_t>(src_y),
+      static_cast<std::uint32_t>(tile_width), static_cast<std::uint32_t>(tile_height)};
+  if (auto gain = attach_grid_gain_map(*tile, context.gain_map, crop); !gain) return std::unexpected{gain.error()};
   return tile;
 }
 
@@ -1116,6 +1141,24 @@ void configure_decoder(avifDecoder& decoder,
   decoder.ignoreXMP = copy_metadata_payloads ? AVIF_FALSE : AVIF_TRUE;
 }
 
+std::expected<void, std::string> parse_primary_preferred(avifDecoder& decoder) {
+  auto result = avifDecoderParse(&decoder);
+  if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, decoder); !valid) return valid;
+  if (result != AVIF_RESULT_OK)
+    return std::unexpected{"AVIF 容器解析失败: " + avif_decode_error(result, &decoder)};
+  const int primary = awjAvifHasIndependentPrimary(&decoder);
+  if (primary < 0) return std::unexpected{"AVIF 主图与序列的关联无法安全确认，拒绝以动画替代静态主图。"};
+  if (decoder.imageSequenceTrackPresent) {
+    const auto source = primary ? AVIF_DECODER_SOURCE_PRIMARY_ITEM : AVIF_DECODER_SOURCE_TRACKS;
+    result = avifDecoderSetSource(&decoder, source);
+    if (result == AVIF_RESULT_OK) result = avifDecoderParse(&decoder);
+    if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, decoder); !valid) return valid;
+    if (result != AVIF_RESULT_OK)
+      return std::unexpected{"AVIF 静态主图/序列选择失败: " + avif_decode_error(result, &decoder)};
+  }
+  return {};
+}
+
 }  // namespace avif_aom_detail
 
 bool avif_libavif_encoder_available(AvifEncoderMode mode) {
@@ -1208,6 +1251,20 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     return std::unexpected{"AVIF encoder 只支持 8、10、12-bit 输出。"};
   }
 
+  IsoGainMapPtr gain_map{nullptr, &avifGainMapDestroy};
+  EncodeTimingDiagnostics gain_map_timing{};
+  if (settings.gain_map_alternative) {
+    // Grid 使用全尺寸 map，cell 边界与主图严格一一对应，避免比例舍入及不同 cell 元数据漂移。
+    const auto width = settings.avif_grid_plan ? static_cast<std::uint32_t>(source_image.width) : 0u;
+    const auto height = settings.avif_grid_plan ? static_cast<std::uint32_t>(source_image.height) : 0u;
+    auto computed = compute_iso_gain_map(source_image, *settings.gain_map_alternative,
+        width, height, 8, stop_token, settings.resources, &gain_map_timing);
+    if (!computed) return std::unexpected{computed.error()};
+    gain_map = std::move(*computed);
+  }
+
+  const auto gain_map_width = gain_map && gain_map->image ? gain_map->image->width : 0u;
+  const auto gain_map_height = gain_map && gain_map->image ? gain_map->image->height : 0u;
   avifImage target_description{};
   avif_aom_detail::apply_color_settings(target_description, settings, applied_chroma, lossless);
   const PixelFormat target_format = *pixel_format == AVIF_PIXEL_FORMAT_YUV444 ? PixelFormat::yuv444
@@ -1236,6 +1293,7 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   const int final_quality = lossless ? AVIF_QUALITY_LOSSLESS : std::clamp(settings.quality, 1, 100);
   encoder->quality = final_quality;
   encoder->qualityAlpha = final_quality;
+  encoder->qualityGainMap = final_quality;
   const int encoder_speed = std::clamp(settings.speed, 0, 10);
   encoder->speed = encoder_speed;
   encoder->keyframeInterval = 1;
@@ -1321,7 +1379,8 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
         .pixel_format = *pixel_format,
         .applied_chroma = applied_chroma,
         .lossless = lossless,
-        .bit_depth = bit_depth};
+        .bit_depth = bit_depth,
+        .gain_map = gain_map.get()};
     const int tile_prepare_threads =
         avif_aom_detail::grid_tile_prepare_thread_count(tile_storage.size(),
                                                         grid_resources);
@@ -1378,6 +1437,10 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
     avif_image->alphaPlane = planes->alphaPlane;
     avif_image->alphaRowBytes = planes->alphaRowBytes;
     avif_image->alphaPremultiplied = AVIF_FALSE;
+    if (gain_map) {
+      gain_map->altPlaneCount = 3;
+      avif_image->gainMap = gain_map.release();
+    }
     auto substage_started = avif_aom_detail::Clock::now();
     result = AVIF_RESULT_OK;
     if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped) {
@@ -1452,7 +1515,13 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
                                      : settings.bit_depth_reason;
   diagnostics.fallback_reason = settings.encoder_fallback_reason;
   diagnostics.encoder_license = "BSD-2-Clause";
-  diagnostics.integration_mode = settings.avif_grid_plan ? "libavif-grid" : std::string{};
+  diagnostics.integration_mode = settings.gain_map_alternative
+      ? (settings.avif_grid_plan ? "libavif-grid-iso21496-1" : "libavif-iso21496-1")
+      : settings.avif_grid_plan ? "libavif-grid" : std::string{};
+  if (settings.gain_map_alternative) {
+    diagnostics.applied_hdr_metadata = "iso21496-1-gain-map-hdr-base";
+    diagnostics.color_reason += "；保留 HDR 主图与原 SDR/低端呈现，重新编码 ISO 21496-1 Gain Map；整对不宣称逐样本无损";
+  }
   diagnostics.speed_mapping = avif_aom_detail::libavif_speed_mapping(actual_mode, encoder_speed);
   diagnostics.encoder_threads = total_encoder_threads;
   diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
@@ -1460,11 +1529,18 @@ std::expected<NativeEncodeResult, std::string> encode_with_current_settings(
   diagnostics.timing.avif_add_image_seconds = add_image_seconds;
   diagnostics.timing.avif_finish_seconds = finish_seconds;
   diagnostics.timing.avif_output_copy_seconds = output_copy_seconds;
+  diagnostics.timing.gain_map_compute_seconds = gain_map_timing.gain_map_compute_seconds;
+  diagnostics.timing.gain_map_compute_workers = gain_map_timing.gain_map_compute_workers;
+  diagnostics.rendition.gain_map_generated = settings.gain_map_alternative != nullptr;
+  diagnostics.rendition.gain_map_width = gain_map_width;
+  diagnostics.rendition.gain_map_height = gain_map_height;
+  diagnostics.rendition.gain_map_bit_depth = gain_map_width ? 8 : 0;
 
   return NativeEncodeResult{.encoded = std::move(encoded),
                             .diagnostics = std::move(diagnostics),
                             .final_quality = final_quality,
-                            .lossless = lossless,
+                            .lossless = lossless && !settings.gain_map_alternative &&
+                                bit_depth >= rendition_reference_depth(source_image),
                             .search_attempt_count = 1};
 }
 
@@ -1505,9 +1581,10 @@ std::expected<NativeEncodeResult, std::string> encode_avif_animation(
         settings.avif_animation_tune == AvifAnimationTune::ssim ? "ssim" : "psnr");
     if (option != AVIF_RESULT_OK) return std::unexpected{avif_aom_detail::avif_error(option, encoder.get())};
   }
-  const auto budget = settings.resources.memory_limit_bytes / std::max(1, settings.resources.file_parallelism);
+  const auto budget = settings.resources.memory_limit_bytes;
   const auto raw_reserve = static_cast<std::uint64_t>(info.width) * info.height * 32;
   auto check_budget = [&](std::size_t frame_index) -> std::expected<void, std::string> {
+    if (!budget) return {};
     const auto retained = awjAvifEncoderRetainedBytes(encoder.get());
     const auto reader_bytes = reader.memory_usage_bytes();
     const auto overhead = static_cast<std::uint64_t>(frame_index + 1) * 4096;
@@ -1572,7 +1649,7 @@ std::expected<NativeEncodeResult, std::string> encode_avif_animation(
   const auto result = avifEncoderFinish(encoder.get(), output.get());
   if (result != AVIF_RESULT_OK) return std::unexpected{avif_aom_detail::avif_error(result, encoder.get())};
   if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
-  if (output->size > encoding_defaults::effective_max_input_file_bytes() || output->size > budget / 3)
+  if (output->size > encoding_defaults::effective_max_input_file_bytes() || (budget && output->size > budget / 3))
     return std::unexpected{"动画 AVIF 输出超过内存预算。"};
   auto bytes = decoder_common::make_byte_buffer(output->size, "动画 AVIF");
   if (!bytes) return std::unexpected{bytes.error()};
@@ -1667,13 +1744,8 @@ class AvifImageDecoder final : public ImageDecoder {
       decoder->maxThreads = 1;
       avif_aom_detail::configure_decoder(*decoder, false);
       avifDecoderSetIO(decoder.get(), &(*file_io)->io);
-      const avifResult result = avifDecoderParse(decoder.get());
-      if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, *decoder); !valid)
-        return std::unexpected{valid.error()};
-      if (result != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("AVIF 读取尺寸失败: {}",
-                                           avif_aom_detail::avif_decode_error(result, decoder.get()))};
-      }
+      if (auto parsed = avif_aom_detail::parse_primary_preferred(*decoder); !parsed)
+        return std::unexpected{parsed.error()};
       if (decoder->image == nullptr) {
         return std::unexpected{std::format("AVIF 图像信息为空: {}", display_path_for_user(path))};
       }
@@ -1689,7 +1761,34 @@ class AvifImageDecoder final : public ImageDecoder {
           if (orientation >= 5) std::swap(dimensions.width, dimensions.height);
         }
       }
-      return decoder_common::make_image_dimensions_checked(dimensions.width, dimensions.height, "AVIF");
+      auto profile = decoder_common::make_image_dimensions_checked(dimensions.width, dimensions.height, "AVIF");
+      if (!profile) return profile;
+      const auto& image = *decoder->image;
+      profile->source_bit_depth = static_cast<int>(image.depth);
+      profile->source_has_alpha = decoder->alphaPresent != AVIF_FALSE;
+      profile->source_has_gain_map = image.gainMap != nullptr;
+      profile->source_icc_bytes = std::max<std::uint64_t>(image.icc.size,
+          image.gainMap ? image.gainMap->altICC.size : 0);
+      const bool hdr = avif_aom_detail::has_hdr_metadata(image);
+      profile->source_dynamic_range = hdr ? ImageDynamicRangeHint::hdr : !image.icc.size &&
+          image.transferCharacteristics != 0 && image.transferCharacteristics != AVIF_TRANSFER_CHARACTERISTICS_UNSPECIFIED
+          ? ImageDynamicRangeHint::sdr : ImageDynamicRangeHint::unknown;
+      if (image.gainMap) {
+        profile->source_bit_depth = 16;
+        profile->source_dynamic_range = hdr || image.gainMap->baseHdrHeadroom.n || image.gainMap->alternateHdrHeadroom.n
+            ? ImageDynamicRangeHint::hdr : ImageDynamicRangeHint::sdr;
+        if (image.gainMap->image) {
+          profile->gain_map_width = image.gainMap->image->width;
+          profile->gain_map_height = image.gainMap->image->height;
+        }
+      }
+      profile->opaque_sdr8_yuv420 = !image.gainMap && !image.icc.size && !profile->source_has_alpha &&
+          image.depth == 8 && image.yuvFormat == AVIF_PIXEL_FORMAT_YUV420 &&
+          profile->source_dynamic_range == ImageDynamicRangeHint::sdr;
+      const auto pixels = static_cast<std::uint64_t>(image.width) * image.height;
+      const auto bytes_per_pixel = profile->source_bit_depth > 8 ? 8u : 4u;
+      profile->decoded_storage_bytes = pixels > UINT64_MAX / bytes_per_pixel ? UINT64_MAX : pixels * bytes_per_pixel;
+      return profile;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"AVIF 尺寸探测内存不足。"};
     } catch (const std::length_error&) {
@@ -1721,7 +1820,8 @@ class AvifImageDecoder final : public ImageDecoder {
       std::string_view source_name,
       DecodeOptions options = {}) const override {
     return decode_bytes(bytes, source_name, decode_threads_,
-                        options.copy_metadata_payloads.value_or(false), options.native_pixels);
+                        options.copy_metadata_payloads.value_or(false), options.native_pixels, options.gain_map_mode,
+                        options.diagnostics, options.stop_token);
   }
 
   std::expected<ImageDecodeResult, std::string> decode(
@@ -1736,7 +1836,9 @@ class AvifImageDecoder final : public ImageDecoder {
       if (!file_io) {
         return std::unexpected{file_io.error()};
       }
-      return decode_file(**file_io, display_path_for_user(path), decode_threads_, options.native_pixels);
+      return decode_file(**file_io, display_path_for_user(path), decode_threads_,
+          options.copy_metadata_payloads.value_or(true), options.native_pixels, options.gain_map_mode,
+          options.diagnostics, options.stop_token);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"AVIF 解码内存不足。"};
     } catch (const std::length_error&) {
@@ -1750,8 +1852,11 @@ class AvifImageDecoder final : public ImageDecoder {
   static std::expected<void, std::string> reject_unsupported_sequence(
       const avifDecoder& decoder,
       std::string_view source_name) {
-    if (decoder.imageSequenceTrackPresent) {
+    if (decoder.imageSequenceTrackPresent && decoder.requestedSource != AVIF_DECODER_SOURCE_PRIMARY_ITEM) {
       return std::unexpected{std::format("AVIF sequence 不能无损直通，需解码首帧: {}", source_name)};
+    }
+    if (decoder.imageSequenceTrackPresent) {
+      return std::unexpected{"AVIF 混合容器必须重新编码独立静态主图，不能将附带视频原样直通。"};
     }
     return {};
   }
@@ -1761,13 +1866,8 @@ class AvifImageDecoder final : public ImageDecoder {
       std::string_view source_name,
       bool copy_metadata_payloads) {
     avif_aom_detail::configure_decoder(decoder, copy_metadata_payloads);
-    const avifResult result = avifDecoderParse(&decoder);
-    if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, decoder); !valid)
-      return std::unexpected{valid.error()};
-    if (result != AVIF_RESULT_OK) {
-      return std::unexpected{std::format("AVIF 读取容器信息失败: {}: {}", source_name,
-                                         avif_aom_detail::avif_decode_error(result, &decoder))};
-    }
+    if (auto parsed = avif_aom_detail::parse_primary_preferred(decoder); !parsed)
+      return std::unexpected{parsed.error()};
     if (auto supported = reject_unsupported_sequence(decoder, source_name); !supported) {
       return std::unexpected{supported.error()};
     }
@@ -1834,7 +1934,10 @@ class AvifImageDecoder final : public ImageDecoder {
       int decode_threads,
       bool copy_metadata_payloads,
       std::string decoder_id,
-      bool used_fallback, bool native_pixels = false) {
+      bool used_fallback, bool native_pixels = false,
+      GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only,
+      DecodeDiagnostics* diagnostics = nullptr, std::stop_token stop = {}) {
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
     if (native_pixels && !image.gainMap) {
       auto native = copy_yuv_pixels(image);
       if (!native) return std::unexpected{native.error()};
@@ -1915,74 +2018,66 @@ class AvifImageDecoder final : public ImageDecoder {
       return std::unexpected{image.gainMap ? "Gain Map: ISO 21496-1 AVIF: " + copied.error() : copied.error()};
     }
     out.planes.push_back(std::move(plane));
-    if (image.gainMap) {
-      const auto* map = image.gainMap;
-      if (!map->image || !map->baseHdrHeadroom.d || !map->alternateHdrHeadroom.d ||
-          image.icc.size || map->altICC.size) {
-        return std::unexpected{"Gain Map: ISO 21496-1 AVIF: 增益图缺少像素/有效 headroom，或使用暂不支持的 ICC 合成空间。"};
-      }
-      const float headroom = std::max(static_cast<float>(map->baseHdrHeadroom.n) / map->baseHdrHeadroom.d,
-          static_cast<float>(map->alternateHdrHeadroom.n) / map->alternateHdrHeadroom.d);
-      if (!std::isfinite(headroom)) return std::unexpected{"Gain Map: ISO 21496-1 AVIF: HDR headroom 无效。"};
-      if (!hdr::hdr_detail::primaries_from_cicp(static_cast<int>(image.colorPrimaries)) ||
-          image.transferCharacteristics == AVIF_TRANSFER_CHARACTERISTICS_UNSPECIFIED ||
-          image.transferCharacteristics == 0)
-        return std::unexpected{"Gain Map: ISO 21496-1 AVIF: base 色彩标签未指定或不支持。"};
-      if (!map->useBaseColorSpace && !hdr::hdr_detail::primaries_from_cicp(static_cast<int>(map->altColorPrimaries)))
-        return std::unexpected{"Gain Map: ISO 21496-1 AVIF: alternate 合成原色未指定或不支持。"};
-      avifRGBImage enhanced{};
-      enhanced.format = AVIF_RGB_FORMAT_RGBA;
-      enhanced.depth = 16;
-      enhanced.maxThreads = decode_threads;
-      avifDiagnostics diag{};
-      avifContentLightLevelInformationBox clli{};
-      // RGB helper owns its allocated output pixels; source alpha passes through.
-      const auto applied = avifRGBImageApplyGainMap(&rgb, image.colorPrimaries,
-          image.transferCharacteristics, map, headroom, AVIF_COLOR_PRIMARIES_BT2020,
-          AVIF_TRANSFER_CHARACTERISTICS_SMPTE2084, &enhanced, &clli, &diag);
-      struct PixelsGuard { avifRGBImage* image; ~PixelsGuard() { avifRGBImageFreePixels(image); } } guard{&enhanced};
-      if (applied != AVIF_RESULT_OK) {
-        return std::unexpected{std::format("Gain Map: ISO 21496-1 AVIF: 合成失败: {}: {}", avifResultToString(applied), diag.error)};
-      }
-      auto enhanced_stride = avif_aom_detail::checked_rgba_stride(out.width, "Gain Map: ISO 21496-1 AVIF", 2);
-      if (!enhanced_stride) return std::unexpected{enhanced_stride.error()};
-      auto enhanced_size = avif_aom_detail::checked_image_bytes(*enhanced_stride, out.height, "Gain Map: ISO 21496-1 AVIF");
-      if (!enhanced_size) return std::unexpected{enhanced_size.error()};
-      ImagePlane enhanced_plane{.stride = *enhanced_stride};
-      auto resized_enhanced = decoder_common::resize_buffer(enhanced_plane.bytes, *enhanced_size, "Gain Map: ISO 21496-1 AVIF");
-      if (!resized_enhanced) return std::unexpected{resized_enhanced.error()};
-      for (std::size_t y = 0; y < out.height; ++y) {
-        std::memcpy(enhanced_plane.bytes.data() + y * *enhanced_stride,
-            enhanced.pixels + y * enhanced.rowBytes, *enhanced_stride);
-      }
-      out.planes.front() = std::move(enhanced_plane);
-      out.bit_depth = 16;
-      out.source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba, .bit_depth = 16,
-          .color_primaries = 9, .transfer_characteristics = 16, .matrix_coefficients = 9,
-          .color_range = 1, .content_light = HdrContentLightMetadata{clli.maxCLL, clli.maxPALL},
-          .has_hdr_metadata = true, .color_metadata_source = "gain-map-avif-iso21496-1-bt2020-pq",
-          .source_has_gain_map = true};
-      std::erase_if(out.metadata, [](const MetadataBlock& block) { return block.kind != MetadataKind::exif; });
-      decoder_id += "-iso21496-1-gain-map-enhanced";
-      if (image.transformFlags & AVIF_TRANSFORM_CLAP) {
-        avifCropRect crop{};
-        if (!avifCropRectConvertCleanApertureBox(&crop, &image.clap, image.width, image.height, image.yuvFormat, &diag))
-          return std::unexpected{"Gain Map: ISO 21496-1 AVIF: clean aperture 无效。"};
-        auto cropped = gain_map_detail::crop_rgba(out, crop.x, crop.y, crop.width, crop.height);
-        if (!cropped) return std::unexpected{cropped.error()};
-      }
-      auto oriented = gain_map_detail::transform_rgba(out,
-          image.transformFlags & AVIF_TRANSFORM_IROT ? image.irot.angle : 0,
-          image.transformFlags & AVIF_TRANSFORM_IMIR ? image.imir.axis : -1);
-      if (!oriented) return std::unexpected{oriented.error()};
-      if (image.transformFlags & (AVIF_TRANSFORM_IROT | AVIF_TRANSFORM_IMIR))
-        gain_map_detail::normalize_exif_orientation(out);
-      else if (auto exif = gain_map_detail::apply_exif_orientation(out); !exif) return std::unexpected{exif.error()};
+    if (diagnostics) {
+      if (!diagnostics->source_info) capture_decode_source(*diagnostics, out);
+      diagnostics->decoder_id = decoder_id;
+      diagnostics->stage = image.gainMap ? "avif.gain-map.render" : "complete";
+      diagnostics->source_info->source_has_gain_map = image.gainMap != nullptr;
+      if (image.gainMap) diagnostics->source_info->has_hdr_metadata = true;
     }
-    if (!copy_metadata_payloads) out.metadata.clear();
-    return ImageDecodeResult{.image = std::move(out),
-                             .decoder_id = std::move(decoder_id),
-                             .used_fallback = used_fallback};
+    ImageDecodeResult decoded{.image = std::move(out), .decoder_id = std::move(decoder_id),
+        .used_fallback = used_fallback};
+    if (image.gainMap) {
+      auto* map = image.gainMap;
+      if (!map->image || map->image->gainMap || !map->baseHdrHeadroom.d || !map->alternateHdrHeadroom.d ||
+          image.icc.size || map->altICC.size)
+        return std::unexpected{"Gain Map: ISO 21496-1 AVIF: 增益图缺少像素/有效 headroom，或使用暂不支持的 ICC 合成空间。"};
+      // 辅助图只是 raw gain samples，不能当普通照片做 HDR 或色调转换。
+      auto gain = finish_decoded_image(*map->image, source_name, decode_threads, false, "libavif-gain-map-samples", false);
+      if (!gain) return std::unexpected{"Gain Map: ISO 21496-1 AVIF: " + gain.error()};
+      const int budget = avif_aom_detail::codec_thread_count(decode_threads);
+      const ResourcePlan resources{.encoder_threads_per_file = budget, .global_thread_budget = budget};
+      auto pair = render_iso_gain_map(std::move(decoded.image), gain->image, *map, gain_map_mode,
+          stop, resources, diagnostics ? &diagnostics->timing : nullptr);
+      if (!pair) return std::unexpected{pair.error()};
+      pair->decoder_id = decoded.decoder_id + "-iso21496-1-gain-map-enhanced";
+      pair->used_fallback = used_fallback;
+      const auto transform = [&](ImageBuffer& rendition) -> std::expected<void, std::string> {
+        if (image.transformFlags & AVIF_TRANSFORM_CLAP) {
+          avifCropRect crop{};
+          avifDiagnostics diag{};
+          if (!avifCropRectConvertCleanApertureBox(&crop, &image.clap, image.width, image.height, image.yuvFormat, &diag))
+            return std::unexpected{"Gain Map: ISO 21496-1 AVIF: clean aperture 无效。"};
+          if (auto cropped = gain_map_detail::crop_rgba(rendition, crop.x, crop.y, crop.width, crop.height); !cropped)
+            return std::unexpected{cropped.error()};
+        }
+        if (auto oriented = gain_map_detail::transform_rgba(rendition,
+                image.transformFlags & AVIF_TRANSFORM_IROT ? image.irot.angle : 0,
+                image.transformFlags & AVIF_TRANSFORM_IMIR ? image.imir.axis : -1); !oriented)
+          return std::unexpected{oriented.error()};
+        if (image.transformFlags & (AVIF_TRANSFORM_IROT | AVIF_TRANSFORM_IMIR))
+          gain_map_detail::normalize_exif_orientation(rendition);
+        else if (auto exif = gain_map_detail::apply_exif_orientation(rendition); !exif)
+          return std::unexpected{exif.error()};
+        return {};
+      };
+      if (auto transformed = transform(pair->image); !transformed) return std::unexpected{transformed.error()};
+      if (pair->gain_map_alternative) {
+        if (auto transformed = transform(pair->gain_map_alternative->image); !transformed)
+          return std::unexpected{transformed.error()};
+      }
+      decoded = std::move(*pair);
+    }
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (diagnostics) {
+      diagnostics->decoder_id = decoded.decoder_id;
+      diagnostics->stage = "complete";
+    }
+    if (!copy_metadata_payloads) {
+      decoded.image.metadata.clear();
+      if (decoded.gain_map_alternative) decoded.gain_map_alternative->image.metadata.clear();
+    }
+    return decoded;
   }
 
  private:
@@ -1993,11 +2088,14 @@ class AvifImageDecoder final : public ImageDecoder {
   static std::expected<ImageDecodeResult, std::string> decode_file(
       avif_aom_detail::AvifFileIO& file_io,
       std::string_view source_name,
-      int decode_threads, bool native_pixels = false) {
+      int decode_threads, bool copy_metadata_payloads = true, bool native_pixels = false,
+      GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only,
+      DecodeDiagnostics* diagnostics = nullptr, std::stop_token stop = {}) {
     try {
       const auto clamped_decode_threads = avif_aom_detail::codec_thread_count(decode_threads);
       std::string last_error, iso_error;
       for (const auto codec_choice : decode_codec_choices()) {
+        if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
         const char* codec_name = avifCodecName(codec_choice, AVIF_CODEC_FLAG_CAN_DECODE);
         if (codec_name == nullptr) {
           continue;
@@ -2008,15 +2106,11 @@ class AvifImageDecoder final : public ImageDecoder {
         }
         decoder->codecChoice = codec_choice;
         decoder->maxThreads = clamped_decode_threads;
-        avif_aom_detail::configure_decoder(*decoder, true);
+        avif_aom_detail::configure_decoder(*decoder, copy_metadata_payloads);
         avifDecoderSetIO(decoder.get(), &file_io.io);
-
-        auto result = avifDecoderParse(decoder.get());
-        if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, *decoder); !valid)
-          return std::unexpected{valid.error()};
-        if (result == AVIF_RESULT_OK) {
-          result = avifDecoderNextImage(decoder.get());
-        }
+        if (auto parsed = avif_aom_detail::parse_primary_preferred(*decoder); !parsed)
+          return std::unexpected{parsed.error()};
+        auto result = avifDecoderNextImage(decoder.get());
         if (result != AVIF_RESULT_OK) {
           last_error = std::format("AVIF {} 解码失败: {}: {}", codec_name, source_name,
                                    avif_aom_detail::avif_decode_error(result, decoder.get()));
@@ -2031,9 +2125,9 @@ class AvifImageDecoder final : public ImageDecoder {
           continue;
         }
         return finish_decoded_image(
-            *decoder->image, source_name, clamped_decode_threads, true,
+            *decoder->image, source_name, clamped_decode_threads, copy_metadata_payloads,
             std::format("libavif-{}", codec_name),
-            codec_choice != AVIF_CODEC_CHOICE_DAV1D, native_pixels);
+            codec_choice != AVIF_CODEC_CHOICE_DAV1D, native_pixels, gain_map_mode, diagnostics, stop);
       }
       if (!iso_error.empty()) return std::unexpected{std::move(iso_error)};
       return std::unexpected{last_error.empty()
@@ -2052,7 +2146,9 @@ class AvifImageDecoder final : public ImageDecoder {
       std::span<const std::byte> bytes,
       std::string_view source_name,
       int decode_threads,
-      bool copy_metadata_payloads = true, bool native_pixels = false) {
+      bool copy_metadata_payloads = true, bool native_pixels = false,
+      GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only,
+      DecodeDiagnostics* diagnostics = nullptr, std::stop_token stop = {}) {
     try {
       if (bytes.empty()) {
         return std::unexpected{std::format("AVIF 输入为空: {}", source_name)};
@@ -2060,6 +2156,7 @@ class AvifImageDecoder final : public ImageDecoder {
       const auto clamped_decode_threads = avif_aom_detail::codec_thread_count(decode_threads);
       std::string last_error, iso_error;
       for (const auto codec_choice : decode_codec_choices()) {
+        if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
         const char* codec_name = avifCodecName(codec_choice, AVIF_CODEC_FLAG_CAN_DECODE);
         if (codec_name == nullptr) {
           continue;
@@ -2075,9 +2172,8 @@ class AvifImageDecoder final : public ImageDecoder {
         auto result = avifDecoderSetIOMemory(
             decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size());
         if (result == AVIF_RESULT_OK) {
-          result = avifDecoderParse(decoder.get());
-          if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, *decoder); !valid)
-            return std::unexpected{valid.error()};
+          if (auto parsed = avif_aom_detail::parse_primary_preferred(*decoder); !parsed)
+            return std::unexpected{parsed.error()};
         }
         if (result == AVIF_RESULT_OK) {
           result = avifDecoderNextImage(decoder.get());
@@ -2098,7 +2194,7 @@ class AvifImageDecoder final : public ImageDecoder {
         return finish_decoded_image(
             *decoder->image, source_name, clamped_decode_threads, copy_metadata_payloads,
             std::format("libavif-{}", codec_name),
-            codec_choice != AVIF_CODEC_CHOICE_DAV1D, native_pixels);
+            codec_choice != AVIF_CODEC_CHOICE_DAV1D, native_pixels, gain_map_mode, diagnostics, stop);
       }
       if (!iso_error.empty()) return std::unexpected{std::move(iso_error)};
       return std::unexpected{last_error.empty()
@@ -2126,11 +2222,9 @@ std::expected<bool, std::string> avif_has_sequence(const std::filesystem::path& 
   if (!decoder) return std::unexpected{"无法创建 AVIF 动画探测器。"};
   avif_aom_detail::configure_decoder(*decoder, false);
   avifDecoderSetIO(decoder.get(), &(*io)->io);
-  const auto result = avifDecoderParse(decoder.get());
-  if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, *decoder); !valid)
-    return std::unexpected{valid.error()};
-  if (result != AVIF_RESULT_OK) return std::unexpected{avif_aom_detail::avif_decode_error(result, decoder.get())};
-  return decoder->imageSequenceTrackPresent == AVIF_TRUE;
+  if (auto parsed = avif_aom_detail::parse_primary_preferred(*decoder); !parsed)
+    return std::unexpected{parsed.error()};
+  return decoder->imageSequenceTrackPresent == AVIF_TRUE && decoder->requestedSource == AVIF_DECODER_SOURCE_TRACKS;
 }
 
 class AvifAnimationReader final : public AnimationReader {
@@ -2188,16 +2282,14 @@ std::expected<std::unique_ptr<AnimationReader>, std::string> open_avif_animation
   if (!reader->decoder) return std::unexpected{"无法创建 AVIF 动画解码器。"};
   avif_aom_detail::configure_decoder(*reader->decoder, true);
   reader->decoder->maxThreads = 1;
-  avifDecoderSetSource(reader->decoder.get(), AVIF_DECODER_SOURCE_TRACKS);
   avifDecoderSetIO(reader->decoder.get(), &reader->io->io);
-  const auto result = avifDecoderParse(reader->decoder.get());
-  if (auto valid = gain_map_detail::validate_avif_iso_gain_map_parse(result, *reader->decoder); !valid)
-    return std::unexpected{valid.error()};
-  if (result != AVIF_RESULT_OK) return std::unexpected{avif_aom_detail::avif_decode_error(result, reader->decoder.get())};
-  if (!reader->decoder->imageSequenceTrackPresent) return std::unique_ptr<AnimationReader>{};
+  if (auto parsed = avif_aom_detail::parse_primary_preferred(*reader->decoder); !parsed)
+    return std::unexpected{parsed.error()};
+  if (!reader->decoder->imageSequenceTrackPresent || reader->decoder->requestedSource != AVIF_DECODER_SOURCE_TRACKS)
+    return std::unique_ptr<AnimationReader>{};
   auto& info = reader->description;
   info.width = reader->decoder->image->width; info.height = reader->decoder->image->height;
-  if (!info.width || !info.height || info.width > budget / 80 / info.height)
+  if (!info.width || !info.height || (budget && info.width > budget / 80 / info.height))
     return std::unexpected{"动画 AVIF 解码工作区超出内存预算。"};
   if (reader->decoder->imageCount <= 0 || reader->decoder->imageCount > 100000)
     return std::unexpected{"动画 AVIF 帧数超过限制。"};

@@ -57,6 +57,7 @@ export module awj.core;
 
 import awj.config;
 import awj.encoding_defaults;
+import awj.image;
 import awj.visual_quality;
 
 #ifdef _WIN32
@@ -180,6 +181,16 @@ struct EncodeResult {
   int applied_speed{};
   int encoder_threads{};
   std::uint64_t memory_budget_bytes{};
+  // Planning diagnostics, not allocator limits or measured process peaks.
+  std::string memory_budget_mode{};
+  std::string memory_budget_source{};
+  std::uint64_t estimated_working_set_bytes{};
+  std::string memory_estimate_profile{};
+  std::uint32_t memory_source_width{};
+  std::uint32_t memory_source_height{};
+  std::uint32_t memory_target_width{};
+  std::uint32_t memory_target_height{};
+  bool memory_source_has_gain_map{};
   double seconds{};
   double decode_seconds{-1.0};
   double prepare_seconds{-1.0};
@@ -214,6 +225,19 @@ struct EncodeResult {
   bool canceled{false};
   std::string message{};
   std::string command{};
+  // false 表示未取得源事实，不能把默认 false/空值解释成输入没有元数据。
+  std::string decode_stage{};
+  bool source_metadata_available{};
+  RenditionDiagnostics rendition{};
+  double base_decode_seconds{-1.0};
+  double auxiliary_decode_seconds{-1.0};
+  double gain_map_render_seconds{-1.0};
+  double gain_map_compute_seconds{-1.0};
+  double color_convert_seconds{-1.0};
+  int gain_map_render_workers{};
+  int gain_map_compute_workers{};
+  int heif_tile_parallelism{};
+  int heif_codec_thread_budget{};
 };
 
 std::uint64_t current_process_id() noexcept {
@@ -2549,7 +2573,10 @@ std::expected<void, std::string> write_csv(
          "requested_chroma,applied_chroma,requested_color_representation,applied_color_representation,requested_bit_depth,applied_bit_"
          "depth,bit_depth_reason,"
          "fallback_reason,speed_parameter_kind,applied_speed,encoder_threads,"
-         "memory_budget_bytes,"
+         "memory_budget_bytes,memory_budget_mode,memory_budget_source,"
+         "estimated_working_set_bytes,memory_estimate_profile,"
+         "memory_source_width,memory_source_height,memory_target_width,"
+         "memory_target_height,memory_source_has_gain_map,"
          "quality_overridden_by_visual_quality,lossless,"
          "seconds,decode_seconds,prepare_seconds,encode_seconds,avif_rgb_to_yuv_"
          "seconds,avif_add_image_seconds,avif_finish_seconds,avif_output_copy_"
@@ -2572,7 +2599,13 @@ std::expected<void, std::string> write_csv(
          "applied_color_primaries,applied_transfer_characteristics,applied_"
          "matrix_coefficients,applied_color_range,"
          "source_has_icc,applied_icc,source_has_hdr_metadata,applied_hdr_"
-         "metadata,color_metadata_source,color_reason,visual_quality_search_trace,awj_version\n";
+         "metadata,color_metadata_source,color_reason,visual_quality_search_trace,"
+         "decode_stage,source_metadata_available,"
+         "selected_rendition,rendition_origin,reference_chroma,reference_bit_depth,"
+         "reused_sdr_rendition,tone_mapped,gain_map_generated,gain_map_width,gain_map_height,gain_map_bit_depth,"
+         "base_decode_seconds,auxiliary_decode_seconds,gain_map_render_seconds,gain_map_compute_seconds,"
+         "color_convert_seconds,gain_map_render_workers,gain_map_compute_workers,"
+         "heif_tile_parallelism,heif_codec_thread_budget,awj_version\n";
 
   for (const auto& result : results) {
     const double ratio = result.original_bytes == 0
@@ -2668,6 +2701,13 @@ std::expected<void, std::string> write_csv(
         << core_detail::csv_escape(result.speed_parameter_kind) << ','
         << result.applied_speed << ',' << result.encoder_threads << ','
         << result.memory_budget_bytes << ','
+        << core_detail::csv_escape(result.memory_budget_mode) << ','
+        << core_detail::csv_escape(result.memory_budget_source) << ','
+        << result.estimated_working_set_bytes << ','
+        << core_detail::csv_escape(result.memory_estimate_profile) << ','
+        << result.memory_source_width << ',' << result.memory_source_height << ','
+        << result.memory_target_width << ',' << result.memory_target_height << ','
+        << (result.memory_source_has_gain_map ? "true" : "false") << ','
         << (result.quality_overridden_by_visual_quality ? "true" : "false")
         << ',' << (result.lossless ? "true" : "false") << ','
         << std::format("{:.3f}", result.seconds) << ','
@@ -2724,6 +2764,22 @@ std::expected<void, std::string> write_csv(
         << core_detail::csv_escape(result.color_metadata_source) << ','
         << core_detail::csv_escape(result.color_reason) << ','
         << core_detail::csv_escape(result.visual_quality_search_trace) << ','
+        << core_detail::csv_escape(result.decode_stage) << ','
+        << (result.source_metadata_available ? "true" : "false") << ','
+        << core_detail::csv_escape(result.rendition.selected) << ','
+        << core_detail::csv_escape(result.rendition.origin) << ','
+        << core_detail::csv_escape(result.rendition.reference_chroma) << ','
+        << optional_int(result.rendition.reference_bit_depth) << ','
+        << (result.rendition.reused_sdr ? "true" : "false") << ','
+        << (result.rendition.tone_mapped ? "true" : "false") << ','
+        << (result.rendition.gain_map_generated ? "true" : "false") << ','
+        << result.rendition.gain_map_width << ',' << result.rendition.gain_map_height << ','
+        << result.rendition.gain_map_bit_depth << ','
+        << duration(result.base_decode_seconds) << ',' << duration(result.auxiliary_decode_seconds) << ','
+        << duration(result.gain_map_render_seconds) << ',' << duration(result.gain_map_compute_seconds) << ','
+        << duration(result.color_convert_seconds) << ','
+        << result.gain_map_render_workers << ',' << result.gain_map_compute_workers << ','
+        << result.heif_tile_parallelism << ',' << result.heif_codec_thread_budget << ','
         << kAwjVersion << '\n';
   }
 

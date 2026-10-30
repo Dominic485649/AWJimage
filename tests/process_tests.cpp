@@ -38,6 +38,19 @@ int main() {
   fs::remove_all(root, ec);
 
   awj::EncodeResult result{.index = 0, .processed = true, .ok = true};
+  result.decode_stage = "heif.gain-map.render";
+  result.source_metadata_available = true;
+  result.source_has_icc = true;
+  result.rendition.selected = "hdr";
+  result.rendition.origin = "gain-map-reconstructed";
+  result.rendition.reference_chroma = "444";
+  result.rendition.reference_bit_depth = 16;
+  result.rendition.gain_map_generated = true;
+  result.rendition.gain_map_width = 1080;
+  result.rendition.gain_map_height = 1440;
+  result.rendition.gain_map_bit_depth = 8;
+  result.gain_map_compute_seconds = 1.25;
+  result.gain_map_compute_workers = 3;
   if (auto written = awj::write_csv(
           root / "csv", std::span<const awj::EncodeResult>{&result, 1});
       !written) {
@@ -46,8 +59,11 @@ int main() {
   const auto csv = read_file(root / "csv" / "summary.csv");
   const auto version_cell = "," + std::string{awj::kAwjVersion} + "\n";
   if (!csv.starts_with("\xEF\xBB\xBF" "index,input,") ||
-      csv.find("visual_quality_search_trace,awj_version\n") ==
+      csv.find("visual_quality_search_trace,decode_stage,source_metadata_available,selected_rendition,rendition_origin,reference_chroma,reference_bit_depth,") ==
           std::string::npos ||
+      csv.find("heif_tile_parallelism,heif_codec_thread_budget,awj_version\n") == std::string::npos ||
+      csv.find(",heif.gain-map.render,true,hdr,gain-map-reconstructed,444,16,false,false,true,1080,1440,8,") == std::string::npos ||
+      csv.find("1.250000") == std::string::npos ||
       !csv.ends_with(version_cell)) {
     return fail("summary.csv did not record the CMake AWJ version.");
   }

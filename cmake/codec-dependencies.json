@@ -1,8 +1,8 @@
 {
   "awj_version": "1.3.0",
-  "selected_at": "2026-10-06",
+  "selected_at": "2026-10-29",
   "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
-  "vcpkg_baseline": "45f9f39362a4c52e2b1fbe57b7e649db7f3d96d4",
+  "vcpkg_baseline": "d4c0a46cb8f63e5c9fa007d13baf1cb3e43bf7e3",
   "libultrahdr": {
     "tag": "v2.0.2",
     "commit": "e5f5a022fe96fc4dc2ee35c19f733a50df807abe",
@@ -14,14 +14,17 @@
     ]
   },
   "libheif": {
-    "tag": "v1.23.6",
-    "commit": "f81f28ac014b1c28dee483ac45b72c6b05bc421a",
-    "url": "https://github.com/strukturag/libheif/releases/download/v1.23.6/libheif-1.23.6.tar.gz",
-    "sha256": "4484346dc5995319dbc11e3a1c35d0a2ec46511ce370900869337fd2c7033125",
+    "tag": "v1.23.7",
+    "commit": "12a259a5882dd99d45ec5fc77e296a3b620d1e2e",
+    "url": "https://github.com/strukturag/libheif/releases/download/v1.23.7/libheif-1.23.7.tar.gz",
+    "sha256": "f7483e818503ea6224c8863e4a56ac02c7089021a98472c811c12aa19faf2475",
     "patches": [
       "cmake/patch_libheif_decoder_only.cmake",
       "cmake/patch_libheif_gain_map.cmake"
-    ]
+    ],
+    "sha512": "953f2a59a426de6e2baf717801ee6248eb0713e22e1ccb5213ebd5fa199b1100f443a4e69ee19ff1eb9796ce4e5620a44e8762c03060649214105330df6ee62d",
+    "version": "1.23.7",
+    "source": "FetchContent"
   },
   "libde265": {
     "tag": "v1.1.3",
@@ -37,7 +40,9 @@
     "sha256": "5e9aa73e43af8021a57d744712ee0bc145267863afb7c9b118723a15dbd4cfbf",
     "patches": [
       "cmake/patch_libavif_parallel_grid.cmake",
-      "cmake/patch_libavif_animation_budget.cmake"
+      "cmake/patch_libavif_animation_budget.cmake",
+      "cmake/patch_libavif_primary_item.cmake",
+      "cmake/patch_libavif_gain_map_threads.cmake"
     ]
   },
   "jpegli": {
@@ -59,6 +64,9 @@
     "sha256": "e25f9e2dc37ad2cf11166ac0df400f59772b024b22bb9577d729af68291f3481",
     "patches": [
       "cmake/patch_slint_static_import.cmake"
+    ],
+    "backport_commits": [
+      "08a297b7151e52b98b500b4424a8dee770fc7b58"
     ]
   },
   "libjxl": {
@@ -68,6 +76,10 @@
     "sha256": "03e9be69a30be4011f559da75328b6d7cea8ad921fabfbd551ce10bf45cdc992",
     "sha512": "71d45123e47588c8028c0e01a7820c7a18d98df05c29b5318ab6858eaff5f249879763907201ba19a93f817c6ef75c393c1974d2a0cc8e461c4e2709ca6fa45f",
     "source": "vcpkg-overlays/libjxl",
+    "gain_map_utility_sha256": {
+      "lib/extras/gain_map.cc": "74a4750a4014ec995807019ea7ae58679fe684d90545562581a408c25c5bdca9",
+      "lib/extras/compressed_icc.cc": "db4a5b2f2838bcbd805952b145c353d2b1d4bf00ce93c5fdf57d2c807ad1bc5f"
+    },
     "patches": [
       "vcpkg-overlays/libjxl/fix-dependencies.patch"
     ]
@@ -81,12 +93,18 @@
     "tag": "1.5.4"
   },
   "libjpeg-turbo": {
-    "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.0.tar.gz",
-    "commit": "c85e6b905bf237038faa936dab160ebfc5da0344",
-    "sha256": "980dd81f425082aa6d7c9e47fef27554ce7a9ffc8e2f6e863b97d263c5c50858",
-    "source": "vcpkg baseline",
-    "version": "3.2.0",
-    "tag": "3.2.0"
+    "url": "https://github.com/libjpeg-turbo/libjpeg-turbo/archive/refs/tags/3.2.1.tar.gz",
+    "commit": "7b4993786d856cbccabfc0ed2f923ba000e326cc",
+    "sha256": "6f5819c51649bce2571a23b1b0cd41eae2f57fc3f8908c7ec9e7047efb65ca13",
+    "source": "vcpkg-overlays/libjpeg-turbo",
+    "version": "3.2.1",
+    "tag": "3.2.1",
+    "sha512": "680b97652a51846e1965e70b5498f74ebf9e6eaa31c122546ba7b8eff9fa6b6eb85972802970e94cce4f539518ad421395eaffe121bce7ad7b8f23a9ab9731ef",
+    "patches": [
+      "vcpkg-overlays/libjpeg-turbo/add-options-for-docs-headers.patch",
+      "vcpkg-overlays/libjpeg-turbo/workaround_cmake_system_processor.patch"
+    ],
+    "upstreamed_patch": "3.2.1 already supplies SPNG/ZLIB exported dependencies and pkg-config private requirements; legacy PR901 patch is no longer applied."
   },
   "libpng": {
     "url": "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.59.tar.gz",
@@ -113,12 +131,13 @@
     "tag": "lcms2.19.1"
   },
   "aom": {
-    "tag": "v3.15.1",
-    "url": "https://storage.googleapis.com/aom-releases/libaom-3.15.1.tar.gz",
-    "version": "3.15.1",
-    "sha256": "8ca0c52746174603500f0adb6f2a215d69c9ca2aab2acb3caa06fb791d8d01bf",
-    "commit": "44d0a57786f432d933ff64b653347c66f4d0fa1d",
-    "source": "vcpkg-overlays/aom"
+    "tag": "v3.15.2",
+    "url": "https://storage.googleapis.com/aom-releases/libaom-3.15.2.tar.gz",
+    "version": "3.15.2",
+    "sha256": "67bb54b245f33ed98600e08269e6139986e48114e14042474ddd8885801dfddc",
+    "commit": "af3dc9aadc793c1b00edc003e3fc19a44fdeb574",
+    "source": "vcpkg-overlays/aom",
+    "sha512": "4ba185a642c9dd32d1ab708916a5aed1a65d3cd6d2599d632f33c83849e6702ca91528ad09a007eb39ac2723f0b10de9a7905ed26abfef42a164f13e21aacb7a"
   },
   "giflib": {
     "tag": "6.1.3",
@@ -134,24 +153,27 @@
     "cmake/patch_libheif_gain_map.cmake": "10ae2230394038a30d4a6dfa9a34eceb0e3f576770b9eb0f19295ca5b4ba4046",
     "cmake/patch_libavif_parallel_grid.cmake": "eeb38346e6f974f3e2c2d0e054b7f96209b332ce868886556dd9ed440121fb11",
     "cmake/patch_libavif_animation_budget.cmake": "b2f2c1a3a5409bfe3eee5b0bad047327f5acafe4f46bc410e805f1f1b0c1a5d6",
+    "cmake/patch_libavif_primary_item.cmake": "dceb7ac2fd8feb50128212c51169dc771894c00c872027aed0a5fbd9c7db9e22",
+    "cmake/patch_libavif_gain_map_threads.cmake": "4e9c07fa155b552bbaba3dea8e86d7dd898b427c542cd4afdb6f6104f93a3bb4",
+    "src/codecs/avif_gain_map_thread_adapter.h": "4836b8d8b1cbcbe1e9411a32edfd29f79f4062981e0be6af40f11e70baef0b9e",
     "cmake/patch_jpegli_allocator.cmake": "04104442f3e4b29068ca1eb4f6e661b8f730844537ebdd0600ff67f55cdcad4c",
-    "cmake/patch_slint_static_import.cmake": "33f9af8d0ff8c9f3b11ab3514ecaecf7f8a37dc43818094b65352c3f96bb6d61",
+    "cmake/patch_slint_static_import.cmake": "88f883a461109f8b777650065625f0af19ff6a3b33bcf17018fca3bd891f297c",
     "vcpkg-overlays/libjxl/fix-dependencies.patch": "f57a52305f168815b11aa6f1e284a525ffa3471c7a5b5c47d0d61684fbb579cf",
     "vcpkg-overlays/aom/aom-rename-static.diff": "94f8f7fc7a7b661d488733cf43fb90e94f2cc345ae2317f6d5a2d3b2fc5f57ad",
     "vcpkg-overlays/aom/aom-uninitialized-pointer.diff": "5a07138d20ac842bf1b491bdeaae17bf6fbae4c6c085e544361ef2d8cec6d2b0",
-    "vcpkg-overlays/aom/portfile.cmake": "2e94c84a08ca1c9c8573244539d8532c2b2558804300d34da44e047068536ef8",
-    "vcpkg-overlays/aom/vcpkg.json": "d1a4ef8530278bd3204a728cf333e080a900b6e098e75f28911ade9e8efccad1",
+    "vcpkg-overlays/aom/portfile.cmake": "c5c427b81404d04f65e634637fc799438a93791de75acfdc2cdf89c85e11c4af",
+    "vcpkg-overlays/aom/vcpkg.json": "1d4290d324b04a7ee1965593c6edc4350e25601adfa4c91e8eca491e4fef706a",
     "vcpkg-overlays/dav1d/portfile.cmake": "0dbcaeb1ed440a7089ab7261fb8ada8e1bf7f002d6bc4baa18cee2f20c13bced",
     "vcpkg-overlays/dav1d/usage": "9a9ed47aee5fdb08fcf21c1585e56c19fd5276f6416fbed9216128a9314bcae0",
     "vcpkg-overlays/dav1d/vcpkg.json": "c59def987dd9fba57f885019f884b9044041e4dee26bf328d241ecbe2b271b1e",
-    "vcpkg-overlays/libarchive/portfile.cmake": "50dd0fba384660ca99422682253d6b7e8ecac06fe76ce41a695c7ee5bd2d8b4f",
+    "vcpkg-overlays/libarchive/portfile.cmake": "a4fa3e2f8817d734d4ee0e2b56728e4597db05887655af88bec7941dd9ab4b52",
     "vcpkg-overlays/libarchive/vcpkg-cmake-wrapper.cmake.in": "216fc7aa427e7ebfb9b6f271ec40eaa5c7bb736e9f14db0e059ad1253c8eae26",
-    "vcpkg-overlays/libarchive/vcpkg.json": "b8c76b54fca76110dfa121aeae7bb724f28fb5e8e66d05bfd66f3bcd11bd73c6",
+    "vcpkg-overlays/libarchive/vcpkg.json": "4692bd27a438cebe024b655effc158a34bb8133c77807f00904749f4c5fc0825",
     "vcpkg-overlays/libjxl/portfile.cmake": "43a7782fe9a8dad945fab11cc8c6c64d17b33dcc4c8ec2a0eb203e650647968e",
     "vcpkg-overlays/libjxl/vcpkg.json": "26544c5e61c6120693a0b0fe21eeb56553b1db2156d155b00c58d905c28e3ae8",
-    "vcpkg-overlays/libplacebo/CMakeLists.txt": "7315bd393c28bf958d9828482e985bb72397b9a0fe678d3f229cc555981f08b5",
-    "vcpkg-overlays/libplacebo/portfile.cmake": "217caaad97370a2c87a72c2459740e8e210bb0b48304c61f08175244de1f08a9",
-    "vcpkg-overlays/libplacebo/vcpkg.json": "727b8a66123bacce5806d4105867ebaf352170d652df6ae24161c2ef8fc99d94",
+    "vcpkg-overlays/libplacebo/CMakeLists.txt": "5cf761421ea2f22656862d584afbb4fed26ebfac5006f3cfac8c84517b607183",
+    "vcpkg-overlays/libplacebo/portfile.cmake": "ced630a5b0d1d8dba745db121ea48faf126560dcd4320d9f60c348be909a98f2",
+    "vcpkg-overlays/libplacebo/vcpkg.json": "f66cd79365f2748d426855aea15fe3fbd61b4cca162d5f97a804ca20fdc53d83",
     "vcpkg-overlays/libyuv/cmake.diff": "656bf8f64eda479762df5e4b6cf30fdc98cf85670b8dc3963f53aa646c218fbd",
     "vcpkg-overlays/libyuv/libyuv-config.cmake": "cdad93ddebb938e09680f76350a40f053e200522af483cbb1d9aa5ffa5ec1d1d",
     "vcpkg-overlays/libyuv/portfile.cmake": "472e881a65e284622379c78d94225e8e9689fbdd19178bcb2bd917a3e877cde7",
@@ -168,7 +190,68 @@
     "vcpkg-overlays/scnlib/portfile.cmake": "e4dec963cddba84306f55c88a35d3a734224211f91fe717654f257f70900b138",
     "vcpkg-overlays/scnlib/vcpkg.json": "6d8fc99f26c1256e719011fea1e0322d9c74e8097faf993f7a3db1378d852ccd",
     "vcpkg-overlays/scnlib/scnlib-pr-136.patch": "3821a7c3f18e90c4c68d3ed2fddc7018e2a9c8fcc81cf02a901969dcd2e5dac7",
-    "vcpkg-overlays/scnlib/libcxx-wrap-iter.patch": "a7496a9101e0e5b942fbffdccfc07e5cfb4e03b2ceced0afbbec5a82ed65f67f"
+    "vcpkg-overlays/scnlib/libcxx-wrap-iter.patch": "a7496a9101e0e5b942fbffdccfc07e5cfb4e03b2ceced0afbbec5a82ed65f67f",
+    "vcpkg-overlays/libjpeg-turbo/add-options-for-docs-headers.patch": "ca0974ee39b53aabbe2a1ee0fc02781cad5582d988b49e631b990c63019f770e",
+    "vcpkg-overlays/libjpeg-turbo/portfile.cmake": "26f4cfc9ff9bbda574f738cc7a206e66a934924801aba2ace8b96db135dca30a",
+    "vcpkg-overlays/libjpeg-turbo/usage": "47f758c3e170429801a301f8acf5a764f7842df390d07293b6ddee47e7e276b1",
+    "vcpkg-overlays/libjpeg-turbo/vcpkg-cmake-wrapper.cmake": "37be49bd6b131a34f6a16a5054ee154a98097aa57d6d3cdb99fc8e2afe363e07",
+    "vcpkg-overlays/libjpeg-turbo/vcpkg.json": "00c8d9eb99ad58081330780fee2829c359f9a0a4857a4bf0f5dd83d05fb66e38",
+    "vcpkg-overlays/libjpeg-turbo/workaround_cmake_system_processor.patch": "2f4a9d8b3920ce7d4933d9e1aeca04d3a742e1c7c28db854eb4619e5d6cd9a9e",
+    "cmake/patch_winit_dpi.cmake": "9798bf7913e952abb98347610ef57e9fea0c80637529abab2e39372099d393fe",
+    "cmake/verify_winit_source.cmake": "f44b7e0cdf7d132cbda4267cd8b042001ce70aee84b3e76cd9cd2cbba3abf10d",
+    "cmake/winit-source-manifest.json": "45a2bf83a4b39b866530ba76abb0386d0c17b045d183862c1e98d9f575e4aedb"
   },
-  "local_build_hash_normalization": "UTF-8 text, CRLF normalized to LF; source archives retain byte-exact hashes"
+  "local_build_hash_normalization": "UTF-8 text, CRLF normalized to LF; source archives retain byte-exact hashes",
+  "libraw": {
+    "tag": "0.22.3",
+    "commit": "cf02d66eb5c19d4e46df7aee0582e47a4918509a",
+    "url": "https://github.com/LibRaw/LibRaw/archive/refs/tags/0.22.3.tar.gz",
+    "sha256": "7edf96c5b70cff88980a02ab0fc8af125cb6a4a377985573c654439d9d02355c",
+    "sha512": "a9453f8cff55302926c11c47ba7c8d04d81023bbbcad145551d2c0cc601de7eea8218d00a073e6b9ece845d3420897a2272a34fabf55f5b821183eaa7f66b3ef",
+    "version": "0.22.3",
+    "source": "vcpkg baseline"
+  },
+  "libarchive": {
+    "tag": "v3.8.10",
+    "commit": "0c48412be2d94afe1859a807ea7896a18d8900bd",
+    "url": "https://github.com/libarchive/libarchive/archive/refs/tags/v3.8.10.tar.gz",
+    "sha256": "6ec4ad1b96f92f9fe3a74bac2647e7b122a4496aa804e2fb9b50f2030283582c",
+    "sha512": "27b65bea66974a7f6279a3ceba77a3d0e2967c47a5ff56d91d3e2522326238bf5eca3965aefaabca830d5b1a0f44e1bad625a9f8d140d6cd6da307bf04881a24",
+    "version": "3.8.10",
+    "source": "vcpkg-overlays/libarchive"
+  },
+  "libplacebo": {
+    "tag": "v7.387.0",
+    "commit": "275f7dea27924cdd34ab2e6c20e448b6bc4fab65",
+    "url": "https://github.com/haasn/libplacebo/archive/refs/tags/v7.387.0.tar.gz",
+    "sha256": "f9e62d3774a9c4cfd198ec3abaa88294aaade2e31c04d5ab02bcf4abc98b1df5",
+    "sha512": "a0c2b20f3656f94226beb12f7555f114974e89e73923f17b76866ab4a1e5bc34af8edf601ba7efc983e67127b79c409143f9d0292f6264ba7a4dd5008a20e0f4",
+    "version": "7.387.0",
+    "source": "vcpkg-overlays/libplacebo"
+  },
+  "curl": {
+    "tag": "curl-8_23_0",
+    "commit": "3163ec065643ba20709f190111f42c3e1fe95273",
+    "url": "https://github.com/curl/curl/archive/refs/tags/curl-8_23_0.tar.gz",
+    "sha256": "d0605d5883124ef5ae64c6d2b307e1417c482b362583b57491fdf37d9a99a792",
+    "sha512": "e1003f374675a6ae50463995a6c705208c4247120093f1fcccf030847161235b3dfc0e40927114ccbc5b4530893990ccb96ec15400ffe4bcb275d26a0499f10e",
+    "version": "8.23.0",
+    "source": "vcpkg baseline",
+    "platform": "!windows"
+  },
+  "winit": {
+    "version": "0.30.13",
+    "tag": "v0.30.13",
+    "commit": "e9809ef54b18499bb4f2cac945719ecc2a61061b",
+    "url": "https://static.crates.io/crates/winit/winit-0.30.13.crate",
+    "sha256": "a6755fa58a9f8350bd1e472d4c3fcc25f824ec358933bba33306d0b63df5978d",
+    "source": "project FetchContent and Slint Cargo path override",
+    "patches": [
+      "cmake/patch_winit_dpi.cmake"
+    ],
+    "backport_commits": [
+      "488c036a05d418e13bbdcdc349e2db2f6b7f58e2"
+    ],
+    "source_manifest": "cmake/winit-source-manifest.json"
+  }
 }

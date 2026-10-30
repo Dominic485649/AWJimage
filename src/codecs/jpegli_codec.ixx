@@ -245,17 +245,77 @@ std::expected<void, std::string> write_app1_marker(jpeg_compress_struct& cinfo,
   return {};
 }
 
+// ICC_PROFILE 签名及两个分片序号字节占14字节，总分片数只能用一个字节表示。
+inline constexpr std::size_t jpeg_icc_profile_max_bytes =
+    (encoding_defaults::jpeg_marker_payload_max_bytes - 14u) * 255u;
+
+constexpr bool jpeg_icc_size_supported(std::size_t bytes) noexcept {
+  return bytes != 0 && bytes <= jpeg_icc_profile_max_bytes &&
+      bytes <= encoding_defaults::codec_metadata_max_bytes;
+}
+
+struct EssentialSdrIcc {
+  const MetadataBlock* borrowed{};
+  std::vector<std::byte> generated{};
+  std::span<const std::byte> bytes() const noexcept {
+    return borrowed ? std::span<const std::byte>{borrowed->bytes} : std::span<const std::byte>{generated};
+  }
+};
+
+// 借用源 ICC 或仅生成小型 profile，拥有者在 setjmp 前构造并活到同步编码返回。
+std::expected<EssentialSdrIcc, std::string> prepare_essential_sdr_icc(
+    const ImageBuffer& image, const NativeEncodeSettings& settings, std::stop_token stop) {
+  EssentialSdrIcc result;
+  if (image.source_info && image.source_info->has_hdr_metadata) return result;
+  const auto* source = image.source_info ? &*image.source_info : nullptr;
+  const bool known_color = source && source->color_primaries && source->transfer_characteristics;
+  const bool non_srgb = known_color && (source->color_primaries != 1 || source->transfer_characteristics != 13);
+  const bool essential = settings.applied_icc == "kept" || non_srgb || (source && source->source_has_gain_map);
+  if (!essential) return result;
+  if (settings.jpegli_xyb) {
+    if (!known_color || non_srgb)
+      return std::unexpected{"JPG XYB 需要明确 BT.709/sRGB 输入；不能删除必要 ICC 后错误套用其内置 ICC。"};
+    return result;
+  }
+  result.borrowed = first_metadata(image, MetadataKind::icc);
+  if (result.borrowed) {
+    if (!jpeg_icc_size_supported(result.borrowed->bytes.size()))
+      return std::unexpected{"JPG 必要 SDR ICC 为空或超过 JPEG 的255分片上限。"};
+  } else if (non_srgb) {
+    auto profile = gain_map_detail::sdr_presentation_icc(*source, stop);
+    if (!profile) return std::unexpected{profile.error()};
+    if (!jpeg_icc_size_supported(profile->size()))
+      return std::unexpected{"JPG 生成的必要 SDR ICC 超过 JPEG 的255分片上限。"};
+    result.generated = std::move(*profile);
+  }
+  return result;
+}
+
+void record_essential_sdr_icc(EncodeDiagnostics& diagnostics, const EssentialSdrIcc& icc, const ImageBuffer& image) {
+  if (icc.bytes().empty() || !image.source_info) return;
+  diagnostics.applied_icc = icc.borrowed ? "essential-sdr-rendition" : "generated-essential-sdr-cicp";
+  diagnostics.applied_color_primaries = image.source_info->color_primaries;
+  diagnostics.applied_transfer_characteristics = image.source_info->transfer_characteristics;
+  diagnostics.color_reason = "写入解释已有 SDR 呈现所需的 ICC；不重新 tone-map，strip 仅移除可选元数据";
+}
+
 std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
                                                 const ImageBuffer& image,
-                                                const NativeEncodeSettings& settings) {
+                                                const NativeEncodeSettings& settings,
+                                                std::span<const std::byte> essential_icc = {}) {
+  if (!essential_icc.empty()) {
+    if (!jpeg_icc_size_supported(essential_icc.size()))
+      return std::unexpected{"JPG 必要 ICC 超过 JPEG 的255分片上限。"};
+    jpegli_write_icc_profile(&cinfo, reinterpret_cast<const JOCTET*>(essential_icc.data()),
+                             static_cast<unsigned int>(essential_icc.size()));
+  }
   if (settings.strip_metadata) {
     return {};
   }
-  if (!settings.jpegli_xyb && settings.applied_icc == "kept") {
+  if (essential_icc.empty() && !settings.jpegli_xyb && settings.applied_icc == "kept") {
     if (const auto* icc = first_metadata(image, MetadataKind::icc); icc != nullptr) {
-      if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
-          icc->bytes.size() > std::numeric_limits<unsigned int>::max()) {
-        return std::unexpected{"JPG ICC profile 超过运行时上限。"};
+      if (!jpeg_icc_size_supported(icc->bytes.size())) {
+        return std::unexpected{"JPG ICC profile 为空或超过 JPEG 的255分片上限。"};
       }
       jpegli_write_icc_profile(&cinfo,
                                reinterpret_cast<const JOCTET*>(icc->bytes.data()),
@@ -381,7 +441,8 @@ std::expected<void, std::string> copy_app1_metadata(
 
 std::expected<ImageDecodeResult, std::string> decode_bytes(
     std::span<const std::byte> bytes, std::string_view source_name,
-    bool copy_metadata_payloads, bool native_pixels = false) {
+    bool copy_metadata_payloads, bool native_pixels = false,
+    GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only) {
   try {
     if (bytes.empty()) {
       return std::unexpected{std::format("JPG 输入为空: {}", source_name)};
@@ -392,10 +453,13 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
 
     // Recognized legacy/broken HDR is terminal, never a plain-JPEG fallback.
     // The ISO decoder uses its internal libjpeg path and cannot recurse here.
-    auto enhanced = decode_jpeg_gain_map(bytes);
+    auto enhanced = decode_jpeg_gain_map(bytes, {}, 1, gain_map_mode);
     if (!enhanced) return std::unexpected{enhanced.error()};
     if (*enhanced) {
-      if (!copy_metadata_payloads) (**enhanced).image.metadata.clear();
+      if (!copy_metadata_payloads) {
+        (**enhanced).image.metadata.clear();
+        if ((**enhanced).gain_map_alternative) (**enhanced).gain_map_alternative->image.metadata.clear();
+      }
       return std::move(**enhanced);
     }
 
@@ -609,7 +673,16 @@ class JpegliImageDecoder final : public ImageDecoder {
       }
       auto dimensions = decoder_common::make_image_dimensions_checked(cinfo.image_width,
                                                            cinfo.image_height, "JPG");
-      if (dimensions) dimensions->opaque_sdr8_yuv420 = jpegli_detail::opaque_sdr8_yuv420_header(cinfo);
+      if (dimensions) {
+        // JPEGli 的 ABI 62 与 libjpeg-turbo ABI 80 不共享结构体布局，只传递已提取的值。
+        bool has_icc = false;
+        static constexpr char signature[] = "ICC_PROFILE";
+        for (auto* marker = cinfo.marker_list; marker != nullptr; marker = marker->next)
+          has_icc |= marker->marker == JPEG_APP0 + 2 && marker->data_length >= sizeof(signature) + 2 &&
+              jpeg_detail::marker_payload_has_prefix(marker->data, marker->data_length, signature, sizeof(signature));
+        jpeg_detail::fill_memory_profile(*dimensions, cinfo.data_precision, has_icc,
+                                        jpegli_detail::opaque_sdr8_yuv420_header(cinfo));
+      }
       return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"JPG 尺寸探测内存不足。"};
@@ -631,7 +704,8 @@ class JpegliImageDecoder final : public ImageDecoder {
     if (!bytes) {
       return std::unexpected{bytes.error()};
     }
-    return jpegli_detail::decode_bytes(*bytes, display_path_for_user(path), true, options.native_pixels);
+    return jpegli_detail::decode_bytes(*bytes, display_path_for_user(path),
+        options.copy_metadata_payloads.value_or(true), options.native_pixels, options.gain_map_mode);
   }
 
   std::expected<ImageDecodeResult, std::string> decode_memory(
@@ -639,7 +713,7 @@ class JpegliImageDecoder final : public ImageDecoder {
       std::string_view source_name,
       DecodeOptions options = {}) const override {
     return jpegli_detail::decode_bytes(
-        bytes, source_name, options.copy_metadata_payloads.value_or(true), options.native_pixels);
+        bytes, source_name, options.copy_metadata_payloads.value_or(true), options.native_pixels, options.gain_map_mode);
   }
 };
 
@@ -719,6 +793,8 @@ class JpegliImageEncoder final : public ImageEncoder {
         if (rgb_input.size() != *expected_size) return std::unexpected{"JPG encoder RGB 输入缓存尺寸无效。"};
       }
 
+      auto essential_icc = jpegli_detail::prepare_essential_sdr_icc(image, settings, stop_token);
+      if (!essential_icc) return std::unexpected{essential_icc.error()};
       unsigned char* output = nullptr;
       unsigned long output_size = 0;
       jpegli_detail::MallocCleanup output_cleanup{};
@@ -760,7 +836,7 @@ class JpegliImageEncoder final : public ImageEncoder {
       jpegli_set_progressive_level(&cinfo, settings.jpegli_progressive_level);
       cinfo.optimize_coding = settings.jpegli_optimize_huffman ? TRUE : FALSE;
       jpegli_start_compress(&cinfo, TRUE);
-      if (auto metadata = jpegli_detail::write_metadata(cinfo, image, settings); !metadata) {
+      if (auto metadata = jpegli_detail::write_metadata(cinfo, image, settings, essential_icc->bytes()); !metadata) {
         return std::unexpected{metadata.error()};
       }
 
@@ -796,6 +872,7 @@ class JpegliImageEncoder final : public ImageEncoder {
                           bytes->begin());
 
       auto diagnostics = diagnostics_from_settings(settings);
+      jpegli_detail::record_essential_sdr_icc(diagnostics, *essential_icc, image);
       if (!settings.jpegli_xyb) {
         diagnostics.applied_matrix_coefficients = 6;
         diagnostics.applied_color_range = 1;
@@ -829,6 +906,8 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
   if (image.width > JPEG_MAX_DIMENSION || image.height > JPEG_MAX_DIMENSION ||
       image.bit_depth != 8 || image.pixel_format == PixelFormat::gray)
     return std::unexpected{"JPG YUV 编码尺寸或布局无效。"};
+  auto essential_icc = prepare_essential_sdr_icc(image, settings, stop);
+  if (!essential_icc) return std::unexpected{essential_icc.error()};
   auto context = std::make_unique<RawEncodeContext>();
   auto& cinfo = context->cinfo;
   auto& error = context->error;
@@ -850,7 +929,7 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
   jpegli_set_progressive_level(&cinfo, settings.jpegli_progressive_level);
   cinfo.optimize_coding = settings.jpegli_optimize_huffman ? TRUE : FALSE;
   jpegli_start_compress(&cinfo, TRUE);
-  if (auto metadata = write_metadata(cinfo, image, settings); !metadata) return std::unexpected{metadata.error()};
+  if (auto metadata = write_metadata(cinfo, image, settings, essential_icc->bytes()); !metadata) return std::unexpected{metadata.error()};
   for (std::size_t c = 0; c < 3; ++c) {
     const auto& component = cinfo.comp_info[c];
     const auto width = static_cast<std::size_t>(component.width_in_blocks) * DCTSIZE;
@@ -884,6 +963,7 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
   if (!storage) return std::unexpected{storage.error()};
   std::memcpy(storage->data(), context->output, context->output_size);
   auto diagnostics = diagnostics_from_settings(settings);
+  record_essential_sdr_icc(diagnostics, *essential_icc, image);
   diagnostics.applied_matrix_coefficients = 6; diagnostics.applied_color_range = 1;
   diagnostics.applied_chroma = chroma_mode_name(chroma);
   diagnostics.encoder_id = "jpegli"; diagnostics.integration_mode = "jpegli-native";

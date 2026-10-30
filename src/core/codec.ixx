@@ -50,6 +50,34 @@ ChromaMode jpeg_auto_chroma(const ImageBuffer& image) noexcept {
   }
 }
 
+GainMapDecodeMode gain_map_mode_for_output(OutputFormat format, JpegHdrMode jpeg_mode) noexcept {
+  if (format == OutputFormat::webp || (format == OutputFormat::jpgli && jpeg_mode == JpegHdrMode::sdr))
+    return GainMapDecodeMode::sdr_only;
+  return format == OutputFormat::png ? GainMapDecodeMode::hdr_only : GainMapDecodeMode::preserve_both;
+}
+
+int rendition_reference_depth(const ImageBuffer& image) noexcept {
+  int depth = image.source_info && image.source_info->bit_depth > 0
+      ? image.source_info->bit_depth : image.bit_depth;
+  if (image.significant_bits)
+    depth = std::min(depth, std::max({image.significant_bits->red,
+        image.significant_bits->green, image.significant_bits->blue}));
+  return depth;
+}
+
+std::expected<int, std::string> resolve_rendition_bit_depth(
+    OutputFormat format, const ImageBuffer& image, bool hdr,
+    std::optional<int> requested = {}) {
+  const int depth = requested.value_or(format == OutputFormat::avif
+      ? (rendition_reference_depth(image) > 10 ? 12 : 10)
+      : format == OutputFormat::jxl ? 16 : format == OutputFormat::png ? (hdr ? 16 : 8) : 8);
+  const bool supported = format == OutputFormat::avif ? depth == 8 || depth == 10 || depth == 12
+      : format == OutputFormat::jxl ? depth == 8 || depth == 10 || depth == 12 || depth == 16
+      : format == OutputFormat::png ? depth == 8 || depth == 16 : depth == 8;
+  if (!supported) return std::unexpected{"目标格式不支持所请求的位深，不能静默忽略或降级。"};
+  return depth;
+}
+
 enum class BackendId {
   native,
 };
@@ -153,6 +181,13 @@ struct EncodeTimingDiagnostics {
   int visual_quality_candidate_count{};
   int visual_quality_decode_memory_fallback_count{};
   int visual_quality_gpu_fallback_count{};
+  double base_decode_seconds{-1.0};
+  double auxiliary_decode_seconds{-1.0};
+  double gain_map_render_seconds{-1.0};
+  double gain_map_compute_seconds{-1.0};
+  double color_convert_seconds{-1.0};
+  int gain_map_render_workers{};
+  int gain_map_compute_workers{};
 };
 
 struct EncodeDiagnostics {
@@ -211,6 +246,7 @@ struct EncodeDiagnostics {
   std::string visual_quality_gpu_fallback_reason{};
   std::string visual_quality_search_trace{};
   EncodeTimingDiagnostics timing{};
+  RenditionDiagnostics rendition{};
 };
 
 struct NativeEncodeSettings {
@@ -278,6 +314,9 @@ struct NativeEncodeSettings {
   std::span<const std::byte> jpegli_rgb8_input{};
   std::function<void(std::size_t, std::size_t)> frame_progress{};
   bool tone_map_to_sdr_pixels{};
+  // 借用同步编码调用所持有的 ImageDecodeResult；候选搜索完成前所有者不得销毁。
+  const GainMapAlternative* gain_map_alternative{};
+  RenditionDiagnostics rendition{};
 };
 
 struct NativeEncodeResult {
@@ -337,13 +376,44 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .jpegli_progressive_level = settings.jpegli_progressive_level,
                            .jpegli_optimize_huffman = settings.jpegli_optimize_huffman,
                            .jpegli_xyb = settings.jpegli_xyb,
+                           .memory_budget_bytes = settings.resources.memory_limit_bytes,
                            .visual_quality_gpu_requested = settings.visual_quality && settings.visual_quality_gpu,
-                           .visual_quality_gpu_path = settings.visual_quality ? (settings.visual_quality_gpu ? "requested" : "cpu-disabled") : "not-requested"};
+                           .visual_quality_gpu_path = settings.visual_quality ? (settings.visual_quality_gpu ? "requested" : "cpu-disabled") : "not-requested",
+                           .rendition = settings.rendition};
+}
+
+// 同步解码调用的观察结果。即使尚未返回完整像素，也可保留已确认的输入事实。
+// 每个调用独占一个实例；不保存 ICC 载荷，不作为工作像素的色彩解释使用。
+struct DecodeDiagnostics {
+  std::string decoder_id{};
+  std::string stage{};
+  std::optional<ImageSourceInfo> source_info{};
+  bool source_has_icc{};
+  bool source_has_alpha_channel{};
+  AlphaMode source_alpha_mode{AlphaMode::none};
+  bool icc_normalized_to_cicp{};
+  EncodeTimingDiagnostics timing{};
+  int heif_tile_workers{};
+  int heif_codec_threads{};
+};
+
+void capture_decode_source(DecodeDiagnostics& diagnostics, const ImageBuffer& image) {
+  diagnostics.source_info = image.source_info.value_or(
+      ImageSourceInfo{.pixel_format = image.pixel_format, .bit_depth = image.bit_depth});
+  diagnostics.source_has_icc = std::ranges::any_of(image.metadata, [](const MetadataBlock& block) {
+    return block.kind == MetadataKind::icc;
+  });
+  diagnostics.source_has_alpha_channel = image.alpha_mode != AlphaMode::none;
+  diagnostics.source_alpha_mode = image.alpha_mode;
 }
 
 struct DecodeOptions {
   std::optional<bool> copy_metadata_payloads{};
   bool native_pixels{};
+  GainMapDecodeMode gain_map_mode{GainMapDecodeMode::hdr_only};
+  // 仅借用到本次同步调用返回，解码器不得留存或跨线程共享。
+  DecodeDiagnostics* diagnostics{};
+  std::stop_token stop_token{};
 };
 
 class ImageDecoder {

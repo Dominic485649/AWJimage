@@ -60,8 +60,8 @@ msgstr "Choose AVIF"
 msgid "极高压缩率 · 支持 HDR · 最高 12-bit"
 msgstr "top compression · HDR · up to 12-bit"
 
-msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，自动按源选择 4:2:0 / 4:2:2 / 4:4:4，RGB、灰度与未知源使用三分量 4:4:4，并支持 ISO 21496-1 HDR Gain Map。PNG q100 无损，q1–99 降低 RGB 有效精度，保持存储位深与 alpha 精度。"
-msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPG works with common viewers. Auto follows source 4:2:0 / 4:2:2 / 4:4:4; RGB, grayscale and unknown sources use three-component 4:4:4. ISO 21496-1 HDR Gain Maps are supported. PNG q100 is lossless. q1–99 reduces effective RGB precision while retaining storage bit depth and alpha precision."
+msgid "AWJ 针对 AVIF 做了大量实测与调参，代价是编码较慢；若某台设备打不开，优先更新查看端，而不是降级格式。WebP 编码快、兼容最好，适合作为第二格式，但只有 8-bit。JXL 更现代，能无损转封装 JPEG 并支持 HDR，压缩率略逊 AVIF。JPG 兼容常见查看器，自动按源选择 4:2:0 / 4:2:2 / 4:4:4，RGB、灰度与未知源使用三分量 4:4:4，并支持 ISO 21496-1 HDR Gain Map。PNG 默认 SDR 8-bit、HDR 16-bit；q100 无损编码目标像素，q1–99 降低 RGB 有效精度。"
+msgstr "AWJ has put a lot of real-world testing and tuning into AVIF; the price is slower encoding. If some device cannot open the file, update the viewer rather than downgrading the format. WebP encodes fast and has the best compatibility, which makes it a good second format, but it is 8-bit only. JXL is more modern, can losslessly transcode JPEG and supports HDR, though it compresses slightly worse than AVIF. JPG works with common viewers. Auto follows source 4:2:0 / 4:2:2 / 4:4:4; RGB, grayscale and unknown sources use three-component 4:4:4. ISO 21496-1 HDR Gain Maps are supported. PNG defaults to 8-bit SDR and 16-bit HDR. q100 losslessly encodes the target samples; q1–99 reduces effective RGB precision."
 
 msgid "编码器"
 msgstr "Encoder"
@@ -84,8 +84,8 @@ msgstr "1–100, higher means better quality; 100 is lossless"
 msgid "1–100，越大质量越高；JPG 始终有损"
 msgstr "1–100, higher means better quality; JPG is always lossy"
 
-msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 默认走无损转封装。"
-msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPG 90. PNG q100 is lossless. q1–99 quantizes RGB while alpha retains its original precision. JPEG to JXL defaults to lossless transcoding."
+msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 仅在 8-bit 输出计划相符时使用可逆转封装，默认 16-bit 重编码。"
+msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPG 90. PNG q100 is lossless. q1–99 quantizes RGB while alpha retains its original precision. Reversible JPEG-to-JXL transcoding requires a matching 8-bit output plan; the default 16-bit plan re-encodes pixels."
 
 msgid "视觉质量"
 msgstr "Visual quality"
@@ -144,8 +144,14 @@ msgstr "e.g. 4 (in GiB)"
 msgid "min(总内存 80%, 可用 50%)"
 msgstr "min(80% of total, 50% of free)"
 
-msgid "填数字即为内存占用上限，单位 GiB。设置页可以解除内存限制，解除后覆盖这一项。"
-msgstr "A number sets the memory ceiling, in GiB. The settings page can lift the memory limit, which then overrides this value."
+msgid "填数字即为工作集准入预算，单位 GiB，并非进程内存硬上限。设置页的“解除工作集内存预算”优先于自动或手动预算，仅当前会话生效，保留手动值。"
+msgstr "A number sets the working-set admission budget in GiB, not a hard process-memory cap. In Settings, lifting the working-set budget overrides automatic or manual budgets for this session only and keeps the manual value."
+
+msgid "当前会话已解除预算"
+msgstr "Budget lifted for this session"
+
+msgid "保留手动值"
+msgstr "Manual value preserved"
 
 msgid "尺寸限制"
 msgstr "Size limit"
@@ -194,6 +200,24 @@ msgstr "Bit depth"
 
 msgid "保持原片"
 msgstr "Keep source"
+
+msgid "留空自动选择"
+msgstr "Leave blank for Auto"
+
+msgid "SDR 8 / HDR 16-bit"
+msgstr "SDR 8 / HDR 16-bit"
+
+msgid "自动 16-bit"
+msgstr "Auto 16-bit"
+
+msgid "PNG 兼容性优先：SDR 默认 8-bit，HDR 默认 16-bit。可显式填写 8/16；SDR 16-bit 可能影响兼容性。"
+msgstr "PNG prioritizes compatibility: SDR defaults to 8-bit, HDR to 16-bit. Explicit 8/16 is supported; 16-bit SDR may reduce compatibility."
+
+msgid "JXL 默认 16-bit，可显式填写 8/10/12/16；JPG 可逆转封装仅在 8-bit 输出计划相符时使用。"
+msgstr "JXL defaults to 16-bit; explicit 8/10/12/16 is supported. Reversible JPG transcoding requires a matching 8-bit output plan."
+
+msgid "按所选呈现选择 10/12-bit；Gain Map 重建图与原底图分别作为基准，显式 8/10/12 优先。"
+msgstr "Choose 10/12-bit from the selected rendition: use the reconstructed Gain Map image or the retained base as appropriate. Explicit 8/10/12 takes priority."
 
 msgid "自动至少 10-bit"
 msgstr "Auto uses 10-bit or better"
@@ -549,11 +573,17 @@ msgstr "Output a fallback when visual quality is not met"
 msgid "填写视觉质量后生效；未填写视觉质量时此选项保持可选，但不会参与本次编码。启用后，visual_quality 搜索没有候选达到目标时仍输出最接近目标的候选；关闭时未达标会失败。"
 msgstr "Takes effect once visual quality is set; while visual quality is empty this option stays selectable but plays no part in the encode. When enabled, if no candidate in the visual_quality search reaches the target, the closest candidate is still written; when disabled, missing the target fails the task."
 
-msgid "解除 20 GiB 输入/运行时上限"
-msgstr "Lift the 20 GiB input/runtime cap"
+msgid "解除工作集内存预算"
+msgstr "Lift the working-set memory budget"
 
-msgid "仅当前会话生效，不会写入 AWJ.jsonc。"
-msgstr "Applies to this session only; never written to AWJ.jsonc."
+msgid "优先于自动和手动工作集预算，保留手动值；仅当前会话生效，不会写入 AWJ.jsonc 或预设。"
+msgstr "Overrides automatic and manual working-set budgets while preserving the manual value. Applies to this session only; never written to AWJ.jsonc or presets."
+
+msgid "解除 20 GiB 输入/缓冲区保护"
+msgstr "Lift the 20 GiB input/buffer protection"
+
+msgid "仅解除单文件读取与缓冲区保护，不改变工作集预算。仅当前会话生效，不会写入 AWJ.jsonc。"
+msgstr "Only lifts single-file input and buffer protection; the working-set budget is unchanged. Applies to this session only; never written to AWJ.jsonc."
 
 msgid "警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"
 msgstr "Warning: an oversized image or working set can exhaust memory, get the process killed by the system, or freeze the whole machine. Turn this on temporarily only when you genuinely need to handle very large files."

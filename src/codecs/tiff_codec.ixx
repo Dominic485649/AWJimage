@@ -180,7 +180,22 @@ class TiffImageDecoder final : public ImageDecoder {
           TIFFGetField(tiff.get(), TIFFTAG_IMAGELENGTH, &height) != 1) {
         return std::unexpected{std::format("TIFF 尺寸无效: {}", display_path_for_user(path))};
       }
-      return decoder_common::make_image_dimensions_checked(width, height, "TIFF");
+      auto dimensions = decoder_common::make_image_dimensions_checked(width, height, "TIFF");
+      if (!dimensions) return dimensions;
+      std::uint16_t bits{}, extras{}, *extra_types = nullptr;
+      TIFFGetFieldDefaulted(tiff.get(), TIFFTAG_BITSPERSAMPLE, &bits);
+      if (TIFFGetField(tiff.get(), TIFFTAG_EXTRASAMPLES, &extras, &extra_types) == 1 && extra_types)
+        for (std::uint16_t i = 0; i < extras; ++i)
+          dimensions->source_has_alpha |= extra_types[i] == EXTRASAMPLE_ASSOCALPHA || extra_types[i] == EXTRASAMPLE_UNASSALPHA;
+      dimensions->source_bit_depth = bits;
+      std::uint32_t icc_size{};
+      void* icc_data = nullptr;
+      const bool has_icc = TIFFGetField(tiff.get(), TIFFTAG_ICCPROFILE, &icc_size, &icc_data) == 1 && icc_size && icc_data;
+      if (bits <= 8 && !has_icc) dimensions->source_dynamic_range = ImageDynamicRangeHint::sdr;
+      // 现有 libtiff 路径物化为 RGBA8；高位深和带 ICC 的未知动态范围仍保守处理。
+      const auto pixels = static_cast<std::uint64_t>(width) * height;
+      dimensions->decoded_storage_bytes = pixels > UINT64_MAX / 4 ? UINT64_MAX : pixels * 4;
+      return dimensions;
     } catch (const std::bad_alloc&) {
       return std::unexpected{"TIFF 尺寸探测内存不足。"};
     } catch (const std::length_error&) {

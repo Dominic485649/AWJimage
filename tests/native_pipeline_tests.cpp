@@ -1,9 +1,12 @@
 #include <algorithm>
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <expected>
 #include <format>
 #include <fstream>
 #include <iterator>
@@ -14,6 +17,8 @@
 #include <utility>
 #include <vector>
 #include <windows.h>
+#include <wincodec.h>
+#include <wrl/client.h>
 #include <avif/avif.h>
 #include <jxl/decode.h>
 
@@ -21,12 +26,15 @@ import awj.config;
 import awj.codec;
 import awj.core;
 import awj.encoding_defaults;
+import awj.animation_decoder;
 import awj.avif_aom_codec;
 import awj.image;
 import awj.jpegli_codec;
 import awj.gain_map;
 import awj.jxl_codec;
+import awj.jxr_codec;
 import awj.native_backend;
+import awj.png_codec;
 import awj.resource_planner;
 import awj.webp_codec;
 
@@ -203,6 +211,351 @@ bool csv_sampling_matches(std::string_view text, std::span<const awj::EncodeResu
   return true;
 }
 
+awj::ImageBuffer solid_rgba8(unsigned r, unsigned g, unsigned b) {
+  awj::ImageBuffer image{.width = 16, .height = 16, .pixel_format = awj::PixelFormat::rgba,
+      .bit_depth = 8, .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba,
+          .bit_depth = 8, .color_primaries = 1, .transfer_characteristics = 13,
+          .matrix_coefficients = 0, .color_range = 1}};
+  image.planes.push_back({std::vector<std::byte>(16 * 16 * 4), 16 * 4});
+  for (std::size_t i = 0; i < 16 * 16; ++i) {
+    auto* pixel = image.planes[0].bytes.data() + i * 4;
+    pixel[0] = std::byte(r); pixel[1] = std::byte(g); pixel[2] = std::byte(b); pixel[3] = std::byte{255};
+  }
+  return image;
+}
+void write_bytes(const std::filesystem::path& path, std::span<const std::byte> bytes) {
+  std::ofstream output{path, std::ios::binary};
+  output.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+  if (!output) fail("Cannot write native pair/poster test fixture.");
+}
+bool same_sdr_pixels(const awj::ImageBuffer& a, const awj::ImageBuffer& b, unsigned tolerance = 0) {
+  if (a.width != b.width || a.height != b.height || a.bit_depth != 8 || b.bit_depth != 8 ||
+      a.pixel_format != awj::PixelFormat::rgba || b.pixel_format != awj::PixelFormat::rgba) return false;
+  for (std::size_t y = 0; y < a.height; ++y) for (std::size_t x = 0; x < a.width; ++x)
+    for (std::size_t c = 0; c < 3; ++c) {
+      const auto pa = std::to_integer<int>(a.planes[0].bytes[y * a.planes[0].stride + x * 4 + c]);
+      const auto pb = std::to_integer<int>(b.planes[0].bytes[y * b.planes[0].stride + x * 4 + c]);
+      if (static_cast<unsigned>(std::abs(pa - pb)) > tolerance) return false;
+    }
+  return true;
+}
+int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem::path& output, awj::FileLogger& logger,
+                        int source_depth = 16) {
+  struct ComScope {
+    HRESULT hr{CoInitializeEx(nullptr, COINIT_MULTITHREADED | COINIT_DISABLE_OLE1DDE)};
+    ~ComScope() { if (SUCCEEDED(hr)) CoUninitialize(); }
+  } com;
+  if (FAILED(com.hr)) return fail("Cannot initialize COM for the synthetic FP16 fixture.");
+  using Microsoft::WRL::ComPtr;
+  ComPtr<IWICImagingFactory> factory;
+  ComPtr<IWICStream> stream;
+  ComPtr<IWICBitmapEncoder> writer;
+  ComPtr<IWICBitmapFrameEncode> frame;
+  ComPtr<IPropertyBag2> options;
+  const auto input = root / std::format("synthetic-scrgb-float{}.jxr", source_depth);
+  if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
+      FAILED(factory->CreateStream(&stream)) || FAILED(stream->InitializeFromFilename(input.c_str(), GENERIC_WRITE)) ||
+      FAILED(factory->CreateEncoder(GUID_ContainerFormatWmp, nullptr, &writer)) ||
+      FAILED(writer->Initialize(stream.Get(), WICBitmapEncoderNoCache)) ||
+      FAILED(writer->CreateNewFrame(&frame, &options)) || FAILED(frame->Initialize(options.Get())) ||
+      FAILED(frame->SetSize(2, 2))) return fail("Cannot prepare the synthetic FP16 JPEG XR fixture.");
+  const auto requested_format = source_depth == 32 ? GUID_WICPixelFormat128bppRGBAFloat
+                                                    : GUID_WICPixelFormat64bppRGBAHalf;
+  WICPixelFormatGUID format = requested_format;
+  std::uint16_t pixels[]{0, 0, 0, 0x3c00, 0x3c00, 0x3800, 0x3400, 0x3c00,
+      0x4000, 0x4000, 0x4000, 0x3c00, 0x4400, 0x3c00, 0x3800, 0x3c00};
+  float float_pixels[]{0, 0, 0, 1, 1, .5F, .25F, 1, 2, 2, 2, 1, 4, 1, .5F, 1};
+  const UINT stride = source_depth == 32 ? 32 : 16;
+  const UINT bytes = static_cast<UINT>(source_depth == 32 ? sizeof(float_pixels) : sizeof(pixels));
+  auto* data = source_depth == 32 ? reinterpret_cast<BYTE*>(float_pixels) : reinterpret_cast<BYTE*>(pixels);
+  if (FAILED(frame->SetPixelFormat(&format)) || !IsEqualGUID(format, requested_format) ||
+      FAILED(frame->WritePixels(2, stride, bytes, data)) ||
+      FAILED(frame->Commit()) || FAILED(writer->Commit())) return fail("Cannot write synthetic FP16 samples.");
+  frame.Reset(); writer.Reset(); stream.Reset();
+  auto original = awj::JxrImageDecoder{}.decode(input);
+  if (!original || original->image.sample_representation != awj::SampleRepresentation::ieee_half_float ||
+      !original->image.source_info || original->image.source_info->color_primaries != 1)
+    return fail(original ? "FP16 fixture was not decoded with scRGB semantics." : original.error());
+  for (int primaries : {1, 12}) {
+    auto cfg = awj::default_app_config();
+    cfg.output_format = awj::OutputFormat::png; cfg.quality = 100; cfg.bit_depth = 16;
+    cfg.color_primaries = primaries; cfg.strip_metadata = true;
+    cfg.output_dir = output / std::format("explicit-float{}-{}", source_depth, primaries);
+    awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
+    auto result = backend.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)});
+    if (!result.ok || result.applied_color_primaries != primaries || result.applied_transfer_characteristics != 16)
+      return fail(result.ok ? "Source-matching FP16 primaries override was replaced by default BT.2020." : result.message);
+    auto restored = awj::PngImageDecoder{}.decode(result.output_path);
+    if (!restored || restored->image.bit_depth != 16 || !restored->image.source_info ||
+        restored->image.source_info->color_primaries != primaries || restored->image.source_info->transfer_characteristics != 16)
+      return fail(restored ? "FP16 override output lost its actual CICP." : restored.error());
+    // 独立 binary16、BT.709→Display P3 及 ST2084 参考，不调用生产像素转换。
+    constexpr double to_p3[3][3]{{.8224619687, .1775380313, 0},
+        {.03319419885, .9668058011, 0}, {.0170826307, .07239744066, .9105199286}};
+    for (std::size_t y = 0; y < original->image.height; ++y) for (std::size_t x = 0; x < original->image.width; ++x) {
+      double nits[3]{};
+      for (std::size_t c = 0; c < 3; ++c) {
+        std::uint16_t bits{};
+        std::memcpy(&bits, original->image.planes[0].bytes.data() + y * original->image.planes[0].stride + (x * 4 + c) * 2, 2);
+        const int exponent = (bits >> 10) & 31;
+        const double sign = bits & 0x8000 ? -1 : 1;
+        nits[c] = sign * (exponent ? std::ldexp(1.0 + (bits & 1023) / 1024.0, exponent - 15)
+            : std::ldexp(static_cast<double>(bits & 1023), -24)) *
+            original->image.source_info->linear_reference_white_nits.value_or(80.0F);
+      }
+      for (std::size_t c = 0; c < 3; ++c) {
+        const double value = std::max(0.0, primaries == 1 ? nits[c]
+            : to_p3[c][0] * nits[0] + to_p3[c][1] * nits[1] + to_p3[c][2] * nits[2]);
+        const double p = std::pow(value / 10000.0, 2610.0 / 16384.0);
+        const double expected = std::pow((3424.0 / 4096.0 + 2413.0 / 128.0 * p) /
+            (1.0 + 2392.0 / 128.0 * p), 2523.0 / 32.0);
+        std::uint16_t actual{};
+        std::memcpy(&actual, restored->image.planes[0].bytes.data() + y * restored->image.planes[0].stride + (x * 4 + c) * 2, 2);
+        if (std::abs(actual / 65535.0 - expected) > 4.0 / 65535.0)
+          return fail("FP16 CICP override differs from independent primaries/PQ math.");
+      }
+    }
+  }
+  auto unsupported = awj::default_app_config();
+  unsupported.output_format = awj::OutputFormat::png; unsupported.transfer_characteristics = 8;
+  unsupported.output_dir = output / std::format("explicit-float{}-unsupported-linear", source_depth);
+  awj::NativeBackend backend{unsupported, logger, {.encoder_threads_per_file = 1, .global_thread_budget = 1}};
+  if (backend.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)}).ok)
+    return fail("Explicit extended linear HDR output silently became PQ.");
+  return 0;
+}
+
+int existing_sdr_targets(const std::filesystem::path& root, const std::filesystem::path& output, awj::FileLogger& logger) {
+  auto main = solid_rgba8(0, 0, 0);
+  main.bit_depth = 16;
+  main.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+      .color_primaries = 9, .transfer_characteristics = 16, .matrix_coefficients = 9,
+      .color_range = 1, .has_hdr_metadata = true};
+  main.planes = {{std::vector<std::byte>(16 * 16 * 8), 16 * 8}};
+  for (std::size_t i = 0; i < 16 * 16; ++i) for (std::size_t c = 0; c < 4; ++c) {
+    const std::uint16_t value = c == 3 ? 65535 : 50000;
+    std::memcpy(main.planes[0].bytes.data() + (i * 4 + c) * 2, &value, 2);
+  }
+  awj::GainMapAlternative source_sdr{.image = solid_rgba8(16, 170, 40),
+      .main_hdr_headroom_log2 = 2, .alternate_hdr_headroom_log2 = 0};
+  auto encoder = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom);
+  if (!encoder) return fail("No AVIF fixture encoder.");
+  awj::NativeEncodeSettings settings{.output_format = awj::OutputFormat::avif, .quality = 100,
+      .speed = 10, .bit_depth = 12, .chroma_mode = awj::ChromaMode::yuv444};
+  settings.applied_color_primaries = 9; settings.applied_transfer_characteristics = 16;
+  settings.applied_matrix_coefficients = 9; settings.applied_color_range = 1;
+  settings.gain_map_alternative = &source_sdr;
+  settings.resources = {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1};
+  auto pair = encoder->encode(main, settings);
+  if (!pair) return fail(pair.error());
+  const auto input = root / "existing-sdr-pair.avif"; write_bytes(input, pair->encoded.bytes);
+  auto decoder = awj::make_avif_image_decoder(1);
+  auto low = decoder->decode_memory(pair->encoded.bytes, "native existing SDR fixture",
+      {.gain_map_mode = awj::GainMapDecodeMode::sdr_only});
+  auto both = decoder->decode_memory(pair->encoded.bytes, "native paired fixture",
+      {.gain_map_mode = awj::GainMapDecodeMode::preserve_both});
+  if (!low || !both) return fail(!low ? low.error() : both.error());
+  if (!both->gain_map_alternative || !low->image.source_info || low->image.source_info->has_hdr_metadata ||
+      !same_sdr_pixels(low->image, source_sdr.image, 12))
+    return fail("AVIF routing fixture lost its independently green SDR endpoint.");
+  for (const auto format : {awj::OutputFormat::webp}) for (const bool strip : {false, true}) {
+    auto cfg = awj::default_app_config();
+    cfg.input_path = input; cfg.output_format = format; cfg.quality = 100; cfg.bit_depth = 8;
+    cfg.strip_metadata = strip; cfg.max_jobs = 1;
+    cfg.output_dir = output / std::format("existing-sdr-{}-{}", static_cast<int>(format), strip);
+    awj::NativeBackend backend{cfg, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    auto converted = backend.encode(awj::ImageFile{.index = 0, .path = input, .bytes = pair->encoded.bytes.size()});
+    if (!converted.ok) return fail(converted.message);
+    if (converted.applied_hdr_metadata == "sdr-tone-map" || converted.fallback_reason.find("tone-map") != std::string::npos)
+      return fail("WebP/PNG re-tone-mapped a gain-map input that already has SDR.");
+    auto restored = awj::WebPImageDecoder{}.decode(converted.output_path);
+    if (!restored || !same_sdr_pixels(restored->image, low->image, 1))
+      return fail(restored ? "WebP selected HDR or a new tone map instead of the existing SDR." : restored.error());
+  }
+  for (const bool strip : {false, true}) for (int depth : {0, 8, 16}) {
+    auto cfg = awj::default_app_config();
+    cfg.output_format = awj::OutputFormat::png; cfg.quality = 100; cfg.strip_metadata = strip;
+    if (depth) cfg.bit_depth = depth;
+    cfg.output_dir = output / std::format("paired-hdr-png-{}-{}", strip, depth);
+    awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
+    auto result = backend.encode(awj::ImageFile{.path = input, .bytes = pair->encoded.bytes.size()});
+    if (!result.ok || result.rendition.selected != "hdr" || result.rendition.reused_sdr ||
+        result.rendition.tone_mapped || result.rendition.gain_map_generated || result.applied_bit_depth != (depth ? depth : 16))
+      return fail(result.ok ? "PNG did not select the highest supported HDR rendition." : result.message);
+    auto restored = awj::PngImageDecoder{}.decode(result.output_path);
+    if (!restored || restored->image.bit_depth != (depth ? depth : 16) ||
+        restored->image.width != both->image.width || restored->image.height != both->image.height ||
+        restored->image.pixel_format != awj::PixelFormat::rgba ||
+        !restored->image.source_info || restored->image.source_info->color_primaries != 9 ||
+        restored->image.source_info->transfer_characteristics != 16)
+      return fail(restored ? "PNG lost essential HDR color interpretation under strip." : restored.error());
+    const int output_depth = depth ? depth : 16;
+    for (std::size_t y = 0; y < both->image.height; ++y) for (std::size_t x = 0; x < both->image.width * 4; ++x) {
+      std::uint16_t source_value{};
+      std::memcpy(&source_value, both->image.planes[0].bytes.data() + y * both->image.planes[0].stride + x * 2, 2);
+      unsigned value{};
+      if (output_depth == 8) value = std::to_integer<unsigned>(restored->image.planes[0].bytes[y * restored->image.planes[0].stride + x]);
+      else { std::uint16_t sample{}; std::memcpy(&sample, restored->image.planes[0].bytes.data() + y * restored->image.planes[0].stride + x * 2, 2); value = sample; }
+      const unsigned expected = output_depth == 8 ? (static_cast<unsigned>(source_value) * 255u + 32767u) / 65535u : source_value;
+      if (value != expected) return fail("PNG re-tone-mapped the selected HDR or only changed its bit-depth label.");
+    }
+  }
+  return 0;
+}
+int hdr_color_policy(const std::filesystem::path& root, const std::filesystem::path& output, awj::FileLogger& logger) {
+  for (int primaries : {9, 12}) for (int transfer : {16, 18}) for (bool paired : {false, true}) {
+    auto source = make_hdr_test_image();
+    source.source_info->color_primaries = primaries;
+    source.source_info->transfer_characteristics = transfer;
+    awj::NativeEncodeSettings settings{.quality = 100, .speed = 10, .bit_depth = paired ? 12 : 16,
+        .chroma_mode = awj::ChromaMode::yuv444};
+    settings.applied_color_primaries = primaries;
+    settings.applied_transfer_characteristics = transfer;
+    settings.applied_matrix_coefficients = 9;
+    settings.applied_color_range = 1;
+    auto sdr = solid_rgba8(16, 170, 40);
+    // Match logical dimensions without deriving a new SDR appearance from HDR.
+    sdr.width = source.width; sdr.height = source.height;
+    sdr.planes = {{std::vector<std::byte>(source.width * source.height * 4), source.width * 4}};
+    for (std::size_t i = 0; i < source.width * source.height; ++i) {
+      sdr.planes[0].bytes[i * 4] = std::byte{16}; sdr.planes[0].bytes[i * 4 + 1] = std::byte{170};
+      sdr.planes[0].bytes[i * 4 + 2] = std::byte{40}; sdr.planes[0].bytes[i * 4 + 3] = std::byte{255};
+    }
+    awj::GainMapAlternative alternate{.image = std::move(sdr), .main_hdr_headroom_log2 = 2, .alternate_hdr_headroom_log2 = 0};
+    std::expected<awj::NativeEncodeResult, std::string> encoded = std::unexpected{"fixture"};
+    if (paired) {
+      settings.output_format = awj::OutputFormat::avif;
+      settings.gain_map_alternative = &alternate;
+      encoded = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom)->encode(source, settings);
+    } else {
+      settings.output_format = awj::OutputFormat::jxl;
+      encoded = awj::JXLImageEncoder{}.encode(source, settings);
+    }
+    if (!encoded) return fail(encoded.error());
+    const auto input = root / std::format("color-policy-{}-{}-{}.{}", primaries, transfer, paired, paired ? "avif" : "jxl");
+    write_bytes(input, encoded->encoded.bytes);
+    std::unique_ptr<awj::ImageDecoder> input_decoder;
+    if (paired) input_decoder = awj::make_avif_image_decoder(1);
+    else input_decoder = std::make_unique<awj::JXLImageDecoder>();
+    auto reference = input_decoder->decode(input, {.gain_map_mode = awj::GainMapDecodeMode::hdr_only});
+    if (!reference || reference->image.bit_depth != 16) return fail(reference ? "HDR reference lost16-bit storage." : reference.error());
+    for (auto format : {awj::OutputFormat::avif, awj::OutputFormat::png}) for (bool strip : {false, true}) {
+      auto cfg = awj::default_app_config();
+      cfg.output_format = format; cfg.quality = 100; cfg.strip_metadata = strip;
+      if (format == awj::OutputFormat::avif) { cfg.speed = 10; cfg.bit_depth = 12; cfg.chroma_mode = awj::ChromaMode::yuv444; }
+      cfg.output_dir = output / std::format("color-policy-{}-{}-{}-{}-{}", primaries, transfer, paired, static_cast<int>(format), strip);
+      awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
+      auto result = backend.encode(awj::ImageFile{.path = input, .bytes = encoded->encoded.bytes.size()});
+      const bool map_expected = paired && format == awj::OutputFormat::avif;
+      if (!result.ok || result.applied_color_primaries != primaries || result.applied_transfer_characteristics != transfer ||
+          result.rendition.selected != "hdr" || result.rendition.tone_mapped || result.rendition.gain_map_generated != map_expected)
+        return fail(result.ok ? "HDR base was relabeled, tone-mapped or given an invented SDR endpoint." : result.message);
+      std::unique_ptr<awj::ImageDecoder> reader;
+      if (format == awj::OutputFormat::png) reader = std::make_unique<awj::PngImageDecoder>();
+      else reader = awj::make_avif_image_decoder(1);
+      auto restored = reader->decode(result.output_path, {.gain_map_mode = awj::GainMapDecodeMode::hdr_only});
+      if (!restored || !restored->image.source_info || restored->image.bit_depth != 16 ||
+          restored->image.source_info->color_primaries != primaries || restored->image.source_info->transfer_characteristics != transfer ||
+          restored->image.source_info->source_has_gain_map != map_expected)
+        return fail(restored ? "Actual HDR color/map signaling differs from the selected rendition." : restored.error());
+      for (std::size_t y = 0; y < reference->image.height; ++y) for (std::size_t x = 0; x < reference->image.width * 4; ++x) {
+        std::uint16_t a{}, b{};
+        std::memcpy(&a, reference->image.planes[0].bytes.data() + y * reference->image.planes[0].stride + x * 2, 2);
+        std::memcpy(&b, restored->image.planes[0].bytes.data() + y * restored->image.planes[0].stride + x * 2, 2);
+        if (std::abs(static_cast<int>(a) - static_cast<int>(b)) > (format == awj::OutputFormat::png ? 0 : 64))
+          return fail("Retained HDR base pixels changed color despite unchanged color labels.");
+      }
+    }
+  }
+  return 0;
+}
+
+std::vector<std::byte> poster_apng(bool independent_poster) {
+  awj::PngImageEncoder encoder;
+  const auto png = [&](unsigned r, unsigned g, unsigned b) {
+    auto encoded = encoder.encode(solid_rgba8(r, g, b), {.output_format = awj::OutputFormat::png, .quality = 100});
+    if (!encoded) fail(encoded.error());
+    return std::move(encoded->encoded.bytes);
+  };
+  const auto red = png(255, 0, 0), green = png(0, 255, 0), blue = png(0, 0, 255);
+  std::vector<std::byte> result(red.begin(), red.begin() + 33), control;
+  awj::png_detail::append_be_u32(control, 2); awj::png_detail::append_be_u32(control, 3);
+  awj::png_detail::append_png_chunk(result, "acTL", control);
+  const auto data = [&](const auto& bytes, bool frame_data, std::uint32_t& sequence) {
+    for (std::size_t pos = 8; pos + 12 <= bytes.size();) {
+      const auto size = awj::png_detail::read_be_u32(bytes, pos);
+      if (std::memcmp(bytes.data() + pos + 4, "IDAT", 4) == 0) {
+        std::vector<std::byte> payload;
+        if (frame_data) awj::png_detail::append_be_u32(payload, sequence++);
+        payload.insert(payload.end(), bytes.begin() + pos + 8, bytes.begin() + pos + 8 + size);
+        awj::png_detail::append_png_chunk(result, frame_data ? "fdAT" : "IDAT", payload);
+      }
+      pos += size + 12;
+    }
+  };
+  std::uint32_t sequence{};
+  if (independent_poster) data(blue, false, sequence);
+  for (unsigned index = 0; index < 2; ++index) {
+    control.clear(); awj::png_detail::append_be_u32(control, sequence++);
+    for (const auto n : {16u, 16u, 0u, 0u}) awj::png_detail::append_be_u32(control, n);
+    control.insert(control.end(), {std::byte{0}, std::byte(index + 1), std::byte{0}, std::byte{10}, std::byte{0}, std::byte{0}});
+    awj::png_detail::append_png_chunk(result, "fcTL", control);
+    data(index ? green : red, independent_poster || index != 0, sequence);
+  }
+  awj::png_detail::append_png_chunk(result, "IEND", {});
+  return result;
+}
+int poster_pipeline(const std::filesystem::path& root, const std::filesystem::path& output, awj::FileLogger& logger) {
+  for (const bool poster : {true, false}) {
+    const auto input = root / (poster ? "blue-poster.png" : "pure-apng.png");
+    const auto bytes = poster_apng(poster); write_bytes(input, bytes);
+    auto cfg = awj::default_app_config(); cfg.input_path = input; cfg.output_format = awj::OutputFormat::avif;
+    cfg.output_dir = output / (poster ? "static-poster" : "pure-apng"); cfg.quality = 100; cfg.max_jobs = 1;
+    awj::NativeBackend backend{cfg, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto converted = backend.encode(awj::ImageFile{.index = 0, .path = input, .bytes = bytes.size()});
+    if (!converted.ok) return fail(converted.message);
+    auto animated = awj::open_animation(converted.output_path, 0);
+    if (!animated) return fail(animated.error());
+    if (poster) {
+      if (*animated || converted.integration_mode == "libavif-sequence") return fail("Independent blue PNG poster became AVIF animation.");
+      auto decoder = awj::make_avif_image_decoder(1);
+      auto decoded = decoder->decode(converted.output_path);
+      if (!decoded) return fail(decoded.error());
+      const auto sample = [&](std::size_t c) {
+        if (decoded->image.bit_depth == 8) return std::to_integer<unsigned>(decoded->image.planes[0].bytes[c]);
+        std::uint16_t v{}; std::memcpy(&v, decoded->image.planes[0].bytes.data() + c * 2, 2); return unsigned(v);
+      };
+      const auto full = decoded->image.bit_depth == 8 ? 255u : 65535u;
+      if (sample(2) < full * 9 / 10 || sample(0) > full / 10 || sample(1) > full / 10)
+        return fail("Red animation frame replaced independent blue poster in the native pipeline.");
+    } else {
+      if (!*animated || converted.integration_mode != "libavif-sequence" || (*animated)->info().durations.size() != 2 ||
+          (*animated)->info().repetitions != 2) return fail("Pure APNG timing/loop was flattened by static-first routing.");
+      for (unsigned index = 0; index < 2; ++index) {
+        const auto delay = (*animated)->info().durations[index];
+        if (!delay.denominator || std::uint64_t(delay.numerator) * 10 != std::uint64_t(delay.denominator) * (index + 1))
+          return fail("Pure APNG frame duration changed in AVIF output.");
+        const auto next = (*animated)->next();
+        if (!next || !*next) return fail("Pure APNG output lost an animation frame.");
+        const auto& frame = (*animated)->frame();
+        const auto channel = [&](std::size_t c) {
+          if (frame.bit_depth == 8) return std::to_integer<unsigned>(frame.planes[0].bytes[c]);
+          std::uint16_t value{}; std::memcpy(&value, frame.planes[0].bytes.data() + c * 2, 2); return unsigned(value);
+        };
+        const auto full = frame.bit_depth == 8 ? 255u : 65535u;
+        if (frame.width != 16 || frame.height != 16 || channel(index) < full * 9 / 10 ||
+            channel(1 - index) > full / 10 || channel(2) > full / 10)
+          return fail("Pure APNG red/green frame order or canvas changed in AVIF output.");
+      }
+      const auto ended = (*animated)->next();
+      if (!ended || *ended) return fail("Pure APNG output frame count/termination changed.");
+    }
+  }
+  return 0;
+}
+
 }  // namespace
 
 int main() {
@@ -244,6 +597,11 @@ int main() {
   cfg.max_jobs = 1;
 
   awj::FileLogger logger{output, false};
+  if (const auto checked = explicit_fp16_color(root, output, logger)) return checked;
+  if (const auto checked = explicit_fp16_color(root, output, logger, 32)) return checked;
+  if (const auto checked = existing_sdr_targets(root, output, logger)) return checked;
+  if (const auto checked = hdr_color_policy(root, output, logger)) return checked;
+  if (const auto checked = poster_pipeline(root, output, logger)) return checked;
   {
     // Two one-pixel GIF frames: automatic animation must survive the normal preset path.
     constexpr unsigned char header[]{'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0x80, 0, 0,
@@ -415,7 +773,7 @@ int main() {
   if (!hdr_avif_result.ok ||
       hdr_avif_result.applied_color_representation != "yuv" ||
       hdr_avif_result.source_bit_depth.value_or(0) != 16 ||
-      hdr_avif_result.requested_bit_depth.value_or(0) != 16 ||
+      hdr_avif_result.requested_bit_depth.value_or(0) != 12 ||
       hdr_avif_result.applied_bit_depth.value_or(0) != 12 ||
       hdr_avif_result.bit_depth_reason.find("12-bit") == std::string::npos) {
     return fail(hdr_avif_result.message.empty()
@@ -481,6 +839,16 @@ int main() {
   cfg.quality = awj::encoding_defaults::default_jxl_quality;
   cfg.visual_quality = {};
   cfg.strip_metadata = false;
+  {
+    auto automatic = cfg;
+    automatic.bit_depth.reset();
+    automatic.output_dir = output / "jxl-jpeg-auto16";
+    awj::NativeBackend backend{automatic, logger, {.encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    auto result = backend.encode(awj::ImageFile{.path = jpeg_input, .bytes = jpeg_bytes});
+    if (!result.ok || result.applied_bit_depth != 16 || result.integration_mode == "jxl-jpeg-bitstream-transcode")
+      return fail(result.ok ? "JPEG transcode bypassed the automatic JXL16 plan." : result.message);
+  }
+  cfg.bit_depth = 8;
   awj::NativeBackend jxl_jpeg_backend{cfg, logger, awj::ResourcePlan{
                                                        .file_parallelism = 1,
                                                        .encoder_threads_per_file = 1,

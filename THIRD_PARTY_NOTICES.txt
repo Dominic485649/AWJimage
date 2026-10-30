@@ -523,7 +523,7 @@ The MIT License terms are reproduced in the appendix below.
 ===============================================================================
 Website:   https://curl.se/libcurl/
 License:   curl License
-Pinned version: 8.21.0 (Linux update-check HTTPS transport)
+Pinned version: 8.23.0 (Linux update-check HTTPS transport)
 
 COPYRIGHT AND PERMISSION NOTICE
 
@@ -569,7 +569,7 @@ CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ===============================================================================
 Website:   https://www.openssl.org/
 License:   Apache License 2.0
-Pinned version: 3.6.3 (static TLS dependency of libcurl on Linux)
+Pinned version: 3.6.5 (static TLS dependency of libcurl on Linux)
 
 OpenSSL 3 is licensed under the Apache License 2.0. The complete license text
 is reproduced in the appendix below.
@@ -999,13 +999,13 @@ Common Development and Distribution License 1.0 (CDDL-1.0)
 -------------------------------------------------------------------------------
 
 Website:   https://code.videolan.org/videolan/libplacebo
-Source:    https://github.com/haasn/libplacebo/tree/v7.360.1
+Source:    https://github.com/haasn/libplacebo/tree/v7.387.0
 License:   GNU Lesser General Public License, version 2.1 or later
 
 Copyright (C) 2017-2026 the libplacebo developers
 
 AWJ links only the documented CPU colorspace, tone-mapping, and gamut-mapping
-source subset from libplacebo v7.360.1.  The corresponding source, exact
+source subset from libplacebo v7.387.0.  The corresponding source, exact
 overlay recipe, version and SHA-512 source archive checksum are available in
 this project's `vcpkg-overlays/libplacebo` directory.  The complete LGPL-2.1-or-later license text is appended to the release
 archive's `NOTICE.txt` and remains available in the source tree as
@@ -1018,12 +1018,12 @@ source is published under AGPL-3.0 at the URL at the top of this file.
 -------------------------------------------------------------------------------
 
 Website:   https://www.libarchive.org/
-Source:    https://github.com/libarchive/libarchive/tree/v3.8.9
+Source:    https://github.com/libarchive/libarchive/tree/v3.8.10
 License:   BSD-style; upstream COPYING controls individual source files
 
 Copyright (c) 2003-2018 <author(s)> and individual libarchive contributors.
 
-AWJ uses libarchive v3.8.9 only to validate and extract signed update
+AWJ uses libarchive v3.8.10 only to validate and extract signed update
 archives.  The exact upstream source archive SHA-512 and overlay recipe are
 published in `vcpkg-overlays/libarchive`; its upstream COPYING file is
 reproduced below.
@@ -1060,7 +1060,7 @@ ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 -------------------------------------------------------------------------------
 
 Website:   https://github.com/strukturag/libheif
-Version:   1.23.6
+Version:   1.23.7
 License:   GNU Lesser General Public License, version 3
 
 Copyright (c) 2017-2026 Dirk Farin and libheif contributors
@@ -1119,6 +1119,22 @@ copyright notices, the LLVM exceptions, and complete referenced license
 texts are retained in licenses/llvm-runtime-LICENSE.txt and appended to the
 release NOTICE. This entry is conditional on the actual build toolchain;
 it does not imply that the Windows/MSVC build includes these C++ runtimes.
+
+-------------------------------------------------------------------------------
+32. winit (project-local Slint windowing dependency)
+-------------------------------------------------------------------------------
+
+Website:   https://github.com/rust-windowing/winit
+Source:    https://github.com/rust-windowing/winit/tree/e9809ef54b18499bb4f2cac945719ecc2a61061b
+Version:   0.30.13 with a project-local Windows DPI backport
+License:   Apache License 2.0
+Authors:   The winit contributors
+
+The official crate checksum, source manifest and exact local patch are pinned
+in cmake/codec-dependencies.json, cmake/winit-source-manifest.json and
+cmake/patch_winit_dpi.cmake. Slint uses this project-local source through a
+Cargo path override; the user's shared Cargo registry is not modified.
+The complete Apache License 2.0 terms are reproduced in the appendix above.
 
 -------------------------------------------------------------------------------
 END OF THIRD-PARTY NOTICES

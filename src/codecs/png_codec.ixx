@@ -14,6 +14,7 @@ module;
 #include <limits>
 #include <memory>
 #include <new>
+#include <optional>
 #include <span>
 #include <stdexcept>
 #include <stop_token>
@@ -37,6 +38,7 @@ import awj.config;
 import awj.core;
 import awj.decoder_common;
 import awj.encoding_defaults;
+import awj.hdr_tonemap;
 import awj.image;
 import awj.pixel_conversion;
 import awj.large_image_plan;
@@ -44,6 +46,22 @@ import awj.large_image_plan;
 export namespace awj {
 
 namespace png_detail {
+
+std::expected<int, std::string> encoding_bit_depth(
+    const ImageBuffer& image, const NativeEncodeSettings& settings) {
+  if (settings.bit_depth) {
+    if (*settings.bit_depth != 8 && *settings.bit_depth != 16)
+      return std::unexpected{"PNG bit-depth 只支持 8 或 16。"};
+    return *settings.bit_depth;
+  }
+  if (settings.tone_map_to_sdr_pixels) return 8;
+  auto signal = hdr::has_explicit_hdr_signal(image);
+  if (!signal) return std::unexpected{signal.error()};
+  // SDR compatibility is intentional, even when the working buffer is RGBA16.
+  return *signal ? 16 : 8;
+}
+
+const MetadataBlock* first_metadata(const ImageBuffer& image, MetadataKind kind) noexcept;
 
 int quantization_bits(int storage_depth, int quality) noexcept {
   if (quality >= 100) return storage_depth;
@@ -172,7 +190,10 @@ std::expected<void, std::string> add_png_hdr_chunks(
     std::vector<std::byte>& png_bytes,
     const ImageBuffer& image,
     const NativeEncodeSettings& settings) {
-  if (settings.strip_metadata || settings.applied_icc == "kept") {
+  // CICP describes the pixels, not optional provenance. Ordinary HDR and
+  // non-sRGB SDR need it just as much as a rendered Gain Map does. A retained
+  // ICC is authoritative instead; do not emit potentially conflicting CICP.
+  if (settings.applied_icc == "kept" && first_metadata(image, MetadataKind::icc)) {
     return {};
   }
   const auto primaries = settings.applied_color_primaries
@@ -200,7 +221,7 @@ std::expected<void, std::string> add_png_hdr_chunks(
       std::byte{static_cast<unsigned char>(matrix)},
       std::byte{static_cast<unsigned char>(range != 0 ? 1 : 0)}};
   append_png_chunk(chunks, "cICP", cicp);
-  if (image.source_info && image.source_info->content_light) {
+  if (!settings.strip_metadata && image.source_info && image.source_info->content_light) {
     std::vector<std::byte> clli;
     clli.reserve(8);
     append_be_u32(clli, static_cast<std::uint32_t>(image.source_info->content_light->max_cll) * 10000u);
@@ -218,74 +239,225 @@ bool chunk_type_is(std::span<const std::byte> header, std::string_view type) noe
          header[7] == std::byte{static_cast<unsigned char>(type[3])};
 }
 
-std::expected<bool, std::string> contains_animation_control_chunk(
-    std::span<const std::byte> bytes,
-    std::string_view source_name) {
-  if (bytes.size() < 8 ||
-      png_sig_cmp(reinterpret_cast<png_const_bytep>(bytes.data()), 0, 8) != 0) {
-    return std::unexpected{std::format("PNG 签名无效: {}", source_name)};
-  }
+inline constexpr std::size_t apng_max_frames = 100000;
+inline constexpr std::size_t png_scan_block_bytes = 64 * 1024;
 
-  std::size_t offset = 8;
-  while (offset + 12 <= bytes.size()) {
-    const auto chunk_size = read_be_u32(bytes, offset);
-    if (chunk_size > bytes.size() - offset - 12) {
-      return std::unexpected{std::format("PNG 文件截断: {}", source_name)};
-    }
-    const auto header = bytes.subspan(offset, 8);
-    if (chunk_type_is(header, "acTL")) {
-      return true;
-    }
-    if (chunk_type_is(header, "IDAT")) {
-      return false;
-    }
-    offset += 12 + chunk_size;
-  }
-  return std::unexpected{std::format("PNG 文件截断: {}", source_name)};
+bool is_global_decoding_chunk(std::string_view type) noexcept {
+  return type == "PLTE" || type == "tRNS" || type == "iCCP" || type == "sRGB" ||
+      type == "gAMA" || type == "cHRM" || type == "cICP" || type == "cLLI" ||
+      type == "sBIT" || type == "eXIf";
 }
 
-std::expected<bool, std::string> file_contains_animation_control_chunk(const fs::path& path) {
-  std::error_code ec;
-  const auto file_size = fs::file_size(path, ec);
-  if (ec) {
-    return std::unexpected{std::format("读取 PNG 文件大小失败: {}；系统错误：{}",
-                                       display_path_for_user(path), ec.message())};
+bool valid_ihdr(std::span<const std::byte> payload) noexcept {
+  if (payload.size() != 13) return false;
+  const auto width = read_be_u32(payload, 0), height = read_be_u32(payload, 4);
+  if (!width || !height || width > 0x7fffffffu || height > 0x7fffffffu ||
+      payload[10] != std::byte{0} || payload[11] != std::byte{0} ||
+      std::to_integer<unsigned>(payload[12]) > 1) return false;
+  const auto depth = std::to_integer<unsigned>(payload[8]);
+  switch (std::to_integer<unsigned>(payload[9])) {
+    case PNG_COLOR_TYPE_GRAY: return depth == 1 || depth == 2 || depth == 4 || depth == 8 || depth == 16;
+    case PNG_COLOR_TYPE_PALETTE: return depth == 1 || depth == 2 || depth == 4 || depth == 8;
+    case PNG_COLOR_TYPE_RGB:
+    case PNG_COLOR_TYPE_GRAY_ALPHA:
+    case PNG_COLOR_TYPE_RGB_ALPHA: return depth == 8 || depth == 16;
+    default: return false;
   }
-  if (file_size > static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
-    return std::unexpected{std::format("PNG 文件超过当前输入上限: {}",
-                                       display_path_for_user(path))};
-  }
+}
 
-  std::ifstream input{path, std::ios::binary};
-  if (!input) {
-    return std::unexpected{std::format("无法读取 PNG 文件: {}", display_path_for_user(path))};
-  }
+// The file probe and APNG reader share structural validation. An independent
+// default image is legal APNG; static-first routing is an AWJimage product rule.
+struct PngAnimationLayout {
+  std::uint32_t width{}, height{}, declared_frames{}, plays{};
+  std::uint64_t sequence{}, idat_bytes{}, frame_data_bytes{}, inherited_bytes{};
+  std::size_t frames{};
+  bool ihdr{}, actl{}, idat{}, idat_closed{}, first_uses_idat{}, ended{};
 
-  std::array<std::byte, 8> signature{};
-  input.read(reinterpret_cast<char*>(signature.data()), static_cast<std::streamsize>(signature.size()));
-  if (input.gcount() != static_cast<std::streamsize>(signature.size()) || input.bad() ||
-      png_sig_cmp(reinterpret_cast<png_const_bytep>(signature.data()), 0, 8) != 0) {
-    return std::unexpected{std::format("PNG 签名无效: {}", display_path_for_user(path))};
-  }
+  bool uses_animation_reader() const noexcept { return actl && first_uses_idat; }
 
-  while (true) {
-    std::array<std::byte, 8> header{};
-    input.read(reinterpret_cast<char*>(header.data()), static_cast<std::streamsize>(header.size()));
-    if (input.gcount() != static_cast<std::streamsize>(header.size()) || input.bad()) {
-      return std::unexpected{std::format("PNG 文件截断: {}", display_path_for_user(path))};
+  std::expected<void, std::string> accept(std::string_view type,
+      std::span<const std::byte> prefix, std::uint32_t size, std::uint64_t payload_offset) {
+    if (idat && type != "IDAT") idat_closed = true;
+    if (type == "IHDR") {
+      if (ihdr || payload_offset != 16 || !valid_ihdr(prefix))
+        return std::unexpected{"PNG IHDR 无效。"};
+      ihdr = true;
+      width = read_be_u32(prefix, 0); height = read_be_u32(prefix, 4);
+    } else if (!ihdr) {
+      return std::unexpected{"PNG 首个 chunk 必须是 IHDR。"};
+    } else if (type == "acTL") {
+      if (actl || idat || size != 8) return std::unexpected{"APNG acTL 位置或长度无效。"};
+      actl = true;
+      if (inherited_bytes > encoding_defaults::codec_metadata_max_bytes + 1024ull)
+        return std::unexpected{"APNG 全局 metadata 过大。"};
+      declared_frames = read_be_u32(prefix, 0); plays = read_be_u32(prefix, 4);
+      if (!declared_frames || declared_frames > apng_max_frames ||
+          plays > static_cast<unsigned>(std::numeric_limits<int>::max()))
+        return std::unexpected{"APNG 帧数/loop 超出上限。"};
+    } else if (type == "fcTL") {
+      if (!actl || size != 26 || read_be_u32(prefix, 0) != sequence++)
+        return std::unexpected{"APNG fcTL 顺序或长度无效。"};
+      if (frames && !frame_data_bytes) return std::unexpected{"APNG 帧缺少数据。"};
+      if (frames == declared_frames) return std::unexpected{"APNG 帧数超过 acTL 声明。"};
+      const auto w = read_be_u32(prefix, 4), h = read_be_u32(prefix, 8);
+      const auto x = read_be_u32(prefix, 12), y = read_be_u32(prefix, 16);
+      if (!w || !h || x > width || y > height || w > width - x || h > height - y ||
+          std::to_integer<unsigned>(prefix[24]) > 2 || std::to_integer<unsigned>(prefix[25]) > 1)
+        return std::unexpected{"APNG frame rect/blend/dispose 无效。"};
+      if (!frames && !idat) {
+        first_uses_idat = true;
+        if (x || y || w != width || h != height)
+          return std::unexpected{"APNG IDAT 首帧必须与默认 PNG 画布一致。"};
+      }
+      ++frames;
+      frame_data_bytes = 0;
+    } else if (type == "IDAT") {
+      if (idat_closed) return std::unexpected{"APNG IDAT 必须连续。"};
+      if (frames && (!first_uses_idat || frames != 1))
+        return std::unexpected{"APNG IDAT 出现在非默认帧。"};
+      idat = true;
+      idat_bytes += size;
+      if (frames) frame_data_bytes += size;
+    } else if (type == "fdAT") {
+      if (!idat || !frames || size < 4 || (first_uses_idat && frames == 1) ||
+          read_be_u32(prefix, 0) != sequence++) return std::unexpected{"APNG fdAT 顺序无效。"};
+      frame_data_bytes += size - 4;
+    } else if (type == "IEND") {
+      if (size || !idat_bytes) return std::unexpected{"PNG IEND 或默认图像数据无效。"};
+      if (actl && (frames != declared_frames || !frames || !frame_data_bytes))
+        return std::unexpected{"APNG 帧数据/计数不完整。"};
+      ended = true;
+    } else if (is_global_decoding_chunk(type)) {
+      if (idat && type != "eXIf") return std::unexpected{"PNG 色彩/解码 chunk 必须位于 IDAT 前。"};
+      constexpr auto limit = encoding_defaults::codec_metadata_max_bytes + 1024ull;
+      if (actl && (inherited_bytes > limit || size + 12ull > limit - inherited_bytes))
+        return std::unexpected{"APNG 全局 metadata 过大。"};
+      inherited_bytes += size + 12ull;
+    } else if ((type[0] & 32) == 0) {
+      return std::unexpected{"PNG 使用未知关键 chunk。"};
     }
-    if (chunk_type_is(header, "acTL")) {
-      return true;
-    }
-    if (chunk_type_is(header, "IDAT")) {
-      return false;
-    }
-    const auto chunk_size = read_be_u32(header, 0);
-    input.seekg(static_cast<std::streamoff>(chunk_size) + 4, std::ios::cur);
-    if (!input) {
-      return std::unexpected{std::format("PNG 文件截断: {}", display_path_for_user(path))};
-    }
+    return {};
   }
+};
+
+// Read at most one fixed-size block at a time. Only a 26-byte control prefix is
+// retained, except bounded iCCP metadata requested by a header-only probe.
+// Visitors must not retain prefix spans; the APNG index borrows the original bytes.
+template <class Read, class Visit>
+std::expected<void, std::string> scan_png_chunks(std::uint64_t input_size,
+    Read&& read, Visit&& visit, std::string_view source_name,
+    bool metadata_only, std::stop_token stop) {
+  if (input_size > encoding_defaults::effective_max_input_file_bytes())
+    return std::unexpected{std::format("PNG 文件超过当前输入上限: {}", source_name)};
+  if (input_size < 8) return std::unexpected{std::format("PNG 签名无效: {}", source_name)};
+  auto signature = read(0, 8);
+  if (!signature) return std::unexpected{signature.error()};
+  if (png_sig_cmp(reinterpret_cast<png_const_bytep>(signature->data()), 0, 8) != 0)
+    return std::unexpected{std::format("PNG 签名无效: {}", source_name)};
+  std::vector<std::byte> prefix;
+  std::size_t chunks{};
+  for (std::uint64_t pos = 8; pos < input_size;) {
+    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (++chunks > 1000000) return std::unexpected{"PNG chunk 数量超过上限。"};
+    if (input_size - pos < 12) return std::unexpected{"PNG chunk 截断。"};
+    auto header = read(pos, 8);
+    if (!header) return std::unexpected{header.error()};
+    const auto size = read_be_u32(*header, 0);
+    if (size > 0x7fffffffu || size > input_size - pos - 12)
+      return std::unexpected{"PNG chunk 长度无效或越界。"};
+    std::array<char, 4> tag{};
+    std::memcpy(tag.data(), header->data() + 4, tag.size());
+    for (const char c : tag) {
+      if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+        return std::unexpected{"PNG chunk 类型无效。"};
+    }
+    const std::string_view type{tag.data(), tag.size()};
+    if (metadata_only && type == "IDAT") return {};
+    auto retained = std::min<std::size_t>(size, 26);
+    if (metadata_only && type == "iCCP") {
+      if (size > encoding_defaults::codec_metadata_max_bytes)
+        return std::unexpected{"PNG ICC chunk 超过 64 MiB 上限。"};
+      retained = size;
+    }
+    prefix.resize(retained);
+    auto crc = crc32_z(0, reinterpret_cast<const Bytef*>(tag.data()), tag.size());
+    for (std::uint64_t consumed = 0; consumed < size;) {
+      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      const auto count = static_cast<std::size_t>(std::min<std::uint64_t>(size - consumed, png_scan_block_bytes));
+      auto block = read(pos + 8 + consumed, count);
+      if (!block) return std::unexpected{block.error()};
+      crc = crc32_z(crc, reinterpret_cast<const Bytef*>(block->data()), block->size());
+      if (consumed < retained) {
+        const auto copy = std::min<std::size_t>(count, retained - static_cast<std::size_t>(consumed));
+        std::copy_n(block->begin(), copy, prefix.begin() + static_cast<std::size_t>(consumed));
+      }
+      consumed += count;
+    }
+    auto stored_crc = read(pos + 8 + size, 4);
+    if (!stored_crc) return std::unexpected{stored_crc.error()};
+    if (crc != read_be_u32(*stored_crc, 0)) return std::unexpected{"PNG chunk CRC 错误。"};
+    if (type == "IEND" && (size || pos + 12 != input_size || metadata_only))
+      return std::unexpected{"PNG IEND 无效或缺少 IDAT。"};
+    if (auto accepted = visit(type, std::span<const std::byte>{prefix}, size, pos + 8); !accepted)
+      return std::unexpected{accepted.error()};
+    if (type == "IEND") return {};
+    pos += size + 12ull;
+  }
+  return std::unexpected{"PNG 缺少 IEND 或文件截断。"};
+}
+
+template <class Visit>
+std::expected<void, std::string> visit_png_chunks(std::span<const std::byte> bytes,
+    std::string_view source_name, Visit&& visit, std::stop_token stop = {}) {
+  auto read = [&](std::uint64_t offset, std::size_t count)
+      -> std::expected<std::span<const std::byte>, std::string> {
+    return bytes.subspan(static_cast<std::size_t>(offset), count);
+  };
+  return scan_png_chunks(bytes.size(), read, visit, source_name, false, stop);
+}
+
+template <class Visit>
+std::expected<void, std::string> visit_png_file_chunks(const fs::path& path,
+    Visit&& visit, bool metadata_only = false, std::stop_token stop = {}) {
+  std::ifstream input{path, std::ios::binary | std::ios::ate};
+  if (!input) return std::unexpected{std::format("无法读取 PNG 文件: {}", display_path_for_user(path))};
+  const auto end = input.tellg();
+  if (end < 0) return std::unexpected{"无法读取 PNG 文件大小。"};
+  const auto input_size = static_cast<std::uint64_t>(end);
+  input.seekg(0, std::ios::beg);
+  if (!input) return std::unexpected{"无法读取 PNG 文件头。"};
+  std::array<std::byte, png_scan_block_bytes> buffer{};
+  std::uint64_t position{};
+  auto read = [&](std::uint64_t offset, std::size_t count)
+      -> std::expected<std::span<const std::byte>, std::string> {
+    if (offset != position || count > buffer.size()) return std::unexpected{"PNG 扫描偏移无效。"};
+    input.read(reinterpret_cast<char*>(buffer.data()), static_cast<std::streamsize>(count));
+    if (input.bad() || input.gcount() != static_cast<std::streamsize>(count))
+      return std::unexpected{"PNG 文件截断。"};
+    position += count;
+    return std::span<const std::byte>{buffer}.first(count);
+  };
+  return scan_png_chunks(input_size, read, visit, display_path_for_user(path), metadata_only, stop);
+}
+
+std::expected<bool, std::string> contains_animation_control_chunk(
+    std::span<const std::byte> bytes, std::string_view source_name) {
+  PngAnimationLayout layout;
+  auto scanned = visit_png_chunks(bytes, source_name, [&](auto type, auto prefix, auto size, auto offset) {
+    return layout.accept(type, prefix, size, offset);
+  });
+  if (!scanned) return std::unexpected{scanned.error()};
+  return layout.uses_animation_reader();
+}
+
+std::expected<bool, std::string> file_contains_animation_control_chunk(
+    const fs::path& path, std::stop_token stop = {}) {
+  PngAnimationLayout layout;
+  auto scanned = visit_png_file_chunks(path, [&](auto type, auto prefix, auto size, auto offset) {
+    return layout.accept(type, prefix, size, offset);
+  }, false, stop);
+  if (!scanned) return std::unexpected{scanned.error()};
+  return layout.uses_animation_reader();
 }
 
 struct ReadState {
@@ -572,6 +744,129 @@ std::expected<std::vector<std::byte>, std::string> copy_xmp_metadata(png_structp
   return copy_xmp_metadata(png, end_info);
 }
 
+ImageDynamicRangeHint dynamic_range_for_transfer(int transfer) noexcept {
+  switch (transfer) {
+    case 16:
+    case 18: return ImageDynamicRangeHint::hdr;
+    case 1:
+    case 4:
+    case 5:
+    case 6:
+    case 7:
+    case 13:
+    case 14:
+    case 15: return ImageDynamicRangeHint::sdr;
+    // Unspecified, linear, log and unrecognized transfer functions do not prove SDR.
+    default: return ImageDynamicRangeHint::unknown;
+  }
+}
+
+std::expected<ImageDynamicRangeHint, std::string> inspect_icc_dynamic_range(
+    std::span<const std::byte> payload) {
+  if (payload.size() < 3) return ImageDynamicRangeHint::unknown;
+  const auto name_end = std::ranges::find(payload, std::byte{0});
+  const auto name_size = static_cast<std::size_t>(name_end - payload.begin());
+  if (!name_size || name_size > 79 || payload.size() < name_size + 3 ||
+      payload[name_size + 1] != std::byte{0}) return ImageDynamicRangeHint::unknown;
+  const auto compressed = payload.subspan(name_size + 2);
+  z_stream stream{};
+  stream.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(compressed.data()));
+  stream.avail_in = static_cast<uInt>(compressed.size());
+  if (inflateInit(&stream) != Z_OK) return std::unexpected{"PNG ICC 解压初始化失败。"};
+  struct InflateGuard { z_stream* stream; ~InflateGuard() { inflateEnd(stream); } } inflate_guard{&stream};
+  std::vector<std::byte> profile;
+  std::array<std::byte, 4096> block{};
+  for (;;) {
+    stream.next_out = reinterpret_cast<Bytef*>(block.data());
+    stream.avail_out = static_cast<uInt>(block.size());
+    const auto status = inflate(&stream, Z_NO_FLUSH);
+    const auto count = block.size() - stream.avail_out;
+    if (count > encoding_defaults::codec_metadata_max_bytes - profile.size())
+      return std::unexpected{"PNG ICC profile 超过 64 MiB 上限。"};
+    profile.insert(profile.end(), block.begin(), block.begin() + count);
+    if (status == Z_STREAM_END) {
+      if (stream.avail_in) return ImageDynamicRangeHint::unknown;
+      break;
+    }
+    if (status != Z_OK || (!count && !stream.avail_in)) return ImageDynamicRangeHint::unknown;
+  }
+  if (profile.empty()) return ImageDynamicRangeHint::unknown;
+  auto* icc = cmsOpenProfileFromMem(profile.data(), static_cast<cmsUInt32Number>(profile.size()));
+  if (!icc) return ImageDynamicRangeHint::unknown;
+  struct ProfileGuard { cmsHPROFILE profile; ~ProfileGuard() { cmsCloseProfile(profile); } } profile_guard{icc};
+  if (const auto* cicp = static_cast<const cmsVideoSignalType*>(cmsReadTag(icc, cmsSigcicpTag))) {
+    if (cicp->MatrixCoefficients == 0 && cicp->VideoFullRangeFlag <= 1)
+      return dynamic_range_for_transfer(cicp->TransferCharacteristics);
+  }
+  // An arbitrary ICC profile, its description or the storage depth alone does
+  // not establish SDR. Keep unrecognized profiles conservative for admission.
+  return ImageDynamicRangeHint::unknown;
+}
+
+std::expected<ImageDimensions, std::string> probe_png_dimensions(const fs::path& path) {
+  PngAnimationLayout layout;
+  int bit_depth{}, color_type{};
+  bool transparency{}, has_cicp{}, has_icc{}, has_srgb{}, has_content_light{};
+  std::optional<std::uint32_t> gamma;
+  auto cicp_range = ImageDynamicRangeHint::unknown;
+  auto icc_range = ImageDynamicRangeHint::unknown;
+  auto scanned = visit_png_file_chunks(path,
+      [&](std::string_view type, std::span<const std::byte> prefix,
+          std::uint32_t size, std::uint64_t offset) -> std::expected<void, std::string> {
+    if (auto accepted = layout.accept(type, prefix, size, offset); !accepted) return accepted;
+    if (type == "IHDR") {
+      bit_depth = std::to_integer<int>(prefix[8]); color_type = std::to_integer<int>(prefix[9]);
+    } else if (type == "tRNS") {
+      if ((color_type == PNG_COLOR_TYPE_GRAY && size != 2) ||
+          (color_type == PNG_COLOR_TYPE_RGB && size != 6) ||
+          (color_type == PNG_COLOR_TYPE_PALETTE && (!size || size > 256)) ||
+          (color_type & PNG_COLOR_MASK_ALPHA)) return std::unexpected{"PNG tRNS 无效。"};
+      transparency = true;
+    } else if (type == "cICP") {
+      if (has_cicp || size != 4) return std::unexpected{"PNG cICP 重复或长度无效。"};
+      has_cicp = true;
+      if (prefix[2] == std::byte{0} && std::to_integer<unsigned>(prefix[3]) <= 1)
+        cicp_range = dynamic_range_for_transfer(std::to_integer<int>(prefix[1]));
+    } else if (type == "iCCP") {
+      if (has_icc) return std::unexpected{"PNG iCCP 重复。"};
+      has_icc = true;
+      auto range = inspect_icc_dynamic_range(prefix);
+      if (!range) return std::unexpected{range.error()};
+      icc_range = *range;
+    } else if (type == "sRGB") {
+      if (size != 1 || std::to_integer<unsigned>(prefix[0]) > 3)
+        return std::unexpected{"PNG sRGB 无效。"};
+      has_srgb = true;
+    } else if (type == "gAMA") {
+      if (gamma || size != 4 || !read_be_u32(prefix, 0)) return std::unexpected{"PNG gAMA 重复或无效。"};
+      gamma = read_be_u32(prefix, 0);
+    } else if (type == "cLLI") {
+      if (size != 8) return std::unexpected{"PNG cLLI 长度无效。"};
+      has_content_light = true;
+    }
+    return {};
+  }, true);
+  if (!scanned) return std::unexpected{scanned.error()};
+  auto dimensions = decoder_common::make_image_dimensions_checked(layout.width, layout.height, "PNG");
+  if (!dimensions) return std::unexpected{dimensions.error()};
+  auto stride = decoder_common::checked_rgba_stride(layout.width, "PNG probe", bit_depth == 16 ? 2 : 1);
+  if (!stride) return std::unexpected{stride.error()};
+  auto bytes = decoder_common::checked_image_bytes(*stride, layout.height, "PNG probe");
+  if (!bytes) return std::unexpected{bytes.error()};
+  dimensions->source_bit_depth = bit_depth;
+  dimensions->source_has_alpha = (color_type & PNG_COLOR_MASK_ALPHA) != 0 || transparency;
+  dimensions->decoded_storage_bytes = *bytes;
+  if (has_content_light) dimensions->source_dynamic_range = ImageDynamicRangeHint::hdr;
+  else if (has_cicp) dimensions->source_dynamic_range = cicp_range;
+  else if (has_icc) dimensions->source_dynamic_range = icc_range;
+  // 无色彩块的低位深 PNG 在本解码器中明确按 sRGB 解读，规划须匹配这条实际解码分支。
+  // 显式未知 CICP/ICC、未知 gamma 和高位深无标记输入不进入该默认分支。
+  else if (has_srgb || gamma == 45455u || gamma == 50000u || gamma == 55556u ||
+           (!gamma && bit_depth <= 8))
+    dimensions->source_dynamic_range = ImageDynamicRangeHint::sdr;
+  return *dimensions;
+}
+
 }  // namespace png_detail
 
 class PngImageDecoder final : public ImageDecoder {
@@ -586,20 +881,7 @@ class PngImageDecoder final : public ImageDecoder {
   std::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
     try {
-      auto bytes = decoder_common::read_file_prefix(path, 24, "PNG");
-      if (!bytes) {
-        return std::unexpected{bytes.error()};
-      }
-      if (bytes->size() < 24 ||
-          png_sig_cmp(reinterpret_cast<png_const_bytep>(bytes->data()), 0, 8) != 0 ||
-          png_detail::read_be_u32(*bytes, 8) != 13 ||
-          (*bytes)[12] != std::byte{'I'} || (*bytes)[13] != std::byte{'H'} ||
-          (*bytes)[14] != std::byte{'D'} || (*bytes)[15] != std::byte{'R'}) {
-        return std::unexpected{std::format("PNG 文件头无效: {}", display_path_for_user(path))};
-      }
-      return decoder_common::make_image_dimensions_checked(png_detail::read_be_u32(*bytes, 16),
-                                                           png_detail::read_be_u32(*bytes, 20),
-                                                           "PNG");
+      return png_detail::probe_png_dimensions(path);
     } catch (const std::bad_alloc&) {
       return std::unexpected{"PNG 尺寸探测内存不足。"};
     } catch (const std::length_error&) {
@@ -853,21 +1135,41 @@ class PngImageEncoder final : public ImageEncoder {
       const NativeEncodeSettings& settings,
       std::stop_token stop_token = {}) const override {
     try {
-      if (image.geometry || image.pixel_format != PixelFormat::rgba || image.sample_representation == SampleRepresentation::ieee_half_float ||
-          settings.tone_map_to_sdr_pixels) {
-        const int depth = settings.bit_depth.value_or(image.bit_depth > 8 ? 16 : 8);
-        auto converted = convert_image_pixels(image, PixelConversionRequest{.format = PixelFormat::rgba,
-            .bit_depth = depth, .preserve_alpha = settings.applied_alpha == "kept",
-            .tone_map_to_sdr = settings.tone_map_to_sdr_pixels}, stop_token, settings.resources);
-        if (!converted) return std::unexpected{converted.error()};
-        auto normalized = settings; normalized.tone_map_to_sdr_pixels = false;
-        return encode(*converted, normalized, stop_token);
-      }
-      if (stop_token.stop_requested()) {
-        return std::unexpected{"任务已取消。"};
-      }
+      if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
       if (settings.quality < 1 || settings.quality > 100) {
         return std::unexpected{"PNG quality 必须在 1–100 范围内。"};
+      }
+      auto depth = png_detail::encoding_bit_depth(image, settings);
+      if (!depth) return std::unexpected{depth.error()};
+      if (image.significant_bits) {
+        const auto bits = *image.significant_bits;
+        const std::array<int, 4> channels{bits.red, bits.green, bits.blue, bits.alpha};
+        if (std::ranges::any_of(channels, [&](int value) { return value < 1 || value > image.bit_depth; }))
+          return std::unexpected{"PNG 有效位数必须在 1 到存储位深之间。"};
+      }
+      if (image.geometry || image.pixel_format != PixelFormat::rgba || image.bit_depth != *depth ||
+          image.sample_representation == SampleRepresentation::ieee_half_float ||
+          image.alpha_mode == AlphaMode::premultiplied || settings.tone_map_to_sdr_pixels) {
+        const bool preserve_alpha = settings.applied_alpha.empty() || settings.applied_alpha == "kept";
+        auto converted = convert_image_pixels(image, PixelConversionRequest{.format = PixelFormat::rgba,
+            .bit_depth = *depth, .preserve_alpha = preserve_alpha,
+            .tone_map_to_sdr = settings.tone_map_to_sdr_pixels}, stop_token, settings.resources);
+        if (!converted) return std::unexpected{converted.error()};
+        if (image.bit_depth != *depth && image.pixel_format == PixelFormat::rgba &&
+            image.sample_representation == SampleRepresentation::unorm &&
+            image.alpha_mode != AlphaMode::premultiplied && !settings.tone_map_to_sdr_pixels) {
+          const auto bits = image.significant_bits.value_or(
+              SignificantBits{image.bit_depth, image.bit_depth, image.bit_depth, image.bit_depth});
+          converted->significant_bits = SignificantBits{std::min(bits.red, *depth), std::min(bits.green, *depth),
+              std::min(bits.blue, *depth), preserve_alpha ? std::min(bits.alpha, *depth) : *depth};
+        }
+        auto normalized = settings;
+        normalized.bit_depth = *depth;
+        normalized.tone_map_to_sdr_pixels = false;
+        auto encoded = encode(*converted, normalized, stop_token);
+        // PNG compression may be lossless while the requested precision change is not.
+        if (encoded && *depth < image.bit_depth) encoded->lossless = false;
+        return encoded;
       }
       auto plane = png_detail::rgba_plane(image);
       if (!plane) {
@@ -920,8 +1222,10 @@ class PngImageEncoder final : public ImageEncoder {
         bits.alpha = static_cast<png_byte>(source_bits.alpha);
         png_set_sBIT(png.get(), info.get(), &bits);
       }
-      if (!settings.strip_metadata && settings.applied_icc == "kept") {
+      if (settings.applied_icc == "kept") {
         if (const auto* icc = png_detail::first_metadata(image, MetadataKind::icc)) {
+          if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes)
+            return std::unexpected{"PNG ICC profile 超过 64 MiB 上限。"};
           png_set_iCCP(png.get(), info.get(), "ICC profile", PNG_COMPRESSION_TYPE_BASE,
                        reinterpret_cast<png_const_bytep>(icc->bytes.data()),
                        static_cast<png_uint_32>(icc->bytes.size()));
@@ -968,6 +1272,7 @@ class PngImageEncoder final : public ImageEncoder {
 
       auto diagnostics = diagnostics_from_settings(settings);
       diagnostics.encoder_id = "libpng";
+      diagnostics.applied_bit_depth = bit_depth;
       diagnostics.integration_mode = "libpng";
       diagnostics.encoder_threads = 1;
       diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;

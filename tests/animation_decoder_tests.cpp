@@ -5,7 +5,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <cstdint>
+#include <limits>
+#include <span>
 #include <stop_token>
+#include <string>
+#include <string_view>
 #include <vector>
 #include <gif_lib.h>
 #include <webp/encode.h>
@@ -33,6 +38,36 @@ void chunk(Bytes& bytes, const char* tag, const Bytes& data) {
   bytes.insert(bytes.end(), data.begin(), data.end());
   be32(bytes, crc32(0, reinterpret_cast<const Bytef*>(bytes.data() + begin), data.size() + 4));
 }
+std::size_t chunk_offset(const Bytes& bytes, std::string_view tag) {
+  for (std::size_t pos = 8; pos + 12 <= bytes.size();) {
+    const auto size = read32(bytes.data() + pos);
+    if (size > bytes.size() - pos - 12) break;
+    if (std::memcmp(bytes.data() + pos + 4, tag.data(), 4) == 0) return pos;
+    pos += size + 12;
+  }
+  require(false, "fixture chunk missing"); return bytes.size();
+}
+void set32(Bytes& bytes, std::size_t offset, std::uint32_t value) {
+  for (unsigned i = 0; i < 4; ++i) bytes[offset + i] = std::byte((value >> (24 - i * 8)) & 255);
+}
+void patch_u32(Bytes& bytes, std::string_view tag, std::size_t field, std::uint32_t value) {
+  const auto pos = chunk_offset(bytes, tag), size = static_cast<std::size_t>(read32(bytes.data() + pos));
+  require(field + 4 <= size, "fixture patch out of range");
+  set32(bytes, pos + 8 + field, value);
+  set32(bytes, pos + 8 + size, crc32(0, reinterpret_cast<const Bytef*>(bytes.data() + pos + 4), size + 4));
+}
+std::uint16_t sample(const awj::ImageBuffer& image, std::size_t index) {
+  const auto* data = image.planes[0].bytes.data() + index * (image.bit_depth / 8);
+  if (image.bit_depth == 8) return std::to_integer<std::uint8_t>(*data);
+  std::uint16_t value{}; std::memcpy(&value, data, sizeof(value)); return value;
+}
+void reject_apng(const std::filesystem::path& root, const Bytes& bytes) {
+  const auto path = root / "rejected.png"; write(path, bytes);
+  require(!awj::png_detail::contains_animation_control_chunk(bytes, "invalid APNG"), "memory APNG probe accepted malformed chunks");
+  require(!awj::input_uses_animation_reader(path), "file APNG probe accepted malformed chunks");
+  require(!awj::open_animation(path, 0), "unlimited APNG open accepted malformed chunks");
+  require(!awj::open_animation(path, 128 * 1024 * 1024), "bounded APNG open accepted malformed chunks");
+}
 awj::ImageBuffer solid(std::size_t width, unsigned r, unsigned g, unsigned b, unsigned alpha = 255) {
   awj::ImageBuffer image{.width = width, .height = 1, .pixel_format = awj::PixelFormat::rgba,
       .alpha_mode = awj::AlphaMode::straight, .planes = {{Bytes(width * 4), width * 4}}};
@@ -59,10 +94,16 @@ Bytes apng(bool poster = false, bool deep = false, unsigned count = 4, bool zero
   Bytes result(first.begin(), first.begin() + 33); // signature + IHDR
   Bytes control; be32(control, count); be32(control, 3); chunk(result, "acTL", control);
   if (poster) {
-    for (std::size_t pos = 8; pos + 12 <= first.size();) {
-      const auto size = read32(first.data() + pos);
-      if (std::memcmp(first.data() + pos + 4, "IDAT", 4) == 0)
-        chunk(result, "IDAT", Bytes(first.begin() + pos + 8, first.begin() + pos + 8 + size));
+    const auto independent = png(solid(3, 0, 0, 255), deep);
+    for (std::size_t pos = 8; pos + 12 <= independent.size();) {
+      const auto size = read32(independent.data() + pos);
+      if (std::memcmp(independent.data() + pos + 4, "IDAT", 4) == 0) {
+        const auto start = independent.begin() + pos + 8;
+        if (count > 1 && size > 1) {
+          chunk(result, "IDAT", Bytes(start, start + size / 2));
+          chunk(result, "IDAT", Bytes(start + size / 2, start + size));
+        } else chunk(result, "IDAT", Bytes(start, start + size));
+      }
       pos += size + 12;
     }
   }
@@ -131,37 +172,102 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(root);
   const auto gif_path = root / "disposal.gif", apng_path = root / "blend.png", webp_path = root / "blend.webp";
   gif(gif_path); write(apng_path, apng()); webp(webp_path);
+  std::stop_source stop; stop.request_stop();
   for (const auto& path : {gif_path, apng_path, webp_path}) {
-    auto opened = awj::open_animation(path, 128 * 1024 * 1024);
-    if (!opened) { std::fprintf(stderr, "%s\n", opened.error().c_str()); return 1; }
-    require(bool(*opened) && (*opened)->info().durations.size() == 4, "frame count failed");
-    auto& reader = **opened;
-    require(reader.info().repetitions == (path == gif_path ? 0 : 2), "loop conversion failed");
-    for (int i = 0; i < 4; ++i) {
-      auto next = reader.next(); require(next && *next, "frame decode failed");
-      const auto& f = reader.frame(); require(f.width == 3 && f.height == 1, "full canvas failed");
-      const auto& p = f.planes[0].bytes;
-      if (i == 0) require(p[0] == std::byte{255} && p[8] == std::byte{255}, "first full canvas failed");
-      if (i == 2 && path != webp_path) require(p[0] == std::byte{0} && p[6] == std::byte{255}, "BACKGROUND disposal failed");
-      if (i == 3 && path != webp_path) require(p[4] == std::byte{255} && p[6] == std::byte{0} && p[8] == std::byte{255}, "PREVIOUS disposal failed");
-      if (i == 1 && path == apng_path) require(std::to_integer<int>(p[0]) >= 126 && std::to_integer<int>(p[1]) >= 127, "APNG OVER blend failed");
+    for (const std::uint64_t budget : {0ull, 128ull * 1024 * 1024}) {
+      auto opened = awj::open_animation(path, budget);
+      if (!opened) { std::fprintf(stderr, "%s\n", opened.error().c_str()); return 1; }
+      require(bool(*opened) && (*opened)->info().durations.size() == 4, "frame count/unlimited budget failed");
+      auto& reader = **opened;
+      require(reader.info().repetitions == (path == gif_path ? 0 : 2), "loop conversion failed");
+      require(!reader.next(stop.get_token()), "frame cancellation ignored");
+      for (int i = 0; i < 4; ++i) {
+        auto next = reader.next(); require(next && *next, "frame decode failed");
+        const auto& f = reader.frame(); require(f.width == 3 && f.height == 1, "full canvas failed");
+        const auto& p = f.planes[0].bytes;
+        if (i == 0) require(p[0] == std::byte{255} && p[8] == std::byte{255}, "first full canvas failed");
+        if (i == 2 && path != webp_path) require(p[0] == std::byte{0} && p[6] == std::byte{255}, "BACKGROUND disposal failed");
+        if (i == 3 && path != webp_path) require(p[4] == std::byte{255} && p[6] == std::byte{0} && p[8] == std::byte{255}, "PREVIOUS disposal failed");
+        if (i == 1 && path == apng_path) require(std::to_integer<int>(p[0]) >= 126 && std::to_integer<int>(p[1]) >= 127, "APNG OVER blend failed");
+      }
+      auto end = reader.next(); require(end && !*end, "end of animation failed");
+      require(!awj::open_animation(path, budget, stop.get_token()), "open cancellation ignored");
     }
-    auto end = reader.next(); require(end && !*end, "end of animation failed");
     require(!awj::open_animation(path, 1), "memory budget ignored");
-    std::stop_source stop; stop.request_stop(); require(!awj::open_animation(path, 128 * 1024 * 1024, stop.get_token()), "cancellation ignored");
+    require(!awj::open_animation(path, std::filesystem::file_size(path)), "exhausted finite input budget became unlimited");
   }
-  auto bad = apng(); bad[45] ^= std::byte{1}; write(root / "bad.png", bad);
-  require(!awj::open_animation(root / "bad.png", 128 * 1024 * 1024), "bad APNG accepted");
-  for (const auto count : {1u, 4u}) {
-    const auto path = root / (count == 1 ? "single16.apng" : "poster16.apng");
-    write(path, apng(true, true, count, true));
-    auto reader = awj::open_animation(path, 128 * 1024 * 1024);
-    require(reader && *reader && (*reader)->info().durations.size() == count, "APNG poster/single frame count failed");
-    require((*reader)->info().durations[0].numerator == 1 && (*reader)->info().durations[0].denominator == 1000, "APNG zero delay normalization failed");
-    for (unsigned i = 0; i < count; ++i) {
-      auto next = (*reader)->next(); require(next && *next && (*reader)->frame().bit_depth == 16, "APNG 16-bit sample precision failed");
+  require(!awj::animation_detail::fits_working_set(32, 1, 1, 32), "zero finite remainder became unlimited");
+  require(awj::animation_detail::fits_working_set(32, 1, 1, 0), "original zero budget is not unlimited");
+  require(!awj::animation_detail::fits_working_set(std::numeric_limits<std::uint64_t>::max() - 3, 4, 1, 0), "unlimited working set overflow accepted");
+
+  for (const bool deep : {false, true}) {
+    const auto full = deep ? 65535u : 255u;
+    for (const auto count : {1u, 2u}) {
+      const auto bytes = apng(true, deep, count);
+      const auto path = root / ("poster-" + std::to_string(deep ? 16 : 8) + "-" + std::to_string(count) + (deep ? ".apng" : ".png"));
+      write(path, bytes);
+      auto in_memory = awj::png_detail::contains_animation_control_chunk(bytes, "blue independent poster");
+      auto routed = awj::input_uses_animation_reader(path);
+      require(in_memory && !*in_memory && routed && !*routed, "independent poster routed to animation reader");
+      for (const std::uint64_t budget : {0ull, 128ull * 1024 * 1024}) {
+        auto opened = awj::open_animation(path, budget);
+        require(opened && !*opened, "open_animation discarded independent default image");
+      }
+      auto decoded = awj::PngImageDecoder{}.decode(path);
+      require(decoded && decoded->image.bit_depth == (deep ? 16 : 8), "poster precision changed");
+      for (std::size_t x = 0; x < 3; ++x)
+        require(sample(decoded->image, x * 4) == 0 && sample(decoded->image, x * 4 + 1) == 0 &&
+            sample(decoded->image, x * 4 + 2) == full && sample(decoded->image, x * 4 + 3) == full,
+            "red/green animation replaced blue static poster");
+      awj::animation_detail::ApngReader direct;
+      direct.bytes = bytes;
+      require(!direct.open({}), "APNG reader silently discarded independent poster");
+    }
+    for (const auto count : {1u, 4u}) {
+      const auto bytes = apng(false, deep, count, true);
+      const auto path = root / ("pure-" + std::to_string(deep ? 16 : 8) + "-" + std::to_string(count) + ".apng");
+      write(path, bytes);
+      auto in_memory = awj::png_detail::contains_animation_control_chunk(bytes, "default is frame zero");
+      auto routed = awj::input_uses_animation_reader(path);
+      require(in_memory && *in_memory && routed && *routed, "animation frame zero mistaken for independent poster");
+      auto reader = awj::open_animation(path, 0);
+      require(reader && *reader && (*reader)->info().durations.size() == count, "pure APNG count/unlimited budget failed");
+      require((*reader)->info().repetitions == 2, "pure APNG loop lost");
+      for (unsigned i = 0; i < count; ++i) {
+        const auto duration = (*reader)->info().durations[i];
+        require(duration.numerator == 1 && duration.denominator == 1000, "APNG zero delay normalization failed");
+        auto next = (*reader)->next();
+        require(next && *next && (*reader)->frame().bit_depth == (deep ? 16 : 8), "APNG sample precision failed");
+        if (!i) require(sample((*reader)->frame(), 0) == full && sample((*reader)->frame(), 2) == 0, "pure APNG first red frame lost");
+      }
+      auto end = (*reader)->next(); require(end && !*end, "pure APNG termination failed");
     }
   }
+  for (const bool poster : {false, true}) {
+    auto bad = apng(poster, false, 2); bad[45] ^= std::byte{1}; reject_apng(root, bad);
+    bad = apng(poster, false, 2); patch_u32(bad, "fcTL", 0, 1); reject_apng(root, bad);
+    bad = apng(poster, false, 2); patch_u32(bad, "fdAT", 0, 99); reject_apng(root, bad);
+    bad = apng(poster, false, 2); bad.pop_back(); reject_apng(root, bad);
+    bad = apng(poster, false, 2); bad.resize(bad.size() - 12); reject_apng(root, bad);
+    bad = apng(poster, false, 2); bad.push_back(std::byte{0}); reject_apng(root, bad);
+    bad = apng(poster, false, 2); patch_u32(bad, "acTL", 0, 3); reject_apng(root, bad);
+    bad = apng(poster, false, 2); patch_u32(bad, "acTL", 0, 100001); reject_apng(root, bad);
+    bad = apng(poster, false, 2); patch_u32(bad, "fcTL", 4, 4); reject_apng(root, bad);
+    bad = apng(poster, false, 2); patch_u32(bad, "IHDR", 0, 0); reject_apng(root, bad);
+    Bytes extra; chunk(extra, "ABCD", {});
+    bad = apng(poster, false, 2); bad.insert(bad.end() - 12, extra.begin(), extra.end()); reject_apng(root, bad);
+    extra.clear(); chunk(extra, "IDAT", {std::byte{0}});
+    bad = apng(poster, false, 2); bad.insert(bad.end() - 12, extra.begin(), extra.end()); reject_apng(root, bad);
+  }
+  auto huge = apng(false, true, 1);
+  for (const auto tag : {"IHDR", "fcTL"}) {
+    patch_u32(huge, tag, std::string_view{tag} == "IHDR" ? 0 : 4, 0x7fffffffu);
+    patch_u32(huge, tag, std::string_view{tag} == "IHDR" ? 4 : 8, 0x7fffffffu);
+  }
+  const auto huge_path = root / "oversized.apng"; write(huge_path, huge);
+  const auto huge_route = awj::input_uses_animation_reader(huge_path);
+  require(huge_route && *huge_route, "oversized APNG fixture has invalid animation structure");
+  require(!awj::open_animation(huge_path, 0), "unlimited APNG bypassed buffer size/overflow protection");
   if (argc == 1) std::filesystem::remove_all(root);
   return 0;
 }

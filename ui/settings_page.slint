@@ -39,6 +39,7 @@ export component SettingsPage inherits ScrollView {
     callback theme-selection-requested(int, length, length);
     in-out property <int> ui-font-index;
     in property <[ComboOption]> ui-font-options;
+    in-out property <bool> unlock-memory-limit;
     in-out property <bool> unlock-max-input-file-bytes;
     in-out property <int> update-channel-index;
     callback update-channel-selection-requested(int);
@@ -297,9 +298,16 @@ export component SettingsPage inherits ScrollView {
                     spacing: 8px;
                     width: 100%;
                     height: self.preferred-height;
-                    CheckBox { text: @tr("解除 20 GiB 输入/运行时上限"); checked <=> root.unlock-max-input-file-bytes; enabled: !root.running; }
-                    Text { text: @tr("仅当前会话生效，不会写入 AWJ.jsonc。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                    CheckBox { text: @tr("解除工作集内存预算"); checked <=> root.unlock-memory-limit; enabled: !root.running; }
+                    Text { text: @tr("优先于自动和手动工作集预算，保留手动值；仅当前会话生效，不会写入 AWJ.jsonc 或预设。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                     Text { text: @tr("警告：图片或工作集过大时可能导致内存耗尽、进程被系统杀死或整机卡死。仅在明确需要处理超大文件时临时开启。"); color: #d13438; font-size: 13px; wrap: word-wrap; font-weight: 700; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    width: 100%;
+                    height: self.preferred-height;
+                    CheckBox { text: @tr("解除 20 GiB 输入/缓冲区保护"); checked <=> root.unlock-max-input-file-bytes; enabled: !root.running; }
+                    Text { text: @tr("仅解除单文件读取与缓冲区保护，不改变工作集预算。仅当前会话生效，不会写入 AWJ.jsonc。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                 }
 
 

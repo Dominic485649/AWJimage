@@ -475,7 +475,13 @@ std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs:
         file_size_bytes - sizeof(raw_image_detail::Header) != header.byte_count) {
       return std::unexpected{"raw 图像文件大小与 header 不一致。"};
     }
-    return make_image_dimensions(header.width, header.height);
+    auto dimensions = make_image_dimensions(header.width, header.height);
+    dimensions.source_bit_depth = static_cast<int>(header.bit_depth);
+    dimensions.source_has_alpha = raw_image_detail::alpha_from_raw(header.alpha_mode) != AlphaMode::none;
+    dimensions.source_dynamic_range = raw_image_detail::is_wgc_scrgb_magic(header)
+        ? ImageDynamicRangeHint::hdr : ImageDynamicRangeHint::unknown;
+    dimensions.decoded_storage_bytes = header.byte_count;
+    return dimensions;
   } catch (const std::bad_alloc&) {
     return std::unexpected{"raw 图像尺寸探测内存不足。"};
   } catch (const std::length_error&) {
