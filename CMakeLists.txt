@@ -1704,13 +1704,14 @@ avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
 
 if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_executable(awj_linux_queue_tests tests/linux_queue_tests.cpp
+    add_executable(awj_linux_queue_tests tests/linux_queue_tests.cpp src/ui/import_service.cpp
         "${CMAKE_CURRENT_BINARY_DIR}/slint_generated_awj_studio_1.cpp")
     target_sources(awj_linux_queue_tests PRIVATE
         FILE_SET linux_queue_test_modules TYPE CXX_MODULES FILES src/ui/studio_defaults.ixx)
     avif_enable_common_options(awj_linux_queue_tests)
-    target_compile_definitions(awj_linux_queue_tests PRIVATE AWJ_BUILD_VERSION="${PROJECT_VERSION}")
-    target_include_directories(awj_linux_queue_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_compile_definitions(awj_linux_queue_tests PRIVATE SLINT_FEATURE_EXPERIMENTAL=1 AWJ_BUILD_VERSION="${PROJECT_VERSION}")
+    target_include_directories(awj_linux_queue_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(awj_linux_queue_tests PRIVATE awj_core awj_update Slint::Slint)
     add_dependencies(awj_linux_queue_tests AWJ)
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/queue-contract-temp")

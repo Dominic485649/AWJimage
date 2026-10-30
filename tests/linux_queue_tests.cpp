@@ -5,6 +5,8 @@
 // 仅本测试目标包含该文件，不与应用的同名实现链接。
 #include "../src/ui/studio_run_linux.cpp"
 
+import awj.image;
+import awj.codec;
 import awj.png_codec;
 
 namespace {
