@@ -14,6 +14,7 @@
 #include "studio_shell_cli.h"
 #include "studio_fields.h"
 #include "studio_queue_rows.h"
+#include "studio_queue_import.h"
 #include "studio_ui_util.h"
 #include "studio_worker_control.h"
 
@@ -173,150 +174,64 @@ std::filesystem::path queue_relative_dir_for(
   return relative;
 }
 
+std::expected<bool, std::string> append_prepared_import_file(
+    UiState& state, const awj::ui_import::File& file) {
+  auto merged = merge_queue_import(state, std::span{&file, 1});
+  if (!merged) return std::unexpected{merged.error()};
+  return merged->added + merged->requeued != 0;
+}
+
 std::expected<bool, std::string> append_queue_image_path(
     UiState& state, const std::filesystem::path& path,
     const std::filesystem::path& source_root) {
-  try {
-    const auto key = queue_path_key(path);
-    if (state.queue_path_keys.contains(key)) {
-      return false;
-    }
-    std::error_code ec;
-    if (!std::filesystem::is_regular_file(path, ec) || ec) {
-      return std::unexpected{std::format("不是可加入队列的文件: {}。",
-                                         awj::display_path_for_user(path))};
-    }
-    if (!awj::is_supported_image_extension(path)) {
-      return std::unexpected{std::format("文件格式不受支持: {}。支持 {}。",
-                                         awj::display_path_for_user(path),
-                                         awj::kSupportedImageExtensionsText)};
-    }
-    const auto bytes = std::filesystem::file_size(path, ec);
-    if (ec) {
-      return std::unexpected{std::format("读取文件大小失败: {}；系统错误：{}。",
-                                         awj::display_path_for_user(path),
-                                         ec.message())};
-    }
-    if (bytes > static_cast<std::uintmax_t>(
-                    awj::encoding_defaults::effective_max_input_file_bytes())) {
-      return std::unexpected{std::format("输入文件超过当前输入上限: {}。",
-                                         awj::display_path_for_user(path))};
-    }
-    QueueImageItem item{
-        .id = state.next_queue_id,
-        .path = path,
-        .source_root = source_root,
-        .relative_dir =
-            source_root.empty() ? std::filesystem::path{}
-                                : queue_relative_dir_for(source_root, path),
-        .bytes = bytes};
-    const auto [position, inserted] = state.queue_path_keys.insert(key);
-    if (!inserted) return false;
-    try {
-      state.queue_items.push_back(std::move(item));
-    } catch (...) {
-      state.queue_path_keys.erase(position);
-      throw;
-    }
-    ++state.next_queue_id;
-    return true;
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"添加队列项时内存不足。"};
-  } catch (const std::length_error&) {
-    return std::unexpected{"添加队列项时数据超过运行时限制。"};
-  } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"添加队列项时文件系统访问失败。"};
-  }
+  auto result = awj::ui_import::scan({{.path = path}}, awj::ui_import::Origin::command_line,
+      {.is_supported = awj::is_supported_image_extension,
+       .maximum_file_bytes = awj::encoding_defaults::effective_max_input_file_bytes()});
+  if (result.failed || result.cancelled || result.files.empty())
+    return std::unexpected{awj::ui_import::summary_text(result, 0, 0)};
+  result.files.front().source_root = source_root;
+  return append_prepared_import_file(state, result.files.front());
 }
 
-std::expected<bool, std::string> append_prepared_import_file(
-    UiState& state, const awj::ui_import::File& file) {
-  try {
-    const auto key = queue_path_key(file.path);
-    if (state.queue_path_keys.contains(key)) return false;
-    QueueImageItem item{
-        .id = state.next_queue_id,
-        .path = file.path,
-        .source_root = file.source_root,
-        .relative_dir = file.source_root.empty()
-                            ? std::filesystem::path{}
-                            : queue_relative_dir_for(file.source_root, file.path),
-        .bytes = file.bytes};
-    const auto [position, inserted] = state.queue_path_keys.insert(key);
-    if (!inserted) return false;
-    try {
-      state.queue_items.push_back(std::move(item));
-    } catch (...) {
-      state.queue_path_keys.erase(position);
-      throw;
-    }
-    ++state.next_queue_id;
-    return true;
-  } catch (const std::bad_alloc&) {
-    return std::unexpected{"添加导入结果时内存不足。"};
+bool apply_scanned_import(AwjStudio& app, UiState& state,
+                          const awj::ui_import::Result& result,
+                          const std::filesystem::path& input_hint,
+                          bool update_input_path) {
+  if (result.cancelled || result.failed || result.files.empty()) {
+    app.set_status_text(to_shared(awj::ui_import::summary_text(result, 0, 0)));
+    return false;
   }
+  std::uint64_t selected_id = 0;
+  const auto selected = app.get_selected_queue_index();
+  if (selected >= 0 && static_cast<std::size_t>(selected) < state.queue_items.size())
+    selected_id = state.queue_items[static_cast<std::size_t>(selected)].id;
+  auto merged = merge_queue_import(state, result.files);
+  if (!merged) {
+    app.set_status_text(to_shared(merged.error()));
+    return false;
+  }
+  if (update_input_path && !input_hint.empty()) set_input_path_preserving_output(app, input_hint);
+  app.invoke_close_queue_menu();
+  state.last_click_id = 0;
+  state.drag_reordered = false;
+  refresh_queue_rows(app, state);
+  auto restored = queue_index_for_id(state, selected_id);
+  if (restored && app.get_queue_failed_only() && state.queue_items[*restored].status != QueueItemStatus::failed)
+    restored.reset();
+  app.set_selected_queue_index(restored ? static_cast<int>(*restored) : -1);
+  app.set_progress(0.0f);
+  app.set_status_text(to_shared(awj::ui_import::summary_text(result, merged->added, merged->requeued)));
+  return true;
 }
 
 bool add_queue_from_path(AwjStudio& app, UiState& state,
                          const std::filesystem::path& picked,
-                         bool pick_folder, bool update_input_path = true) {
-  std::error_code ec;
-  const bool is_folder = pick_folder ||
-                         (std::filesystem::is_directory(picked, ec) && !ec);
-  std::vector<std::filesystem::path> paths;
-  if (is_folder) {
-    auto scanned = supported_files_in_folder(picked);
-    if (!scanned) {
-      app.set_status_text(to_shared(scanned.error()));
-      return false;
-    }
-    paths = std::move(*scanned);
-    if (paths.empty()) {
-      app.set_status_text(to_shared("文件夹中没有支持的图片文件。"));
-      return false;
-    }
-  } else {
-    paths.push_back(picked);
-  }
-
-  std::size_t added = 0;
-  std::size_t skipped = 0;
-  std::size_t failed = 0;
-  std::string first_error;
-  const auto source_root = is_folder ? picked : std::filesystem::path{};
-  bool accepted_target = false;
-  for (const auto& path : paths) {
-    auto appended = append_queue_image_path(state, path, source_root);
-    if (appended && *appended) {
-      ++added;
-      accepted_target = true;
-    } else if (appended) {
-      ++skipped;
-      accepted_target = true;
-    } else {
-      ++failed;
-      if (first_error.empty()) {
-        first_error = appended.error();
-      }
-    }
-  }
-  if (update_input_path && accepted_target) {
-    set_input_path_preserving_output(app, picked);
-  }
-  refresh_queue_rows(app, state);
-  if (added == 0) {
-    app.set_status_text(
-        to_shared(first_error.empty()
-                      ? std::format("没有新图片加入队列{}。",
-                                    skipped > 0 ? "，重复项已跳过" : "")
-                      : first_error));
-    return accepted_target;
-  }
-  app.set_status_text(to_shared(std::format(
-      "已加入 {} 张图片{}{}。", added,
-      skipped == 0 ? "" : std::format("，跳过 {} 个重复项", skipped),
-      failed == 0 ? "" : std::format("，{} 个失败", failed))));
-  return accepted_target;
+                         bool pick_folder, bool update_input_path) {
+  const auto result = awj::ui_import::scan({{.path = picked, .force_directory = pick_folder}},
+      pick_folder ? awj::ui_import::Origin::folder_dialog : awj::ui_import::Origin::file_dialog,
+      {.is_supported = awj::is_supported_image_extension,
+       .maximum_file_bytes = awj::encoding_defaults::effective_max_input_file_bytes()});
+  return apply_scanned_import(app, state, result, picked, update_input_path);
 }
 
 void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,

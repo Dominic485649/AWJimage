@@ -625,6 +625,14 @@ int run_studio_ui(const wchar_t* health_event,
           return;
         }
         auto empty_rows = std::make_shared<slint::VectorModel<TaskRow>>();
+        {
+          std::scoped_lock lock{state->mutex};
+          ++state->import_epoch;
+          state->pending_imports = 0;
+          ++state->run_id;
+        }
+        if (state->import_dispatcher) state->import_dispatcher->discard_pending();
+        (*app)->invoke_close_queue_menu();
         std::vector<QueueImageItem>{}.swap(state->queue_items);
         state->task_rows = std::move(empty_rows);
         awj::ui::bind_queue_model(**app, state->task_rows);

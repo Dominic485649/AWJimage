@@ -34,12 +34,14 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <span>
 #include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <thread>
+#include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
@@ -51,6 +53,8 @@
 #include "queue_preset_selection.h"
 #include "deferred_model.h"
 #include "changelog_history.h"
+#include "import_service.h"
+#include "queue_merge.h"
 
 import awj.config;
 import awj.core;
@@ -128,6 +132,12 @@ struct LinuxParameterParams {
   std::string scale_percent_text{};
 };
 
+struct LinuxQueueItem {
+  std::uint64_t id{};
+  awj::ImageFile file{};
+  TaskRow row{};
+};
+
 struct LinuxUiState {
   std::jthread worker{};
   std::jthread update_worker{};
@@ -140,10 +150,13 @@ struct LinuxUiState {
   slint::Timer close_timer{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
   std::vector<fs::path> failed_paths{};
-  // The visible queue is the source of truth. A manifest is written only
-  // immediately before a run so changing UI settings cannot rescan a folder.
-  std::vector<awj::ImageFile> queue_files{};
+  // 行状态与文件身份持久保存；显示位置不是本轮 worker 的连续索引。
+  std::vector<LinuxQueueItem> queue_files{};
   std::unordered_set<std::string> queue_path_keys{};
+  std::unordered_map<std::uint64_t, std::size_t> queue_id_indices{};
+  std::vector<std::uint64_t> run_queue_ids{};
+  std::uint64_t next_queue_id{1};
+  std::uint64_t run_generation{};
   fs::path selected_input_path{};
   fs::path selected_output_dir{};
   std::uint64_t next_queue_run_id{1};
@@ -1137,9 +1150,17 @@ std::optional<std::size_t> linux_task_row_index_for_path(
     return std::nullopt;
   }
   const auto count = std::min(rows->row_count(), state.queue_files.size());
-  if (hint && *hint < count && state.queue_files[*hint].path == path) return hint;
+  const auto key = awj::ui_queue::path_key(path);
+  if (hint) {
+    if (*hint >= state.run_queue_ids.size()) return std::nullopt;
+    const auto found = state.queue_id_indices.find(state.run_queue_ids[*hint]);
+    if (found == state.queue_id_indices.end() || found->second >= count) return std::nullopt;
+    const auto index = found->second;
+    return awj::ui_queue::path_key(state.queue_files[index].file.path) == key
+        ? std::optional{index} : std::nullopt;
+  }
   for (std::size_t index = 0; index < count; ++index) {
-    if (state.queue_files[index].path == path) return index;
+    if (awj::ui_queue::path_key(state.queue_files[index].file.path) == key) return index;
   }
   return std::nullopt;
 }
@@ -1196,58 +1217,42 @@ void push_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
 
 void mark_linux_task_row_running(AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-    const LinuxUiState& state, const awj::EncodeResult& result) noexcept {
-  if (!rows) return;
+    LinuxUiState& state, const awj::EncodeResult& result) noexcept {
   try {
     if (const auto index = linux_task_row_index_for_path(rows, state, result.input_path, result.index)) {
-      auto row = rows->row_data(*index);
-      if (row) {
-        row->status = to_shared("正在转码");
-        row->output_size = to_shared("-");
-        row->locked = true;
-        row->state = 1;
-        awj::ui::replace_queue_row(app, rows, *index, *row);
-        return;
-      }
+      auto& row = state.queue_files[*index].row;
+      row.status = to_shared("正在转码");
+      row.output_size = to_shared("-");
+      row.locked = true;
+      row.state = 1;
+      awj::ui::replace_queue_row(app, rows, *index, row);
     }
-    const auto previous_count = rows->row_count();
-    push_task_row(rows,
-                  TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
-                          .filename = to_shared(awj::path_to_utf8(
-                              result.input_path.filename())),
-                          .folder = to_shared(awj::path_to_utf8(
-                              result.input_path.parent_path())),
-                          .size = to_shared(awj::format_size(result.original_bytes)),
-                          .output_size = to_shared("-"),
-                          .status = to_shared("正在转码"),
-                           .output = to_shared(awj::path_to_utf8(
-                               result.output_path.filename())),
-                           .locked = true,
-                           .state = 1,
-                           .input_path = to_shared(awj::path_to_utf8(result.input_path)),
-                           .output_path = to_shared(awj::path_to_utf8(result.output_path))});
-    if (rows->row_count() > previous_count) awj::ui::adjust_queue_count(app, 1, 1);
   } catch (...) {
   }
 }
 
+void apply_linux_frame_progress(AwjStudio& app, LinuxUiState& state,
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+    std::uint64_t generation, std::size_t item, std::size_t completed, std::size_t total) {
+  if (state.run_generation != generation || item >= state.run_queue_ids.size()) return;
+  const auto found = state.queue_id_indices.find(state.run_queue_ids[item]);
+  if (found == state.queue_id_indices.end() || found->second >= state.queue_files.size()) return;
+  auto& row = state.queue_files[found->second].row;
+  if (row.state != 1) return;
+  const auto text = to_shared(std::format("编码帧 {}/{}", completed, total));
+  row.status = text;
+  awj::ui::replace_queue_row(app, rows, found->second, row);
+  app.set_status_text(text);
+}
+
 void attach_linux_frame_progress(awj::AppConfig& cfg, slint::ComponentWeakHandle<AwjStudio> weak,
-    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows) {
-  cfg.frame_progress = [weak, rows](std::size_t item, std::size_t completed, std::size_t total) {
+    const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
+    const std::shared_ptr<LinuxUiState>& state, std::uint64_t generation) {
+  cfg.frame_progress = [weak, rows, state, generation](std::size_t item, std::size_t completed, std::size_t total) {
     if (completed != 1 && completed != total && completed % 16) return;
-    slint::invoke_from_event_loop([weak, rows, item, completed, total] {
-      if (auto app = weak.lock()) {
-        const auto text = to_shared(std::format("编码帧 {}/{}", completed, total));
-        for (std::size_t index = 0; rows && index < rows->row_count(); ++index) {
-          auto row = rows->row_data(index);
-          if (row && shared_to_string(row->order) == std::to_string(item + 1) && row->state == 1) {
-            row->status = text;
-            awj::ui::replace_queue_row(**app, rows, index, *row);
-            break;
-          }
-        }
-        (*app)->set_status_text(text);
-      }
+    slint::invoke_from_event_loop([weak, rows, state, generation, item, completed, total] {
+      if (auto app = weak.lock())
+        apply_linux_frame_progress(**app, *state, rows, generation, item, completed, total);
     });
   };
 }
@@ -1255,15 +1260,23 @@ void attach_linux_frame_progress(awj::AppConfig& cfg, slint::ComponentWeakHandle
 void set_linux_task_row_result(
     AwjStudio& app,
     const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
-    const LinuxUiState& state, const awj::EncodeResult& result) {
-  auto row = task_row_from_result(result);
+    LinuxUiState& state, const awj::EncodeResult& result) {
   if (const auto index = linux_task_row_index_for_path(rows, state, result.input_path, result.index)) {
+    auto row = task_row_from_result(result);
+    row.order = to_shared(std::format("{}", *index + 1));
+    state.queue_files[*index].row = row;
     awj::ui::replace_queue_row(app, rows, *index, row);
-  } else {
-    const auto previous_count = rows->row_count();
-    const int status = row.state;
-    push_task_row(rows, std::move(row));
-    if (rows->row_count() > previous_count) awj::ui::adjust_queue_count(app, status, 1);
+  }
+}
+
+void mark_linux_large_image_queued(AwjStudio& app, LinuxUiState& state,
+                                   const awj::BatchLargeImageItem& item) {
+  if (const auto index = linux_task_row_index_for_path(state.task_rows, state, item.file.path, item.file.index)) {
+    auto& row = state.queue_files[*index].row;
+    row.status = to_shared("已加入大图队列");
+    row.state = 2;
+    row.locked = true;
+    awj::ui::replace_queue_row(app, state.task_rows, *index, row);
   }
 }
 
@@ -1379,74 +1392,119 @@ TaskRow pending_linux_queue_row(const awj::ImageFile& file, std::size_t index,
       .output_path = to_shared(awj::path_to_utf8(file.resolved_output_path))};
 }
 
-void refresh_linux_pending_queue(AwjStudio& app, LinuxUiState& state,
-                                 bool locked = false) {
+void refresh_linux_pending_queue(AwjStudio& app, LinuxUiState& state) {
   std::vector<TaskRow> rows;
+  std::unordered_map<std::uint64_t, std::size_t> ids;
   rows.reserve(state.queue_files.size());
+  ids.reserve(state.queue_files.size());
   for (std::size_t index = 0; index < state.queue_files.size(); ++index) {
-    rows.push_back(pending_linux_queue_row(state.queue_files[index], index,
-                                           locked));
+    auto row = state.queue_files[index].row;
+    row.order = to_shared(std::format("{}", index + 1));
+    rows.push_back(std::move(row));
+    ids.emplace(state.queue_files[index].id, index);
   }
+  for (std::size_t index = 0; index < rows.size(); ++index)
+    state.queue_files[index].row = rows[index];
+  state.queue_id_indices.swap(ids);
   state.task_rows->set_vector(std::move(rows));
   refresh_linux_queue_counts(app, state.task_rows);
 }
 
-std::expected<bool, std::string> add_linux_queue_from_path(
-    AwjStudio& app, LinuxUiState& state, const fs::path& path,
+std::expected<bool, std::string> add_linux_queue_from_paths(
+    AwjStudio& app, LinuxUiState& state, std::span<const fs::path> paths,
     bool update_input_path) {
-  auto scan_cfg = awj::default_app_config();
-  scan_cfg.input_path = path;
-  const auto output = selected_linux_path(app.get_output_dir(), state.selected_output_dir, "输出目录");
-  if (!output) return std::unexpected{output.error()};
-  scan_cfg.output_dir = *output;
-  scan_cfg.output_policy = awj::OutputPolicy::normal;
-  std::vector<awj::ImageFile> scanned;
-  if (auto result = awj::scan_images(scan_cfg, scanned); !result) {
-    return std::unexpected{result.error()};
+  if (app.get_running()) return std::unexpected{"当前任务仍在运行或收尾，无法导入。"};
+  try {
+    std::vector<awj::ui_import::Root> roots;
+    roots.reserve(paths.size());
+    for (const auto& path : paths) roots.push_back({.path = path});
+    const auto scanned = awj::ui_import::scan(roots, awj::ui_import::Origin::drag_drop,
+        {.is_supported = awj::is_supported_image_extension,
+         .maximum_file_bytes = awj::encoding_defaults::effective_max_input_file_bytes()});
+    if (scanned.cancelled || scanned.failed || scanned.files.empty()) {
+      app.set_status_text(to_shared(awj::ui_import::summary_text(scanned, 0, 0)));
+      return false;
+    }
+    const auto plan = awj::ui_queue::plan_merge(state.queue_files.size(), scanned.files.size(),
+        [&](std::size_t i) { return linux_queue_path_key(state.queue_files[i].file.path); },
+        [&](std::size_t i) { return linux_queue_path_key(scanned.files[i].path); });
+    auto next_id = state.next_queue_id;
+    std::vector<LinuxQueueItem> items;
+    std::unordered_set<std::string> keys;
+    std::unordered_map<std::uint64_t, std::size_t> ids;
+    std::vector<fs::path> failed;
+    items.reserve(plan.entries.size());
+    keys.reserve(plan.entries.size());
+    ids.reserve(plan.entries.size());
+    std::uint64_t selected_id = 0;
+    const auto selected = app.get_selected_queue_index();
+    if (selected >= 0 && static_cast<std::size_t>(selected) < state.queue_files.size())
+      selected_id = state.queue_files[static_cast<std::size_t>(selected)].id;
+    for (const auto& entry : plan.entries) {
+      auto item = entry.previous == awj::ui_queue::no_index
+          ? LinuxQueueItem{} : state.queue_files[entry.previous];
+      if (entry.incoming != awj::ui_queue::no_index) {
+        const auto& file = scanned.files[entry.incoming];
+        if (entry.previous == awj::ui_queue::no_index) {
+          if (next_id == UINT64_MAX) return std::unexpected{"队列身份编号已用尽。"};
+          item.id = next_id++;
+        }
+        std::error_code ec;
+        const auto absolute = fs::absolute(file.path, ec);
+        auto path = ec ? file.path : absolute;
+        fs::path relative;
+        if (!file.source_root.empty()) {
+          relative = fs::relative(path.parent_path(), file.source_root, ec);
+          if (ec || relative == ".") relative.clear();
+        }
+        item.file = awj::ImageFile{.index = items.size(), .path = std::move(path),
+                                  .relative_dir = std::move(relative), .bytes = file.bytes};
+        item.row = pending_linux_queue_row(item.file, items.size());
+      }
+      keys.insert(linux_queue_path_key(item.file.path));
+      ids.emplace(item.id, items.size());
+      if (item.row.state == 3) failed.push_back(item.file.path);
+      items.push_back(std::move(item));
+    }
+    state.queue_files.swap(items);
+    state.queue_path_keys.swap(keys);
+    state.queue_id_indices.swap(ids);
+    state.failed_paths.swap(failed);
+    state.next_queue_id = next_id;
+    state.run_queue_ids.clear();
+    ++state.run_generation;
+    if (update_input_path) {
+      const auto& file = scanned.files.front();
+      set_input_path_preserving_output(app, state, file.source_root.empty() ? file.path : file.source_root);
+    }
+    app.invoke_close_queue_menu();
+    state.drag_reordered = false;
+    refresh_linux_pending_queue(app, state);
+    const auto restored = state.queue_id_indices.find(selected_id);
+    app.set_selected_queue_index(restored != state.queue_id_indices.end() &&
+        (!app.get_queue_failed_only() || state.queue_files[restored->second].row.state == 3)
+            ? static_cast<int>(restored->second) : -1);
+    app.set_progress(0.0f);
+    app.set_status_text(to_shared(awj::ui_import::summary_text(scanned, plan.added, plan.requeued)));
+    return true;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"准备导入队列时内存不足。"};
+  } catch (const std::length_error&) {
+    return std::unexpected{"准备导入队列时数量超过运行时限制。"};
+  } catch (const fs::filesystem_error&) {
+    return std::unexpected{"准备导入队列时文件系统访问失败。"};
   }
-  if (scanned.empty()) {
-    return false;
-  }
+}
 
-  std::size_t added = 0;
-  for (auto& file : scanned) {
-    std::error_code ec;
-    const auto absolute = fs::absolute(file.path, ec);
-    if (!ec) {
-      file.path = absolute;
-    }
-    const auto key = linux_queue_path_key(file.path);
-    if (state.queue_path_keys.contains(key)) {
-      continue;
-    }
-    file.index = state.queue_files.size();
-    file.source_extension_disambiguator.clear();
-    file.extension_disambiguated = false;
-    file.resolved_output_path.clear();
-    file.output_path_resolved = false;
-    const auto [position, inserted] = state.queue_path_keys.insert(key);
-    if (!inserted) continue;
-    try {
-      state.queue_files.push_back(std::move(file));
-    } catch (...) {
-      state.queue_path_keys.erase(position);
-      throw;
-    }
-    ++added;
-  }
-  if (update_input_path) {
-    set_input_path_preserving_output(app, state, path);
-  }
-  refresh_linux_pending_queue(app, state);
-  app.set_status_text(to_shared(
-      added == 0 ? "没有新图片加入队列，重复项已跳过。"
-                 : std::format("已加入 {} 张图片。", added)));
-  return true;
+std::expected<bool, std::string> add_linux_queue_from_path(
+    AwjStudio& app, LinuxUiState& state, const fs::path& path, bool update_input_path) {
+  const std::array paths{path};
+  return add_linux_queue_from_paths(app, state, paths, update_input_path);
 }
 
 std::expected<std::vector<awj::ImageFile>, std::string>
 build_linux_queue_files(const awj::AppConfig& cfg,
-                        const std::vector<awj::ImageFile>& queue,
+                        const std::vector<LinuxQueueItem>& queue,
                         const std::vector<fs::path>* only_paths = nullptr) {
   try {
     std::unordered_set<std::string> selected;
@@ -1466,7 +1524,9 @@ build_linux_queue_files(const awj::AppConfig& cfg,
     const bool needs_sha256 = template_text.find(L"{sha256}") != std::wstring_view::npos ||
                               template_text.find(L"{sha2568}") != std::wstring_view::npos ||
                               template_text.find(L"{sha256_8}") != std::wstring_view::npos;
-    for (const auto& item : queue) {
+    for (const auto& queued : queue) {
+      if (queued.row.state != 0 && queued.row.state != 3 && queued.row.state != 4) continue;
+      const auto& item = queued.file;
       if (only_paths != nullptr &&
           !selected.contains(linux_queue_path_key(item.path))) {
         continue;
@@ -1505,6 +1565,59 @@ build_linux_queue_files(const awj::AppConfig& cfg,
   } catch (const fs::filesystem_error&) {
     return std::unexpected{"构建队列运行快照时文件系统访问失败。"};
   }
+}
+
+std::expected<std::uint64_t, std::string> prepare_linux_queue_run(
+    AwjStudio& app, LinuxUiState& state, const std::vector<awj::ImageFile>& files) {
+  try {
+    std::unordered_map<std::string, std::size_t> indices;
+    indices.reserve(state.queue_files.size());
+    for (std::size_t i = 0; i < state.queue_files.size(); ++i)
+      indices.emplace(linux_queue_path_key(state.queue_files[i].file.path), i);
+    std::vector<std::pair<std::size_t, TaskRow>> prepared;
+    std::vector<std::uint64_t> ids;
+    prepared.reserve(files.size());
+    ids.reserve(files.size());
+    for (const auto& file : files) {
+      const auto found = indices.find(linux_queue_path_key(file.path));
+      if (found == indices.end()) return std::unexpected{"本轮任务不在当前队列中。"};
+      const auto index = found->second;
+      prepared.emplace_back(index, pending_linux_queue_row(file, index, true));
+      ids.push_back(state.queue_files[index].id);
+    }
+    for (auto& [index, row] : prepared) state.queue_files[index].row = std::move(row);
+    state.run_queue_ids.swap(ids);
+    const auto generation = ++state.run_generation;
+    refresh_linux_pending_queue(app, state);
+    return generation;
+  } catch (const std::bad_alloc&) {
+    return std::unexpected{"准备本轮队列状态时内存不足。"};
+  }
+}
+
+bool finish_linux_queue_run(AwjStudio& app, LinuxUiState& state,
+                            std::uint64_t generation, bool canceled,
+                            std::string_view error = {}) {
+  if (state.run_generation != generation) return false;
+  for (const auto id : state.run_queue_ids) {
+    const auto found = state.queue_id_indices.find(id);
+    if (found == state.queue_id_indices.end()) continue;
+    auto& row = state.queue_files[found->second].row;
+    if (row.state != 0 && row.state != 1) continue;
+    row.state = canceled ? 4 : 3;
+    row.status = to_shared(canceled ? "已取消" : "未处理");
+    row.warning = !canceled;
+    row.locked = true;
+    row.output_size = to_shared("-");
+    row.log = to_shared(error);
+  }
+  state.failed_paths.clear();
+  for (const auto& item : state.queue_files)
+    if (item.row.state == 3) state.failed_paths.push_back(item.file.path);
+  ++state.run_generation;
+  refresh_linux_pending_queue(app, state);
+  app.set_running(false);
+  return true;
 }
 
 std::expected<fs::path, std::string> create_linux_queue_manifest(
@@ -1554,14 +1667,14 @@ slint::DataTransfer make_linux_queue_drag_data(const LinuxUiState& state,
   }
   transfer.set_user_data(
       LinuxQueueDragPayload{linux_queue_path_key(
-          state.queue_files[static_cast<std::size_t>(index)].path)});
+          state.queue_files[static_cast<std::size_t>(index)].file.path)});
   return transfer;
 }
 
 std::optional<std::size_t> linux_queue_index_for_key(
     const LinuxUiState& state, std::string_view key) {
   for (std::size_t index = 0; index < state.queue_files.size(); ++index) {
-    if (linux_queue_path_key(state.queue_files[index].path) == key) {
+    if (linux_queue_path_key(state.queue_files[index].file.path) == key) {
       return index;
     }
   }
@@ -1612,16 +1725,8 @@ slint::language::DragAction linux_queue_drag_dropped(
       app.set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
       return slint::language::DragAction::None;
     }
-    std::string first_error;
-    for (const auto& path : *paths) {
-      if (auto added = add_linux_queue_from_path(app, state, path, false);
-          !added && first_error.empty()) {
-        first_error = added.error();
-      }
-    }
-    if (!first_error.empty()) {
-      app.set_status_text(to_shared(first_error));
-    }
+    if (auto added = add_linux_queue_from_paths(app, state, *paths, false); !added)
+      app.set_status_text(to_shared(added.error()));
     return slint::language::DragAction::Copy;
   }
   const auto current = linux_queue_index_for_key(state, payload->path_key);
@@ -3140,8 +3245,12 @@ int awj::studio::run_studio_ui() {
           (*app)->set_status_text(to_shared("当前任务正在运行，无法清空状态。"));
           return;
         }
+        ++state->run_generation;
+        state->run_queue_ids.clear();
+        state->queue_id_indices.clear();
         decltype(state->queue_files){}.swap(state->queue_files);
         decltype(state->queue_path_keys){}.swap(state->queue_path_keys);
+        (*app)->invoke_close_queue_menu();
         state->task_rows->set_vector({});
         state->failed_paths.clear();
         refresh_linux_queue_counts(**app, state->task_rows);
@@ -3193,20 +3302,8 @@ int awj::studio::run_studio_ui() {
               (*app)->set_status_text(to_shared("拖入内容不包含本地文件或文件夹路径。"));
               return;
             }
-            bool update_input_path = true;
-            std::string first_error;
-            for (const auto& path : *paths) {
-              if (auto added = add_linux_queue_from_path(
-                      **app, *state, path, update_input_path);
-                  added && *added) {
-                update_input_path = false;
-              } else if (!added && first_error.empty()) {
-                first_error = added.error();
-              }
-            }
-            if (!first_error.empty()) {
-              (*app)->set_status_text(to_shared(first_error));
-            }
+            if (auto added = add_linux_queue_from_paths(**app, *state, *paths, true); !added)
+              (*app)->set_status_text(to_shared(added.error()));
           }
         });
 
@@ -3396,30 +3493,27 @@ int awj::studio::run_studio_ui() {
         return;
       }
       cfg->studio_queue_manifest = *manifest;
-      for (std::size_t index = 0; index < state->task_rows->row_count();
-           ++index) {
-        auto row = state->task_rows->row_data(index);
-        if (row && row->state == 3) {
-          row->state = 0;
-          row->status = to_shared("等待重试");
-          row->output_size = to_shared("-");
-          row->warning = false;
-          state->task_rows->set_row_data(index, *row);
-        }
+      const auto prepared = prepare_linux_queue_run(**app, *state, *files);
+      if (!prepared) {
+        std::error_code ec;
+        fs::remove(*manifest, ec);
+        (*app)->set_status_text(to_shared(prepared.error()));
+        return;
       }
-      refresh_linux_queue_counts(**app, state->task_rows);
+      const auto generation = *prepared;
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared(
           std::format("正在重试 {} 个失败项…", retry_paths.size())));
       auto rows = state->task_rows;
       state->worker = std::jthread(
-          [weak, state, rows, cfg = std::move(*cfg),
+          [weak, state, rows, generation, cfg = std::move(*cfg),
            retry_paths = std::move(retry_paths), manifest_path = *manifest](
               std::stop_token token) mutable {
-            auto progress = [weak, state, rows](
+            auto progress = [weak, state, rows, generation](
                                 const awj::BatchProgress& event) {
-              slint::invoke_from_event_loop([weak, state, rows, event] {
+              slint::invoke_from_event_loop([weak, state, rows, generation, event] {
+                if (state->run_generation != generation) return;
                 if (auto app = weak.lock()) {
                   if (event.kind == awj::BatchEventKind::item_started) {
                     mark_linux_task_row_running(**app, rows, *state, event.result);
@@ -3431,7 +3525,7 @@ int awj::studio::run_studio_ui() {
                     }
                   } else if (event.kind ==
                              awj::BatchEventKind::large_image_queued) {
-                    add_large_image_task_row(rows, event.large_image);
+                    mark_linux_large_image_queued(**app, *state, event.large_image);
                     push_linux_large_image(*state, event.large_image);
                     refresh_linux_queue_counts(**app, rows);
                   }
@@ -3446,41 +3540,24 @@ int awj::studio::run_studio_ui() {
                 }
               });
             };
-            attach_linux_frame_progress(cfg, weak, rows);
+            attach_linux_frame_progress(cfg, weak, rows, state, generation);
             auto summary = awj::run_batch(cfg, progress, token);
             std::error_code cleanup_ec;
             fs::remove(manifest_path, cleanup_ec);
             slint::invoke_from_event_loop(
-                [weak, state, rows, summary = std::move(summary),
-                 retry_paths = std::move(retry_paths)]() mutable {
+                [weak, state, generation, canceled = token.stop_requested(), summary = std::move(summary)] {
                   if (auto app = weak.lock()) {
-                    (*app)->set_running(false);
+                    if (!finish_linux_queue_run(**app, *state, generation, canceled,
+                        summary ? std::string_view{} : std::string_view{summary.error()})) return;
                     if (!summary) {
-                      state->failed_paths = retry_paths;
-                      for (const auto& path : retry_paths) {
-                        if (const auto index =
-                                linux_task_row_index_for_path(rows, *state, path)) {
-                          auto row = rows->row_data(*index);
-                          if (row) {
-                            row->state = 3;
-                            row->status = to_shared("失败");
-                            row->output_size = to_shared("-");
-                            row->log = to_shared(summary.error());
-                            row->warning = true;
-                            rows->set_row_data(*index, *row);
-                          }
-                        }
-                      }
-                      refresh_linux_queue_counts(**app, rows);
-                      (*app)->set_status_text(to_shared(
-                          std::format("重试失败：{}", summary.error())));
+                      (*app)->set_progress(0.0f);
+                      (*app)->set_status_text(to_shared(std::format("重试失败：{}", summary.error())));
                       return;
                     }
                     (*app)->set_progress(1.0f);
                     (*app)->set_status_text(to_shared(std::format(
                         "重试完成：成功 {}，失败 {}，取消 {}。",
-                        summary->ok_count, summary->failed_count,
-                        summary->canceled_count)));
+                        summary->ok_count, summary->failed_count, summary->canceled_count)));
                   }
                 });
           });
@@ -3528,14 +3605,24 @@ int awj::studio::run_studio_ui() {
       (*cfg).output_format = awj::OutputFormat::avif;
       (*cfg).studio_large_action = awj::wide_from_utf8(action);
       (*cfg).visual_quality.reset();
+      std::uint64_t generation{};
+      if (linux_task_row_index_for_path(state->task_rows, *state, item.file.path)) {
+        const auto prepared = prepare_linux_queue_run(**app, *state, {item.file});
+        if (!prepared) { (*app)->set_status_text(to_shared(prepared.error())); return; }
+        generation = *prepared;
+      } else {
+        state->run_queue_ids.clear();
+        generation = ++state->run_generation;
+      }
       set_linux_large_image_status(*state, index, std::format("已选择 {} · 正在编码…", action));
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared(std::format("大图处理：{}", action)));
       const auto rows = state->task_rows;
-      state->worker = std::jthread([weak, state, rows, cfg = std::move(*cfg), index, action](std::stop_token token) mutable {
-        auto progress = [weak, state, rows](const awj::BatchProgress& event) {
-          slint::invoke_from_event_loop([weak, state, rows, event] {
+      state->worker = std::jthread([weak, state, rows, generation, cfg = std::move(*cfg), index, action](std::stop_token token) mutable {
+        auto progress = [weak, state, rows, generation](const awj::BatchProgress& event) {
+          slint::invoke_from_event_loop([weak, state, rows, generation, event] {
+                if (state->run_generation != generation) return;
             if (auto app = weak.lock()) {
               if (event.kind == awj::BatchEventKind::item_started) {
                 mark_linux_task_row_running(**app, rows, *state, event.result);
@@ -3554,9 +3641,10 @@ int awj::studio::run_studio_ui() {
           });
         };
         auto summary = awj::run_batch(cfg, progress, token);
-        slint::invoke_from_event_loop([weak, state, summary = std::move(summary), index, action] {
+        slint::invoke_from_event_loop([weak, state, generation, canceled = token.stop_requested(), summary = std::move(summary), index, action] {
           if (auto app = weak.lock()) {
-            (*app)->set_running(false);
+            if (!finish_linux_queue_run(**app, *state, generation, canceled,
+                summary ? std::string_view{} : std::string_view{summary.error()})) return;
             if (!summary) {
               set_linux_large_image_status(*state, index, "失败");
               (*app)->set_status_text(to_shared(std::format("大图失败：{}", summary.error())));
@@ -3604,29 +3692,23 @@ int awj::studio::run_studio_ui() {
         return;
       }
       cfg->studio_queue_manifest = *manifest;
-      state->task_rows = std::make_shared<slint::VectorModel<TaskRow>>();
-      state->large_image_rows = std::make_shared<slint::VectorModel<LargeImageRow>>();
-      state->large_image_items.clear();
-      state->failed_paths.clear();
-      std::vector<TaskRow> pending_rows;
-      pending_rows.reserve(files->size());
-      for (std::size_t index = 0; index < files->size(); ++index) {
-        pending_rows.push_back(pending_linux_queue_row((*files)[index], index,
-                                                       true));
+      const auto prepared = prepare_linux_queue_run(**app, *state, *files);
+      if (!prepared) {
+        std::error_code ec;
+        fs::remove(*manifest, ec);
+        (*app)->set_status_text(to_shared(prepared.error()));
+        return;
       }
-      state->task_rows->set_vector(std::move(pending_rows));
-      awj::ui::bind_queue_model(**app, state->task_rows);
-      (*app)->set_large_image_rows(state->large_image_rows);
-      (*app)->set_selected_large_image_index(-1);
-      refresh_linux_queue_counts(**app, state->task_rows);
+      const auto generation = *prepared;
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared("正在转换…"));
       auto rows = state->task_rows;
-      state->worker = std::jthread([weak, state, rows, cfg = std::move(*cfg),
+      state->worker = std::jthread([weak, state, rows, generation, cfg = std::move(*cfg),
                                     manifest_path = *manifest](std::stop_token token) mutable {
-        auto progress = [weak, state, rows](const awj::BatchProgress& event) {
-          slint::invoke_from_event_loop([weak, state, rows, event] {
+        auto progress = [weak, state, rows, generation](const awj::BatchProgress& event) {
+          slint::invoke_from_event_loop([weak, state, rows, generation, event] {
+                if (state->run_generation != generation) return;
             if (auto app = weak.lock()) {
               if (event.kind == awj::BatchEventKind::item_started) {
                 mark_linux_task_row_running(**app, rows, *state, event.result);
@@ -3637,7 +3719,7 @@ int awj::studio::run_studio_ui() {
                   state->failed_paths.push_back(event.result.input_path);
                 }
               } else if (event.kind == awj::BatchEventKind::large_image_queued) {
-                add_large_image_task_row(rows, event.large_image);
+                mark_linux_large_image_queued(**app, *state, event.large_image);
                 push_linux_large_image(*state, event.large_image);
                 refresh_linux_queue_counts(**app, rows);
                 if ((*app)->get_selected_large_image_index() < 0 && !state->large_image_items.empty()) {
@@ -3655,14 +3737,16 @@ int awj::studio::run_studio_ui() {
             }
           });
         };
-        attach_linux_frame_progress(cfg, weak, rows);
+        attach_linux_frame_progress(cfg, weak, rows, state, generation);
         auto summary = awj::run_batch(cfg, progress, token);
         std::error_code cleanup_ec;
         fs::remove(manifest_path, cleanup_ec);
-        slint::invoke_from_event_loop([weak, summary = std::move(summary)] {
+        slint::invoke_from_event_loop([weak, state, generation, canceled = token.stop_requested(), summary = std::move(summary)] {
           if (auto app = weak.lock()) {
-            (*app)->set_running(false);
+            if (!finish_linux_queue_run(**app, *state, generation, canceled,
+                summary ? std::string_view{} : std::string_view{summary.error()})) return;
             if (!summary) {
+              (*app)->set_progress(0.0f);
               (*app)->set_status_text(to_shared(std::format("转换失败：{}", summary.error())));
               return;
             }

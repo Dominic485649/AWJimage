@@ -43,9 +43,13 @@ std::expected<bool, std::string> append_queue_image_path(
     const std::filesystem::path& source_root);
 std::expected<bool, std::string> append_prepared_import_file(
     UiState& state, const awj::ui_import::File& file);
+bool apply_scanned_import(AwjStudio& app, UiState& state,
+                          const awj::ui_import::Result& result,
+                          const std::filesystem::path& input_hint,
+                          bool update_input_path);
 bool add_queue_from_path(AwjStudio& app, UiState& state,
                          const std::filesystem::path& path,
-                         bool allow_wic_fallback);
+                         bool pick_folder, bool update_input_path = true);
 void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,
                                          const std::filesystem::path& picked,
                                          bool folder);

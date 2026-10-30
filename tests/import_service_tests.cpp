@@ -84,11 +84,44 @@ int main() {
       ++folder_files;
     }
   }
-  if (folder_files != 2 || direct_files != 1) {
+  // 显式文件在目录之后导入，应以最后一次元数据为准，清除旧 source_root。
+  if (folder_files != 1 || direct_files != 1) {
     fs::remove_all(root, ec);
     fs::remove(direct_root, ec);
     return fail("mixed file/folder classification is incorrect");
   }
+
+  write_file(root / "z.png", "last");
+  const auto ordered = awj::ui_import::scan(
+      {{.path = root / "z.png"}, {.path = root / "a.png"},
+       {.path = root / "." / "z.png"}, {.path = direct_root}},
+      awj::ui_import::Origin::drag_drop, options);
+  if (ordered.files.size() != 3 || ordered.duplicate_count != 1 ||
+      ordered.files[0].path != root / "a.png" ||
+      ordered.files[1].path != root / "." / "z.png" ||
+      ordered.files[2].path != direct_root)
+    return fail("末次有效导入的位置被首次去重或全局路径排序覆盖");
+  int occurrences = 0;
+  auto last_invalid_options = options;
+  last_invalid_options.is_supported = [&](const fs::path&) { return ++occurrences != 2; };
+  const auto last_invalid = awj::ui_import::scan(
+      {{.path = root / "a.png"}, {.path = root / "a.png"}},
+      awj::ui_import::Origin::drag_drop, last_invalid_options);
+  if (last_invalid.files.size() != 1 || last_invalid.unsupported_count != 1 ||
+      last_invalid.duplicate_count != 0)
+    return fail("无效的末次输入覆盖了先前有效输入");
+#ifndef _WIN32
+  const auto native_path = root / fs::path{u8"中文 名称.png"};
+  write_file(native_path, "utf8");
+  const auto native = awj::ui_import::scan({{.path = native_path}},
+      awj::ui_import::Origin::file_dialog, options);
+  if (native.failed || native.files.size() != 1 ||
+      awj::ui_import::normalized_path_key(native_path).empty())
+    return fail("Linux 原生 UTF-8 路径不应依赖宽字符 locale 转换");
+  if (awj::ui_import::normalized_path_key(root / "A.png") ==
+      awj::ui_import::normalized_path_key(root / "a.png"))
+    return fail("Linux 路径大小写被错误折叠");
+#endif
 
   const auto empty = awj::ui_import::scan(
       {{.path = root / "empty", .force_directory = true}},
@@ -157,6 +190,37 @@ int main() {
   }
   dispatcher.request_stop();
   dispatcher.join();
+
+  std::promise<void> entered, release_scan, after_clear;
+  auto entered_future = entered.get_future();
+  auto release_future = release_scan.get_future().share();
+  auto after_clear_future = after_clear.get_future();
+  std::atomic<int> providers{}, callbacks{}, clear_mask{};
+  awj::ui_import::Dispatcher clear_dispatcher(
+      [&] {
+        if (++providers == 1) { entered.set_value(); release_future.wait(); }
+        return options;
+      },
+      [&](awj::ui_import::Request request, awj::ui_import::Result dispatched) {
+        if (request.epoch == 10 && dispatched.cancelled && dispatched.files.empty()) clear_mask.fetch_or(1);
+        if (request.epoch == 11 && !dispatched.cancelled && dispatched.files.size() == 1) clear_mask.fetch_or(2);
+        if (++callbacks == 2) after_clear.set_value();
+      });
+  clear_dispatcher.enqueue({.roots = {{.path = direct_root}}, .epoch = 10});
+  if (entered_future.wait_for(std::chrono::seconds{5}) != std::future_status::ready) {
+    release_scan.set_value();
+    return fail("取消边界测试的扫描线程未启动");
+  }
+  clear_dispatcher.enqueue({.roots = {{.path = root / "a.png"}}, .epoch = 10});
+  clear_dispatcher.discard_pending();
+  const bool new_accepted = clear_dispatcher.enqueue({.roots = {{.path = root / "a.png"}}, .epoch = 11});
+  release_scan.set_value();
+  if (!new_accepted || after_clear_future.wait_for(std::chrono::seconds{5}) != std::future_status::ready)
+    return fail("清空后新请求被错误停止或丢失");
+  clear_dispatcher.request_stop();
+  clear_dispatcher.join();
+  if (providers != 2 || callbacks != 2 || clear_mask != 3)
+    return fail("清空未取消当前/旧排队扫描，或污染了新 epoch");
 
   const auto upper_key = awj::ui_import::normalized_path_key(root / "A.PNG");
   const auto lower_key = awj::ui_import::normalized_path_key(root / "a.png");

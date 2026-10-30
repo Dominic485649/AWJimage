@@ -118,6 +118,10 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       (*app)->set_status_text(to_shared("当前任务正在运行，请先停止任务或强制终止"));
       return;
     }
+    if (state->pending_imports) {
+      (*app)->set_status_text(to_shared("导入扫描尚未完成，请完成后再开始编码。"));
+      return;
+    }
     if (state->queue_items.empty()) {
       (*app)->set_status_text(to_shared("队列为空，请先输入或选择图片。"));
       return;
@@ -136,7 +140,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     (*app)->set_status_text(
         to_shared(failed_only
                       ? "队列中没有失败项。"
-                      : "队列中没有待编码图片；请清空队列或添加新图片。"));
+                      : "队列中没有待编码图片；可重新导入已完成的图片，或添加新图片。"));
     return;
   }
 
@@ -168,17 +172,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       if (!queue_item_selected_for_run(item, failed_only)) {
         continue;
       }
-      item.status = QueueItemStatus::pending;
-      item.status_text = "等待编码";
-      item.output_bytes.reset();
-      clear_shared_string(item.log_text);
-      item.encoder_id.clear();
-      item.encoder_threads = 0;
-      item.decode_seconds = -1.0;
-      item.prepare_seconds = -1.0;
-      item.encode_seconds = -1.0;
-      item.write_seconds = -1.0;
-      item.warning = false;
+      reset_queue_item_execution(item);
       item.run_index = run_index;
       item.locked_output_path = awj::output_path_for(cfg, (*files)[run_index]);
       ++run_index;
@@ -776,6 +770,10 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     std::scoped_lock lock{state->mutex};
     if (state->worker_active) {
       (*app)->set_status_text(to_shared("当前任务正在运行，请先停止任务或强制终止"));
+      return;
+    }
+    if (state->pending_imports) {
+      (*app)->set_status_text(to_shared("导入扫描尚未完成，请完成后再开始编码。"));
       return;
     }
     run_id = ++state->run_id;

@@ -17,6 +17,7 @@ std::string stage_seconds_text(double seconds);
 std::string stage_timings_text(double decode_seconds, double prepare_seconds,
                                double encode_seconds, double write_seconds);
 
+void reset_queue_item_execution(QueueImageItem& item);
 bool queue_item_editable(const QueueImageItem& item) noexcept;
 bool queue_item_runnable(const QueueImageItem& item) noexcept;
 bool queue_item_selected_for_run(const QueueImageItem& item,

@@ -94,6 +94,22 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
                      item.encode_seconds, item.write_seconds))};
 }
 
+void reset_queue_item_execution(QueueImageItem& item) {
+  item.status_text = "等待编码";
+  item.status = QueueItemStatus::pending;
+  item.run_index = std::numeric_limits<std::size_t>::max();
+  item.output_bytes.reset();
+  item.locked_output_path.clear();
+  clear_shared_string(item.log_text);
+  item.encoder_id.clear();
+  item.encoder_threads = 0;
+  item.decode_seconds = -1.0;
+  item.prepare_seconds = -1.0;
+  item.encode_seconds = -1.0;
+  item.write_seconds = -1.0;
+  item.warning = false;
+}
+
 bool queue_item_editable(const QueueImageItem& item) noexcept {
   return item.status == QueueItemStatus::pending;
 }

@@ -17,11 +17,10 @@ void reset_failed_run(AwjStudio& app, UiState& state, std::uint64_t run_id,
                       std::string_view message) noexcept {
   try {
     std::scoped_lock lock{state.mutex};
-    if (run_id != 0 && state.run_id == run_id) {
-      state.update_timer.stop();
-      state.pending_events.clear();
-      state.worker_active = false;
-    }
+    if (run_id != 0 && state.run_id != run_id) return;
+    state.update_timer.stop();
+    state.pending_events.clear();
+    state.worker_active = false;
   } catch (...) {
   }
   try {

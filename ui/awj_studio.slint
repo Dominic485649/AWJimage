@@ -280,6 +280,13 @@ export component AwjStudio inherits Window {
         root.queue-column-menu-opening = true;
     }
 
+    public function close-queue-menu() {
+        root.queue-menu-opening = false;
+        root.queue-menu-visible = false;
+        root.queue-menu-index = -1;
+        queue-menu-popup.close();
+    }
+
     public function open-queue-menu(index: int, x: length, y: length) {
         if index >= 0 && index < root.task-rows.length {
             root.queue-column-menu-opening = false;

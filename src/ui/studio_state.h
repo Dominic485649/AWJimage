@@ -290,6 +290,9 @@ struct UiState {
   std::optional<StudioConfigSnapshot> config_defaults{};
   std::optional<StudioConfigSnapshot> last_config_snapshot{};
   std::uint64_t run_id{};
+  // 只在清空/失效边界推进；普通 FIFO 请求共享 epoch，不互相覆盖。
+  std::uint64_t import_epoch{1};
+  std::size_t pending_imports{};
   std::uint64_t next_queue_id{1};
   std::mutex mutex{};
   std::vector<awj::BatchProgress> pending_events{};

@@ -1620,6 +1620,7 @@ if(WIN32)
         src/ui/studio_update_ui.cpp
         src/ui/studio_config_io.cpp
         src/ui/studio_import.cpp
+        src/ui/studio_queue_import.cpp
         src/ui/studio_template_theme.cpp
         src/ui/studio_import_dispatch.cpp
         src/ui/studio_presets.cpp
@@ -1702,6 +1703,23 @@ avif_add_slint_sources(AWJ ui/awj_studio.slint)
 avif_copy_slint_runtime(AWJ)
 awj_add_sha256_post_build(AWJ)
 
+if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(awj_linux_queue_tests tests/linux_queue_tests.cpp
+        "${CMAKE_CURRENT_BINARY_DIR}/slint_generated_awj_studio_1.cpp")
+    target_sources(awj_linux_queue_tests PRIVATE
+        FILE_SET linux_queue_test_modules TYPE CXX_MODULES FILES src/ui/studio_defaults.ixx)
+    avif_enable_common_options(awj_linux_queue_tests)
+    target_compile_definitions(awj_linux_queue_tests PRIVATE AWJ_BUILD_VERSION="${PROJECT_VERSION}")
+    target_include_directories(awj_linux_queue_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+    target_link_libraries(awj_linux_queue_tests PRIVATE awj_core awj_update Slint::Slint)
+    add_dependencies(awj_linux_queue_tests AWJ)
+    file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/queue-contract-temp")
+    add_test(NAME linux_queue_contract COMMAND awj_linux_queue_tests
+        "${CMAKE_CURRENT_BINARY_DIR}/queue-contract-fixtures")
+    set_tests_properties(linux_queue_contract PROPERTIES TIMEOUT 120
+        ENVIRONMENT "TMPDIR=${CMAKE_CURRENT_BINARY_DIR}/queue-contract-temp")
+endif()
+
 if(BUILD_TESTING AND WIN32)
     add_executable(awj_update_windows_cleanup_tests tests/update_windows_cleanup_tests.cpp)
     avif_enable_common_options(awj_update_windows_cleanup_tests)
@@ -1760,12 +1778,15 @@ if(BUILD_TESTING)
             tests/studio_state_tests.cpp
             src/ui/studio_config.cpp
             src/ui/studio_json.cpp
-            src/ui/studio_queue_format.cpp)
+            src/ui/studio_queue_format.cpp
+            src/ui/studio_queue_import.cpp
+            src/ui/import_service.cpp
+            src/ui/file_drop_win32.cpp)
         target_sources(awj_studio_state_tests PRIVATE
             FILE_SET studio_state_modules TYPE CXX_MODULES FILES src/ui/studio_defaults.ixx)
         avif_enable_common_options(awj_studio_state_tests)
         target_include_directories(awj_studio_state_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
-        target_link_libraries(awj_studio_state_tests PRIVATE awj_shared Slint::Slint psapi)
+        target_link_libraries(awj_studio_state_tests PRIVATE awj_shared Slint::Slint psapi ole32 shell32)
         add_dependencies(awj_studio_state_tests AWJ)
         awj_set_runtime_directory(awj_studio_state_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/studio-state-contract")
         add_test(NAME studio_state_contract COMMAND awj_studio_state_tests)
@@ -1795,6 +1816,11 @@ if(BUILD_TESTING)
         add_test(NAME linux_process COMMAND awj_linux_process_tests)
         set_tests_properties(linux_process PROPERTIES TIMEOUT 30)
     endif()
+    add_executable(awj_queue_merge_tests tests/queue_merge_tests.cpp)
+    avif_enable_common_options(awj_queue_merge_tests)
+    add_test(NAME queue_merge_contract COMMAND awj_queue_merge_tests)
+    set_tests_properties(queue_merge_contract PROPERTIES TIMEOUT 30)
+
     add_executable(awj_import_service_tests
         tests/import_service_tests.cpp
         src/ui/import_service.cpp)

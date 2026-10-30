@@ -1,5 +1,9 @@
+#ifdef _WIN32
 #define NOMINMAX
 #include <windows.h>
+#else
+#include <dlfcn.h>
+#endif
 #include "awj/awj_ffmpeg.h"
 extern "C" {
 #include <libavutil/frame.h>
@@ -18,13 +22,24 @@ void AWJ_CALL release(void* user) { ++static_cast<Module*>(user)->released; }
 uint32_t AWJ_CALL wrong_version() { return 1; }
 AVBufferRef* AWJ_CALL failed_ref(const AVBufferRef*) { return nullptr; }
 
+#ifdef _WIN32
 int wmain(int argc, wchar_t** argv) {
-  if (argc != 2) { std::puts("未提供来源 libavutil DLL，本项未运行。"); return 77; }
+#else
+int main(int argc, char** argv) {
+#endif
+  if (argc != 2) { std::puts("未提供来源 libavutil 运行库，本项未运行。"); return 77; }
   auto path = std::filesystem::absolute(std::filesystem::path{argv[1]}).make_preferred();
+#ifdef _WIN32
   const auto library = LoadLibraryExW(path.c_str(), nullptr, LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
   if (!library) std::fprintf(stderr, "加载来源 DLL 失败，Win32 错误 %lu。\n", GetLastError());
+#define LOOKUP(name) GetProcAddress(library, name)
+#else
+  const auto library = ::dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
+  if (!library) std::fprintf(stderr, "加载来源共享库失败：%s\n", ::dlerror());
+#define LOOKUP(name) ::dlsym(library, name)
+#endif
   CHECK(library != nullptr);
-#define LOAD(name) const auto name = reinterpret_cast<decltype(&::name)>(GetProcAddress(library, #name)); CHECK(name != nullptr)
+#define LOAD(name) const auto name = reinterpret_cast<decltype(&::name)>(LOOKUP(#name)); CHECK(name != nullptr)
   LOAD(avutil_version); LOAD(av_buffer_ref); LOAD(av_buffer_unref); LOAD(av_buffer_get_ref_count);
   LOAD(av_frame_alloc); LOAD(av_frame_free); LOAD(av_frame_unref); LOAD(av_frame_get_buffer); LOAD(av_frame_new_side_data);
 #undef LOAD
@@ -107,7 +122,11 @@ int wmain(int argc, wchar_t** argv) {
   CHECK(awj_frame_row(frame, 0, 0, &row, &bytes) == AWJ_OK);
   awj_frame_release(frame);
   CHECK(module.retained == module.released);
+#ifdef _WIN32
   FreeLibrary(library);
+#else
+  CHECK(::dlclose(library) == 0);
+#endif
   std::puts("真实 libavutil C ABI：像素缓冲借用、负 stride、裁切、ICC、来源释放、版本/错误边界通过。未验证真实 FFmpeg D3D11 解码会话。");
   return 0;
 }

@@ -25,45 +25,22 @@ namespace awj::studio {
 void apply_import_result(AwjStudio& app, UiState& state,
                          awj::ui_import::Request request,
                          awj::ui_import::Result result) {
-  if (result.cancelled) {
-    app.set_status_text(to_shared("导入扫描已取消。"));
-    return;
-  }
   {
     std::scoped_lock lock{state.mutex};
-    if (state.worker_active) {
-      app.set_status_text(to_shared("编码已开始，本次后台导入结果未加入队列。"));
-      return;
-    }
+    if (request.epoch != state.import_epoch) return;
+    if (state.pending_imports) --state.pending_imports;
   }
-  std::size_t added = 0;
-  std::size_t queue_duplicates = 0;
-  for (const auto& file : result.files) {
-    auto appended = append_prepared_import_file(state, file);
-    if (appended && *appended) {
-      ++added;
-    } else if (appended) {
-      ++queue_duplicates;
-    } else if (result.errors.size() < 16) {
-      result.errors.push_back(appended.error());
-    }
-  }
-  if (request.update_input_path && added > 0 && !request.input_hint.empty()) {
-    set_input_path_preserving_output(app, request.input_hint);
-  }
-  refresh_queue_rows(app, state);
-  app.set_status_text(
-      to_shared(awj::ui_import::summary_text(result, added, queue_duplicates)));
+  apply_scanned_import(app, state, result, request.input_hint, request.update_input_path);
 }
 
 bool enqueue_import(const std::shared_ptr<UiState>& state,
                     awj::ui_import::Request request) {
-  {
-    std::scoped_lock run_lock{state->mutex};
-    if (state->worker_active) return false;
-  }
-  return state->import_dispatcher &&
-         state->import_dispatcher->enqueue(std::move(request));
+  std::scoped_lock run_lock{state->mutex};
+  if (state->worker_active || !state->import_dispatcher) return false;
+  request.epoch = state->import_epoch;
+  if (!state->import_dispatcher->enqueue(std::move(request))) return false;
+  ++state->pending_imports;
+  return true;
 }
 
 void start_import_dispatcher(slint::ComponentWeakHandle<AwjStudio> weak,

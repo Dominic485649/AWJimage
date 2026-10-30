@@ -1,6 +1,7 @@
 #include "../src/ui/studio_config.h"
 #include "../src/ui/studio_json.h"
 #include "../src/ui/studio_queue_format.h"
+#include "../src/ui/studio_queue_import.h"
 #include "../src/ui/queue_preset_selection.h"
 #include <psapi.h>
 #include <chrono>
@@ -89,6 +90,64 @@ void queue_output_size_check() {
   check(make_queue_task_row(item, 0).output_size == to_shared("-"),
         "reset output size retained a previous completion");
 }
+void queue_reimport_check() {
+  using namespace awj::studio;
+  namespace fs = std::filesystem;
+  const fs::path root{L"C:\\queue-fixture\\reimport"};
+  UiState state;
+  state.next_queue_id = 3;
+  state.run_id = 7;
+  for (std::uint64_t id : {1u, 2u}) {
+    QueueImageItem item{.id = id, .path = root / (id == 1 ? L"A.png" : L"B.png"),
+        .bytes = 100, .output_bytes = 80, .status = QueueItemStatus::done,
+        .run_index = static_cast<std::size_t>(id - 1), .locked_output_path = root / L"old.avif",
+        .status_text = "完成", .log_text = "上轮日志", .encoder_id = "old-encoder",
+        .encoder_threads = 4, .decode_seconds = 1, .prepare_seconds = 2,
+        .encode_seconds = 3, .write_seconds = 4, .warning = true};
+    state.queue_items.push_back(std::move(item));
+  }
+  std::vector<awj::ui_import::File> incoming{
+      {.path = root / L"C.png", .source_root = root, .bytes = 10},
+      {.path = root / L"A.png", .bytes = 200},
+      {.path = root / L".\\C.png", .bytes = 30}};
+  const auto result = merge_queue_import(state, incoming);
+  check(result && result->added == 1 && result->requeued == 1 && result->folded == 1,
+        "重新导入数量或批内折叠错误");
+  check(state.queue_items.size() == 3 && state.queue_items[0].id == 2 &&
+        state.queue_items[1].id == 1 && state.queue_items[2].id == 3,
+        "未保留完成项或末次导入顺序/稳定 ID 错误");
+  const auto& old = state.queue_items[0];
+  check(old.status == QueueItemStatus::done && old.output_bytes == 80 &&
+        old.log_text == to_shared("上轮日志") && old.warning,
+        "未重导入的完成项被重置");
+  const auto& again = state.queue_items[1];
+  check(again.status == QueueItemStatus::pending && again.status_text == "等待编码" &&
+        again.bytes == 200 && !again.output_bytes && again.locked_output_path.empty() &&
+        again.log_text.empty() && again.encoder_id.empty() && !again.encoder_threads &&
+        again.decode_seconds == -1 && again.prepare_seconds == -1 &&
+        again.encode_seconds == -1 && again.write_seconds == -1 && !again.warning &&
+        again.run_index == std::numeric_limits<std::size_t>::max(),
+        "重导入未清除上轮执行字段");
+  check(state.queue_items[2].bytes == 30 && state.queue_items[2].source_root.empty() &&
+        state.queue_items[2].relative_dir.empty() && state.next_queue_id == 4 &&
+        state.run_id == 8 && state.queue_path_keys.size() == 3 &&
+        state.queue_id_indices.at(1) == 1 && !state.queue_run_indices.contains(0),
+        "末次元数据、next-ID、generation 或旧 run 映射错误");
+  awj::AppConfig cfg;
+  cfg.output_dir = fs::temp_directory_path() / "awj-reimport-output";
+  const auto files = build_run_files(cfg, state.queue_items, false);
+  check(files && files->size() == 2 && (*files)[0].index == 0 && (*files)[1].index == 1 &&
+        (*files)[0].path == root / L"A.png", "下一轮错误包含历史完成项或索引不连续");
+  state.worker_active = true;
+  check(!merge_queue_import(state, incoming) && state.queue_items[0].id == 2 &&
+        state.next_queue_id == 4 && state.run_id == 8, "运行/收尾期间仍允许修改队列");
+  state.worker_active = false;
+  state.next_queue_id = UINT64_MAX;
+  const awj::ui_import::File extra{.path = root / L"D.png", .bytes = 1};
+  check(!merge_queue_import(state, std::span{&extra, 1}) && state.queue_items.size() == 3 &&
+        state.run_id == 8, "准备失败破坏了原队列");
+}
+
 void config_check() {
   using namespace awj::studio;
   namespace fs = std::filesystem;
@@ -204,7 +263,7 @@ void config_check() {
 int main(int argc, char** argv) try {
   if (argc == 4 && std::string_view{argv[1]} == "--queue-benchmark") {
     queue_check(std::stoull(argv[2]), std::string_view{argv[3]} == "legacy");
-  } else { queue_check(10, false); queue_output_size_check(); config_check(); }
+  } else { queue_check(10, false); queue_output_size_check(); queue_reimport_check(); config_check(); }
   return 0;
 } catch (const std::exception& error) {
   std::fprintf(stderr, "%s\n", error.what());

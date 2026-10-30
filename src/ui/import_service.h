@@ -7,14 +7,11 @@
 #include <string>
 #include <vector>
 
+#include "queue_merge.h"
+
 namespace awj::ui_import {
 
-enum class Origin {
-  file_dialog,
-  folder_dialog,
-  drag_drop,
-  command_line,
-};
+enum class Origin { file_dialog, folder_dialog, drag_drop, command_line };
 
 struct Root {
   std::filesystem::path path;
@@ -26,6 +23,7 @@ struct Request {
   Origin origin{Origin::drag_drop};
   std::filesystem::path input_hint;
   bool update_input_path{true};
+  std::uint64_t epoch{};
 };
 
 struct File {
@@ -41,6 +39,7 @@ struct Result {
   std::size_t inaccessible_count{};
   std::vector<std::string> errors;
   bool cancelled{};
+  bool failed{};
 };
 
 using SupportedPredicate = std::function<bool(const std::filesystem::path&)>;
@@ -65,6 +64,7 @@ class Dispatcher {
   Dispatcher& operator=(const Dispatcher&) = delete;
 
   bool enqueue(Request request);
+  void discard_pending();
   void request_stop();
   void join();
   [[nodiscard]] bool joinable() const noexcept;
@@ -74,14 +74,11 @@ class Dispatcher {
   std::unique_ptr<Impl> impl_;
 };
 
-// 统一处理来自文件选择器、文件夹选择器、拖放与命令行的输入根。
-// 扫描阶段只做文件系统工作，不依赖 UI，也不修改队列；调用方可以安全地放到后台线程。
+// 扫描只做文件系统工作；根输入按序展开，有效文件按最后一次出现折叠。
 Result scan(const std::vector<Root>& roots, Origin origin, const Options& options);
+std::string summary_text(const Result& result, std::size_t added, std::size_t requeued);
 
-std::string summary_text(const Result& result, std::size_t added,
-                         std::size_t queue_duplicates);
-
-// 与队列去重使用同一类“绝对 + 规范化 + Windows 大小写不敏感”键。
-std::wstring normalized_path_key(const std::filesystem::path& path);
+// Windows 大小写归一，Linux 保留原生路径字节，不依赖宽字符 locale 转换。
+ui_queue::PathKey normalized_path_key(const std::filesystem::path& path);
 
 }  // namespace awj::ui_import

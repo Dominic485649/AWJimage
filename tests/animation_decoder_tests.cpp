@@ -83,8 +83,13 @@ Bytes png(awj::ImageBuffer image, bool deep = false) {
     for (auto value : image.planes[0].bytes) { samples.push_back(value); samples.push_back(value); }
     image.bit_depth = 16; image.planes[0].stride *= 2; image.planes[0].bytes = std::move(samples);
   }
-  awj::PngImageEncoder encoder; awj::NativeEncodeSettings options{.output_format = awj::OutputFormat::png};
+  awj::PngImageEncoder encoder;
+  awj::NativeEncodeSettings options{.output_format = awj::OutputFormat::png,
+      .quality = 100, .bit_depth = image.bit_depth};
   auto output = encoder.encode(image, options); require(bool(output), "PNG fixture encoding failed");
+  require(output->encoded.bytes.size() >= 33 &&
+      std::to_integer<int>(output->encoded.bytes[24]) == (deep ? 16 : 8),
+      "PNG fixture storage depth changed");
   require(output->encoded.bytes.size() >= 12 && read32(output->encoded.bytes.data() + output->encoded.bytes.size() - 4) == 0xae426082,
       "PNG empty IEND chunk CRC failed");
   return output->encoded.bytes;
@@ -214,7 +219,14 @@ int main(int argc, char** argv) {
         require(opened && !*opened, "open_animation discarded independent default image");
       }
       auto decoded = awj::PngImageDecoder{}.decode(path);
-      require(decoded && decoded->image.bit_depth == (deep ? 16 : 8), "poster precision changed");
+      if (!decoded) {
+        std::fprintf(stderr, "poster-%d-%u decode failed: %s\n", deep ? 16 : 8, count, decoded.error().c_str());
+        return 1;
+      }
+      if (decoded->image.bit_depth != (deep ? 16 : 8)) {
+        std::fprintf(stderr, "poster-%d-%u precision changed: actual %d\n", deep ? 16 : 8, count, decoded->image.bit_depth);
+        return 1;
+      }
       for (std::size_t x = 0; x < 3; ++x)
         require(sample(decoded->image, x * 4) == 0 && sample(decoded->image, x * 4 + 1) == 0 &&
             sample(decoded->image, x * 4 + 2) == full && sample(decoded->image, x * 4 + 3) == full,

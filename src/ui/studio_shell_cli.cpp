@@ -35,9 +35,7 @@ import awj.studio_defaults;
 namespace awj::studio {
 
 std::wstring queue_path_key(const std::filesystem::path& path) {
-  std::error_code ec;
-  const auto absolute = std::filesystem::absolute(path, ec);
-  return awj::normalized_lower_path_key(ec ? path : absolute);
+  return awj::ui_queue::path_key(path);
 }
 
 
