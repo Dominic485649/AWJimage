@@ -1958,6 +1958,54 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("an accessible control is clipped outside the minimum window");
   }
 
+  // 混合完成/等待行的真实 UI 投影；生产扫描与编码闭环另由平台队列测试覆盖。
+  {
+    auto complete = *task_rows()->row_data(1);
+    complete.filename = "B.png";
+    complete.state = 2;
+    complete.output_path = "B-output.png";
+    auto again = complete;
+    again.filename = "A.png";
+    auto source = std::make_shared<slint::VectorModel<TaskRow>>(std::vector{complete, again});
+    awj::ui::bind_queue_model(*app, source);
+    app->set_queue_success_count(2);
+    app->set_queue_failed_count(0);
+    app->set_queue_running_count(0);
+    app->set_queue_pending_count(0);
+    again.state = 0;
+    again.status = "等待编码";
+    again.output_path = "";
+    again.output_size = "";
+    awj::ui::replace_queue_row(*app, source, 1, again);
+    auto added = again;
+    added.filename = "C.png";
+    source->push_back(added);
+    awj::ui::adjust_queue_count(*app, added.state, 1);
+    app->set_progress(0);
+    app->set_selected_queue_index(1);
+    app->set_queue_failed_only(false);
+    if (app->get_queue_success_count() != 1 || app->get_queue_pending_count() != 2 ||
+        app->get_failed_task_rows()->row_count() != 0 ||
+        source->row_data(0)->output_path != slint::SharedString{"B-output.png"} ||
+        !source->row_data(1)->output_path.empty() || app->get_progress() != 0 ||
+        !find_one(app, "关闭详情", slint::language::AccessibleRole::Button))
+      return fail("重新入队的混合行破坏了结果、计数、详情或进度投影");
+    app->invoke_open_queue_menu(1, 360.0f, 220.0f);
+    app->invoke_close_queue_menu();
+    if (slint::cbindgen_private::slint_testing_active_popup_count(&app->window().window_handle()) != 0)
+      return fail("重新导入后队列位置菜单未关闭");
+    app->set_queue_failed_only(true);
+    app->set_selected_queue_index(-1);
+    const auto filtered = find_one(app, "编码任务", slint::language::AccessibleRole::List);
+    if (!filtered || filtered->accessible_item_count() != 0)
+      return fail("等待编码行仍出现在失败过滤中");
+    awj::ui::bind_queue_model(*app, task_rows());
+    app->set_queue_success_count(1);
+    app->set_queue_failed_count(1);
+    app->set_queue_pending_count(0);
+    app->set_queue_failed_only(false);
+    app->set_selected_queue_index(0);
+  }
   if (const int result = verify_parameter_matrix(app)) return result;
   if (const int result = verify_manual_update(app)) return result;
   if (const int result = verify_queue_option_layout(app)) return result;

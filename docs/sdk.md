@@ -14,11 +14,11 @@
 | Windows x64，Clang 23.1.4 | 基础 API 有先前验证；独立安装消费者另行记录，不把它当作完整 Clang 23 源码构建证明 |
 | D3D11 | WARP 测试覆盖回读、严格模式、映射借用、池背压；共享 NT/keyed mutex 子项独立记录是否通过或跳过 |
 | 真实 WGC、物理 GPU HDR、跨设备共享 | 未验证；WARP 不替代这些结果 |
-| FFmpeg | 可选桥接，按精确 libavutil 头版本构建，真实用户 DLL 集成测试；未验证实际 D3D11 解码会话 |
-| Linux/WSL | 用户明确要求等 1.2.6 合入 1.3.0 后再做；本阶段不执行 |
+| FFmpeg | 可选桥接，按精确 libavutil 头版本构建；Windows DLL 与 Linux `.so` 分别验证，不混用证据；未验证实际 D3D11 解码会话 |
+| Linux x86_64，Clang 21.1.8 / 23.1.5 | 原生 C ABI `.so`、匿名共享内存、FFmpeg 和只读页适配；实际完成范围与工具链要求以对应开发包的原始记录为准 |
 | 华为 HarmonyOS Native SDK | 有独立构建入口和薄 Node-API 示例，未用真实 SDK 编译/链接或真机验证；不能宣布已支持 |
 
-主线仍保持 `master`。1.3.0 基于已提交的 1.2.5 在独立 worktree/分支开发，不能根据一次构建或版本号推断 1.2.6 已完成。须由用户确认完成后，先合入 1.2.6，再整合验证/Linux，最后才合主线并在必要时迁移为 `main`、正式提交与分发。
+主线仍保持 `master`。用户于 2026-10-30 确认 1.2.6 已完成并固定；独立 1.3.0 分支已通过合并提交 `718cd45` 纳入固定的 `f77b5f0`，随后同步开发 Windows/Linux 队列与 SDK。开发候选不等于主线或正式发布；最后才按验收结果合主线、迁移为 `main` 并执行正式签名分发流程。
 
 ## 复制与无文件保证
 
@@ -51,11 +51,13 @@ pwsh -NoProfile -File scripts/build-sdk.ps1 -BuildDirectory build/sdk-native-cla
 可选配置：
 
 - `AWJ_SDK_NATIVE_CODECS=ON`：项目锁定的五种编码器。
-- `AWJ_SDK_D3D11`、`AWJ_SDK_SHM`：仅 Windows。
+- `AWJ_SDK_D3D11`：仅 Windows；`AWJ_SDK_SHM`：Windows/Linux，分别选择原生实现，不表示 Linux GPU 或 HarmonyOS 已验证。
 - `AWJ_SDK_FFMPEG=ON`、`AWJ_SDK_AVUTIL_INCLUDE_DIR`：编译可选 AVFrame 桥接，**不查找或链接 avutil 导入库**。
 - `AWJ_ENABLE_GPU_METRICS=OFF`：CPU 视觉质量，无 FXC/DXC/Vulkan shader 构建依赖。D3D11 导入可独立开启。
 - `AWJ_SDK_TOOLS=ON`：构建 `awj-stream`。
-- `AWJ_SDK_FFMPEG_TEST_AVUTIL`：仅测试来源 DLL 的绝对路径，不安装/分发此 DLL。
+- `AWJ_SDK_FFMPEG_TEST_AVUTIL`：仅测试来源动态库的绝对路径，不安装/分发此 DLL 或 `.so`。
+
+Linux 在原生文件系统中使用 CMake/Ninja 和 Clang 21 以上构建，例如配置 `cmake -S sdk -B build/sdk-linux -G Ninja -DAWJ_SDK_SHM=ON`，并指定自己的编译器、锁定依赖和安装前缀。完整编码核心使用 C++23 `<print>/<format>`；编译器版本号不足以证明标准库具备这些功能，配置时另做编译／链接探测。Ubuntu 24.04 默认 GCC 13 标准库不足以完成本项目全部编码核心，本轮最低 Clang 21 配合原生 libc++ 及实际探测构建，具体库版本和 ELF 运行依赖随证据记录。Linux Release SDK 与应用采用一致的私有静态 C++ 运行库策略，并通过 ELF 导出表隐藏非 C API 符号，避免静态 libc++ 宿主同时装载 SDK 的动态 libc++ 而在 main 前出现初始化冲突。调用方仍不需要使用相同 C++ 编译器或标准库，但目标系统必须满足实际 ELF 的 glibc 等运行依赖。Linux 候选不宣称适用于所有发行版、架构或 libc。
 
 只安装本 SDK 的组件，避免同时安装第三方依赖的内部包：
 
@@ -127,7 +129,7 @@ context 必须开启 D3D 多线程保护，或调用方用 `AWJ_D3D11_CALLER_SER
 
 ## FFmpeg 桥接
 
-编译时必须使用与来源 DLL **精确版本匹配**的 libavutil 公共头。当前验证使用固定提交 `d8990137eec96e8ead292f5de2fc2c6de450e676`，libavutil 61.18.100。可查询 `awj_ffmpeg_expected_avutil_version()`；不同版本的 `AVFrame` 不能跨此适配器使用。
+编译时必须使用与来源动态库（Windows DLL／Linux `.so`）**精确版本匹配**的 libavutil 公共头。当前验证使用固定提交 `d8990137eec96e8ead292f5de2fc2c6de450e676`，libavutil 61.18.100。可查询 `awj_ffmpeg_expected_avutil_version()`；不同版本的 `AVFrame` 不能跨此适配器使用。
 
 `awj_ffmpeg_api` 由调用方提供 `avutil_version`、`av_buffer_ref`、`av_buffer_unref` 三个 C 函数指针和可选 module_owner。必须来自同一匹配的 libavutil。SDK 不加载、不硬链接、不分发 FFmpeg；调用方从可信绝对路径加载并保持运行库直到最后一次 buffer_unref 返回。
 
@@ -139,13 +141,15 @@ D3D11 硬件帧走平台适配器，保持 AVBufferRef 到资源使用结束；�
 
 ## 共享内存
 
-`awj_shm_create/open` 是当前用户范围的 Windows 本机 SPSC 通道；名称限制 1..64 个 ASCII 字母/数字/`-`/`_`，建议通过可信控制通道传递不可预测随机名称。对象 ACL 限制当前用户与 SYSTEM，不开放网络服务；不提供针对恶意同权限进程的完整防篡改隔离。
+`awj_shm_create/open` 是当前用户范围的 Windows/Linux 本机 SPSC 通道；名称限制 1..64 个 ASCII 字母/数字/`-`/`_`，建议通过可信控制通道传递不可预测随机名称。Windows 对象 ACL 限制当前用户与 SYSTEM；Linux 用 `SO_PEERCRED` 限制相同 effective UID。均不开放网络服务，也不提供针对恶意同权限进程的完整防篡改隔离。
 
 生产者 `begin_write` -> 直接写槽位紧凑平面与尾部 ICC -> `commit`；消费者 `receive` -> 持有 frame -> `frame_release`。WRITING/READY/READING 都占槽位；不得在 commit 后继续写或在消费完成前复用。满队列返回 BUSY/超时，拒绝无界扩容。token/代次防止迟到提交/归还误用。
 
-通道使用显式 little-endian 元数据与 Win32 mutex/events，不把 `std::atomic` 或 C++ 对象布局当跨进程 ABI。对端以进程句柄和创建时间识别，防止 PID 重用；生产者或消费者异常退出会使通道进入不可恢复 I/O 错误，不偷回仍借出的槽位。已经借出的 frame 保持映射有效，channel/context 可先释放。
+通道使用显式 little-endian 元数据，不把 `std::atomic` 或 C++ 对象布局当公共跨进程 ABI。Windows 使用 Win32 mutex/events、进程句柄和创建时间；Linux 使用预留 backing 的匿名 `memfd`、大小 seals、`SCM_RIGHTS`、process-shared robust pthread mutex、共享 futex 与内核提供的 `pidfd`，不创建命名 shm／业务文件节点，也不把复用的 PID 当原进程。Linux 两端须处于相同本机 IPC／网络命名空间，使用兼容的 pthread 布局；需要 `SO_PEERPIDFD`、`memfd` seals 和 `pthread_mutex_clocklock` 支持，不具备时明确失败，不退回磁盘文件。通道绑定 create/open 的进程，不得在 fork 后使用继承句柄，应 exec 后重建。
 
-正常 close 唤醒并允许 drain 已提交帧；EOF 表示关闭且无待取帧。mutex abandoned、损坏头或状态无效均失败。归还槽位的锁等待有界，失败后当前映射标记不可继续使用，不能把这种失败当已成功归还。
+生产者或消费者异常退出会使通道进入不可恢复 I/O 错误，不偷回仍借出的槽位。已经借出的 frame 保持映射有效，channel/context 可先释放。Linux 仅用 socket 传小型控制消息与 fd，不传像素；消费者预算等验证通过并 ACK 后才占用唯一连接，失败连接不永久抢占消费者身份。FIFO 按 begin 的 token 排序，未提交的早期槽位会阻塞后续 READY，直到提交、abort 或 close。
+
+正常 close 唤醒并允许 drain 已提交帧；EOF 表示关闭且无待取帧。mutex abandoned／owner-dead、损坏头或状态无效均失败。归还槽位的锁等待有界，失败后当前映射标记不可继续使用，不能把这种失败当已成功归还。共享内存 API 的 timeout 为 0..60000 毫秒；0 不阻塞，返回 BUSY，正超时返回 TIMEOUT。同名对象在最后一个拥有者销毁后才可重建；Linux 不留下 abstract socket／命名 shm 文件清理负担。
 
 ## 二进制帧协议与流工具
 
@@ -192,8 +196,8 @@ payload 是各平面逐行的有效像素字节，再附 ICC，不传 padding。
 
 `awj_sdk_validation` 只构建 SDK 和受影响的定向检查，不运行更新器/UI 全量回归。测试覆盖公共 C/C++ 消费、布局/owner/队列/协议、真实跨进程 SHM 和异常退出、WARP、真实 libavutil、五种编码器内存回读、只读页、负 stride、常见 RGB/YUV、FP16 和 CPU 视觉质量。
 
-`tests/sdk_stream_cli_tests.ps1` 用真实 FFmpeg 子进程、内存 stdin/stdout 验证多帧结果、原生单帧码流、截断和旧 WGC 分支；检查测试工作目录不产生输入中间文件，但这不等于系统级全进程文件 I/O 跟踪。
+Windows 的 `tests/sdk_stream_cli_tests.ps1` 用真实 FFmpeg 子进程、内存 stdin/stdout 验证多帧结果、原生单帧码流、截断和旧 WGC 分支。Linux 配置 `AWJ_SDK_FFMPEG_TEST_CLI` 后注册 `sdk_stream_cli`，用原生 FFmpeg 及二进制校验器覆盖多帧、单帧 PNG 和截断拒绝。检查测试工作目录不产生输入中间文件，但这不等于系统级全进程文件 I/O 跟踪。
 
-安装后独立 C99/C++11 项目消费；`scripts/verify-sdk-exports.ps1` 从实际安装公共头生成精确白名单并核对 DLL，不能只检查 `awj_` 前缀。构建证据记录源码指纹/每文件哈希、工具链、配置、原始日志、测试与产物 SHA-256；不把先前测试当本次重跑。
+安装后独立 C99/C++11 项目消费；`scripts/verify-sdk-exports.ps1` 从实际安装公共头生成精确白名单并核对 DLL，Linux 对应 `scripts/verify-sdk-exports.cmake` 核对 ELF，不能只检查 `awj_` 前缀。构建证据记录源码指纹/每文件哈希、工具链、配置、原始日志、测试与产物 SHA-256；不把先前测试当本次重跑。
 
-开发交付固定到 `D:\Code\Cpp\AWJimage\bin\1.3.0\dev\<构建标识>\`；保留正式包、许可证和用户的 `bin/x64/`，不覆盖未知内容。实际交付的位置与未验证项见本轮报告。Linux、真实 HarmonyOS、真实 WGC/物理 HDR GPU 和正式发布仍有独立验收门槛。
+开发交付固定到各项目工作根的 `bin/1.3.0/dev/<构建标识>/`，并汇总至 `D:\Code\Cpp\AWJimage\bin\1.3.0\dev\`；保留正式包、许可证和用户的 `bin/x64/`，不覆盖未知内容。Windows、Linux 分别携带与统一源码对应的原始证据；复制证据不等于在交付路径重新验证。实际位置与未验证项见本轮报告。真实 HarmonyOS、真实 WGC/物理 HDR GPU 和正式发布仍有独立验收门槛。

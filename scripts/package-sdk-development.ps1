@@ -22,7 +22,7 @@ New-Item -ItemType Directory -Path $destination | Out-Null
 Copy-Item -Path (Join-Path $evidence 'install/*') -Destination $destination -Recurse
 $proof = Join-Path $destination 'evidence'
 New-Item -ItemType Directory -Path $proof | Out-Null
-foreach ($name in @('validation.json','source-files.json','build-and-tests.log','sdk-tests.xml','install.log','exports.log','consumer-configure.log','consumer-build.log','consumer-tests.log','consumer-tests.xml','stream-tests.log')) {
+foreach ($name in @('validation.json','source-files.json','build-and-tests.log','sdk-tests.xml','install.log','exports.log','consumer-configure.log','consumer-build.log','consumer-tests.log','consumer-tests.xml','consumer-clang-version.txt','consumer-clang-configure.log','consumer-clang-build.log','consumer-clang-tests.log','consumer-clang-tests.xml','stream-tests.log')) {
     Copy-Item -LiteralPath (Join-Path $evidence $name) -Destination $proof
 }
 Copy-Item -LiteralPath (Join-Path $evidence 'configuration') -Destination $proof -Recurse
@@ -31,13 +31,13 @@ $notice = @"
 AWJimage 1.3.0 未发布开发构建
 构建标识：$($record.run_id)
 源码指纹：$($record.source_fingerprint)
-基线提交：$($record.baseline_commit)，隔离分支中尚有未提交修改。
+源码提交：$($record.baseline_commit)，未提交源码：$($record.uncommitted_source)。
 仅 Windows x64 动态 SDK；公共接口只有 C ABI，.lib 是 DLL 导入库。
 本地开发交付不是正式签名发布，不能作为正式 Release/自动更新资产。
-Linux/WSL 按用户要求延期；HarmonyOS 未经真实 Native SDK/真机验证。
+此 Windows 包不作为 Linux 验证证据，Linux 原生产物与记录单独交付；HarmonyOS 未经真实 Native SDK/真机验证。
 真实 WGC/物理 HDR GPU、跨设备共享及完整应用正式发布门槛仍未验收。
 许可证仍为项目现有 AGPL-3.0，第三方许可另见 share/AWJimage；未给予闭源许可豁免。
-此包不包含用户 FFmpeg 运行库、签名密钥、modules/BMI 或 1.2.6 工作源码。
+此包不包含用户 FFmpeg 运行库、签名密钥、modules/BMI 或原工作区的可变构建树；源码已合入固定的 1.2.6。
 证据原始绝对路径用于溯源；文件复制到交付目录不构成在新路径重新运行测试。
 "@
 $notice | Set-Content -LiteralPath (Join-Path $destination 'UNRELEASED-DEVELOPMENT.txt') -Encoding utf8

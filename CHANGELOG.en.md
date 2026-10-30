@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.3.0 - Unreleased
+
+### Memory pipeline and C ABI SDK
+
+- Add a C-ABI-only image-frame processing library. C and C++ consumers use the same C headers; implementation remains C++23 without exporting C++ classes, STL, exceptions or modules/BMI.
+- Accept caller-submitted CPU pixels, reference-counted FFmpeg software frames, shared-memory slots and Windows D3D11 resources. Retain sources under explicit ownership contracts, including read-only borrowing, negative strides, cropping and explicit color metadata.
+- Provide separate native SPSC shared-memory implementations for Windows and Linux. Linux uses anonymous memfd, descriptor passing, process-shared synchronization and pidfd, not ordinary disk files posing as zero-input-copy storage.
+- Memory encoding and binary stdin/stdout create no input snapshots or candidate files. Only an explicit final-file sink writes output. Report input copies, conversions and GPU transfers separately; ordinary pipes, GPU readback and encoder internals are not end-to-end zero-copy guarantees.
+
+### Encoding queue
+
+- Reimport completed images on Windows and Linux without clearing the queue. Preserve completed entries and results that were not reimported; new and reimported entries become pending.
+- Deduplicate normalized paths by the last valid import position: `[C,A,C,B]` becomes `[A,C,B]`, not first-occurrence order or a globally sorted batch.
+- Separate stable task identity, display position and contiguous run indices. Isolate stale scan/encoding callbacks, prevent starting before accepted imports finish, and retain import locking during encoding/cancellation cleanup. Global presets and existing output-collision policies are unchanged.
+
+### Development and validation boundaries
+
+- Integrate the fixed 1.2.6, preserving paired gain-map renditions, independent still images, resource budgets, DPI and floating-point JXR HDR fixes.
+- Record native Windows/Linux artifacts, compiler versions, actual checks and unverified scope with each development candidate. HarmonyOS still requires the real Huawei Native SDK/device; WARP does not validate real WGC or physical HDR GPUs.
+- Do not merge the mainline, rename master, create a formal tag or sign/publish a release at this stage. Preserve historical release packages and validation evidence.
+
 ## 1.2.6 - 2026-10-30
 
 ### Fixes and improvements

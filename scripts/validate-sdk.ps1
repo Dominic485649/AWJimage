@@ -21,6 +21,11 @@ $branch = (& git -C $root branch --show-current).Trim()
 if ($LASTEXITCODE -or $branch -ne 'feature/1.3.0-memory-pipeline') { throw '本验证入口仅用于隔离的 1.3.0 开发分支。' }
 $version = [IO.File]::ReadAllText((Join-Path $root 'VERSION')).Trim()
 if ($version -ne '1.3.0') { throw '版本不是预期的 1.3.0。' }
+$fixed126 = 'f77b5f0fa15a15f5047d64cb0c0bd98be95dbaa4'
+& git -C $root merge-base --is-ancestor $fixed126 HEAD
+$merged126 = $LASTEXITCODE -eq 0
+if (-not $merged126) { throw '固定的 1.2.6 尚未合入当前源码，拒绝生成整合后的验证记录。' }
+$sourceDirty = [bool](& git -C $root status --porcelain --untracked-files=normal)
 # 记录逐文件真实字节哈希，与规范化 Git blob 的汇总指纹区分。
 $paths = & $sourceModule {
     param($Repository)
@@ -57,6 +62,19 @@ if ($LASTEXITCODE) { throw '独立消费者构建失败。' }
 & ctest --test-dir $consumer --output-on-failure --output-junit (Join-Path $evidence 'consumer-tests.xml') *>&1 |
     Tee-Object -FilePath (Join-Path $evidence 'consumer-tests.log')
 if ($LASTEXITCODE) { throw '独立消费者运行失败。' }
+$consumerClang = Join-Path $evidence 'consumers-clang23'
+$clang23 = 'D:/Scoop/apps/llvm/current/bin/clang-cl.exe'
+& $clang23 --version | Set-Content -LiteralPath (Join-Path $evidence 'consumer-clang-version.txt') -Encoding utf8
+if ($LASTEXITCODE) { throw '无法核对 Clang 消费者工具链。' }
+& cmake -S (Join-Path $install 'share/AWJimage/examples/basic') -B $consumerClang -G Ninja '-DCMAKE_BUILD_TYPE=Release' `
+    "-DCMAKE_C_COMPILER=$clang23" "-DCMAKE_CXX_COMPILER=$clang23" "-DCMAKE_PREFIX_PATH=$install" *>&1 |
+    Tee-Object -FilePath (Join-Path $evidence 'consumer-clang-configure.log')
+if ($LASTEXITCODE) { throw '独立 Clang 消费者配置失败。' }
+& cmake --build $consumerClang --parallel 2 *>&1 | Tee-Object -FilePath (Join-Path $evidence 'consumer-clang-build.log')
+if ($LASTEXITCODE) { throw '独立 Clang 消费者构建失败。' }
+& ctest --test-dir $consumerClang --output-on-failure --output-junit (Join-Path $evidence 'consumer-clang-tests.xml') *>&1 |
+    Tee-Object -FilePath (Join-Path $evidence 'consumer-clang-tests.log')
+if ($LASTEXITCODE) { throw '独立 Clang 消费者运行失败。' }
 & (Join-Path $root 'tests/sdk_stream_cli_tests.ps1') -StreamCli (Join-Path $install 'bin/awj-stream.exe') `
     -Ffmpeg (Join-Path $FfmpegDirectory 'ffmpeg.exe') -WgcCli (Join-Path $build 'runtime/Release/awj_wgc_cli_validation.exe') `
     -WorkDirectory (Join-Path $evidence 'stream-work') *>&1 | Tee-Object -FilePath (Join-Path $evidence 'stream-tests.log')
@@ -77,12 +95,12 @@ $toolchain | Set-Content -LiteralPath (Join-Path $configuration 'clang-version.t
 $summary = [ordered]@{
     schema=1; kind='unreleased-sdk-development-validation'; version=$version; abi_version=1;
     run_id=$RunId; source_root=$root; source_fingerprint=$before; baseline_commit=$head; branch=$branch;
-    uncommitted_source=$true; platform='Windows x64'; compiler='clang-cl 21.1.8 / MSVC ABI'; configuration='Release; /MT; GPU metrics OFF; x64-v3 OFF';
+    uncommitted_source=$sourceDirty; platform='Windows x64'; compiler='clang-cl 21.1.8 / MSVC ABI'; configuration='Release; /MT; GPU metrics OFF; x64-v3 OFF';
     sdk_tests=$tests.SelectNodes('//testcase').Count; skipped_tests=$tests.SelectNodes('//testcase[skipped]').Count;
-    consumer_tests=2; consumers='独立 install 包，MSVC C99 / C++11 源码消费同一 C ABI';
+    consumer_tests=4; consumers='独立 install 包，MSVC 与 Clang 23 的 C99 / C++11 源码消费同一 C ABI';
     ffmpeg_runtime='仅用于实际集成测试，不分发；libavutil 61.18.100';
-    not_verified=@('真实 WGC/物理 HDR GPU/跨设备共享','真实 FFmpeg D3D11 解码会话','完整 GUI/批处理应用与 GPU visual metrics','HarmonyOS Native SDK/真机','Linux/WSL：按用户决定延期','系统级全进程文件 I/O 跟踪');
-    release=$false; merged_126=$false; main_renamed=$false
+    not_verified=@('真实 WGC/物理 HDR GPU/跨设备共享','真实 FFmpeg D3D11 解码会话','完整 GUI/批处理应用与 GPU visual metrics：本脚本不覆盖','HarmonyOS Native SDK/真机','Linux：使用独立原生验证记录，本 Windows 脚本不覆盖','系统级全进程文件 I/O 跟踪');
+    release=$false; merged_126=$merged126; integrated_126_commit=$fixed126; main_renamed=$false
 }
 $summary | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $evidence 'validation.json') -Encoding utf8
 # 完整的项目源快照不包含 build/bin、私钥、Git 元数据或 FFmpeg 用户运行库。
