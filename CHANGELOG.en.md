@@ -1,8 +1,8 @@
 # Changelog
 
-## 1.2.6 - 2026-10-29
+## 1.2.6 - 2026-10-30
 
-### Unreleased candidate
+### Fixes and improvements
 
 - Use the system-suggested destination position for Windows 11 cross-monitor DPI changes while preserving explicit client sizes and legacy-system behavior, avoiding repeated scaling caused by old-monitor position correction. Do not lock the scale factor to mask the issue.
 - Backport Slint's Windows update-region repaint fix for stale or blank content after DPI changes and restoration. Preserve partial rendering when Windows has not invalidated a region.
@@ -15,7 +15,7 @@
 - Preserve both renditions of valid ISO gain-map inputs. Re-encode AVIF/JXL with an HDR main image and an alternate-reconstruction map. Re-encode JPEGli using the existing SDR rendition as its base and a newly generated HDR gain map. WebP/PNG select the existing SDR rendition and tone-map only when no SDR endpoint exists.
 - Preserve HDR-base/SDR-alternate direction and explicit headroom instead of unconditionally enhancing or discarding one endpoint. Regenerated pairs do not claim sample-exact losslessness. Unsupported ICC math spaces and corrupt functional gain metadata remain explicit errors.
 - Prefer an independent APNG default image over motion. Select independent AVIF stills from parsed primary/sample storage relationships while preserving pure sequences. Reject ambiguous or invalid relationships instead of silently falling back to animation.
-- Preserve existing formal packages, signed metadata and automatic-update state. This entry describes an unreleased candidate, not a formal release or a claim of complete platform validation.
+- Provide these improvements on Windows and Linux. See the 1.2.6 release notes for targeted validation scope and remaining cross-monitor and third-party HDR display limitations.
 
 ## 1.2.5 - 2026-10-24
 

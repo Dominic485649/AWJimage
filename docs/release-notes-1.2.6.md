@@ -1,7 +1,5 @@
 # AWJimage 1.2.6
 
-> 发布说明草稿，待审查。本文件不表示已经签名、推送或发布。
-
 本版集中改进 HDR / Gain Map 转换、内存与线程调度，并针对 Windows 跨屏缩放和恢复后的重绘问题修复相关代码路径。
 
 ## HDR、Gain Map 与色彩
@@ -39,7 +37,7 @@
 - HDR 呈现仍取决于查看器、显示链与格式支持。本版本不承诺修复第三方查看器或截图工具的 HDR / SDR 自动选层及 tone-map，也不会以调暗 HDR 或修改必要颜色标签补偿外部显示。
 - Windows 要求支持 **AVX2** 的 CPU，Linux 要求 **x86-64-v3**。Windows 图形界面和右键转换需要将 `AWJ.exe` 与 `AWJ.com` 放在同一目录。
 
-正式发布资产拟沿用 `AWJ_Win.7z`、`AWJ_Linux.7z` 和 `SHA256SUMS`。当前交付仍为未发布候选，正式资产及其校验值以审查后按正式流程生成的结果为准。
+下载 `AWJ_Win.7z` 或 `AWJ_Linux.7z`，使用同一 Release 的 `SHA256SUMS` 校验归档。Windows 请将 `AWJ.exe` 与 `AWJ.com` 放在同一目录。
 
 <details>
 <summary>English</summary>
@@ -81,6 +79,6 @@ Update and pin libheif **1.23.7**, libaom **3.15.2**, libjpeg-turbo **3.2.1**, L
 - Third-party viewers and screenshot tools still determine HDR / SDR rendition selection and tone mapping. This version does not claim to repair those external display paths or compensate by darkening HDR or changing required color tags.
 - Windows requires **AVX2**; Linux requires **x86-64-v3**. Keep `AWJ.exe` and `AWJ.com` together for the Windows GUI and context-menu converter.
 
-Planned formal assets remain `AWJ_Win.7z`, `AWJ_Linux.7z` and `SHA256SUMS`. Current deliveries are unpublished candidates; final assets and checksums must come from the formal release process after review.
+Download `AWJ_Win.7z` or `AWJ_Linux.7z` and verify the archives with `SHA256SUMS` from the same release. Keep `AWJ.exe` and `AWJ.com` in the same directory on Windows.
 
 </details>
