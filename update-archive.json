@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 18,
+  "sequence": 19,
   "key_id": "release-2026",
-  "issued_at": "2026-10-24T14:22:51Z",
-  "expires_at": "2027-01-22T14:22:51Z",
+  "issued_at": "2026-10-30T03:13:08Z",
+  "expires_at": "2027-01-28T03:13:08Z",
   "entries": [
     {
-      "version": "1.2.5",
+      "version": "1.2.6",
       "channel": "stable",
-      "published_at": "2026-10-24T14:22:51Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.5",
+      "published_at": "2026-10-30T03:13:08Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.2.6",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
-            "size": 13218863,
-            "sha256": "ae9bc99918c1209968f7a1fb153ede1d6f0953f93bb8090d983844c2aaa481e4"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Win.7z",
+            "size": 13326800,
+            "sha256": "284973edca5c655cea1220646e671179c69c7bb34aabeb654b2513738f105a93"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
-              "size": 24472064,
-              "sha256": "e790ac8338ff2f72c6e51ea72fbe15e0b0709b36150c6663fe2a7e181b4718a2"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Win.7z",
+              "size": 24763392,
+              "sha256": "a937c5735d2c9d885f98d65298885f493583ce0f6ee69a81dbf7fcfb7182b103"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
-              "size": 20649984,
-              "sha256": "d01bc5d27cd5be6963dd18b1aa360c4965a4cb808f64821c2d86d537c48f8ae4"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Win.7z",
+              "size": 20681216,
+              "sha256": "69efbf8c2153d88fbc499260e62884289bd4316d52570c407442dff5ddf8555b"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Win.7z",
-              "size": 166170,
-              "sha256": "691059784361088330d78ba3fe6f9d16049220862ef8f093be59c0a4b7597093"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Win.7z",
+              "size": 167137,
+              "sha256": "cc3e4a58e66cf0111dcbf3b0e83a6b47472855d8c2c239ab0bcd0536680a9898"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
-            "size": 18350626,
-            "sha256": "f32c2c633168a0122418dd11a91a0e71f78fb5369ca1c85e509e212bb2aea781"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Linux.7z",
+            "size": 18561906,
+            "sha256": "d2577718a3167678182c50b5da6e6d768d1f8912df418a10974d7687cce1ed3f"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
-              "size": 66248664,
-              "sha256": "bb829eb8b2cbd1370a7a699c10b6bdfa3c74b18748ed72294e89f59c82cdc77b"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Linux.7z",
+              "size": 66833328,
+              "sha256": "0ca3b6cb4963e3a6ff65be62501a87c65cf31ab6ccf26ecba9f4b61f77fb2ec7"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.5/AWJ_Linux.7z",
-              "size": 166042,
-              "sha256": "ef2402c3dbaa1a837518246772238de9f14b7bbd078e5b2f57127a64b56edba9"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.2.6/AWJ_Linux.7z",
+              "size": 165867,
+              "sha256": "20c193add8a2c837e8b89a2414d2a7aef102ad2f8023d13125fb27db66842d46"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 界面修复\n\n- 为队列表头右键菜单补齐与任务右键菜单一致的展开动画和选项背景过渡。\n- 菜单展开完成后恢复首项键盘焦点，保留列勾选、Escape 关闭及两类菜单互斥。\n- 恢复左上角版本号的点击行为：有可用更新时下载、验证并安装，没有更新时打开仓库 Releases，不再跳转到内置更新日志。\n- Windows 与 Linux 同步修复，保留现有大小对比、独立列宽、列显隐和预设记忆功能；编解码器依赖与配置格式保持不变。",
-        "en": "### UI fixes\n\n- Give the queue-header context menu the same opening animation and option-background transitions as the task context menu.\n- Restore initial keyboard focus after the opening clip completes while preserving column toggles, Escape dismissal and mutually exclusive menus.\n- Restore the top-left version action: download, verify and install an available update, or open the repository Releases page when no update is available, instead of navigating to the embedded changelog.\n- Apply the fixes on Windows and Linux while retaining size comparisons, independent column widths, column visibility and preset persistence. Codec dependency versions and configuration formats are unchanged."
+        "zh-CN": "### 修复与优化\n\n- Windows 11 跨屏 DPI 切换使用系统建议的目标位置，保留显式客户区尺寸及旧系统兼容逻辑，避免旧显示器位置校正触发反复缩放；不通过锁定缩放倍数掩盖问题。\n- 回移 Slint Windows 系统失效区域重绘修复，覆盖跨 DPI 和最小化恢复后的旧画面／空白风险；没有失效区域时仍使用局部重绘。\n- 窗口尺寸仅保存逻辑像素，接受小于 100% 的合法正比例；无效比例安全回退，先限幅再取整。\n- 更新 libheif 1.23.7、libaom 3.15.2、libjpeg-turbo 3.2.1、LibRaw 0.22.3、libarchive 3.8.10、libplacebo CPU 子集 7.387.0 与 Linux curl 8.23.0，固定源码、端口和补丁来源。\n- HDR 主图与已有 SDR 的反向 Gain Map 策略不变。第三方查看器／截图链的自动选层与 tone-map 不由 AWJ 控制，不以调暗 HDR 或修改必要颜色标签补偿外部显示。\n- 修复 Windows WIC/JXR 浮点 RGB 解码：16/32-bit 浮点源归一到现有 FP16 线性工作像素，不先经整数 UNORM 裁切高光和负值；浮点转换失败不再静默降级 SDR，不支持的色彩上下文明确报错。\n\n- 工作集内存解锁与输入/缓冲区大小保护分离，保留手动预算并将真实解锁状态传入 Windows、Linux 及工作进程。会话解锁默认关闭且不写入预设。\n- 按实际源画像、目标尺寸和同时存活阶段规划内存，区分 SDR/HDR JPEGli，补足 WebP/JXL 编码工作区，并为 PNG 高熵输出、Gain Map 双呈现和缩图保留对应成本。CSV 记录预算模式、来源、估算画像及源/目标尺寸，预检失败不再把预算漏填为零。\n- 合法 ISO Gain Map 输入保留 HDR/SDR 两端。AVIF/JXL 重新编码 HDR 主图与可重建低端的增益图，JPEGli 使用原 SDR 端重新编码 SDR 主图与 HDR 增益图。不承载双呈现的 WebP/PNG 选择已有 SDR，只有缺少 SDR 端点时才做 HDR tone-map。\n- HDR 底图与 SDR alternate 不再被无条件增亮或丢弃另一端，保留明确的 headroom 方向。重算的双呈现不宣称逐样本无损，未知 ICC 合成空间和损坏的功能性增益元数据仍明确拒绝。\n- APNG 的独立默认静态图优先于动画。AVIF 根据已解析主图和序列 sample 的实际存储关联选择独立静态主图，保留纯动画；不能安全确认的关联明确报错，不以动画兜底。\n- Windows 与 Linux 同步提供上述改进；定向验证范围及跨屏、第三方 HDR 显示等已知边界见 1.2.6 发布说明。",
+        "en": "### Fixes and improvements\n\n- Use the system-suggested destination position for Windows 11 cross-monitor DPI changes while preserving explicit client sizes and legacy-system behavior, avoiding repeated scaling caused by old-monitor position correction. Do not lock the scale factor to mask the issue.\n- Backport Slint's Windows update-region repaint fix for stale or blank content after DPI changes and restoration. Preserve partial rendering when Windows has not invalidated a region.\n- Persist logical window dimensions, accept valid positive scales below 100%, safely fall back for invalid scales, and clamp before rounding.\n- Update libheif to 1.23.7, libaom to 3.15.2, libjpeg-turbo to 3.2.1, LibRaw to 0.22.3, libarchive to 3.8.10, the libplacebo CPU subset to 7.387.0, and Linux curl to 8.23.0, with pinned source, port and patch identities.\n- Keep the HDR-main/existing-SDR reverse gain-map policy. AWJ does not control third-party viewer or screenshot rendition selection and tone mapping; do not compensate by darkening HDR or changing required color tags.\n- Fix Windows WIC/JXR floating-point RGB decoding. Normalize 16/32-bit float sources into the existing linear FP16 working representation instead of clipping highlights and negative values through UNORM. Float conversion failures no longer silently fall back to SDR; unsupported color contexts fail explicitly.\n\n- Separate the session working-set unlock from input/buffer size protection. Preserve manual budgets and pass the actual unlock state through Windows, Linux and worker processes without saving it in presets.\n- Plan memory from source profiles, target dimensions and simultaneously live stages. Distinguish SDR/HDR JPEGli, account for WebP/JXL workspaces, high-entropy PNG output, paired gain-map renditions and resizing. Record budget mode/source, estimate profile and source/target sizes in CSV, including the real budget on preflight failures.\n- Preserve both renditions of valid ISO gain-map inputs. Re-encode AVIF/JXL with an HDR main image and an alternate-reconstruction map. Re-encode JPEGli using the existing SDR rendition as its base and a newly generated HDR gain map. WebP/PNG select the existing SDR rendition and tone-map only when no SDR endpoint exists.\n- Preserve HDR-base/SDR-alternate direction and explicit headroom instead of unconditionally enhancing or discarding one endpoint. Regenerated pairs do not claim sample-exact losslessness. Unsupported ICC math spaces and corrupt functional gain metadata remain explicit errors.\n- Prefer an independent APNG default image over motion. Select independent AVIF stills from parsed primary/sample storage relationships while preserving pure sequences. Reject ambiguous or invalid relationships instead of silently falling back to animation.\n- Provide these improvements on Windows and Linux. See the 1.2.6 release notes for targeted validation scope and remaining cross-monitor and third-party HDR display limitations."
       }
     }
   ]
