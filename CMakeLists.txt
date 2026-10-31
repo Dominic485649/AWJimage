@@ -965,6 +965,10 @@ target_sources(awj_shared PUBLIC
 if(AWJ_BUILD_APPLICATION)
     target_sources(awj_shared PUBLIC FILE_SET awj_shared_modules TYPE CXX_MODULES FILES
         src/app/preset.ixx src/app/batch_protocol.ixx)
+elseif(WIN32 AND BUILD_TESTING AND AWJ_BUILD_SDK)
+    # 内存 CLI 回归复用预设查询；HMOS/Linux SDK 没有此 importer。
+    target_sources(awj_shared PUBLIC FILE_SET awj_shared_modules TYPE CXX_MODULES FILES
+        src/app/preset.ixx)
 endif()
 
 add_library(awj_base STATIC)
