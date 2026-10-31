@@ -209,5 +209,64 @@ Save-Proof $ExtraProofs[0] $ExtraPaths[0]
 $ChangedArchive=Join-Path (Split-Path -Parent $ExtraPaths[1]) $ExtraProofs[1].archive.name
 [IO.File]::AppendAllText($ChangedArchive, 'changed')
 Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } 'SDK 归档在验收后变化'
+# 1.3.1 四角色使用元数据夹具；不代表真实 SDK、消费者或设备已通过。
+$Version='1.3.1'; $ExtraPaths131=@(); $ExtraProofs131=@()
+foreach ($Spec in @(
+    @{kind='sdk';platform='windows-x64';name='AWJ_SDK_Win_x64.zip';profile='windows-x64-clang21';compiler='21.1.8';triple='x86_64-pc-windows-msvc'},
+    @{kind='sdk';platform='linux-x64';name='AWJ_SDK_Linux_x64.tar.gz';profile='linux-x64-clang23';compiler='23.1.5';triple='x86_64-pc-linux-gnu'},
+    @{kind='sdk';platform='hmos-arm64-api26';name='AWJ_SDK_HMOS_arm64_api26.tar.gz';profile='hmos-arm64-api26-clang23';compiler='23.1.5';triple='aarch64-unknown-linux-ohos'},
+    @{kind='source';platform='source';name='AWJimage-1.3.1-source.zip'})) {
+    $Directory=Join-Path $Repo "build/extra-131-$($Spec.platform)"
+    [void][IO.Directory]::CreateDirectory($Directory)
+    $Archive=Join-Path $Directory $Spec.name
+    [IO.File]::WriteAllText($Archive, "metadata-fixture:$($Spec.name)", [Text.UTF8Encoding]::new($false))
+    $Checks=if ($Spec.kind -ceq 'sdk') {
+        @{sdk_tests='passed';installed_consumers='passed';exports='passed';archive_roundtrip='passed';compiler_identity='passed';target_identity='passed'}
+    } else { @{source_commit='passed';source_layout='passed'} }
+    $Proof131=@{schema=1;kind=$Spec.kind;platform=$Spec.platform;mode='formal';status='passed';version=$Version
+        git_head=$GitHead;source_dirty=$false;source_fingerprint=$SourceFingerprint;verification=$Checks
+        archive=@{name=$Spec.name;size=(Get-Item -LiteralPath $Archive).Length;sha256=(Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()}
+        test_report_sha256=('b' * 64);consumer_report_sha256=('d' * 64)}
+    if ($Spec.kind -ceq 'sdk') {
+        $Proof131.profile=$Spec.profile; $Proof131.compiler_version=$Spec.compiler; $Proof131.target_triple=$Spec.triple
+        if ($Spec.platform -ceq 'hmos-arm64-api26') {
+            $Proof131.native_sdk_version='26.0.0.105'; $Proof131.api=26; $Proof131.libcxx_version=15004
+            $Proof131.libcxx_abi_namespace='__n1'; $Proof131.target_execution_report_sha256='e' * 64
+            $Checks.target_execution='passed'; $Checks.target_loader='passed'
+        } else { $Checks.relocated_stream='passed' }
+    }
+    $Receipt=Join-Path $Directory 'asset-evidence.json'
+    Save-Proof $Proof131 $Receipt
+    $ExtraPaths131+=,$Receipt; $ExtraProofs131+=,$Proof131
+}
+if (@(Assert-AdditionalReleaseAssets $ExtraPaths131).Count -ne 4) { throw '1.3.1 四角色夹具未通过。' }
+Must-Reject { Assert-AdditionalReleaseAssets @($ExtraPaths131[0],$ExtraPaths131[1],$ExtraPaths131[3]) } '1.3.1 缺少 HMOS SDK'
+Must-Reject { Assert-AdditionalReleaseAssets @($ExtraPaths131[0],$ExtraPaths131[1],$ExtraPaths131[2],$ExtraPaths131[2]) } '1.3.1 重复 HMOS 并缺少源码'
+foreach ($Case in @(
+    @{index=0;field='platform';value='Windows-x64'},
+    @{index=1;field='compiler_version';value='21.1.8'},
+    @{index=2;field='compiler_version';value='21.1.8'},
+    @{index=2;field='profile';value='linux-x64-clang23'},
+    @{index=2;field='target_triple';value='x86_64-pc-linux-gnu'},
+    @{index=2;field='native_sdk_version';value='26.0.0.104'},
+    @{index=2;field='api';value=25},
+    @{index=2;field='api';value='26'},
+    @{index=2;field='libcxx_version';value=15003},
+    @{index=2;field='libcxx_abi_namespace';value='__1'},
+    @{index=2;field='target_execution_report_sha256';value=@('e' * 64)})) {
+    $Saved=$ExtraProofs131[$Case.index][$Case.field]
+    $ExtraProofs131[$Case.index][$Case.field]=$Case.value
+    Save-Proof $ExtraProofs131[$Case.index] $ExtraPaths131[$Case.index]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } "1.3.1 错误目标身份：$($Case.field)"
+    $ExtraProofs131[$Case.index][$Case.field]=$Saved
+    Save-Proof $ExtraProofs131[$Case.index] $ExtraPaths131[$Case.index]
+}
+foreach ($Check in @('compiler_identity','target_identity','target_execution','target_loader')) {
+    $ExtraProofs131[2].verification[$Check]='not-executed'
+    Save-Proof $ExtraProofs131[2] $ExtraPaths131[2]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } "HMOS 缺少真实通过项：$Check"
+    $ExtraProofs131[2].verification[$Check]='passed'
+    Save-Proof $ExtraProofs131[2] $ExtraPaths131[2]
+}
 if ((Get-Content -LiteralPath (Join-Path $Repo 'bin/x64/Release/sentinel') -Raw) -cne 'unchanged') { throw '保护目录被改变。' }
-[ordered]@{status='passed'; fixture_root=$Repo; cleanup='not-executed'; scope='evidence-and-layout-contract'; protected='unchanged'} | ConvertTo-Json -Compress
+[ordered]@{status='passed'; fixture_root=$Repo; cleanup='not-executed'; scope='evidence-and-layout-contract'; protected='unchanged'; sdk_roles_131=4} | ConvertTo-Json -Compress

@@ -74,15 +74,19 @@ function Assert-File([string]$Path, [string]$Label) {
 }
 
 function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
+    $withHmos = [version]$Version -ge [version]'1.3.1'
     if (-not $EvidencePaths.Count) {
         if (-not $LocalCandidate -and [version]$Version -ge [version]'1.3.0') {
-            throw '1.3.0 起正式发布必须同时提供双平台 SDK 与对应源码。'
+            throw '正式发布必须提供该版本要求的全部平台 SDK 与对应源码。'
         }
         return
     }
-    if ($EvidencePaths.Count -ne 3) { throw '正式附加资产必须恰好包含双平台 SDK 与对应源码。' }
-    $expected = @{'sdk:windows-x64'='AWJ_SDK_Win_x64.zip'; 'sdk:linux-x64'='AWJ_SDK_Linux_x64.tar.gz';
-        'source:source'="AWJimage-$Version-source.zip"}
+    $expected = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    $expected.Add('sdk:windows-x64', 'AWJ_SDK_Win_x64.zip')
+    $expected.Add('sdk:linux-x64', 'AWJ_SDK_Linux_x64.tar.gz')
+    $expected.Add('source:source', "AWJimage-$Version-source.zip")
+    if ($withHmos) { $expected.Add('sdk:hmos-arm64-api26', 'AWJ_SDK_HMOS_arm64_api26.tar.gz') }
+    if ($EvidencePaths.Count -ne $expected.Count) { throw '正式附加资产必须恰好覆盖该版本要求的全部 SDK 与对应源码。' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($path in $EvidencePaths) {
         $receipt = Assert-File $path '附加资产验收记录'
@@ -103,7 +107,28 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
             if ($proof.test_report_sha256 -notmatch '^[0-9a-f]{64}$' -or $proof.consumer_report_sha256 -notmatch '^[0-9a-f]{64}$') {
                 throw 'SDK 缺少可追溯的实际测试摘要。'
             }
-            @('sdk_tests','installed_consumers','exports','archive_roundtrip','relocated_stream')
+            $sdkChecks = @('sdk_tests','installed_consumers','exports','archive_roundtrip')
+            if ($withHmos) {
+                Assert-AwjJsonFields $proof @('profile','compiler_version','target_triple')
+                $expectedProfile = switch -CaseSensitive ($proof.platform) {
+                    'windows-x64' { @('windows-x64-clang21', '^21\.[0-9]+\.[0-9]+$', 'x86_64-pc-windows-msvc') }
+                    'linux-x64' { @('linux-x64-clang23', '^23\.[0-9]+\.[0-9]+$', 'x86_64-pc-linux-gnu') }
+                    'hmos-arm64-api26' { @('hmos-arm64-api26-clang23', '^23\.[0-9]+\.[0-9]+$', 'aarch64-unknown-linux-ohos') }
+                    default { throw '未知 SDK 目标平台。' }
+                }
+                if ($proof.profile -cne $expectedProfile[0] -or $proof.compiler_version -cnotmatch $expectedProfile[1] -or
+                    $proof.target_triple -cne $expectedProfile[2]) { throw 'SDK 编译器或真实目标与 profile 不匹配。' }
+                $sdkChecks += @('compiler_identity','target_identity')
+            }
+            if ($proof.platform -ceq 'hmos-arm64-api26') {
+                Assert-AwjJsonFields $proof @('native_sdk_version','libcxx_abi_namespace','target_execution_report_sha256')
+                if ($proof.native_sdk_version -cne '26.0.0.105' -or $proof.libcxx_abi_namespace -cne '__n1' -or
+                    -not (Test-AwjJsonUnsignedInteger $proof.api) -or $proof.api -ne 26 -or
+                    -not (Test-AwjJsonUnsignedInteger $proof.libcxx_version) -or $proof.libcxx_version -ne 15004 -or
+                    $proof.target_execution_report_sha256 -cnotmatch '^[0-9a-f]{64}$') { throw 'HMOS 目标 SDK、ABI 或执行证据不匹配。' }
+                $sdkChecks += @('target_execution','target_loader')
+            } else { $sdkChecks += 'relocated_stream' }
+            $sdkChecks
         } else { @('source_commit','source_layout') }
         Assert-AwjJsonFields $proof.verification $checks
         foreach ($check in $checks) {
