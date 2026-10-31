@@ -274,7 +274,22 @@ if ($Generator -eq 'Ninja') {
     $ConfigureArgs += "-DCMAKE_C_COMPILER=$Clang"
     $ConfigureArgs += "-DCMAKE_CXX_COMPILER=$Clang"
     # 同时固定初始化值与缓存值，避免旧缓存把 LLVM 预处理规则用于 Microsoft RC。
-    if (-not $env:WindowsSdkVerBinPath) { throw '缺少 Windows SDK 资源编译器目录。' }
+    if (-not $env:WindowsSdkVerBinPath) {
+        $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+        if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) { throw '缺少 Windows C++ 工具链定位器。' }
+        $VisualStudio = (& $VsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
+        if ($LASTEXITCODE -ne 0 -or -not $VisualStudio) { throw '没有找到 Windows C++ 工具链。' }
+        $DevCommand = Join-Path $VisualStudio 'Common7/Tools/VsDevCmd.bat'
+        $env:PATH = (Split-Path $VsWhere -Parent) + ';' + $env:PATH
+        $DevEnvironment = & $env:ComSpec /d /c "call `"$DevCommand`" -no_logo -arch=amd64 -host_arch=amd64 >nul && set"
+        if ($LASTEXITCODE -ne 0) { throw '初始化 Windows C++ 构建环境失败。' }
+        # 只更新当前构建进程，不修改用户或系统环境。
+        foreach ($Entry in $DevEnvironment) {
+            $Separator = $Entry.IndexOf('=')
+            if ($Separator -gt 0) { [Environment]::SetEnvironmentVariable($Entry.Substring(0,$Separator), $Entry.Substring($Separator+1), 'Process') }
+        }
+    }
+    if (-not $env:WindowsSdkVerBinPath) { throw '开发环境未提供 Windows SDK 资源编译器目录。' }
     $ResourceCompiler = Join-Path $env:WindowsSdkVerBinPath 'x64/rc.exe'
     if (-not (Test-Path -LiteralPath $ResourceCompiler -PathType Leaf)) { throw 'Windows SDK 资源编译器不存在。' }
     $ConfigureArgs += "-DCMAKE_RC_COMPILER=$ResourceCompiler"
