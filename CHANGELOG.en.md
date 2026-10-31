@@ -1,13 +1,19 @@
 # Changelog
 
-## 1.3.0 - Unreleased
+## 1.3.0 - 2026-10-31
 
 ### Memory pipeline and C ABI SDK
 
-- Add a C-ABI-only image-frame processing library. C and C++ consumers use the same C headers; implementation remains C++23 without exporting C++ classes, STL, exceptions or modules/BMI.
+- Add an image-frame processing library with a unified C ABI and shared C headers for C/C++ integration, implemented in C++23.
 - Accept caller-submitted CPU pixels, reference-counted FFmpeg software frames, shared-memory slots and Windows D3D11 resources. Retain sources under explicit ownership contracts, including read-only borrowing, negative strides, cropping and explicit color metadata.
 - Provide separate native SPSC shared-memory implementations for Windows and Linux. Linux uses anonymous memfd, descriptor passing, process-shared synchronization and pidfd, not ordinary disk files posing as zero-input-copy storage.
 - Memory encoding and binary stdin/stdout create no input snapshots or candidate files. Only an explicit final-file sink writes output. Report input copies, conversions and GPU transfers separately; ordinary pipes, GPU readback and encoder internals are not end-to-end zero-copy guarantees.
+
+### SDR/HDR rendition policy
+
+- Retain an HDR base and reverse gain map in JXL/AVIF only for a real SDR/HDR pair. Ordinary single-layer input, zero HDR headroom and HDR/HDR pairs produce the selected single rendition, without inventing an alternate from bit depth, display brightening or provenance flags.
+- Keep the HDR JPEG exception: prefer the existing SDR rendition, or automatically roll highlights off to create an SDR base, then preserve HDR with an ISO gain map. SDR-only input still produces ordinary SDR with `--jpeg-hdr hdr`, without inventing HDR.
+- WebP and JPEG sdr reuse existing SDR where available and otherwise roll HDR highlights down automatically. PNG retains the selected single HDR/SDR rendition. File and C ABI memory encoding share the policy without changing ABI v1 or read-only pixel borrowing.
 
 ### Encoding queue
 
@@ -15,11 +21,11 @@
 - Deduplicate normalized paths by the last valid import position: `[C,A,C,B]` becomes `[A,C,B]`, not first-occurrence order or a globally sorted batch.
 - Separate stable task identity, display position and contiguous run indices. Isolate stale scan/encoding callbacks, prevent starting before accepted imports finish, and retain import locking during encoding/cancellation cleanup. Global presets and existing output-collision policies are unchanged.
 
-### Development and validation boundaries
+### Distribution and compatibility
 
-- Integrate the fixed 1.2.6, preserving paired gain-map renditions, independent still images, resource budgets, DPI and floating-point JXR HDR fixes.
-- Record native Windows/Linux artifacts, compiler versions, actual checks and unverified scope with each development candidate. HarmonyOS still requires the real Huawei Native SDK/device; WARP does not validate real WGC or physical HDR GPUs.
-- Do not merge the mainline, rename master, create a formal tag or sign/publish a release at this stage. Preserve historical release packages and validation evidence.
+- Provide separate Windows/Linux dynamic SDK packages with C headers, CMake files, stream tools, examples, AGPL-3.0 and third-party licenses. SDK source has been built with Clang 21.
+- Use main as the development branch and retain master for older clients' signed update endpoints. Applications and SDKs are downloaded and upgraded separately.
+- Integrate the fixed 1.2.6, retaining paired gain maps, independent still images, resource budgets, DPI and floating-point JXR HDR fixes. Platform conditions and validation scope are documented in the SDK guide and version-specific acceptance records.
 
 ## 1.2.6 - 2026-10-30
 

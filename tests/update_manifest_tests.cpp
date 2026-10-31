@@ -56,6 +56,7 @@ int test_url_policy() {
   }
   for (const std::string_view good : {
            "https://raw.githubusercontent.com/Dominic485649/AWJimage/master/update-archive.json",
+           "https://raw.githubusercontent.com/Dominic485649/AWJimage/main/update-archive.json",
            "https://github.com/Dominic485649/AWJimage/releases/tag/1.0.2",
            "https://release-assets.githubusercontent.com/file",
            "https://objects.githubusercontent.com/file"}) {

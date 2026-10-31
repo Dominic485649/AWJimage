@@ -1,10 +1,10 @@
-# AWJimage 1.3.0 C ABI SDK（未发布开发版本）
+# AWJimage 1.3.0 C ABI SDK
 
 本 SDK 接收其他软件主动提交的图像帧，直接处理 CPU 内存、Windows D3D11 纹理、共享内存槽位或二进制帧流。它不附带录屏选择器、WGC capture session、视频播放器或完整 FFmpeg 解码器，也不能无侵入读取任意软件的私有内存。“任何软件”指能够按平台 C ABI 和资源所有权契约集成 SDK 的软件，不等于支持未知像素布局或任意地址。
 
 **公共接口只有 C ABI。** C++ 调用方也包含同一套 C 头；没有另一套 C++ ABI、`awj.hpp` 或导出的 C++ 封装。内部保持 C++23，私有 modules/BMI 不进入 SDK 消费接口。调用方不要求 Clang 21，但必须匹配目标 OS、架构、C 结构布局和调用约定。
 
-本项目继续适用现有 AGPL-3.0；库化和 C ABI 不会自动给予闭源软件链接/分发的许可豁免。第三方许可证见 `LICENSE`、`THIRD_PARTY_NOTICES.txt` 和 `licenses/`。本阶段只交付本地未发布开发包，不发布正式更新、签名或 tag。
+本项目继续适用现有 AGPL-3.0；库化和 C ABI 不会自动给予闭源软件链接/分发的许可豁免。第三方许可证见 `LICENSE`、`THIRD_PARTY_NOTICES.txt` 和 `licenses/`。Windows/Linux 动态 SDK 通过独立归档分发，下载与校验文件随同一版本 Release 提供。
 
 ## 平台与当前边界
 
@@ -18,7 +18,7 @@
 | Linux x86_64，Clang 21.1.8 / 23.1.5 | 原生 C ABI `.so`、匿名共享内存、FFmpeg 和只读页适配；实际完成范围与工具链要求以对应开发包的原始记录为准 |
 | 华为 HarmonyOS Native SDK | 有独立构建入口和薄 Node-API 示例，未用真实 SDK 编译/链接或真机验证；不能宣布已支持 |
 
-主线仍保持 `master`。用户于 2026-10-30 确认 1.2.6 已完成并固定；独立 1.3.0 分支已通过合并提交 `718cd45` 纳入固定的 `f77b5f0`，随后同步开发 Windows/Linux 队列与 SDK。开发候选不等于主线或正式发布；最后才按验收结果合主线、迁移为 `main` 并执行正式签名分发流程。
+1.3.0 已纳入固定的 1.2.6。开发主线采用 `main`，`master` 保留旧客户端更新入口；两处使用相同的签名清单与密钥环，1.3.0 客户端从 `main` 获取更新。正式包由同一干净源码提交构建，应用与 SDK 独立分发。
 
 ## 复制与无文件保证
 
@@ -115,6 +115,19 @@ CMake `find_package(AWJimage 1.3 CONFIG REQUIRED)`，可要求 `D3D11`、`SHM`�
 
 最小 C 用例见 `examples/basic/basic.c`，包含创建 context、借用像素、内存 PNG 编码和按分配方释放。用 `awj_frame_row` 可以核对导入地址身份；不能以执行耗时推断零复制。
 
+## 自动 SDR/HDR 编码
+
+`awj_encode` 与文件转换共用呈现策略。C ABI v1 输入是一帧像素，没有第二呈现／Gain Map 输入字段，因此外部软件已重建后提交的 HDR 帧仍视为当前单层，不凭来源猜测缺失的 SDR。
+
+| 单帧输入 | PNG / JXL / AVIF | JPEGli | WebP |
+| --- | --- | --- | --- |
+| SDR | SDR 单层，不增加 Gain Map | 普通 SDR JPEG | SDR 单层 |
+| 有明确颜色解释的 HDR | HDR 单层，不增加 Gain Map | 自动高光滚降生成 SDR 底图，再用 ISO Gain Map 保留 HDR | 自动高光滚降为 SDR 单层 |
+
+高光滚降复用 libplacebo spline tone mapping 与 perceptual gamut mapping，不以截断高光或改标签替代像素处理。JPEG 的 SDR 底图不单独宣称保留完整 HDR；HDR 由增益图重建。颜色／位深转换仍可能分配工作存储，不改变复制诊断与 owner 生命周期合同。格式只支持 SDR 不构成自动转换的失败理由；无效颜色、损坏输入、明确不支持的 lossless/visual-quality 组合、预算和取消仍按既有状态码报告。
+
+完整文件转换可保留原有真实 SDR/HDR 两端：JXL/AVIF 使用 HDR 主图与重建原 SDR 的 Gain Map，JPEG 复用原 SDR 底图与 HDR Gain Map。没有不同动态范围端点时不增加双呈现，JPEG 的单 HDR 例外除外。详细规则见 [Gain Map 与自动呈现](gain-map-animation.md)。
+
 ## WGC / D3D11
 
 调用方在持有有效 WGC capture frame 时提交其 texture、ContentSize 及 owner。**单纯 AddRef 底层 texture 不保证捕获内容不会被 frame pool 重用。** resize/recreate/device lost 后，不得把旧代资源继续当新内容使用。
@@ -200,4 +213,6 @@ Windows 的 `tests/sdk_stream_cli_tests.ps1` 用真实 FFmpeg 子进程、内存
 
 安装后独立 C99/C++11 项目消费；`scripts/verify-sdk-exports.ps1` 从实际安装公共头生成精确白名单并核对 DLL，Linux 对应 `scripts/verify-sdk-exports.cmake` 核对 ELF，不能只检查 `awj_` 前缀。构建证据记录源码指纹/每文件哈希、工具链、配置、原始日志、测试与产物 SHA-256；不把先前测试当本次重跑。
 
-开发交付固定到各项目工作根的 `bin/1.3.0/dev/<构建标识>/`，并汇总至 `D:\Code\Cpp\AWJimage\bin\1.3.0\dev\`；保留正式包、许可证和用户的 `bin/x64/`，不覆盖未知内容。Windows、Linux 分别携带与统一源码对应的原始证据；复制证据不等于在交付路径重新验证。实际位置与未验证项见本轮报告。真实 HarmonyOS、真实 WGC/物理 HDR GPU 和正式发布仍有独立验收门槛。
+正式 SDK 独立提供 `AWJ_SDK_Win_x64.zip` 与 `AWJ_SDK_Linux_x64.tar.gz`，同一 Release 附对应源码和 `SHA256SUMS`。`SDK-BUILD.json` 记录版本、C ABI、源码提交、归一化指纹与编译器；`scripts/package-sdk-release.cmake` 校验干净 tag、实际库和测试记录，并在归档回解位置执行精确导出、C99/C++11 消费者及流工具验证。Linux 流工具使用相对安装 RPATH 查找包内 SDK。
+
+历史开发交付保留在各工作根的 `bin/1.3.0/dev/<构建标识>/`，Windows 汇总目录仍保留其原始证据。复制记录不等于在新路径重新验证；真实 HarmonyOS、WGC/物理 HDR GPU 等范围按平台表和对应验收记录分别说明。

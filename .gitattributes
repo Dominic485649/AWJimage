@@ -11,6 +11,7 @@
 /scripts/package-linux-release.sh text eol=lf
 /scripts/release-source-fingerprint.sh text eol=lf
 /tests/sdk_stream_posix_tests.sh text eol=lf
+/tests/linux_release_paths_tests.sh text eol=lf
 
 ###############################################################################
 # Set default behavior for command prompt diff.

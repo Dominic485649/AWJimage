@@ -43,6 +43,12 @@ std::string signature(std::string_view raw,
 }  // namespace
 
 int main() {
+  if (awj::update::update_keyring_url !=
+          "https://raw.githubusercontent.com/Dominic485649/AWJimage/main/update-keyring.json" ||
+      awj::update::update_keyring_signature_url !=
+          "https://raw.githubusercontent.com/Dominic485649/AWJimage/main/update-keyring.json.sig") {
+    return fail("密钥环入口应使用 main 主线。");
+  }
   if (sodium_init() < 0) return fail("cannot initialize sodium");
   const auto now = std::chrono::system_clock::now();
   const auto not_before = utc(now - std::chrono::hours{1});

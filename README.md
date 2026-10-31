@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前源码版本：**1.3.0（未发布开发版）**；正式下载以 Releases 为准。
+AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前版本：**1.3.0**，同时提供应用与 C ABI SDK。
 
 ## 格式支持
 
@@ -11,9 +11,11 @@ AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形�
 | 输入 | AVIF、HEIC/HEIF、JPEG、PNG、WebP、JXL、BMP、GIF、TIFF、相机 RAW；Windows 另支持 JXR |
 | 输出 | AVIF、PNG、WebP、JXL、JPG |
 | 动画 | GIF、APNG、WebP、AVIF 转 AVIF 时保留帧时序、循环和透明度 |
-| HDR | 支持 HDR 图像和受支持的 Gain Map；JPEG 输出可生成 HDR Gain Map |
+| HDR | 单层 SDR/HDR 保持单层；真实双呈现可保留 Gain Map；JPG HDR 可自动生成 SDR 底图，SDR-only 输出自动高光滚降 |
 
 默认输出 AVIF，质量 70、速度 5。JPG 默认输出 8-bit YCbCr，auto 与 AVIF 一样跟随源采样：保留已知 4:2:0 / 4:2:2 / 4:4:4，RGB、RGBA 和未知源使用 4:4:4；JPG 灰度源在 auto 下使用三分量 4:4:4，不支持显式 4:0:0。HDR JPG 使用 SDR 主图与 ISO 21496-1 Gain Map，仅接受 ISO 增益图协议，不再兼容旧 Adobe／Google／Apple 增益图。质量 100 的无损行为取决于格式；JPEG 支持无损转封装为 JXL。[Gain Map 与动画说明](docs/gain-map-animation.md)。
+
+SDR 输入不因宽色域、高位深或显示提亮而增加 HDR 层。JXL/AVIF 仅为原有 SDR/HDR 双呈现保留 HDR 底图与重建 SDR 的 Gain Map；普通单层仍为单层。JPG 是例外：HDR 没有现成 SDR 时自动高光滚降生成 SDR 底图，再用 Gain Map 保留 HDR。WebP 自动滚降至 SDR，有原 SDR 时优先复用；PNG 保留所选 HDR/SDR 单层。`--jpeg-hdr hdr` 遇到 SDR 输入也保持普通 SDR，不重标为 HDR。
 
 各格式使用统一的目标像素转换阶段。兼容的 YUV 布局直接复用，色彩矩阵、位深、采样及几何调整合并处理，减少整图中间缓冲。HDR 亮度分析、Gain Map 重建和动画合成按格式要求执行。
 
@@ -54,9 +56,11 @@ Windows 使用 `AWJ.com`；Linux 将下列命令中的程序名换为 `./AWJ`。
 
 `--threads auto` 按允许的逻辑 CPU 数预留桌面余量；`--threads N` 使用 N 的总编码线程预算（1–128），不扣除预留。文件并发与每图编码线程在该预算内分配，并受内存预算约束。`--cpu-affinity` 使用从 0 开始的逻辑 CPU 编号，只能缩小进程当前允许集合；Windows 编号位于当前处理器组。
 
-## C ABI SDK（未发布）
+## C ABI SDK
 
-其他软件可通过同一套 C 头提交 CPU、共享内存、FFmpeg 或 Windows D3D11 帧，直接进行内存编码；不公开 C++ ABI，也不内置捕获器或播放器。库内部使用 C++23，目标源码编译器为 Clang 21+；Windows/Linux 分别构建，HarmonyOS 仍需真实 SDK／真机验收。复制、颜色、生命周期与平台边界见 [SDK 文档](docs/sdk.md)。普通管道和 GPU 回读不属于端到端零复制。
+提供 Windows / Linux 动态 SDK，C / C++ 项目通过同一套 C 头接入。支持 CPU 图像帧、共享内存、可选 FFmpeg 帧桥接和 Windows D3D11 纹理，直接返回内存编码结果；附 CMake package、`awj-stream` 和集成示例。SDK 源码已通过 Clang 21 构建，提供 C99 / C++11 消费示例。
+
+从同一 Release 下载 `AWJ_SDK_Win_x64.zip` 或 `AWJ_SDK_Linux_x64.tar.gz`。接入契约、复制诊断、色彩和平台要求见 [SDK 文档](docs/sdk.md)。
 
 ## 构建
 

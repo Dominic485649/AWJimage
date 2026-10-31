@@ -298,8 +298,7 @@ ImageMemoryEstimate estimated_regular_memory(
   estimate.decode_bytes = add(add(add(common, decode_auxiliary), decode_workspace), add(16 * mib, worker_scratch));
   const bool hdr_jpeg = cfg.output_format == OutputFormat::jpgli &&
       cfg.jpeg_hdr != JpegHdrMode::sdr &&
-      (!sdr || cfg.jpeg_hdr == JpegHdrMode::hdr ||
-       cfg.transfer_characteristics == 16 || cfg.transfer_characteristics == 18);
+      (!sdr || cfg.transfer_characteristics == 16 || cfg.transfer_characteristics == 18);
   const int target_depth = cfg.output_format == OutputFormat::webp ||
                                    (cfg.output_format == OutputFormat::jpgli && !hdr_jpeg)
       ? 8 : cfg.bit_depth.value_or(cfg.output_format == OutputFormat::avif

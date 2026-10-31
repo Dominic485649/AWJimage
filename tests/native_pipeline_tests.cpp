@@ -754,8 +754,13 @@ int main() {
       return fail("HDR JPEG visual search rejection left a completed output.");
     rejected_cfg.visual_quality.reset(); rejected_cfg.jpeg_hdr = awj::JpegHdrMode::hdr;
     awj::NativeBackend forced{rejected_cfg, logger, budget};
-    if (forced.encode(awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes}).ok)
-      return fail("Forced HDR JPEG accepted SDR input.");
+    const auto ordinary = forced.encode(awj::ImageFile{.index = 0, .path = input, .bytes = input_bytes});
+    if (!ordinary.ok || ordinary.rendition.selected != "sdr" || ordinary.rendition.gain_map_generated ||
+        ordinary.fallback_reason != "SDR input -> SDR JPEG")
+      return fail(ordinary.ok ? "SDR input was promoted to HDR instead of ordinary JPEG." : ordinary.message);
+    auto ordinary_map = awj::decode_jpeg_gain_map(ordinary.output_path);
+    if (!ordinary_map || ordinary_map->has_value())
+      return fail(ordinary_map ? "SDR-only JPEG unexpectedly contains a Gain Map." : ordinary_map.error());
   }
 
   auto hdr_avif_cfg = awj::default_app_config();

@@ -59,4 +59,30 @@ function Test-BuilderInstallSwitch([bool]$SkipInstall) {
 }
 Test-BuilderInstallSwitch $true
 Test-BuilderInstallSwitch $false
-Write-Output 'package manifest selection and Windows builder install-switch contract passed'
+$TestFlagNodes = @($BuilderAst.FindAll({
+    param($Node)
+    $Node -is [Management.Automation.Language.AssignmentStatementAst] -and
+        $Node.Left -is [Management.Automation.Language.VariableExpressionAst] -and
+        $Node.Left.VariablePath.UserPath -eq 'ConfigureArgs' -and
+        $Node.Right.Extent.Text.Contains('-DBUILD_TESTING=')
+}, $true))
+if ($TestFlagNodes.Count -ne 1) { throw 'Windows 构建须显式拼装唯一测试开关。' }
+foreach ($Enabled in @($false,$true)) {
+    $BuildTests=$Enabled; $ConfigureArgs=@()
+    . ([scriptblock]::Create($TestFlagNodes[0].Extent.Text))
+    $Expected=if ($Enabled) { '-DBUILD_TESTING=ON' } else { '-DBUILD_TESTING=OFF' }
+    if ($ConfigureArgs.Count -ne 1 -or $ConfigureArgs[0] -cne $Expected) { throw '正式构建测试开关失效。' }
+}
+$GeneratorNodes = @($BuilderAst.FindAll({
+    param($Node)
+    $Node -is [Management.Automation.Language.IfStatementAst] -and
+        $Node.Clauses[0].Item1.Extent.Text -ceq '$Generator -eq ''Ninja'''
+}, $true))
+if ($GeneratorNodes.Count -ne 1) { throw 'Windows 构建缺少唯一的 Ninja/VS 参数边界。' }
+$Generator='Ninja'; $CompilerDirectory=''; $ConfigureArgs=@(); $Rejected=$false
+try { . ([scriptblock]::Create($GeneratorNodes[0].Extent.Text)) } catch { $Rejected=$true }
+if (-not $Rejected) { throw 'Ninja 必须显式指定编译器。' }
+$Generator='Visual Studio 18 2026'; $CompilerDirectory=''; $ConfigureArgs=@()
+. ([scriptblock]::Create($GeneratorNodes[0].Extent.Text))
+if ($ConfigureArgs.Count -ne 2 -or $ConfigureArgs[0] -cne '-A' -or $ConfigureArgs[1] -cne 'x64') { throw 'VS 架构参数改变。' }
+Write-Output 'package manifest selection and Windows install/test/generator contracts passed'

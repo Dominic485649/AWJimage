@@ -11,6 +11,9 @@ param(
     [string]$DependencyCacheRoot = "",
     [string]$BuildDirectory = "",
     [string]$RuntimeOutputRoot = "",
+    [ValidateSet('Visual Studio 18 2026', 'Ninja')] [string]$Generator = 'Visual Studio 18 2026',
+    [string]$CompilerDirectory = "",
+    [switch]$BuildTests,
     [string]$VcpkgInstalledDirectory = "",
     [string]$DependencySourceRoot = "",
     [switch]$LocalCandidate,
@@ -256,9 +259,24 @@ $ConfigureArgs = @(
     "-U", "AWJ_SLINT_GIT_TAG",
     "-S", $Repo,
     "-B", $BuildDir,
-    "-G", "Visual Studio 18 2026",
-    "-A", "x64"
+    "-G", $Generator
 )
+$CompilerDescription = 'Visual Studio 18 2026 toolset'
+if ($Generator -eq 'Ninja') {
+    if (-not $CompilerDirectory) { throw 'Ninja 正式构建须显式提供 Clang 23 CompilerDirectory。' }
+    $Clang = Join-Path ([IO.Path]::GetFullPath($CompilerDirectory, $Repo)) 'clang-cl.exe'
+    if (-not (Test-Path -LiteralPath $Clang -PathType Leaf)) { throw 'Clang 编译器不存在。' }
+    $CompilerOutput = @(& $Clang --version)
+    if ($LASTEXITCODE -ne 0 -or -not $CompilerOutput.Count -or $CompilerOutput[0] -notmatch 'clang version 23\.') {
+        throw '应用正式 Ninja 构建要求 Clang 23。'
+    }
+    $CompilerDescription = $CompilerOutput[0]
+    $ConfigureArgs += "-DCMAKE_C_COMPILER=$Clang"
+    $ConfigureArgs += "-DCMAKE_CXX_COMPILER=$Clang"
+} else {
+    if ($CompilerDirectory) { throw '显式 Clang 编译器需搭配 Ninja 生成器。' }
+    $ConfigureArgs += @('-A', 'x64')
+}
 if ($VcpkgRoot) {
     $ConfigureArgs += "-DVCPKG_ROOT=$VcpkgRoot"
     $ConfigureArgs += "-DVCPKG_TRIPLET=$VcpkgTriplet"
@@ -273,7 +291,7 @@ $ConfigureArgs += "-DAWJ_RUNTIME_OUTPUT_ROOT=$RuntimeOutputRoot"
 # NoVcpkgInstall 同时约束配置阶段，不能让工具链因缓存 ABI 差异重新安装依赖。
 $ConfigureArgs += "-DVCPKG_MANIFEST_INSTALL=$(if ($NoVcpkgInstall) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DVCPKG_INSTALL_OPTIONS=--x-buildtrees-root=$DependencyBuildtrees;--x-packages-root=$DependencyPackages"
-$ConfigureArgs += "-DBUILD_TESTING=OFF"
+$ConfigureArgs += "-DBUILD_TESTING=$(if ($BuildTests) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_MSVC_RUNTIME=$(if ($UseStaticRuntime) { 'ON' } else { 'OFF' })"
 $ConfigureArgs += "-DAVIF_STATIC_SLINT=$(if ($SharedSlint) { 'OFF' } else { 'ON' })"
 $ConfigureArgs += "-DAVIF_ENABLE_RELEASE_IPO=$(if ($EnableLto) { 'ON' } else { 'OFF' })"
@@ -348,6 +366,8 @@ $GitTagLine
 Architecture: x64
 Minimum CPU: AVX2
 Release IPO/LTO: $(if ($EnableLto) { 'ON' } else { 'OFF' })
+Compiler: $CompilerDescription
+CMake Generator: $Generator
 Source: https://github.com/Dominic485649/AWJimage
 
 Vcpkg baseline: $VcpkgBaseline

@@ -172,6 +172,16 @@ int main() {
     const auto unknown_jpeg = awj::pipeline_detail::estimated_regular_memory(unknown, jpeg);
     if (sdr_jpeg.profile != "jpegli-sdr" || sdr_jpeg.bytes >= unknown_jpeg.bytes)
       return fail("Ordinary SDR JPEGli still reserved the complete HDR pipeline");
+    jpeg.jpeg_hdr = awj::JpegHdrMode::hdr;
+    const auto forced_sdr = awj::pipeline_detail::estimated_regular_memory(rgb, jpeg);
+    if (forced_sdr.profile != "jpegli-sdr" || forced_sdr.bytes != sdr_jpeg.bytes ||
+        awj::pipeline_detail::estimated_regular_memory(unknown, jpeg).profile != "jpegli-hdr-or-unknown" ||
+        awj::pipeline_detail::estimated_regular_memory(gain, jpeg).profile != "jpegli-hdr-gain-map")
+      return fail("JPG hdr reserved HDR for confirmed SDR or under-reserved real/unknown HDR");
+    auto converted_hdr = jpeg;
+    converted_hdr.transfer_characteristics = 16;
+    if (awj::pipeline_detail::estimated_regular_memory(rgb, converted_hdr).profile != "jpegli-hdr-or-unknown")
+      return fail("Explicit SDR-to-PQ conversion lost its HDR JPEG working-set budget");
     jpeg.jpeg_hdr = awj::JpegHdrMode::sdr;
     if (awj::pipeline_detail::estimated_regular_memory(gain, jpeg).profile != "jpegli-source-sdr-presentation")
       return fail("Forced SDR Gain Map output did not plan the saved source SDR presentation");

@@ -1058,7 +1058,7 @@ std::string help_text() {
   --chroma <auto|444|422|420|400> AVIF/JPG 色度采样；AVIF 400 强制灰度并保留 alpha；JPG 支持 auto/444/422/420；AVIF auto 参考 avifenc：保留 YUV 源的 420/422/444，灰度使用 400，RGB/RGBA 与未知源使用 444；JPG auto 同样保留源 420/422/444，RGB/RGBA、灰度与未知源使用三分量 444；也可用 --444 / --422 / --420
   --avif-color-representation <yuv|source|rgb> AVIF 颜色表示；默认 yuv，source 跟随源的 YUV 或 RGB Identity，rgb 强制 RGB(A)/GBR(A) Identity 与 4:4:4（自动选择 AOM）
   --append-png-suffix        AVIF 输出额外添加 .png 后缀，实际字节仍为 AVIF
-  --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：SDR 使用普通 JPG，HDR 输出 8-bit SDR base + ISO Gain Map；HDR 不支持 visual-quality
+  --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：auto/hdr 对 HDR 复用原 SDR，缺少时自动高光滚降生成 8-bit SDR base + ISO Gain Map；SDR 输入始终单层；sdr 仅输出原 SDR 或自动滚降的 SDR；HDR Gain Map 不支持 visual-quality
   --avif-animation-tune <auto|ssim|psnr> 动画优化；默认 auto 使用编码器默认值；静态图保留 IQ
   --avif-animation-keyframe <N> 动画最大关键帧间隔；0 自动（默认），正整数指定最大帧间隔
   --jpeg-progressive-level <0|1|2> JPG 渐进级别；0 为顺序 JPEG，默认 2

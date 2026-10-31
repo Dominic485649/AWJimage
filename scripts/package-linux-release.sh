@@ -28,6 +28,8 @@ script_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 repo=$(CDPATH= cd -- "$script_dir/.." && pwd)
 repo=$(realpath -e -- "$repo")
 workspace=$(dirname -- "$repo")
+version=$(tr -d '\r\n' < "$repo/VERSION")
+[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'VERSION is invalid'
 command -v mountpoint >/dev/null || die 'mountpoint is required for project path validation'
 assert_project_path() {
   local original absolute scope cursor kind=${2-runtime}
@@ -42,7 +44,7 @@ assert_project_path() {
       if [[ "$kind" == build ]]; then
         case "$absolute" in "$workspace/build-release"|"$workspace/build-release/"*|"$workspace/build-tests"|"$workspace/build-tests/"*) scope=$workspace ;; *) die 'unknown native project build path' ;; esac
       else
-        case "$absolute" in "$workspace/bin-release"|"$workspace/bin-release/"*|"$workspace/bin-tests"|"$workspace/bin-tests/"*) scope=$workspace ;; *) die 'unknown native project runtime path' ;; esac
+        case "$absolute" in "$workspace/bin-release"|"$workspace/bin-release/"*|"$workspace/bin-tests"|"$workspace/bin-tests/"*|"$workspace/build-tests/runtime-$version"|"$workspace/build-tests/runtime-$version/"*) scope=$workspace ;; *) die 'unknown native project runtime path' ;; esac
       fi ;;
   esac
   cursor=$absolute
@@ -59,8 +61,6 @@ binary=$(assert_project_path "$binary")
 binary=$(realpath -e -- "$binary")
 [[ -x "$binary" && $(basename -- "$binary") == AWJ ]] || die '--binary must name an executable AWJ'
 case "$repo:$binary" in *'/mnt/'*) die 'build and package from the native Linux filesystem, not a Windows mount' ;; esac
-version=$(tr -d '\r\n' < "$repo/VERSION")
-[[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || die 'VERSION is invalid'
 tracked_status=$(git -C "$repo" status --porcelain --untracked-files=no)
 untracked_sources=$(git -C "$repo" ls-files --others --exclude-standard -- src ui cmake tests scripts docs licenses vcpkg-overlays)
 head=$(git -C "$repo" rev-parse HEAD)

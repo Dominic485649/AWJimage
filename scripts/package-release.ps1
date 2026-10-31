@@ -18,6 +18,7 @@ param(
     [string]$WindowsEvidencePath = "",
     [string]$LinuxEvidencePath = "",
     [Parameter(Mandatory)] [string]$VerificationReportPath,
+    [string[]]$AdditionalAssetEvidencePaths = @(),
     [switch]$LocalCandidate,
     [switch]$SkipManifests
 )
@@ -70,6 +71,52 @@ function Assert-File([string]$Path, [string]$Label) {
     $Resolved = Get-RepoPath $Path
     if (-not (Test-Path -LiteralPath $Resolved -PathType Leaf)) { throw "$Label 不存在: $Resolved" }
     return $Resolved
+}
+
+function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
+    if (-not $EvidencePaths.Count) {
+        if (-not $LocalCandidate -and [version]$Version -ge [version]'1.3.0') {
+            throw '1.3.0 起正式发布必须同时提供双平台 SDK 与对应源码。'
+        }
+        return
+    }
+    if ($EvidencePaths.Count -ne 3) { throw '正式附加资产必须恰好包含双平台 SDK 与对应源码。' }
+    $expected = @{'sdk:windows-x64'='AWJ_SDK_Win_x64.zip'; 'sdk:linux-x64'='AWJ_SDK_Linux_x64.tar.gz';
+        'source:source'="AWJimage-$Version-source.zip"}
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+    foreach ($path in $EvidencePaths) {
+        $receipt = Assert-File $path '附加资产验收记录'
+        $proof = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json -AsHashtable
+        Assert-AwjJsonFields $proof @('kind','mode','status','version','platform','git_head','source_fingerprint') @('source_dirty')
+        if (-not (Test-AwjJsonUnsignedInteger $proof.schema) -or $proof.schema -ne 1 -or
+            $proof.mode -cne 'formal' -or $proof.status -cne 'passed' -or $proof.source_dirty -ne $false -or
+            $proof.version -cne $Version -or $proof.git_head -cne $GitHead -or $proof.source_fingerprint -cne $SourceFingerprint) {
+            throw '附加资产必须通过验收并来自同一干净正式提交。'
+        }
+        $role = $proof.kind + ':' + $proof.platform
+        if (-not $expected.ContainsKey($role) -or -not $seen.Add($role)) { throw '附加资产角色未知或重复。' }
+        Assert-AwjJsonFields $proof.archive @('name','sha256')
+        if ($proof.archive.name -cne $expected[$role] -or -not (Test-AwjJsonUnsignedInteger $proof.archive.size) -or
+            $proof.archive.sha256 -notmatch '^[0-9a-f]{64}$') { throw '附加资产归档信息无效。' }
+        $checks = if ($proof.kind -ceq 'sdk') {
+            Assert-AwjJsonFields $proof @('test_report_sha256','consumer_report_sha256')
+            if ($proof.test_report_sha256 -notmatch '^[0-9a-f]{64}$' -or $proof.consumer_report_sha256 -notmatch '^[0-9a-f]{64}$') {
+                throw 'SDK 缺少可追溯的实际测试摘要。'
+            }
+            @('sdk_tests','installed_consumers','exports','archive_roundtrip','relocated_stream')
+        } else { @('source_commit','source_layout') }
+        Assert-AwjJsonFields $proof.verification $checks
+        foreach ($check in $checks) {
+            if ($proof.verification[$check] -cne 'passed') { throw "附加资产缺少通过项：$check" }
+        }
+        $archive = Assert-File (Join-Path (Split-Path -Parent $receipt) $proof.archive.name) '附加资产归档'
+        if ((Get-Item -LiteralPath $archive).Length -ne [UInt64]$proof.archive.size -or
+            (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $proof.archive.sha256) {
+            throw '附加资产归档与验收记录不匹配。'
+        }
+        [pscustomobject]@{name=$proof.archive.name; path=$archive; sha256=$proof.archive.sha256; receipt=$receipt;
+            receipt_sha256=(Get-FileHash -LiteralPath $receipt -Algorithm SHA256).Hash.ToLowerInvariant()}
+    }
 }
 
 function Assert-Directory([string]$Path, [string]$Label) {
@@ -448,6 +495,7 @@ $ExpectedVerifiedArtifacts = @(
     foreach ($Binary in $LinuxProof.binaries) { [ordered]@{platform='linux-x64'; path=$Binary.path; size=$Binary.size; sha256=$Binary.sha256} }
 )
 $TestReport = Assert-VerificationReport $VerificationReportPath $ExpectedVerifiedArtifacts
+$AdditionalAssets = @(Assert-AdditionalReleaseAssets $AdditionalAssetEvidencePaths)
 if (-not $SkipManifests) {
     if (-not $UpdateKeyringPath) {
         $UpdateKeyringPath = Join-Path $Repo 'update-keyring.json'
@@ -486,6 +534,18 @@ foreach ($Name in @('AWJ', 'LICENSE', 'NOTICE.txt')) {
 Copy-Item -LiteralPath $WindowsEvidencePath -Destination (Join-Path $Verification 'windows-build.json')
 Copy-Item -LiteralPath $LinuxEvidencePath -Destination (Join-Path $Verification 'linux-build.json')
 Copy-Item -LiteralPath $VerificationReportPath -Destination (Join-Path $Verification 'tests.json')
+$AdditionalVerificationFiles = @(
+    foreach ($Asset in $AdditionalAssets) {
+        $ReceiptName = "verification/$($Asset.name).json"
+        Copy-Item -LiteralPath $Asset.path -Destination (Join-Path $Stage $Asset.name)
+        Copy-Item -LiteralPath $Asset.receipt -Destination (Join-Path $Stage $ReceiptName)
+        if ((Get-FileHash -LiteralPath (Join-Path $Stage $Asset.name) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Asset.sha256 -or
+            (Get-FileHash -LiteralPath (Join-Path $Stage $ReceiptName) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Asset.receipt_sha256) {
+            throw '附加资产在正式收口期间变化。'
+        }
+        $ReceiptName
+    }
+)
 
 $WindowsSourceDirectory = Split-Path -Parent $WindowsExePath
 $WindowsLicensePath = Assert-File (Join-Path $WindowsSourceDirectory "LICENSE") "Windows LICENSE"
@@ -549,13 +609,13 @@ if (-not $SkipManifests) {
 if ((Get-AwjSourceFingerprint -RepositoryRoot $Repo) -cne $SourceFingerprint -or (git -C $Repo rev-parse HEAD).Trim() -cne $GitHead) {
     throw '源码在打包期间变化，保留 staging，不投放、不清理旧版本。'
 }
-$HashFiles = @('Windows/AWJ.exe', 'Windows/AWJ.com', 'Windows/LICENSE', 'Windows/NOTICE.txt', 'Linux/AWJ', 'Linux/LICENSE', 'Linux/NOTICE.txt', 'AWJ_Win.7z', 'AWJ_Linux.7z')
+$HashFiles = @('Windows/AWJ.exe', 'Windows/AWJ.com', 'Windows/LICENSE', 'Windows/NOTICE.txt', 'Linux/AWJ', 'Linux/LICENSE', 'Linux/NOTICE.txt', 'AWJ_Win.7z', 'AWJ_Linux.7z') + @($AdditionalAssets | ForEach-Object { $_.name })
 $HashLines = foreach ($Relative in $HashFiles) {
     $Hash = (Get-FileHash -LiteralPath (Join-Path $Stage $Relative) -Algorithm SHA256).Hash.ToLowerInvariant()
     "$Hash  $Relative"
 }
 Write-Utf8NoBom (Join-Path $Stage 'SHA256SUMS') (($HashLines -join "`n") + "`n")
-$Artifacts = foreach ($Relative in ($HashFiles + @('SHA256SUMS', '.awj-owned-stage.json', 'verification/windows-build.json', 'verification/linux-build.json', 'verification/tests.json'))) {
+$Artifacts = foreach ($Relative in ($HashFiles + @('SHA256SUMS', '.awj-owned-stage.json', 'verification/windows-build.json', 'verification/linux-build.json', 'verification/tests.json') + $AdditionalVerificationFiles)) {
     $Path = Join-Path $Stage $Relative
     [ordered]@{path=$Relative; size=[UInt64](Get-Item -LiteralPath $Path).Length; sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
 }

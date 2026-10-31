@@ -656,6 +656,52 @@ bool sdr_only_format_conversion_needed(OutputFormat format, const ImageBuffer& i
          hdr_transfer || (image.source_info && image.source_info->has_hdr_metadata);
 }
 
+std::expected<void, std::string> select_output_rendition(
+    ImageDecodeResult& decoded, const AppConfig& cfg, std::stop_token stop) {
+  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (!decoded.gain_map_alternative) return {};
+  auto& alternative = *decoded.gain_map_alternative;
+  const auto main_headroom = alternative.main_hdr_headroom_log2;
+  const auto alternate_headroom = alternative.alternate_hdr_headroom_log2;
+  if (!std::isfinite(main_headroom) || !std::isfinite(alternate_headroom) ||
+      main_headroom < 0 || alternate_headroom < 0) {
+    return std::unexpected{"Gain Map: 两端呈现 headroom 无效。"};
+  }
+  if (decoded.image.width != alternative.image.width || decoded.image.height != alternative.image.height) {
+    return std::unexpected{"Gain Map: 两端呈现的逻辑尺寸不一致。"};
+  }
+  for (const auto* image : {&decoded.image, &alternative.image}) {
+    if (auto valid = hdr::hdr_detail::validate_rgba(*image, "Gain Map 呈现选择"); !valid)
+      return std::unexpected{valid.error()};
+  }
+  auto main_color = gain_map_detail::resolve_iso_color(decoded.image, stop);
+  if (!main_color) return std::unexpected{main_color.error()};
+  auto alternate_color = gain_map_detail::resolve_iso_color(alternative.image, stop);
+  if (!alternate_color) return std::unexpected{alternate_color.error()};
+  gain_map_detail::normalize_iso_base(decoded.image, *main_color);
+  gain_map_detail::normalize_iso_base(alternative.image, *alternate_color);
+  const auto main_hdr = hdr::has_explicit_hdr_signal(decoded.image);
+  if (!main_hdr) return std::unexpected{main_hdr.error()};
+  const auto alternate_hdr = hdr::has_explicit_hdr_signal(alternative.image);
+  if (!alternate_hdr) return std::unexpected{alternate_hdr.error()};
+  if (*main_hdr != (main_headroom > 0) || *alternate_hdr != (alternate_headroom > 0)) {
+    return std::unexpected{"Gain Map: 呈现 headroom 与 SDR/HDR 色彩解释冲突。"};
+  }
+  if (main_headroom < alternate_headroom) {
+    std::swap(decoded.image, alternative.image);
+    std::swap(alternative.main_hdr_headroom_log2, alternative.alternate_hdr_headroom_log2);
+  }
+  const bool paired = alternative.main_hdr_headroom_log2 > 0 &&
+                      alternative.alternate_hdr_headroom_log2 == 0;
+  const bool select_sdr = cfg.output_format == OutputFormat::webp ||
+      (cfg.output_format == OutputFormat::jpgli && cfg.jpeg_hdr == JpegHdrMode::sdr);
+  if (paired && select_sdr) std::swap(decoded.image, alternative.image);
+  // 只有真实 SDR/HDR 配对才输出 Gain Map；其余保留所选单层，JPEG 可另生成 SDR base。
+  if (!paired || select_sdr || cfg.output_format == OutputFormat::png)
+    decoded.gain_map_alternative.reset();
+  return {};
+}
+
 std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
     const ImageBuffer& image, std::size_t new_width, std::size_t new_height) {
   if (is_yuv_format(image.pixel_format)) return resize_native_pixels(image, new_width, new_height);
@@ -1741,6 +1787,8 @@ class NativeBackend final {
   std::expected<NativeEncodeResult, std::string> encode_memory(
       ImageDecodeResult decoded, std::stop_token stop_token = {}) const {
     if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (auto selected = native_backend_detail::select_output_rendition(decoded, cfg_, stop_token); !selected)
+      return std::unexpected{selected.error()};
     if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_); !limited)
       return std::unexpected{limited.error()};
     const ImageFile source{};
@@ -2052,6 +2100,9 @@ class NativeBackend final {
     }
 
     const bool decoder_used_fallback = decoded->used_fallback;
+    if (auto selected = native_backend_detail::select_output_rendition(*decoded, cfg_, stop_token); !selected) {
+      return std::unexpected{selected.error()};
+    }
     if (auto limited = native_backend_detail::apply_image_size_limit(*decoded, cfg_); !limited) {
       return std::unexpected{limited.error()};
     }
@@ -2069,8 +2120,6 @@ class NativeBackend final {
     prepared.settings.gain_map_alternative = decoded.gain_map_alternative ? &*decoded.gain_map_alternative : nullptr;
     const auto hdr_signal = hdr::has_explicit_hdr_signal(decoded.image);
     if (!hdr_signal) return prepare_failed(hdr_signal.error(), prepared.settings);
-    if (cfg_.output_format == OutputFormat::jpgli && cfg_.jpeg_hdr == JpegHdrMode::hdr && !*hdr_signal)
-      return prepare_failed("--jpeg-hdr hdr 需要原输入的明确 HDR 呈现，不能仅重标 SDR。", prepared.settings);
     const auto depth = resolve_rendition_bit_depth(cfg_.output_format, decoded.image, *hdr_signal, cfg_.bit_depth);
     if (!depth) return prepare_failed(depth.error(), prepared.settings);
     prepared.settings.bit_depth = *depth;
@@ -2407,8 +2456,10 @@ class NativeBackend final {
     if (cfg_.output_format == OutputFormat::jpgli) {
       auto signal = hdr::has_explicit_hdr_signal(decoded.image);
       if (!signal) return std::unexpected{signal.error()};
-      if (cfg_.jpeg_hdr == JpegHdrMode::hdr && !*signal)
-        return std::unexpected{"--jpeg-hdr hdr 需要具有明确色彩语义的 HDR 输入。"};
+      if (cfg_.jpeg_hdr == JpegHdrMode::hdr && !*signal) {
+        effective_settings.encoder_fallback_reason = "SDR input -> SDR JPEG";
+        effective_settings.color_reason += "；原输入仅有 SDR，保留单层且不伪造 HDR/Gain Map";
+      }
 #if AWJ_HAS_JPEGLI
       if (*signal && cfg_.jpeg_hdr != JpegHdrMode::sdr) {
         std::optional<ImageBuffer> rgb;

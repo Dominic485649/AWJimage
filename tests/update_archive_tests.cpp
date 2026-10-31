@@ -166,6 +166,12 @@ std::string sha256_bytes(std::string_view bytes) {
 }  // namespace
 
 int main() {
+  if (awj::update::archive_manifest_v2_url !=
+          "https://raw.githubusercontent.com/Dominic485649/AWJimage/main/update-archive.json" ||
+      awj::update::archive_manifest_v2_signature_url !=
+          "https://raw.githubusercontent.com/Dominic485649/AWJimage/main/update-archive.json.sig") {
+    return fail("归档更新入口应使用 main 主线。");
+  }
   auto parsed = awj::update::parse_archive_manifest_v2_json(valid_manifest());
   if (!parsed || parsed->schema != 2 || parsed->sequence != 11 ||
       parsed->entries.size() != 1 ||

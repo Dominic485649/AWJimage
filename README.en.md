@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current source version: **1.3.0 (unreleased development)**; published downloads remain those listed on Releases.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current version: **1.3.0**, with application and C ABI SDK downloads.
 
 ## Formats
 
@@ -11,9 +11,11 @@ AWJimage is a batch image converter for Windows and Linux, with a desktop interf
 | Input | AVIF, HEIC/HEIF, JPEG, PNG, WebP, JXL, BMP, GIF, TIFF and camera RAW; JXR on Windows |
 | Output | AVIF, PNG, WebP, JXL, JPG |
 | Animation | GIF, APNG, WebP and AVIF retain frame timing, loops and transparency when converted to AVIF |
-| HDR | HDR images and supported Gain Maps; JPEG output can include an HDR Gain Map |
+| HDR | Single-layer SDR/HDR stays single-layer; real paired renditions retain gain maps; HDR JPEG can generate an SDR base, while SDR-only output automatically rolls off highlights |
 
 Defaults: AVIF, quality 70, speed 5. JPG uses 8-bit YCbCr and follows source sampling in auto mode, like AVIF: known 4:2:0, 4:2:2 and 4:4:4 are preserved; RGB, RGBA and unknown sources use 4:4:4. Grayscale JPG sources use three-component 4:4:4 in auto mode; explicit 4:0:0 is unsupported. HDR JPG stores an SDR base image and an ISO 21496-1 gain map. Only ISO gain-map metadata is accepted; legacy Adobe, Google and Apple gain-map protocols are no longer supported. Lossless behavior at quality 100 depends on the format. JPEG can be losslessly repackaged as JXL. See [Gain Map and animation details](docs/gain-map-animation.md).
+
+Wide gamut, high bit depth and display brightening do not add an HDR layer to SDR input. JXL/AVIF retain an HDR base and a map reconstructing SDR only for an existing SDR/HDR pair; ordinary single-layer input stays single-layer. JPEG is the exception: when HDR has no existing SDR rendition, highlight roll-off generates an SDR base and a gain map preserves HDR. WebP automatically rolls HDR down to SDR, preferring an existing SDR rendition; PNG preserves the selected single HDR/SDR rendition. Even `--jpeg-hdr hdr` keeps SDR-only input as ordinary SDR instead of relabeling it HDR.
 
 Formats share one target-pixel conversion stage. Compatible YUV layouts are reused directly; matrix, depth, sampling and geometry changes are combined to reduce full-image intermediate buffers. HDR luminance analysis, gain-map reconstruction and animation compositing follow each format's requirements.
 
@@ -54,9 +56,11 @@ Use `AWJ.com` on Windows; replace it with `./AWJ` on Linux.
 
 `--threads auto` reserves desktop capacity from the allowed logical CPUs. `--threads N` uses a total encoding thread budget of N (1–128) without that reservation; file concurrency and per-image encoder threads share this budget and remain subject to the memory budget. `--cpu-affinity` uses zero-based logical CPU IDs and can only narrow the currently allowed set. Windows IDs refer to the current processor group.
 
-## C ABI SDK (unreleased)
+## C ABI SDK
 
-Other applications can submit CPU, shared-memory, FFmpeg or Windows D3D11 frames through the same C headers for memory encoding. There is no public C++ ABI or built-in capture session/player. Implementation uses C++23 and targets Clang 21+; Windows and Linux are separate builds, while HarmonyOS still requires the real SDK/device. See the [SDK documentation](docs/sdk.md) for copying, color, lifetime and platform contracts. Ordinary pipes and GPU readback are not end-to-end zero-copy paths.
+Windows / Linux dynamic SDKs provide one set of C headers for C / C++ integration. Submit CPU frames, shared-memory frames, optional FFmpeg frames or Windows D3D11 textures and receive encoded results in memory. Packages include CMake files, `awj-stream` and integration examples. SDK source has been built with Clang 21, with C99 / C++11 consumer examples.
+
+Download `AWJ_SDK_Win_x64.zip` or `AWJ_SDK_Linux_x64.tar.gz` from the same Release. See the [SDK documentation](docs/sdk.md) for integration, copy diagnostics, color and platform requirements.
 
 ## Build
 

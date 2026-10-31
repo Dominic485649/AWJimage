@@ -32,4 +32,17 @@
 
 正式 `scripts/package-release.ps1` 仍需渠道、递增 manifest sequence、受信密钥环、发布委派 key ID、公钥、仓库外 seed 与到期时间。验证签名及归档后，才由明确授权的发布步骤创建 tag／GitHub Release，复核公开下载，再提交与实际资产匹配的更新清单及签名。
 
+Windows 的 Clang 23 缓存可通过 `release.ps1 -Generator Ninja -CompilerDirectory <LLVM目录> -BuildTests -SkipUpdateManifest` 增量构建正式应用；保留已有的独立构建、runtime 和依赖目录，正式入口继续要求干净 tag、静态运行库及 IPO/LTO。
+
+### SDK 与对应源码（1.3.0 起）
+
+- SDK 使用独立 Clang 21 构建和 `AWJimageSDK` 安装组件，Windows/Linux 分别在原生环境运行 `scripts/package-sdk-release.cmake`。参数为 `WORK_ROOT`、`INSTALL_DIRECTORY`、全新的 `OUTPUT_DIRECTORY`、实际 `BUILD_EVIDENCE` 和 CTest `TEST_REPORT`；Windows 可通过 `LLVM_DIRECTORY` 指定导出检查工具。
+- 构建记录必须包含同一干净 tag 的提交、源码指纹、编译器版本、完整 native codecs 状态、实际库 SHA-256 与对应 JUnit SHA-256。打包器在归档回解位置核对 C 导出，构建并运行 C99/C++11 消费者，执行迁移后的 `awj-stream`，核对成员、符号链接与内容摘要。
+- `scripts/package-source-release.ps1 -OutputDirectory <本项目build下的新目录>` 从正式提交生成对应源码归档，并校验版本及 SDK、构建脚本和许可成员。
+- 将双平台 SDK 及源码的三份 `asset-evidence.json` 一起传入正式应用打包器的 `-AdditionalAssetEvidencePaths`。正式 1.3.0 起必须三者齐备；它们与应用一起进入最终 SHA256SUMS 和 acceptance.json，应用更新包的固定成员白名单保持不变。
+
+### main 与旧版更新入口
+
+开发主线为 `main`。保留 `master` 的 `update-archive.json`、`update-keyring.json` 及各自签名作为旧客户端兼容入口，两处分发相同有效字节和 sequence。GitHub 的 raw 文件 URL 不会因分支改名重定向，因此应在验证旧、新入口后切换默认主线，并持续维护兼容元数据。
+
 签名和轮换见 [更新安全](update-security.md)。候选不得写入正式清单，不静默轮换信任根；1.0.12 及更早版本需手动升级。

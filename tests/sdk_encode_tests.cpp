@@ -14,6 +14,7 @@
 #include <vector>
 import awj.image;
 import awj.codec;
+import awj.hdr_tonemap;
 import awj.avif_aom_codec;
 import awj.png_codec;
 import awj.webp_codec;
@@ -73,6 +74,7 @@ int main() {
     auto decoded = decoder(codec)->decode_memory({reinterpret_cast<const std::byte*>(awj_result_data(result)), static_cast<size_t>(awj_result_size(result))}, "memory-sdk");
     if (!decoded) std::fprintf(stderr, "codec %u 回读失败：%s\n", codec, decoded.error().c_str());
     CHECK(decoded && decoded->image.width == width && decoded->image.height == height);
+    CHECK(!decoded->gain_map_alternative && (!decoded->image.source_info || !decoded->image.source_info->source_has_gain_map));
     if (codec == AWJ_CODEC_PNG || codec == AWJ_CODEC_WEBP) {
       CHECK(decoded->image.bit_depth == 8);
       const auto& plane = decoded->image.planes[0];
@@ -144,20 +146,52 @@ int main() {
     }
   }
   // FP16 scRGB 保留负值/扩展范围，编码过程不得原地改写来源。
-  std::array<uint16_t, 16> half{0x3800,0xb400,0x4000,0x3c00, 0x3c00,0,0,0x3c00, 0,0x3c00,0,0x3800, 0,0,0x3c00,0x3c00};
+  std::array<uint16_t, 16> half{0x3800,0xb400,0x4800,0x3c00, 0x3c00,0,0,0x3c00, 0,0x3c00,0,0x3800, 0,0,0x3c00,0x3c00};
   const auto saved_half = half;
   awj_frame_desc_init(&desc); desc.width = 2; desc.height = 2; desc.format = AWJ_RGBA16F; desc.bit_depth = 16;
   color(desc); desc.color.transfer = 8; desc.color.linear_reference_white_nits = 80; desc.color.alpha = AWJ_ALPHA_STRAIGHT;
   desc.planes[0] = {reinterpret_cast<const uint8_t*>(half.data()), sizeof(half), 0, 16};
   CHECK(awj_frame_create(context, &desc, nullptr, &frame) == AWJ_OK);
-  for (uint32_t codec : {AWJ_CODEC_PNG, AWJ_CODEC_JXL, AWJ_CODEC_AVIF}) {
+  for (uint32_t codec : {AWJ_CODEC_PNG, AWJ_CODEC_JXL, AWJ_CODEC_AVIF, AWJ_CODEC_JPEGLI, AWJ_CODEC_WEBP}) {
     options.codec = codec; options.bit_depth = 0; options.lossless = 0; options.quality = 85;
     CHECK(awj_encode(context, frame, &options, &result) == AWJ_OK);
-    auto decoded = decoder(codec)->decode_memory({reinterpret_cast<const std::byte*>(awj_result_data(result)), static_cast<size_t>(awj_result_size(result))}, "scrgb-half");
+    auto decoded = decoder(codec)->decode_memory({reinterpret_cast<const std::byte*>(awj_result_data(result)), static_cast<size_t>(awj_result_size(result))}, "scrgb-half",
+        {.gain_map_mode = awj::GainMapDecodeMode::preserve_both});
     CHECK(decoded && decoded->image.width == 2 && decoded->image.height == 2 && half == saved_half);
+    CHECK(decoded->gain_map_alternative.has_value() == (codec == AWJ_CODEC_JPEGLI));
+    auto signal = awj::hdr::has_explicit_hdr_signal(decoded->image);
+    CHECK(signal && *signal == (codec != AWJ_CODEC_WEBP));
     awj_result_release(result);
   }
   awj_frame_release(frame);
+  // 单帧 PQ/HLG 不凭空增加备用呈现；JPEG 例外生成 SDR base，WebP 自动滚降。
+  std::array<uint16_t, width * height * 4> hdr_pixels{};
+  for (size_t i = 0; i < width * height; ++i) {
+    hdr_pixels[i * 4] = 48000; hdr_pixels[i * 4 + 1] = 40000;
+    hdr_pixels[i * 4 + 2] = 30000; hdr_pixels[i * 4 + 3] = 65535;
+  }
+  const auto saved_hdr = hdr_pixels;
+  for (uint32_t primaries : {9u, 12u}) for (uint32_t transfer : {16u, 18u}) {
+    awj_frame_desc_init(&desc); desc.width = width; desc.height = height;
+    desc.format = AWJ_RGBA16; desc.bit_depth = 16; color(desc);
+    desc.color.primaries = primaries; desc.color.transfer = transfer;
+    desc.planes[0] = {reinterpret_cast<const uint8_t*>(hdr_pixels.data()), sizeof(hdr_pixels), 0, width * 8};
+    CHECK(awj_frame_create(context, &desc, nullptr, &frame) == AWJ_OK);
+    for (uint32_t codec : {AWJ_CODEC_PNG, AWJ_CODEC_JXL, AWJ_CODEC_AVIF, AWJ_CODEC_JPEGLI, AWJ_CODEC_WEBP}) {
+      options.codec = codec; options.bit_depth = 0; options.lossless = 0; options.quality = 90;
+      CHECK(awj_encode(context, frame, &options, &result) == AWJ_OK && result);
+      auto decoded = decoder(codec)->decode_memory({reinterpret_cast<const std::byte*>(awj_result_data(result)), static_cast<size_t>(awj_result_size(result))}, "single-hdr-policy",
+          {.gain_map_mode = awj::GainMapDecodeMode::preserve_both});
+      CHECK(decoded && decoded->image.width == width && decoded->image.height == height);
+      CHECK(decoded->gain_map_alternative.has_value() == (codec == AWJ_CODEC_JPEGLI));
+      CHECK(decoded->image.source_info && decoded->image.source_info->source_has_gain_map == (codec == AWJ_CODEC_JPEGLI));
+      auto signal = awj::hdr::has_explicit_hdr_signal(decoded->image);
+      CHECK(signal && *signal == (codec != AWJ_CODEC_WEBP));
+      CHECK(hdr_pixels == saved_hdr);
+      awj_result_release(result);
+    }
+    awj_frame_release(frame);
+  }
   // 视觉质量候选只走内存；这里仅测试受支持的 WebP 路径。
   std::array<uint8_t, 16> opaque{255,0,0,255, 0,255,0,255, 0,0,255,255, 255,255,255,255};
   awj_frame_desc_init(&desc); desc.width = 2; desc.height = 2; color(desc); desc.planes[0] = {opaque.data(), opaque.size(), 0, 8};

@@ -17,7 +17,7 @@ $Errors = $null
 $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Project 'scripts/package-release.ps1'), [ref]$Tokens, [ref]$Errors)
 if ($Errors.Count) { throw '跨平台打包脚本语法错误。' }
 # 仅加载校验函数。不会执行完整打包、启动假二进制或访问签名密钥。
-foreach ($Name in @('Get-RepoPath', 'Assert-File', 'Assert-Directory', 'Get-NormalizedLockHash', 'Assert-BuildEvidence', 'Assert-VerificationReport', 'Assert-ArchiveMemberList', 'Assert-ExactPackage')) {
+foreach ($Name in @('Get-RepoPath', 'Assert-File', 'Assert-Directory', 'Get-NormalizedLockHash', 'Assert-BuildEvidence', 'Assert-VerificationReport', 'Assert-ArchiveMemberList', 'Assert-ExactPackage', 'Assert-AdditionalReleaseAssets')) {
     $Node = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq $Name }, $true)
     if (-not $Node) { throw "缺少校验函数：$Name" }
     . ([scriptblock]::Create($Node.Extent.Text))
@@ -161,5 +161,53 @@ if (-not (Test-Path -LiteralPath (Join-Path $Package 'unexpected.json'))) {
     [IO.File]::WriteAllText((Join-Path $Package 'unexpected.json'), '{}', [Text.UTF8Encoding]::new($false))
 }
 Must-Reject { Assert-ExactPackage $Package @('AWJ','LICENSE','NOTICE.txt') } '未知平台包成员'
+$LocalCandidate=$false; $Version='1.3.0'; $SourceFingerprint='a' * 64
+Must-Reject { Assert-AdditionalReleaseAssets @() } '正式 1.3.0 缺少 SDK 和对应源码'
+$ExtraPaths=@(); $ExtraProofs=@()
+foreach ($Spec in @(@{kind='sdk';platform='windows-x64';name='AWJ_SDK_Win_x64.zip'},
+    @{kind='sdk';platform='linux-x64';name='AWJ_SDK_Linux_x64.tar.gz'},
+    @{kind='source';platform='source';name='AWJimage-1.3.0-source.zip'})) {
+    $Directory=Join-Path $Repo "build/extra-$($Spec.platform)"
+    [void][IO.Directory]::CreateDirectory($Directory)
+    $Archive=Join-Path $Directory $Spec.name
+    [IO.File]::WriteAllText($Archive, "fixture:$($Spec.name)", [Text.UTF8Encoding]::new($false))
+    $Checks=if ($Spec.kind -ceq 'sdk') {
+        @{sdk_tests='passed';installed_consumers='passed';exports='passed';archive_roundtrip='passed';relocated_stream='passed'}
+    } else { @{source_commit='passed';source_layout='passed'} }
+    $ExtraProof=@{schema=1;kind=$Spec.kind;platform=$Spec.platform;mode='formal';status='passed';version=$Version
+        git_head=$GitHead;source_dirty=$false;source_fingerprint=$SourceFingerprint;verification=$Checks
+        archive=@{name=$Spec.name;size=(Get-Item -LiteralPath $Archive).Length;sha256=(Get-FileHash -LiteralPath $Archive -Algorithm SHA256).Hash.ToLowerInvariant()}
+        test_report_sha256=('b' * 64);consumer_report_sha256=('d' * 64)}
+    $ExtraPath=Join-Path $Directory 'asset-evidence.json'
+    Save-Proof $ExtraProof $ExtraPath
+    $ExtraPaths+=,$ExtraPath; $ExtraProofs+=,$ExtraProof
+}
+if (@(Assert-AdditionalReleaseAssets $ExtraPaths).Count -ne 3) { throw '完整附加资产未通过。' }
+Must-Reject { Assert-AdditionalReleaseAssets @($ExtraPaths[0],$ExtraPaths[0],$ExtraPaths[2]) } '重复平台 SDK'
+Must-Reject { Assert-AdditionalReleaseAssets @($ExtraPaths[0],$ExtraPaths[1]) } '缺少对应源码'
+foreach ($Field in @('git_head','source_fingerprint','mode','source_dirty','status')) {
+    $Saved=$ExtraProofs[0][$Field]
+    $ExtraProofs[0][$Field]=if ($Field -ceq 'source_dirty') { $true } else { 'mismatch' }
+    Save-Proof $ExtraProofs[0] $ExtraPaths[0]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } "SDK 错误来源或状态：$Field"
+    $ExtraProofs[0][$Field]=$Saved
+}
+$ExtraProofs[0].verification.relocated_stream='not-executed'
+Save-Proof $ExtraProofs[0] $ExtraPaths[0]
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } 'SDK 未完成迁移运行验证'
+$ExtraProofs[0].verification.relocated_stream='passed'
+$ExtraProofs[0].test_report_sha256=@('b' * 64)
+Save-Proof $ExtraProofs[0] $ExtraPaths[0]
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } 'SDK 测试摘要不能为数组'
+$ExtraProofs[0].test_report_sha256='b' * 64
+$SavedName=$ExtraProofs[0].archive.name
+$ExtraProofs[0].archive.name='../AWJ_SDK_Win_x64.zip'
+Save-Proof $ExtraProofs[0] $ExtraPaths[0]
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } 'SDK 归档路径越界'
+$ExtraProofs[0].archive.name=$SavedName
+Save-Proof $ExtraProofs[0] $ExtraPaths[0]
+$ChangedArchive=Join-Path (Split-Path -Parent $ExtraPaths[1]) $ExtraProofs[1].archive.name
+[IO.File]::AppendAllText($ChangedArchive, 'changed')
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } 'SDK 归档在验收后变化'
 if ((Get-Content -LiteralPath (Join-Path $Repo 'bin/x64/Release/sentinel') -Raw) -cne 'unchanged') { throw '保护目录被改变。' }
 [ordered]@{status='passed'; fixture_root=$Repo; cleanup='not-executed'; scope='evidence-and-layout-contract'; protected='unchanged'} | ConvertTo-Json -Compress
