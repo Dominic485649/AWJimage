@@ -28,6 +28,7 @@ endif()
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/awj-stdlib-compat.cmake")
 
 option(AVIF_STATIC_SLINT "Link Slint statically so AWJ does not need slint_cpp.dll" ON)
 option(AVIF_STATIC_MSVC_RUNTIME "Use /MT or /MTd for smaller redistribution bundles when all dependencies allow it" ON)
@@ -344,6 +345,7 @@ target_link_libraries(JXL::jxl INTERFACE
     "${JXL_LCMS_LIBRARY}")
 
 function(avif_enable_common_options target)
+    target_link_libraries(${target} PUBLIC awj_stdlib)
     target_compile_features(${target} PUBLIC cxx_std_23)
     if(WIN32)
         target_compile_definitions(${target} PUBLIC
@@ -380,8 +382,8 @@ function(avif_enable_common_options target)
         get_target_property(target_type ${target} TYPE)
         if(NOT target_type STREQUAL "STATIC_LIBRARY")
             target_link_options(${target} PRIVATE
-                $<$<CONFIG:Release>:-static-libstdc++>
-                $<$<CONFIG:Release>:-static-libgcc>
+                $<$<AND:$<CONFIG:Release>,$<NOT:$<PLATFORM_ID:OHOS>>>:-static-libstdc++>
+                $<$<AND:$<CONFIG:Release>,$<NOT:$<PLATFORM_ID:OHOS>>>:-static-libgcc>
                 $<$<CONFIG:Release>:LINKER:--gc-sections>
                 $<$<CONFIG:Release>:LINKER:--strip-all>)
         endif()
@@ -708,7 +710,14 @@ FetchContent_Declare(libultrahdr
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_iso_only.cmake"
         COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=<SOURCE_DIR>"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_threads.cmake"
+        COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=<SOURCE_DIR>" "-DAWJ_TARGET_SYSTEM=${CMAKE_SYSTEM_NAME}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_ohos.cmake"
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND FETCHCONTENT_SOURCE_DIR_LIBULTRAHDR)
+    execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${FETCHCONTENT_SOURCE_DIR_LIBULTRAHDR}"
+        "-DAWJ_TARGET_SYSTEM=OHOS" -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libultrahdr_ohos.cmake"
+        COMMAND_ERROR_IS_FATAL ANY)
+endif()
 FetchContent_MakeAvailable(libultrahdr)
 # Source overrides and populated FetchContent caches bypass PATCH_COMMAND.
 # Recheck the exact patched function on every configure on both platforms.
@@ -936,13 +945,14 @@ target_compile_definitions(awj_shared PRIVATE AWJ_BUILD_VERSION="${PROJECT_VERSI
 target_link_libraries(awj_shared PUBLIC scn::scn nlohmann_json::nlohmann_json)
 if(WIN32)
     target_link_libraries(awj_shared PUBLIC bcrypt)
+else()
+    target_link_libraries(awj_shared PUBLIC Threads::Threads)
 endif()
 target_sources(awj_shared PUBLIC
     FILE_SET awj_shared_modules TYPE CXX_MODULES FILES
         src/core/encoding_defaults.ixx
         src/core/large_image_plan.ixx
         src/app/config.ixx
-        src/app/preset.ixx
         src/core/visual_quality.ixx
         src/core/image.ixx
         src/core/animation.ixx
@@ -950,8 +960,12 @@ target_sources(awj_shared PUBLIC
         src/core/codec.ixx
         src/core/process.ixx
         src/codecs/avif_registry.ixx
-        src/app/batch_protocol.ixx
 )
+
+if(AWJ_BUILD_APPLICATION)
+    target_sources(awj_shared PUBLIC FILE_SET awj_shared_modules TYPE CXX_MODULES FILES
+        src/app/preset.ixx src/app/batch_protocol.ixx)
+endif()
 
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
@@ -1149,6 +1163,7 @@ target_sources(awj_native_backend
         FILE_SET awj_native_backend_modules TYPE CXX_MODULES FILES
             src/backends/native_backend.ixx)
 
+if(AWJ_BUILD_APPLICATION)
 add_library(awj_pipeline STATIC)
 avif_enable_common_options(awj_pipeline)
 target_link_libraries(awj_pipeline PUBLIC
@@ -1161,6 +1176,7 @@ target_sources(awj_pipeline
 
 add_library(awj_core INTERFACE)
 target_link_libraries(awj_core INTERFACE awj_pipeline)
+endif()
 
 if(AWJ_BUILD_SDK)
     include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/sdk-targets.cmake")

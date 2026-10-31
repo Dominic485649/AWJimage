@@ -1,0 +1,24 @@
+--- a/scripts/cmake/genout.cmake.in
++++ b/scripts/cmake/genout.cmake.in
+@@ -19,7 +19,9 @@
+ set(APPLE "@APPLE@")
+ set(AWK "@AWK@")
+ set(CMAKE_C_COMPILER "@CMAKE_C_COMPILER@")
+-set(CMAKE_C_FLAGS @CMAKE_C_FLAGS@)
++set(CMAKE_C_COMPILER_TARGET "@CMAKE_C_COMPILER_TARGET@")
++set(CMAKE_C_FLAGS [==[@CMAKE_C_FLAGS@]==])
++separate_arguments(CMAKE_C_FLAGS NATIVE_COMMAND "${CMAKE_C_FLAGS}")
+ set(CMAKE_SYSROOT @CMAKE_SYSROOT@)
+ set(INCDIR "@CMAKE_CURRENT_BINARY_DIR@")
+ set(PNG_PREFIX "@PNG_PREFIX@")
+@@ -40,6 +42,10 @@
+   endif()
+ endif()
+ 
++if(CMAKE_C_COMPILER_TARGET)
++  list(APPEND PLATFORM_C_FLAGS "--target=${CMAKE_C_COMPILER_TARGET}")
++endif()
++
+ if(CMAKE_SYSROOT)
+   set(PLATFORM_C_FLAGS ${PLATFORM_C_FLAGS} "--sysroot=${CMAKE_SYSROOT}")
+ endif()

@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <array>
@@ -6,12 +7,10 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <expected>
 #include <limits>
 #include <new>
 #include <optional>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <utility>
 #include <vector>
@@ -103,30 +102,30 @@ std::uint64_t destination_pixel_bytes(std::size_t width, std::size_t height,
   return hdr_cost::multiply(samples, sample_bytes);
 }
 
-std::expected<void, std::string> validate(const ImageBuffer& image) {
+awj::compat::expected<void, std::string> validate(const ImageBuffer& image) {
   if (image.width == 0 || image.height == 0 || image.planes.empty() ||
       image.width > UINT32_MAX || image.height > UINT32_MAX || !valid_image_geometry(image) ||
       (image.bit_depth != 8 && image.bit_depth != 10 && image.bit_depth != 12 && image.bit_depth != 16))
-    return std::unexpected{"像素转换输入尺寸或位深无效。"};
+    return awj::compat::unexpected{"像素转换输入尺寸或位深无效。"};
   if (image.sample_representation == SampleRepresentation::ieee_half_float &&
       (image.pixel_format != PixelFormat::rgba || image.bit_depth != 16))
-    return std::unexpected{"浮点像素转换需要 16-bit RGBA。"};
+    return awj::compat::unexpected{"浮点像素转换需要 16-bit RGBA。"};
   const bool yuv = is_yuv_format(image.pixel_format);
   if (!yuv && image.pixel_format != PixelFormat::rgba && image.pixel_format != PixelFormat::rgb)
-    return std::unexpected{"像素转换输入布局不受支持。"};
+    return awj::compat::unexpected{"像素转换输入布局不受支持。"};
   const auto channels = image.pixel_format == PixelFormat::rgb ? 3u : 4u;
   const auto count = yuv ? (image.alpha_mode == AlphaMode::none ? 3u : 4u) : 1u;
-  if (image.planes.size() < count) return std::unexpected{"像素转换输入缺少平面。"};
+  if (image.planes.size() < count) return awj::compat::unexpected{"像素转换输入缺少平面。"};
   for (std::size_t c = 0; c < count; ++c) {
     if (image.pixel_format == PixelFormat::gray && (c == 1 || c == 2)) continue;
     const auto size = plane_size(image, c);
     const auto samples = yuv ? 1u : channels;
     const auto bytes = image.bit_depth > 8 ? 2u : 1u;
     if (size[0] > std::numeric_limits<std::size_t>::max() / samples / bytes)
-      return std::unexpected{"像素转换平面宽度溢出。"};
+      return awj::compat::unexpected{"像素转换平面宽度溢出。"};
     const auto& plane = image.planes[c];
     if (!plane.contains_rows(size[1], size[0] * samples * bytes))
-      return std::unexpected{"像素转换输入平面尺寸无效。"};
+      return awj::compat::unexpected{"像素转换输入平面尺寸无效。"};
   }
   return {};
 }
@@ -232,17 +231,17 @@ struct HdrMap {
   bool source_hdr{};
   bool target_hdr{};
 
-  std::expected<std::array<float, 4>, std::string> operator()(std::array<float, 4> rgba) const {
-    for (float value : rgba) if (!std::isfinite(value)) return std::unexpected{"像素输入含非有限值。"};
+  awj::compat::expected<std::array<float, 4>, std::string> operator()(std::array<float, 4> rgba) const {
+    for (float value : rgba) if (!std::isfinite(value)) return awj::compat::unexpected{"像素输入含非有限值。"};
     if (!enabled) return rgba;
     std::array<float, 3> rgb{rgba[0], rgba[1], rgba[2]};
     if (source_hdr) {
       auto nits = hdr::hdr_detail::linear_nits(rgb, source);
-      if (!nits) return std::unexpected{nits.error()};
+      if (!nits) return awj::compat::unexpected{nits.error()};
       rgb = *nits;
     } else for (auto& value : rgb) value = to_linear(value) * 203.0F;
     pl_matrix3x3_apply(&matrix, rgb.data());
-    if (!hdr::hdr_detail::finite_rgb(rgb)) return std::unexpected{"颜色转换矩阵产生了非有限值。"};
+    if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"颜色转换矩阵产生了非有限值。"};
     if (target_hdr && transfer == 18) {
       for (auto& value : rgb) value = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_NORM, std::max(value, 0.0F));
       // 锁定 libplacebo 的逆 HLG OOTF 在零亮度会产生 inf*0；使用黑点的连续极限。
@@ -250,15 +249,15 @@ struct HdrMap {
       else pl_color_delinearize(&output_space, rgb.data());
     } else for (auto& value : rgb) value = target_hdr
         ? pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, value) : from_linear(value / 203.0F);
-    if (!hdr::hdr_detail::finite_rgb(rgb)) return std::unexpected{"目标传递函数产生了非有限值。"};
+    if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"目标传递函数产生了非有限值。"};
     std::copy(rgb.begin(), rgb.end(), rgba.begin());
     return rgba;
   }
 };
 
-std::expected<HdrMap, std::string> hdr_map(const Reader& reader,
-    const PixelConversionRequest& request, std::stop_token stop) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<HdrMap, std::string> hdr_map(const Reader& reader,
+    const PixelConversionRequest& request, awj::compat::stop_token stop) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   HdrMap result{};
   const bool floating = reader.image.sample_representation == SampleRepresentation::ieee_half_float;
   const auto info = reader.image.source_info;
@@ -266,32 +265,32 @@ std::expected<HdrMap, std::string> hdr_map(const Reader& reader,
       (request.transfer_characteristics && (!info || info->transfer_characteristics != request.transfer_characteristics));
   if (!floating && !changed) return result;
   auto signal = hdr::has_explicit_hdr_signal(reader.image);
-  if (!signal) return std::unexpected{signal.error()};
+  if (!signal) return awj::compat::unexpected{signal.error()};
   result.source_hdr = *signal;
   const pl_raw_primaries* input = nullptr;
   if (*signal) {
     auto source = hdr::hdr_detail::make_source_transform(reader.image);
-    if (!source) return std::unexpected{source.error()};
+    if (!source) return awj::compat::unexpected{source.error()};
     result.source = *source;
     input = source->primaries;
   } else {
     if (!info || !info->color_primaries || !info->transfer_characteristics)
-      return std::unexpected{"颜色转换缺少明确的源原色／传递函数，拒绝只重标标签。"};
+      return awj::compat::unexpected{"颜色转换缺少明确的源原色／传递函数，拒绝只重标标签。"};
     const int tc = *info->transfer_characteristics;
     if (!(tc == 1 || (tc >= 4 && tc <= 15) || tc == 17))
-      return std::unexpected{"颜色转换不支持该 SDR 传递函数。"};
+      return awj::compat::unexpected{"颜色转换不支持该 SDR 传递函数。"};
     result.to_linear = avifTransferCharacteristicsGetGammaToLinearFunction(static_cast<avifTransferCharacteristics>(tc));
     input = hdr::hdr_detail::primaries_from_cicp(*info->color_primaries);
   }
   result.primaries = request.color_primaries.value_or(floating ? 9 : info->color_primaries.value_or(0));
   result.transfer = request.transfer_characteristics.value_or(floating ? 16 : info->transfer_characteristics.value_or(0));
   const auto* output = hdr::hdr_detail::primaries_from_cicp(result.primaries);
-  if (!input || !output) return std::unexpected{"颜色转换不支持该源／目标原色。"};
+  if (!input || !output) return awj::compat::unexpected{"颜色转换不支持该源／目标原色。"};
   result.target_hdr = result.transfer == 16 || result.transfer == 18;
-  if (!result.target_hdr && *signal) return std::unexpected{"HDR 转 SDR 需要明确的 tone-map，不能仅覆盖传递函数。"};
+  if (!result.target_hdr && *signal) return awj::compat::unexpected{"HDR 转 SDR 需要明确的 tone-map，不能仅覆盖传递函数。"};
   if (!result.target_hdr) {
     if (!(result.transfer == 1 || (result.transfer >= 4 && result.transfer <= 15) || result.transfer == 17))
-      return std::unexpected{"颜色转换不支持该目标传递函数。"};
+      return awj::compat::unexpected{"颜色转换不支持该目标传递函数。"};
     result.from_linear = avifTransferCharacteristicsGetLinearToGammaFunction(static_cast<avifTransferCharacteristics>(result.transfer));
   }
   result.output_space.primaries = result.primaries == 9 ? PL_COLOR_PRIM_BT_2020
@@ -302,7 +301,7 @@ std::expected<HdrMap, std::string> hdr_map(const Reader& reader,
   result.matrix = pl_raw_primaries_equal(input, output)
       ? pl_matrix3x3{.m = {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}}}
       : pl_get_color_mapping_matrix(input, output, PL_INTENT_RELATIVE_COLORIMETRIC);
-  if (!hdr::hdr_detail::finite_matrix(result.matrix)) return std::unexpected{"颜色矩阵包含非有限值。"};
+  if (!hdr::hdr_detail::finite_matrix(result.matrix)) return awj::compat::unexpected{"颜色矩阵包含非有限值。"};
   return result;
 }
 
@@ -316,16 +315,16 @@ void write_sample(ImageBuffer& output, std::size_t c, std::size_t x, std::size_t
 
 } // namespace pixel_detail
 
-std::expected<void, std::string> validate_image_pixels(const ImageBuffer& image) {
+awj::compat::expected<void, std::string> validate_image_pixels(const ImageBuffer& image) {
   return pixel_detail::validate(image);
 }
 
-std::expected<ImageBuffer, std::string> resize_native_pixels(
-    const ImageBuffer& source, std::size_t width, std::size_t height, std::stop_token stop = {}) {
-  if (auto valid = pixel_detail::validate(source); !valid) return std::unexpected{valid.error()};
-  if (!width || !height || width > UINT32_MAX || height > UINT32_MAX) return std::unexpected{"调整尺寸无效。"};
+awj::compat::expected<ImageBuffer, std::string> resize_native_pixels(
+    const ImageBuffer& source, std::size_t width, std::size_t height, awj::compat::stop_token stop = {}) {
+  if (auto valid = pixel_detail::validate(source); !valid) return awj::compat::unexpected{valid.error()};
+  if (!width || !height || width > UINT32_MAX || height > UINT32_MAX) return awj::compat::unexpected{"调整尺寸无效。"};
   if (source.geometry && is_yuv_format(source.pixel_format))
-    return std::unexpected{"YUV 几何变换应在目标像素转换中处理。"};
+    return awj::compat::unexpected{"YUV 几何变换应在目标像素转换中处理。"};
   try {
     ImageBuffer output{.width = width, .height = height, .pixel_format = source.pixel_format,
         .alpha_mode = source.alpha_mode, .bit_depth = source.bit_depth,
@@ -338,14 +337,14 @@ std::expected<ImageBuffer, std::string> resize_native_pixels(
       const auto output_size = pixel_detail::plane_size(output, c);
       const auto sample_bytes = (source.bit_depth > 8 ? 2u : 1u) *
           (is_yuv_format(source.pixel_format) ? 1u : source.pixel_format == PixelFormat::rgb ? 3u : 4u);
-      if (output_size[0] > SIZE_MAX / sample_bytes) return std::unexpected{"调整尺寸宽度溢出。"};
+      if (output_size[0] > SIZE_MAX / sample_bytes) return awj::compat::unexpected{"调整尺寸宽度溢出。"};
       const auto stride = output_size[0] * sample_bytes;
       auto count = decoder_common::checked_image_bytes(stride, output_size[1], "native resize");
-      if (!count) return std::unexpected{count.error()};
+      if (!count) return awj::compat::unexpected{count.error()};
       auto bytes = decoder_common::make_byte_buffer(*count, "native resize");
-      if (!bytes) return std::unexpected{bytes.error()};
+      if (!bytes) return awj::compat::unexpected{bytes.error()};
       for (std::size_t y = 0; y < output_size[1]; ++y) {
-        if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         const auto sy = std::min(input_size[1] - 1, y * input_size[1] / output_size[1]);
         for (std::size_t x = 0; x < output_size[0]; ++x) {
           const auto sx = std::min(input_size[0] - 1, x * input_size[0] / output_size[0]);
@@ -358,18 +357,18 @@ std::expected<ImageBuffer, std::string> resize_native_pixels(
       output.planes[c] = ImagePlane{.bytes = std::move(*bytes), .stride = stride};
     }
     return output;
-  } catch (const std::bad_alloc&) { return std::unexpected{"调整尺寸内存不足。"}; }
-    catch (const std::length_error&) { return std::unexpected{"调整尺寸超过限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"调整尺寸内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"调整尺寸超过限制。"}; }
 }
 
-std::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& image) {
-  if (image.geometry) return std::unexpected{"原生 YUV 视图需要先应用几何变换。"};
-  if (!is_yuv_format(image.pixel_format)) return std::unexpected{"需要原生 YUV 平面。"};
-  if (auto valid = pixel_detail::validate(image); !valid) return std::unexpected{valid.error()};
-  if (image.width > UINT32_MAX || image.height > UINT32_MAX) return std::unexpected{"YUV 尺寸超过 API 限制。"};
+awj::compat::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& image) {
+  if (image.geometry) return awj::compat::unexpected{"原生 YUV 视图需要先应用几何变换。"};
+  if (!is_yuv_format(image.pixel_format)) return awj::compat::unexpected{"需要原生 YUV 平面。"};
+  if (auto valid = pixel_detail::validate(image); !valid) return awj::compat::unexpected{valid.error()};
+  if (image.width > UINT32_MAX || image.height > UINT32_MAX) return awj::compat::unexpected{"YUV 尺寸超过 API 限制。"};
   auto view = pixel_detail::description(image);
   for (std::size_t c = 0; c < image.planes.size() && c < 4; ++c) {
-    if (image.planes[c].stride > UINT32_MAX) return std::unexpected{"YUV stride 超过 API 限制。"};
+    if (image.planes[c].stride > UINT32_MAX) return awj::compat::unexpected{"YUV stride 超过 API 限制。"};
     auto* data = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(image.planes[c].read_bytes().data()));
     if (c == 3) { view.alphaPlane = data; view.alphaRowBytes = static_cast<std::uint32_t>(image.planes[c].stride); }
     else { view.yuvPlanes[c] = image.planes[c].read_bytes().empty() ? nullptr : data; view.yuvRowBytes[c] = static_cast<std::uint32_t>(image.planes[c].stride); }
@@ -378,9 +377,9 @@ std::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& image) {
   return view;
 }
 
-std::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage& source, std::stop_token stop = {}) {
+awj::compat::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage& source, awj::compat::stop_token stop = {}) {
   try {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     PixelFormat format = source.yuvFormat == AVIF_PIXEL_FORMAT_YUV444 ? PixelFormat::yuv444
         : source.yuvFormat == AVIF_PIXEL_FORMAT_YUV422 ? PixelFormat::yuv422
         : source.yuvFormat == AVIF_PIXEL_FORMAT_YUV420 ? PixelFormat::yuv420 : PixelFormat::gray;
@@ -398,45 +397,45 @@ std::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage& source,
       const auto stride = size[0] * (source.depth > 8 ? 2u : 1u);
       const auto* data = c == 3 ? source.alphaPlane : source.yuvPlanes[c];
       const auto source_stride = c == 3 ? source.alphaRowBytes : source.yuvRowBytes[c];
-      if (!data || source_stride < stride) return std::unexpected{"解码器 YUV 平面无效。"};
+      if (!data || source_stride < stride) return awj::compat::unexpected{"解码器 YUV 平面无效。"};
       auto bytes = decoder_common::checked_image_bytes(stride, size[1], "native YUV");
-      if (!bytes) return std::unexpected{bytes.error()};
+      if (!bytes) return awj::compat::unexpected{bytes.error()};
       auto storage = decoder_common::make_byte_buffer(*bytes, "native YUV");
-      if (!storage) return std::unexpected{storage.error()};
+      if (!storage) return awj::compat::unexpected{storage.error()};
       for (std::size_t y = 0; y < size[1]; ++y) {
-        if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         std::memcpy(storage->data() + y * stride, data + y * source_stride, stride);
       }
       output.planes[c] = ImagePlane{.bytes = std::move(*storage), .stride = stride};
     }
-    if (auto valid = pixel_detail::validate(output); !valid) return std::unexpected{valid.error()};
+    if (auto valid = pixel_detail::validate(output); !valid) return awj::compat::unexpected{valid.error()};
     return output;
-  } catch (const std::bad_alloc&) { return std::unexpected{"YUV 平面内存不足。"}; }
-    catch (const std::length_error&) { return std::unexpected{"YUV 平面尺寸超过限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"YUV 平面内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"YUV 平面尺寸超过限制。"}; }
 }
 
-std::expected<ImageBuffer, std::string> convert_image_pixels(
-    const ImageBuffer& source, const PixelConversionRequest& request, std::stop_token stop = {},
+awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
+    const ImageBuffer& source, const PixelConversionRequest& request, awj::compat::stop_token stop = {},
     const ResourcePlan& resources = {}) {
   try {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-    if (auto valid = pixel_detail::validate(source); !valid) return std::unexpected{valid.error()};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (auto valid = pixel_detail::validate(source); !valid) return awj::compat::unexpected{valid.error()};
     if ((request.bit_depth != 8 && request.bit_depth != 10 && request.bit_depth != 12 && request.bit_depth != 16) ||
         (!is_yuv_format(request.format) && request.format != PixelFormat::rgba) ||
-        (request.color_range != 0 && request.color_range != 1)) return std::unexpected{"目标像素布局无效。"};
+        (request.color_range != 0 && request.color_range != 1)) return awj::compat::unexpected{"目标像素布局无效。"};
     pixel_detail::Reader reader{source};
     if (is_yuv_format(source.pixel_format)) {
       const auto view = pixel_detail::description(source);
-      if (!avifGetYUVColorSpaceInfo(&view, &reader.color)) return std::unexpected{"源 YUV 色彩矩阵不受支持。"};
+      if (!avifGetYUVColorSpaceInfo(&view, &reader.color)) return awj::compat::unexpected{"源 YUV 色彩矩阵不受支持。"};
     }
     if (request.tone_map_to_sdr) {
       auto signal = hdr::has_explicit_hdr_signal(source);
-      if (!signal) return std::unexpected{signal.error()};
+      if (!signal) return awj::compat::unexpected{signal.error()};
       if (*signal) {
         if (reader.color.depth && source.source_info &&
             (source.source_info->matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RE ||
              source.source_info->matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RO)) {
-          return std::unexpected{"可逆 YCgCo 的 HDR 色调映射需要相匹配的整数转换。"};
+          return awj::compat::unexpected{"可逆 YCgCo 的 HDR 色调映射需要相匹配的整数转换。"};
         }
         // Native YUV destinations retain a 16-bit SDR RGB intermediate; do not
         // quantize/dither RGB to 8-bit before the final YUV transform.
@@ -459,10 +458,10 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
           // destination conversion, whose 16-bit RGB path uses a fixed 2x2 block.
           const auto minimum_scratch = hdr_cost::tone_scratch_bytes(1, false, 1);
           const auto required = hdr_cost::add(resident, hdr_cost::add(target, minimum_scratch));
-          if (required == UINT64_MAX) return std::unexpected{"HDR 递归转换工作集尺寸溢出。"};
+          if (required == UINT64_MAX) return awj::compat::unexpected{"HDR 递归转换工作集尺寸溢出。"};
           if (resources.memory_limit_bytes) {
             if (required > resources.memory_limit_bytes || target >= resources.memory_limit_bytes)
-              return std::unexpected{"HDR 递归转换的 source、SDR、目标及 scratch 同时工作集超出内存预算。"};
+              return awj::compat::unexpected{"HDR 递归转换的 source、SDR、目标及 scratch 同时工作集超出内存预算。"};
             // A finite exhausted remainder must never be passed as zero:
             // ResourcePlan's zero means unlimited, not no available capacity.
             tone_resources.memory_limit_bytes = resources.memory_limit_bytes - target;
@@ -476,9 +475,9 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
               return (*static_cast<const pixel_detail::Reader*>(context))(x, y);
             }};
         auto prepared = hdr::hdr_detail::prepare_tone_context(source, stop, pixels);
-        if (!prepared) return std::unexpected{prepared.error()};
+        if (!prepared) return awj::compat::unexpected{prepared.error()};
         auto mapped = hdr::tone_map_to_sdr_srgb(source, *prepared, depth, stop, tone_resources);
-        if (!mapped) return std::unexpected{mapped.error()};
+        if (!mapped) return awj::compat::unexpected{mapped.error()};
         const bool remaining_color_conversion =
             (request.color_primaries && mapped->source_info->color_primaries != request.color_primaries) ||
             (request.transfer_characteristics && mapped->source_info->transfer_characteristics != request.transfer_characteristics);
@@ -486,10 +485,10 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
           if (!request.preserve_alpha) {
             mapped->alpha_mode = AlphaMode::none;
             for (std::size_t y = 0; y < mapped->height; ++y) {
-              if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+              if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
               auto* row = mapped->planes[0].bytes.data() + y * mapped->planes[0].stride;
               for (std::size_t x = 0; x < mapped->width; ++x) {
-                if (x % 1024 == 0 && stop.stop_requested()) return std::unexpected{"任务已取消。"};
+                if (x % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
                 if (depth == 8) row[x * 4 + 3] = std::byte{255};
                 else hdr::hdr_detail::write_unorm16(row, x * 4 + 3, 1.0F);
               }
@@ -504,7 +503,7 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
       }
     }
     auto mapping = pixel_detail::hdr_map(reader, request, stop);
-    if (!mapping) return std::unexpected{mapping.error()};
+    if (!mapping) return awj::compat::unexpected{mapping.error()};
     ImageBuffer output{.width = source.width, .height = source.height, .pixel_format = request.format,
         .alpha_mode = request.preserve_alpha && source.alpha_mode != AlphaMode::none ? AlphaMode::straight : AlphaMode::none,
         .bit_depth = request.bit_depth, .source_info = source.source_info, .metadata = source.metadata};
@@ -527,55 +526,55 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
       if (request.format == PixelFormat::gray && (c == 1 || c == 2)) continue;
       const auto size = pixel_detail::plane_size(output, c);
       const auto channels = yuv ? 1u : 4u;
-      if (size[0] > SIZE_MAX / channels / (request.bit_depth > 8 ? 2u : 1u)) return std::unexpected{"目标像素宽度溢出。"};
+      if (size[0] > SIZE_MAX / channels / (request.bit_depth > 8 ? 2u : 1u)) return awj::compat::unexpected{"目标像素宽度溢出。"};
       const auto stride = size[0] * channels * (request.bit_depth > 8 ? 2u : 1u);
       auto count = decoder_common::checked_image_bytes(stride, size[1], "pixel conversion");
-      if (!count) return std::unexpected{count.error()};
-      if (*count > encoding_defaults::effective_max_input_file_bytes() - allocation) return std::unexpected{"目标像素超过内存上限。"};
+      if (!count) return awj::compat::unexpected{count.error()};
+      if (*count > encoding_defaults::effective_max_input_file_bytes() - allocation) return awj::compat::unexpected{"目标像素超过内存上限。"};
       allocation += *count;
       auto bytes = decoder_common::make_byte_buffer(*count, "pixel conversion");
-      if (!bytes) return std::unexpected{bytes.error()};
+      if (!bytes) return awj::compat::unexpected{bytes.error()};
       output.planes[c] = ImagePlane{.bytes = std::move(*bytes), .stride = stride};
     }
     const float maximum = static_cast<float>((1u << request.bit_depth) - 1);
     avifYUVColorSpaceInfo target{};
     if (yuv) {
       const auto view = pixel_detail::description(output);
-      if (!avifGetYUVColorSpaceInfo(&view, &target)) return std::unexpected{"目标 YUV 色彩矩阵不受支持。"};
+      if (!avifGetYUVColorSpaceInfo(&view, &target)) return awj::compat::unexpected{"目标 YUV 色彩矩阵不受支持。"};
     }
     if (!mapping->enabled && !source.geometry && source.pixel_format == PixelFormat::rgba && yuv &&
         source.sample_representation == SampleRepresentation::unorm) {
       auto view = yuv_plane_view(output);
-      if (!view) return std::unexpected{view.error()};
+      if (!view) return awj::compat::unexpected{view.error()};
       avifRGBImage rgb{};
       avifRGBImageSetDefaults(&rgb, &*view);
       rgb.format = AVIF_RGB_FORMAT_RGBA; rgb.depth = source.bit_depth;
       rgb.pixels = reinterpret_cast<std::uint8_t*>(const_cast<std::byte*>(source.planes[0].read_bytes().data()));
-      if (source.planes[0].stride > UINT32_MAX) return std::unexpected{"RGBA stride 超过 API 限制。"};
+      if (source.planes[0].stride > UINT32_MAX) return awj::compat::unexpected{"RGBA stride 超过 API 限制。"};
       rgb.rowBytes = static_cast<std::uint32_t>(source.planes[0].stride);
       rgb.alphaPremultiplied = source.alpha_mode == AlphaMode::premultiplied ? AVIF_TRUE : AVIF_FALSE;
       rgb.ignoreAlpha = output.alpha_mode == AlphaMode::none ? AVIF_TRUE : AVIF_FALSE;
       rgb.chromaDownsampling = AVIF_CHROMA_DOWNSAMPLING_AVERAGE;
       const auto converted = avifImageRGBToYUV(&*view, &rgb);
-      if (converted != AVIF_RESULT_OK) return std::unexpected{std::string{"RGB 转 YUV 失败: "} + avifResultToString(converted)};
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (converted != AVIF_RESULT_OK) return awj::compat::unexpected{std::string{"RGB 转 YUV 失败: "} + avifResultToString(converted)};
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       return output;
     }
     if (!mapping->enabled && !source.geometry && is_yuv_format(source.pixel_format) && !yuv &&
         (!source.source_info || !source.source_info->chroma_location || source.source_info->chroma_location == 2)) {
       auto view = yuv_plane_view(source);
-      if (!view) return std::unexpected{view.error()};
+      if (!view) return awj::compat::unexpected{view.error()};
       avifRGBImage rgb{};
       avifRGBImageSetDefaults(&rgb, &*view);
       rgb.format = AVIF_RGB_FORMAT_RGBA; rgb.depth = request.bit_depth;
       rgb.pixels = reinterpret_cast<std::uint8_t*>(output.planes[0].bytes.data());
-      if (output.planes[0].stride > UINT32_MAX) return std::unexpected{"RGBA stride 超过 API 限制。"};
+      if (output.planes[0].stride > UINT32_MAX) return awj::compat::unexpected{"RGBA stride 超过 API 限制。"};
       rgb.rowBytes = static_cast<std::uint32_t>(output.planes[0].stride);
       rgb.alphaPremultiplied = AVIF_FALSE;
       rgb.ignoreAlpha = output.alpha_mode == AlphaMode::none ? AVIF_TRUE : AVIF_FALSE;
       const auto converted = avifImageYUVToRGB(&*view, &rgb);
-      if (converted != AVIF_RESULT_OK) return std::unexpected{std::string{"YUV 转 RGB 失败: "} + avifResultToString(converted)};
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (converted != AVIF_RESULT_OK) return awj::compat::unexpected{std::string{"YUV 转 RGB 失败: "} + avifResultToString(converted)};
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       return output;
     }
     if (!mapping->enabled && !source.geometry && is_yuv_format(source.pixel_format) && yuv &&
@@ -586,7 +585,7 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
         if (output.pixel_format == PixelFormat::gray && (c == 1 || c == 2)) continue;
         const auto size = pixel_detail::plane_size(output, c);
         for (std::size_t y = 0; y < size[1]; ++y) {
-          if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+          if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
           for (std::size_t x = 0; x < size[0]; ++x) {
             float value{};
             if (c == 3) value = pixel_detail::sample(source, 3, x, y) /
@@ -617,22 +616,22 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
     if (reader.color.depth && source.source_info &&
         (source.source_info->matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RE ||
          source.source_info->matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RO))
-      return std::unexpected{"可逆 YCgCo 的矩阵转换需要相匹配的整数位深。"};
+      return awj::compat::unexpected{"可逆 YCgCo 的矩阵转换需要相匹配的整数位深。"};
     if (request.matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RE ||
         request.matrix_coefficients == AVIF_MATRIX_COEFFICIENTS_YCGCO_RO)
-      return std::unexpected{"可逆 YCgCo 的矩阵转换需要相匹配的整数位深。"};
+      return awj::compat::unexpected{"可逆 YCgCo 的矩阵转换需要相匹配的整数位深。"};
     if (!mapping->enabled && source.pixel_format == PixelFormat::rgba && request.format == PixelFormat::rgba &&
         source.bit_depth == request.bit_depth && source.alpha_mode != AlphaMode::premultiplied)
       output.significant_bits = source.significant_bits;
     const auto factors = yuv ? pixel_detail::subsampling(request.format) : std::array<std::size_t, 2>{1, 1};
     for (std::size_t by = 0; by < source.height; by += factors[1]) {
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       for (std::size_t bx = 0; bx < source.width; bx += factors[0]) {
         float sum_u{}, sum_v{}; std::size_t count{};
         for (std::size_t y = by; y < std::min(by + factors[1], source.height); ++y) {
           for (std::size_t x = bx; x < std::min(bx + factors[0], source.width); ++x) {
             auto rgba = (*mapping)(reader(x, y));
-            if (!rgba) return std::unexpected{rgba.error()};
+            if (!rgba) return awj::compat::unexpected{rgba.error()};
             if (!yuv) {
               for (std::size_t c = 0; c < 4; ++c) {
                 const float value = c == 3 && output.alpha_mode == AlphaMode::none ? 1 : (*rgba)[c];
@@ -658,8 +657,8 @@ std::expected<ImageBuffer, std::string> convert_image_pixels(
       }
     }
     return output;
-  } catch (const std::bad_alloc&) { return std::unexpected{"像素转换内存不足。"}; }
-    catch (const std::length_error&) { return std::unexpected{"像素转换尺寸超过限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"像素转换内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"像素转换尺寸超过限制。"}; }
 }
 
 } // namespace awj

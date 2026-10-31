@@ -1,15 +1,14 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <filesystem>
 #include <functional>
 #include <limits>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -65,7 +64,7 @@ int rendition_reference_depth(const ImageBuffer& image) noexcept {
   return depth;
 }
 
-std::expected<int, std::string> resolve_rendition_bit_depth(
+awj::compat::expected<int, std::string> resolve_rendition_bit_depth(
     OutputFormat format, const ImageBuffer& image, bool hdr,
     std::optional<int> requested = {}) {
   const int depth = requested.value_or(format == OutputFormat::avif
@@ -74,7 +73,7 @@ std::expected<int, std::string> resolve_rendition_bit_depth(
   const bool supported = format == OutputFormat::avif ? depth == 8 || depth == 10 || depth == 12
       : format == OutputFormat::jxl ? depth == 8 || depth == 10 || depth == 12 || depth == 16
       : format == OutputFormat::png ? depth == 8 || depth == 16 : depth == 8;
-  if (!supported) return std::unexpected{"目标格式不支持所请求的位深，不能静默忽略或降级。"};
+  if (!supported) return awj::compat::unexpected{"目标格式不支持所请求的位深，不能静默忽略或降级。"};
   return depth;
 }
 
@@ -400,7 +399,7 @@ struct DecodeDiagnostics {
 void capture_decode_source(DecodeDiagnostics& diagnostics, const ImageBuffer& image) {
   diagnostics.source_info = image.source_info.value_or(
       ImageSourceInfo{.pixel_format = image.pixel_format, .bit_depth = image.bit_depth});
-  diagnostics.source_has_icc = std::ranges::any_of(image.metadata, [](const MetadataBlock& block) {
+  diagnostics.source_has_icc = awj::compat::ranges::any_of(image.metadata, [](const MetadataBlock& block) {
     return block.kind == MetadataKind::icc;
   });
   diagnostics.source_has_alpha_channel = image.alpha_mode != AlphaMode::none;
@@ -413,7 +412,7 @@ struct DecodeOptions {
   GainMapDecodeMode gain_map_mode{GainMapDecodeMode::hdr_only};
   // 仅借用到本次同步调用返回，解码器不得留存或跨线程共享。
   DecodeDiagnostics* diagnostics{};
-  std::stop_token stop_token{};
+  awj::compat::stop_token stop_token{};
 };
 
 class ImageDecoder {
@@ -421,24 +420,24 @@ class ImageDecoder {
   virtual ~ImageDecoder() = default;
   [[nodiscard]] virtual std::string_view id() const noexcept = 0;
   [[nodiscard]] virtual bool can_decode(const fs::path& path) const = 0;
-  virtual std::expected<ImageDecodeResult, std::string> decode(
+  virtual awj::compat::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const = 0;
-  virtual std::expected<ImageDecodeResult, std::string> decode(
+  virtual awj::compat::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path, DecodeOptions) const { return decode(path); }
-  virtual std::expected<ImageDecodeResult, std::string> decode_memory(
+  virtual awj::compat::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte>, std::string_view,
       DecodeOptions = {}) const {
-    return std::unexpected{"该解码器不支持内存解码。"};
+    return awj::compat::unexpected{"该解码器不支持内存解码。"};
   }
-  virtual std::expected<ImageDimensions, std::string> probe_dimensions(
+  virtual awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const {
     auto decoded = decode(path);
     if (!decoded) {
-      return std::unexpected{decoded.error()};
+      return awj::compat::unexpected{decoded.error()};
     }
     if (decoded->image.width > std::numeric_limits<std::uint32_t>::max() ||
         decoded->image.height > std::numeric_limits<std::uint32_t>::max()) {
-      return std::unexpected{"图片尺寸超过内部尺寸表示范围。"};
+      return awj::compat::unexpected{"图片尺寸超过内部尺寸表示范围。"};
     }
     return make_image_dimensions(static_cast<std::uint32_t>(decoded->image.width),
                                  static_cast<std::uint32_t>(decoded->image.height));
@@ -450,17 +449,17 @@ class ImageEncoder {
   virtual ~ImageEncoder() = default;
   [[nodiscard]] virtual std::string_view id() const noexcept = 0;
   [[nodiscard]] virtual CodecCapabilities capabilities() const = 0;
-  virtual std::expected<NativeEncodeResult, std::string> encode(
+  virtual awj::compat::expected<NativeEncodeResult, std::string> encode(
       const ImageBuffer& image,
       const NativeEncodeSettings& settings,
-      std::stop_token stop_token = {}) const = 0;
+      awj::compat::stop_token stop_token = {}) const = 0;
 };
 
 class CodecBackend {
  public:
   virtual ~CodecBackend() = default;
   [[nodiscard]] virtual BackendId backend_id() const noexcept = 0;
-  virtual std::expected<NativeEncodeResult, std::string> convert(
+  virtual awj::compat::expected<NativeEncodeResult, std::string> convert(
       const fs::path& input,
       const NativeEncodeSettings& settings) const = 0;
 };

@@ -16,7 +16,7 @@ set(AWJ_SDK_SHM OFF CACHE BOOL "" FORCE)
 set(AWJ_ENABLE_GPU_METRICS OFF CACHE BOOL "" FORCE)
 set(AWJ_ENABLE_X64_V3 OFF CACHE BOOL "" FORCE)
 set(AWJ_SDK_TOOLS OFF CACHE BOOL "" FORCE)
-set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+option(BUILD_TESTING "构建目标 SDK 测试；须使用真实 runner 执行" OFF)
 # native codecs 默认开启；依赖必须已为目标 SDK/ABI 构建，不能使用 Windows vcpkg 库。
 add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/.." "${CMAKE_CURRENT_BINARY_DIR}/sdk")
 option(AWJ_HARMONY_NODE_API "构建用于 ArkTS 的薄 Node-API 示例" OFF)

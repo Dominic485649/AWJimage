@@ -4,6 +4,10 @@ endif()
 if(EXISTS "${CURRENT_INSTALLED_DIR}/share/ijg-libjpeg/copyright")
     message(FATAL_ERROR "Can't build ${PORT} if ijg-libjpeg is installed. Please remove ijg-libjpeg:${TARGET_TRIPLET}, and try to install ${PORT}:${TARGET_TRIPLET} again.")
 endif()
+set(AWJ_JPEG_TARGET_PATCHES)
+if(VCPKG_TARGET_IS_OHOS)
+    list(APPEND AWJ_JPEG_TARGET_PATCHES ohos-strings-header.patch)
+endif()
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO libjpeg-turbo/libjpeg-turbo
@@ -11,6 +15,7 @@ vcpkg_from_github(
     SHA512 680b97652a51846e1965e70b5498f74ebf9e6eaa31c122546ba7b8eff9fa6b6eb85972802970e94cce4f539518ad421395eaffe121bce7ad7b8f23a9ab9731ef
     HEAD_REF master
     PATCHES
+        ${AWJ_JPEG_TARGET_PATCHES}
         add-options-for-docs-headers.patch
         # workaround for vcpkg bug see #5697 on github for more information
         workaround_cmake_system_processor.patch

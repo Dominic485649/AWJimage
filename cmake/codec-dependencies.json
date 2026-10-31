@@ -1,5 +1,5 @@
 {
-  "awj_version": "1.3.0",
+  "awj_version": "1.3.1",
   "selected_at": "2026-10-29",
   "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
   "vcpkg_baseline": "d4c0a46cb8f63e5c9fa007d13baf1cb3e43bf7e3",
@@ -10,8 +10,10 @@
     "sha256": "aa8d193bb887c348c419780511dd03b374f4e07af8812b6d3f80c8537cf1ef2c",
     "patches": [
       "cmake/patch_libultrahdr_threads.cmake",
-      "cmake/patch_libultrahdr_iso_only.cmake"
-    ]
+      "cmake/patch_libultrahdr_iso_only.cmake",
+      "cmake/patch_libultrahdr_ohos.cmake"
+    ],
+    "ohos_patch_scope": "OHOS only: recognize the actual platform for the existing CPU-only implementation."
   },
   "libheif": {
     "tag": "v1.23.7",
@@ -102,9 +104,11 @@
     "sha512": "680b97652a51846e1965e70b5498f74ebf9e6eaa31c122546ba7b8eff9fa6b6eb85972802970e94cce4f539518ad421395eaffe121bce7ad7b8f23a9ab9731ef",
     "patches": [
       "vcpkg-overlays/libjpeg-turbo/add-options-for-docs-headers.patch",
-      "vcpkg-overlays/libjpeg-turbo/workaround_cmake_system_processor.patch"
+      "vcpkg-overlays/libjpeg-turbo/workaround_cmake_system_processor.patch",
+      "vcpkg-overlays/libjpeg-turbo/ohos-strings-header.patch"
     ],
-    "upstreamed_patch": "3.2.1 already supplies SPNG/ZLIB exported dependencies and pkg-config private requirements; legacy PR901 patch is no longer applied."
+    "upstreamed_patch": "3.2.1 already supplies SPNG/ZLIB exported dependencies and pkg-config private requirements; legacy PR901 patch is no longer applied.",
+    "ohos_patch_scope": "OHOS only: include the POSIX strcasecmp declaration; desktop source is unchanged."
   },
   "libpng": {
     "url": "https://github.com/pnggroup/libpng/archive/refs/tags/v1.6.59.tar.gz",
@@ -112,7 +116,12 @@
     "sha256": "2540302a1844ad2b2b501977abecfa850f265f97b78f065a712ab4074a89f5b5",
     "source": "vcpkg-overlays/libpng",
     "version": "1.6.59",
-    "tag": "v1.6.59"
+    "tag": "v1.6.59",
+    "patches": [
+      "vcpkg-overlays/libpng/cmake.patch",
+      "vcpkg-overlays/libpng/ohos-preprocessor-target.patch"
+    ],
+    "ohos_patch_scope": "OHOS only: preserve compiler target and parse quoted C flags in the configuration preprocessor."
   },
   "libwebp": {
     "url": "https://github.com/webmproject/libwebp/archive/refs/tags/v1.6.0.tar.gz",
@@ -183,7 +192,7 @@
     "cmake/patch_libultrahdr_iso_only.cmake": "75230938274c8152141aabaef9de78d3ae6c8e8a4067a7d87eee0bf805faa7b5",
     "vcpkg-overlays/libpng/cmake.patch": "e1c91b1739580791b8bfe770981cdb07bf65261caf6b2a99da988a8bb21d4094",
     "vcpkg-overlays/libpng/libpng-config.cmake": "24086e8ff194402a0f2d68e9f992ca7a6899a194883a9df0054818e42d41c246",
-    "vcpkg-overlays/libpng/portfile.cmake": "06b17efcb5b7f8700780de9272e63c90046ebce016dba5f874ee44d080a5d890",
+    "vcpkg-overlays/libpng/portfile.cmake": "0ca5aec38c7a5d4f0c21ca49b9358de9a2af43eb6fdb12ccdb2ca0101baa2983",
     "vcpkg-overlays/libpng/usage": "78d7cf48b6a62ad52b10cb5f2134b2f6b61128c08802e10092020e28fb992542",
     "vcpkg-overlays/libpng/vcpkg-cmake-wrapper.cmake": "4267e69abf185f2228a4cc012e3fe87d5de21a187c75950b5a7615f41c3f6371",
     "vcpkg-overlays/libpng/vcpkg.json": "ec34dfb1f223ac006bb72361edfb2c80ec4dd2067bcc5fa31152f9f7232e2376",
@@ -192,14 +201,17 @@
     "vcpkg-overlays/scnlib/scnlib-pr-136.patch": "3821a7c3f18e90c4c68d3ed2fddc7018e2a9c8fcc81cf02a901969dcd2e5dac7",
     "vcpkg-overlays/scnlib/libcxx-wrap-iter.patch": "a7496a9101e0e5b942fbffdccfc07e5cfb4e03b2ceced0afbbec5a82ed65f67f",
     "vcpkg-overlays/libjpeg-turbo/add-options-for-docs-headers.patch": "ca0974ee39b53aabbe2a1ee0fc02781cad5582d988b49e631b990c63019f770e",
-    "vcpkg-overlays/libjpeg-turbo/portfile.cmake": "26f4cfc9ff9bbda574f738cc7a206e66a934924801aba2ace8b96db135dca30a",
+    "vcpkg-overlays/libjpeg-turbo/portfile.cmake": "b2eec905177338f19c79485f7ca7d1c3c15c9fd87d35fbcbe1a86e178851dcda",
     "vcpkg-overlays/libjpeg-turbo/usage": "47f758c3e170429801a301f8acf5a764f7842df390d07293b6ddee47e7e276b1",
     "vcpkg-overlays/libjpeg-turbo/vcpkg-cmake-wrapper.cmake": "37be49bd6b131a34f6a16a5054ee154a98097aa57d6d3cdb99fc8e2afe363e07",
     "vcpkg-overlays/libjpeg-turbo/vcpkg.json": "00c8d9eb99ad58081330780fee2829c359f9a0a4857a4bf0f5dd83d05fb66e38",
     "vcpkg-overlays/libjpeg-turbo/workaround_cmake_system_processor.patch": "2f4a9d8b3920ce7d4933d9e1aeca04d3a742e1c7c28db854eb4619e5d6cd9a9e",
     "cmake/patch_winit_dpi.cmake": "9798bf7913e952abb98347610ef57e9fea0c80637529abab2e39372099d393fe",
     "cmake/verify_winit_source.cmake": "f44b7e0cdf7d132cbda4267cd8b042001ce70aee84b3e76cd9cd2cbba3abf10d",
-    "cmake/winit-source-manifest.json": "45a2bf83a4b39b866530ba76abb0386d0c17b045d183862c1e98d9f575e4aedb"
+    "cmake/winit-source-manifest.json": "45a2bf83a4b39b866530ba76abb0386d0c17b045d183862c1e98d9f575e4aedb",
+    "vcpkg-overlays/libjpeg-turbo/ohos-strings-header.patch": "39d410a40c529ffbd0d522c2dac2b771cc815774c3e54968d72483f040e049e1",
+    "vcpkg-overlays/libpng/ohos-preprocessor-target.patch": "579f617536f0c58c4f81862408523edcaff693d9e7468c908ef380464750cda5",
+    "cmake/patch_libultrahdr_ohos.cmake": "5ffd500640bcaf28e46df87d644030b70d127e9a47f24c8e00f91deae35f6b39"
   },
   "local_build_hash_normalization": "UTF-8 text, CRLF normalized to LF; source archives retain byte-exact hashes",
   "libraw": {
@@ -253,5 +265,10 @@
       "488c036a05d418e13bbdcdc349e2db2f6b7f58e2"
     ],
     "source_manifest": "cmake/winit-source-manifest.json"
+  },
+  "compatibility_review": {
+    "version": "1.3.1",
+    "reviewed_at": "2026-11-01",
+    "policy": "Retain 1.3.0 codec pins; add target-only OHOS build adaptation and private standard-library compatibility."
   }
 }

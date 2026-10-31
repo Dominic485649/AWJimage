@@ -1,10 +1,10 @@
-# AWJimage 1.3.0 C ABI SDK
+# AWJimage 1.3.1 C ABI SDK
 
 本 SDK 接收其他软件主动提交的图像帧，直接处理 CPU 内存、Windows D3D11 纹理、共享内存槽位或二进制帧流。它不附带录屏选择器、WGC capture session、视频播放器或完整 FFmpeg 解码器，也不能无侵入读取任意软件的私有内存。“任何软件”指能够按平台 C ABI 和资源所有权契约集成 SDK 的软件，不等于支持未知像素布局或任意地址。
 
-**公共接口只有 C ABI。** C++ 调用方也包含同一套 C 头；没有另一套 C++ ABI、`awj.hpp` 或导出的 C++ 封装。内部保持 C++23，私有 modules/BMI 不进入 SDK 消费接口。调用方不要求 Clang 21，但必须匹配目标 OS、架构、C 结构布局和调用约定。
+**公共接口只有 C ABI。** C++ 调用方也包含同一套 C 头；没有另一套 C++ ABI、`awj.hpp` 或导出的 C++ 封装。内部保持 C++23，私有 modules/BMI 不进入 SDK 消费接口。C99、C++11 和 C++17 调用方使用同一公共 C 接口，并匹配目标 OS、架构、C 结构布局和调用约定。
 
-本项目继续适用现有 AGPL-3.0；库化和 C ABI 不会自动给予闭源软件链接/分发的许可豁免。第三方许可证见 `LICENSE`、`THIRD_PARTY_NOTICES.txt` 和 `licenses/`。Windows/Linux 动态 SDK 通过独立归档分发，下载与校验文件随同一版本 Release 提供。
+本项目继续适用现有 AGPL-3.0；库化和 C ABI 不会自动给予闭源软件链接/分发的许可豁免。第三方许可证见 `LICENSE`、`THIRD_PARTY_NOTICES.txt` 和 `licenses/`。各目标平台的动态 SDK 通过独立归档分发，下载与校验文件随同一版本 Release 提供。
 
 ## 平台与当前边界
 
@@ -15,8 +15,8 @@
 | D3D11 | WARP 测试覆盖回读、严格模式、映射借用、池背压；共享 NT/keyed mutex 子项独立记录是否通过或跳过 |
 | 真实 WGC、物理 GPU HDR、跨设备共享 | 未验证；WARP 不替代这些结果 |
 | FFmpeg | 可选桥接，按精确 libavutil 头版本构建；Windows DLL 与 Linux `.so` 分别验证，不混用证据；未验证实际 D3D11 解码会话 |
-| Linux x86_64，Clang 21.1.8 / 23.1.5 | 原生 C ABI `.so`、匿名共享内存、FFmpeg 和只读页适配；实际完成范围与工具链要求以对应开发包的原始记录为准 |
-| 华为 HarmonyOS Native SDK | 有独立构建入口和薄 Node-API 示例，未用真实 SDK 编译/链接或真机验证；不能宣布已支持 |
+| Linux x86_64，WSL Clang 23 | 1.3.1 使用独立原生 Clang23 构建；保留匿名共享内存、FFmpeg、帧流与只读页适配，执行记录随包保存 |
+| HMOS ARM64/API26，WSL Clang23 + Native26.0.0.105 | 完整 CPU C ABI SDK，目标头与原始静态 libc++15004/ABI1/__n1 配对；交叉构建与真实目标执行分别记录，正式放行要求后者通过 |
 
 1.3.0 已纳入固定的 1.2.6。开发主线采用 `main`，`master` 保留旧客户端更新入口；两处使用相同的签名清单与密钥环，1.3.0 客户端从 `main` 获取更新。正式包由同一干净源码提交构建，应用与 SDK 独立分发。
 
@@ -57,7 +57,7 @@ pwsh -NoProfile -File scripts/build-sdk.ps1 -BuildDirectory build/sdk-native-cla
 - `AWJ_SDK_TOOLS=ON`：构建 `awj-stream`。
 - `AWJ_SDK_FFMPEG_TEST_AVUTIL`：仅测试来源动态库的绝对路径，不安装/分发此 DLL 或 `.so`。
 
-Linux 在原生文件系统中使用 CMake/Ninja 和 Clang 21 以上构建，例如配置 `cmake -S sdk -B build/sdk-linux -G Ninja -DAWJ_SDK_SHM=ON`，并指定自己的编译器、锁定依赖和安装前缀。完整编码核心使用 C++23 `<print>/<format>`；编译器版本号不足以证明标准库具备这些功能，配置时另做编译／链接探测。Ubuntu 24.04 默认 GCC 13 标准库不足以完成本项目全部编码核心，本轮最低 Clang 21 配合原生 libc++ 及实际探测构建，具体库版本和 ELF 运行依赖随证据记录。Linux Release SDK 与应用采用一致的私有静态 C++ 运行库策略，并通过 ELF 导出表隐藏非 C API 符号，避免静态 libc++ 宿主同时装载 SDK 的动态 libc++ 而在 main 前出现初始化冲突。调用方仍不需要使用相同 C++ 编译器或标准库，但目标系统必须满足实际 ELF 的 glibc 等运行依赖。Linux 候选不宣称适用于所有发行版、架构或 libc。
+Linux 1.3.1 应用与 SDK 使用本项目 WSL 原生文件系统中的 Clang23。当前实际版本为 Ubuntu Clang 23.1.5 时间戳快照，完整 banner 与编译器摘要写入证据，不作为上游稳定版版本声明。桌面完整编码核心保持 C++23 标准设施，配置阶段执行实际编译及最终链接探针；不能仅凭编译器版本推断支持。Linux Release SDK 私有静态链接 C++ 运行库，并精确隐藏非 C API 符号；调用方可独立选择 C/C++ 编译器和标准库。目标系统仍须满足实际 ELF 依赖，本次与已发布 1.3.0 SDK 对照的最高 glibc 需求均为 2.38。部署范围还受共享内存所需内核能力约束，不表示支持任意发行版或 libc。
 
 只安装本 SDK 的组件，避免同时安装第三方依赖的内部包：
 
@@ -67,7 +67,7 @@ cmake --install build/sdk-native-clang21 --prefix build/sdk-install --component 
 
 安装后的 `AWJimage::SDK` 只公开 C 头和动态库/导入库，不要求消费项目的 C++23、私有 modules 或第三方静态 target。当前验证/交付为动态库；没有验证或交付独立静态 SDK，不能把 DLL 的 `.lib` 导入库误称为静态库。
 
-独立消费者见 `examples/basic/`：C99 和 C++11 均使用同一 C ABI。
+独立消费者见 `examples/basic/`：C99、C++11 和 C++17 均使用同一 C ABI；C++17 示例实际调用全部五种内存编码器。
 
 ```bash
 cmake -S examples/basic -B build/sdk-consumers -DCMAKE_PREFIX_PATH=<SDK安装目录>
@@ -82,6 +82,24 @@ ctest --test-dir build/sdk-consumers -C Release --output-on-failure
 ```
 
 CMake `find_package(AWJimage 1.3 CONFIG REQUIRED)`，可要求 `D3D11`、`SHM`、`FFMPEG`、`NATIVE_CODECS` 组件。FFmpeg/HarmonyOS 额外约束不会污染通用帧 ABI。
+
+### HMOS 原生交叉构建
+
+`scripts/build-hmos-sdk.sh` 是 WSL/Linux 原生入口，构建锁定的目标依赖、完整五编码器 SDK 与七个目标测试程序，并安装到全新的项目结果目录。通过 `--native-sdk` 指定已校验的 Native26 目标输入，`--vcpkg-root` 指定原生 vcpkg，`--work-root` 指定当前仓库或包含 `src` 的 AWJ 专属根。`--cmake` 可选择 CMake 3.30+，`--jobs` 默认 1。此入口不执行 ARM64 目标程序。
+
+```bash
+bash scripts/build-hmos-sdk.sh --work-root "$HOME/AWJimage" --native-sdk "$AWJ_OHOS_NATIVE_ROOT" --vcpkg-root "$VCPKG_ROOT"
+```
+
+若 Native SDK 安装在 Windows，先仅复制本 profile 使用的 metadata、sysroot/usr/include、sysroot/usr/lib/aarch64-linux-ohos、llvm/include/libcxx-ohos/include/c++/v1、llvm/lib/aarch64-linux-ohos 下的 libc++_static.a 与 libunwind.a，以及 llvm/lib/clang/15.0.4/lib/aarch64-linux-ohos 下的 builtins 与两个 CRT 对象；复制前后逐文件核对 SHA-256。不要从 Windows 挂载目录编译，也不随 SDK 分发整套华为 Native SDK。
+
+`cmake/prepare-ohos-clang23-resource.cmake` 校验 26.0.0.105/API26 与 15004/ABI1/__n1，在项目私有目录组合 Clang23 自带头和原始 Native CRT/builtins；只适配驱动要求的 CRT 文件名，不修改原始安装或升级运行库。通用 `llvm/include/c++/v1` 的 __1 头不能替代目标 libcxx-ohos 头。
+
+OHOS 私有兼容层使用固定 tl::expected 与 fmt，补齐实际使用的 expected、宽字符 UTC 格式化、有限 ranges 算法、共享轮询取消状态及 join 型 worker。桌面保留标准实现；错误赋值先拥有目标 string 类型，worker 的内存失败记录不二次分配，全部 join 后才翻译错误。私有依赖不安装为公共 C++ 接口，许可及固定源码摘要随源码保留。
+
+HMOS 安装仅提供 awj.h、真正的 libawj_sdk.so、CMake package、示例和许可；保持 C ABI v1，CPU 编码覆盖 PNG/JPEGli/WebP/AVIF/JXL。D3D11、桌面 SHM、GPU 指标、FFmpeg 桥接及流 CLI 在本 profile 关闭。ArkTS Node-API、PixelMap/NativeBuffer 和 HAP 收集加载另行验证，不能由 `.so` 链接成功推断。
+
+正式 HMOS 包要求真实华为目标或匹配官方运行环境的消费者、完整 SDK 测试及加载证据，并绑定本次库、源码、系统 build 和原始日志。Linux 宿主测试、普通 Linux QEMU 和交叉链接都不能替代；缺少目标执行证据时保留本地候选，阻止正式发布。
 
 ## 公共 C ABI 与生命周期
 

@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -6,11 +7,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <expected>
 #include <iostream>
 #include <limits>
 #include <numbers>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -451,7 +450,7 @@ int main() {
   // Explicitly retain the original scRGB negative/extended sample regression.
   const std::array<std::uint16_t, 4> original{0x3800u, 0xb400u, 0x4000u, 0x3c00u};
   for (std::size_t c = 0; c < 4; ++c) store16(source.planes[0].bytes.data() + c * 2, original[c]);
-  std::stop_source canceled; canceled.request_stop();
+  awj::compat::stop_source canceled; canceled.request_stop();
   auto context = awj::hdr::prepare_tone_map(source);
   if (!context) return fail(context.error());
   if (awj::hdr::tone_map_to_sdr_srgb(source, 8, canceled.get_token()) ||
@@ -498,10 +497,10 @@ int main() {
   auto cancel_image = linear_fixture(9, 1025, 128);
   auto cancel_context = awj::hdr::prepare_tone_map(cancel_image);
   if (!cancel_context) return fail(cancel_context.error());
-  std::stop_source during;
+  awj::compat::stop_source during;
   struct CancelProgress {
     const awj::ImageBuffer* image;
-    std::stop_source* stop;
+    awj::compat::stop_source* stop;
     mutable std::atomic<std::size_t> entered{}, completed{}, active{};
   } progress{&cancel_image, &during};
   // Bind after preparation: cancellation is raised at an actual tone pixel

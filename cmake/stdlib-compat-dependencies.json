@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "normalization": "UTF-8 text, CRLF normalized to LF",
+  "expected": {
+    "tag": "v1.3.1",
+    "commit": "1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4",
+    "url": "https://codeload.github.com/TartanLlama/expected/tar.gz/1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4",
+    "sha256": "8e6655be615ab8dd3a52745d54c8e88258e58a5c0efe4c4133072abe82414885",
+    "license": "CC0-1.0"
+  },
+  "fmt": {
+    "tag": "12.2.0",
+    "commit": "1be298e1bd68957e4cd352e1f676f00e07dcfb57",
+    "url": "https://codeload.github.com/fmtlib/fmt/tar.gz/1be298e1bd68957e4cd352e1f676f00e07dcfb57",
+    "sha256": "d041f836d9b2a3c1c0fe3cce81ffe6a4a257028faa2f4af0dd20d7e58b493766",
+    "license": "MIT"
+  },
+  "files": [
+    {
+      "path": "src/compat/vendor/expected/include/tl/expected.hpp",
+      "sha256": "0788f7d544a2fdec1dd7a794e1e9863ad4cc6a8817982b6fd93fd98724b9fa19"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/args.h",
+      "sha256": "ce9705a22f68469891cba708b3c4ae459edb3f41c8a83f891e93013d485190f8"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/base.h",
+      "sha256": "888315df369b34360880a89998ce24191e7c1b2b0606666ec8fddb31f0cae2fb"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/chrono.h",
+      "sha256": "a2e569b0f671e89e7691cdd8653d4f695da25174d9c203a2434ce62ed34a2b40"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/color.h",
+      "sha256": "80db3364b9f5b8247f4012d05d1353be1d0aed7c1b5bd65bdcd2817d50b64e7c"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/compile.h",
+      "sha256": "91b48c183ab0d2e0f433bee1b690036d478f0ae1d6fa79259c24d3eed5fbc011"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/core.h",
+      "sha256": "eb71f8be534cb6e0806dd583b8487d4160e5338c59ff3d76986ca08f16ce3e30"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/fmt-c.h",
+      "sha256": "4f5dff96d81d9c0f861125b34ae03e55e4f392866384da0fb4670876377cf9a1"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/format.h",
+      "sha256": "b95f7c5b45d3d93e7cd8e691ae3040282ebcfe2d9c390f2c19d15ffcfae80a9c"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/format-inl.h",
+      "sha256": "1940025f2299de8df375fb16dd8963fb5ab7eeb447271dc33274d63f0d593414"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/os.h",
+      "sha256": "b43e2f2e3683bcc930d8011199b811ecb6c4480d876ad453e15f6a58ec7ccc80"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/ostream.h",
+      "sha256": "663ab18a9c1cf8e7687d61ceb1acdcecd8c6484621855453fe83bc467c1b44c5"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/printf.h",
+      "sha256": "9c3421258aff344e27b36fe9f894b361d1865875aa781e4b392e60b2f1ebecc1"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/ranges.h",
+      "sha256": "0a9297b2feb4443413807ff5bc03e82b4671c150fdfadc869b009ff90b6015a1"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/std.h",
+      "sha256": "0aadd4893c93961a619d3bedbb8ac399dbbd5be18498df6933ea8eae88117d03"
+    },
+    {
+      "path": "src/compat/vendor/fmt/include/fmt/xchar.h",
+      "sha256": "1d68c1ed984d18ea267f02583e91e8297be8d23ccd3659fc5c3145bc1cbf2f25"
+    },
+    {
+      "path": "src/compat/vendor/fmt/src/format.cc",
+      "sha256": "5ccc4d8a363bd5c570782bc3dd92020664b1aa89de2d48b3b87d040c8c7bcc02"
+    }
+  ]
+}

@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -5,12 +6,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <expected>
 #include <iostream>
 #include <limits>
 #include <memory>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -62,21 +61,21 @@ awj::ImageBuffer fixture(float peak_nits, std::array<float, 3> rgb = {1, 1, 1},
 
 using Decoder = std::unique_ptr<uhdr_codec_private_t, decltype(&uhdr_release_decoder)>;
 
-std::expected<Decoder, std::string> probe(std::span<const std::byte> bytes) {
+awj::compat::expected<Decoder, std::string> probe(std::span<const std::byte> bytes) {
   Decoder decoder(uhdr_create_decoder(), uhdr_release_decoder);
-  if (!decoder) return std::unexpected{"Cannot create ISO JPEG decoder."};
+  if (!decoder) return awj::compat::unexpected{"Cannot create ISO JPEG decoder."};
   uhdr_compressed_image_t data{const_cast<std::byte*>(bytes.data()), bytes.size(), bytes.size(),
       UHDR_CG_UNSPECIFIED, UHDR_CT_UNSPECIFIED, UHDR_CR_UNSPECIFIED};
   auto status = uhdr_dec_set_image(decoder.get(), &data);
   if (status.error_code == UHDR_CODEC_OK) status = uhdr_dec_probe(decoder.get());
-  if (status.error_code != UHDR_CODEC_OK) return std::unexpected{std::string("Cannot probe ISO JPEG: ") + status.detail};
+  if (status.error_code != UHDR_CODEC_OK) return awj::compat::unexpected{std::string("Cannot probe ISO JPEG: ") + status.detail};
   return decoder;
 }
 
-std::expected<std::vector<float>, std::string> reconstruct(std::span<const std::byte> bytes, float display_boost) {
+awj::compat::expected<std::vector<float>, std::string> reconstruct(std::span<const std::byte> bytes, float display_boost) {
   // probe 会锁定输出 setter；使用新上下文，在 decode 内部 probe 之前完成配置。
   Decoder decoder(uhdr_create_decoder(), uhdr_release_decoder);
-  if (!decoder) return std::unexpected{"Cannot create ISO JPEG decoder."};
+  if (!decoder) return awj::compat::unexpected{"Cannot create ISO JPEG decoder."};
   uhdr_compressed_image_t data{const_cast<std::byte*>(bytes.data()), bytes.size(), bytes.size(),
       UHDR_CG_UNSPECIFIED, UHDR_CT_UNSPECIFIED, UHDR_CR_UNSPECIFIED};
   auto status = uhdr_dec_set_image(decoder.get(), &data);
@@ -84,16 +83,16 @@ std::expected<std::vector<float>, std::string> reconstruct(std::span<const std::
   if (status.error_code == UHDR_CODEC_OK) status = uhdr_dec_set_out_color_transfer(decoder.get(), UHDR_CT_LINEAR);
   if (status.error_code == UHDR_CODEC_OK) status = uhdr_dec_set_out_max_display_boost(decoder.get(), display_boost);
   if (status.error_code == UHDR_CODEC_OK) status = uhdr_decode(decoder.get());
-  if (status.error_code != UHDR_CODEC_OK) return std::unexpected{std::string("Cannot reconstruct ISO JPEG: ") + status.detail};
+  if (status.error_code != UHDR_CODEC_OK) return awj::compat::unexpected{std::string("Cannot reconstruct ISO JPEG: ") + status.detail};
   const auto* image = uhdr_get_decoded_image(decoder.get());
   if (!image || !image->planes[0] || image->fmt != UHDR_IMG_FMT_64bppRGBAHalfFloat || image->stride[0] < image->w)
-    return std::unexpected{"Invalid reconstructed HDR layout."};
+    return awj::compat::unexpected{"Invalid reconstructed HDR layout."};
   std::vector<float> rgb(static_cast<std::size_t>(image->w) * image->h * 3);
   for (unsigned y = 0; y < image->h; ++y) {
     const auto* row = static_cast<const std::uint16_t*>(image->planes[0]) + static_cast<std::size_t>(y) * image->stride[0] * 4;
     for (unsigned x = 0; x < image->w; ++x) for (unsigned c = 0; c < 3; ++c) {
       const auto value = half_reference(row[x * 4 + c]);
-      if (!std::isfinite(value)) return std::unexpected{"Non-finite HDR reconstruction."};
+      if (!std::isfinite(value)) return awj::compat::unexpected{"Non-finite HDR reconstruction."};
       rgb[(static_cast<std::size_t>(y) * image->w + x) * 3 + c] = value;
     }
   }
@@ -285,7 +284,7 @@ int main() {
   }
   auto bad = fixture(203); const std::uint16_t nan = 0x7e00u; std::memcpy(bad.planes[0].bytes.data(), &nan, 2);
   if (awj::encode_hdr_jpeg(bad, settings)) return fail("Non-finite canonical input was accepted.");
-  std::stop_source stopped; stopped.request_stop();
+  awj::compat::stop_source stopped; stopped.request_stop();
   if (awj::encode_hdr_jpeg(fixture(203), settings, stopped.get_token())) return fail("HDR JPEG ignored cancellation.");
 
   // A dynamic admission ticket can reserve most of the global budget for one

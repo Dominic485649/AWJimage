@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -8,7 +9,6 @@
 #include <cstring>
 #include <filesystem>
 #include <memory>
-#include <stop_token>
 #include <vector>
 
 #include <avif/avif.h>
@@ -260,7 +260,7 @@ int check_hdr_geometry() {
   if (awj::convert_image_pixels(hidden_nan, {.tone_map_to_sdr = true}, {}, resources) ||
       awj::hdr::tone_map_to_sdr_srgb(hidden_nan, 8, {}, resources))
     return fail("Transparent premultiplied alpha hid a non-finite source component.");
-  std::stop_source stop; stop.request_stop();
+  awj::compat::stop_source stop; stop.request_stop();
   if (awj::convert_image_pixels(stored, {.tone_map_to_sdr = true}, stop.get_token(), resources))
     return fail("Shared HDR conversion ignored resource-aware cancellation.");
   return 0;
@@ -617,7 +617,7 @@ int main() {
       return fail("Fused SDR tone mapping differs from the reference.");
   auto truncated = source; truncated.planes[0].bytes.resize(2);
   if (awj::convert_image_pixels(truncated, pq)) return fail("Truncated input was accepted.");
-  std::stop_source stop; stop.request_stop();
+  awj::compat::stop_source stop; stop.request_stop();
   if (awj::convert_image_pixels(source, pq, stop.get_token())) return fail("Cancellation was ignored.");
   auto planes = awj::yuv_plane_view(*fused);
   if (!planes || awj::copy_yuv_pixels(*planes, stop.get_token())) return fail("Native plane copy ignored cancellation.");

@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -9,10 +10,8 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <expected>
 #include <filesystem>
 #include <fstream>
-#include <format>
 #include <istream>
 #include <limits>
 #include <memory>
@@ -167,7 +166,7 @@ class OutputFileCleanup {
   bool active_{true};
 };
 
-std::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
+awj::compat::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
                                            const void* data,
                                            std::uint64_t size,
                                            const fs::path& path) {
@@ -179,7 +178,7 @@ std::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
         std::min<std::uint64_t>(remaining, std::numeric_limits<DWORD>::max()));
     DWORD written = 0;
     if (!WriteFile(file, cursor, chunk, &written, nullptr)) {
-      return std::unexpected{std::format("写入 raw 图像文件失败: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("写入 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          win32_error_message(GetLastError()))};
     }
@@ -189,13 +188,13 @@ std::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
       if (errno == EINTR) {
         continue;
       }
-      return std::unexpected{std::format("写入 raw 图像文件失败: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("写入 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          posix_error_message(errno))};
     }
 #endif
     if (written == 0) {
-      return std::unexpected{std::format("写入 raw 图像文件失败: {}", display_path_for_user(path))};
+      return awj::compat::unexpected{awj::compat::format("写入 raw 图像文件失败: {}", display_path_for_user(path))};
     }
     cursor += written;
     remaining -= static_cast<std::uint64_t>(written);
@@ -205,7 +204,7 @@ std::expected<void, std::string> write_all(UniqueFileHandle::native_handle file,
 
 }  // namespace raw_image_detail
 
-std::expected<void, std::string> write_wgc_scrgb_half_stream_file(
+awj::compat::expected<void, std::string> write_wgc_scrgb_half_stream_file(
     const fs::path& path, std::uint32_t width, std::uint32_t height,
     std::istream& input) {
   try {
@@ -214,16 +213,16 @@ std::expected<void, std::string> write_wgc_scrgb_half_stream_file(
         width > std::numeric_limits<std::uint64_t>::max() / 8ull ||
         height > std::numeric_limits<std::uint64_t>::max() /
                      (static_cast<std::uint64_t>(width) * 8ull)) {
-      return std::unexpected{"WGC raw 图像尺寸无效。"};
+      return awj::compat::unexpected{"WGC raw 图像尺寸无效。"};
     }
     const auto stride = static_cast<std::uint64_t>(width) * 8ull;
     const auto byte_count = stride * height;
     if (byte_count > encoding_defaults::effective_max_input_file_bytes() -
                          sizeof(raw_image_detail::Header)) {
-      return std::unexpected{"WGC raw 输入超过当前运行时上限。"};
+      return awj::compat::unexpected{"WGC raw 输入超过当前运行时上限。"};
     }
     raw_image_detail::Header header{};
-    std::ranges::copy(raw_image_detail::wgc_scrgb_magic, header.magic);
+    awj::compat::ranges::copy(raw_image_detail::wgc_scrgb_magic, header.magic);
     header.width = width;
     header.height = height;
     header.pixel_format = raw_image_detail::pixel_format_rgba;
@@ -236,23 +235,23 @@ std::expected<void, std::string> write_wgc_scrgb_half_stream_file(
     std::error_code ec;
     if (!parent.empty()) {
       fs::create_directories(parent, ec);
-      if (ec) return std::unexpected{"无法创建 WGC raw 临时目录。"};
+      if (ec) return awj::compat::unexpected{"无法创建 WGC raw 临时目录。"};
     }
 #ifdef _WIN32
     const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
                                     FILE_ATTRIBUTE_NORMAL, nullptr);
     if (file == INVALID_HANDLE_VALUE) {
-      return std::unexpected{"无法创建 WGC raw 临时文件。"};
+      return awj::compat::unexpected{"无法创建 WGC raw 临时文件。"};
     }
 #else
     const int file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
-    if (file < 0) return std::unexpected{"无法创建 WGC raw 临时文件。"};
+    if (file < 0) return awj::compat::unexpected{"无法创建 WGC raw 临时文件。"};
 #endif
     raw_image_detail::OutputFileCleanup cleanup{path};
     raw_image_detail::UniqueFileHandle output{file};
     if (auto written = raw_image_detail::write_all(output.get(), &header, sizeof(header), path);
         !written) {
-      return std::unexpected{written.error()};
+      return awj::compat::unexpected{written.error()};
     }
     std::array<char, 64 * 1024> buffer{};
     auto remaining = byte_count;
@@ -262,83 +261,83 @@ std::expected<void, std::string> write_wgc_scrgb_half_stream_file(
       input.read(buffer.data(), want);
       const auto received = input.gcount();
       if (received != want) {
-        return std::unexpected{"WGC stdin 数据短于声明的 16-bit RGBA 帧。"};
+        return awj::compat::unexpected{"WGC stdin 数据短于声明的 16-bit RGBA 帧。"};
       }
       if (auto written = raw_image_detail::write_all(
               output.get(), buffer.data(), static_cast<std::uint64_t>(received), path);
           !written) {
-        return std::unexpected{written.error()};
+        return awj::compat::unexpected{written.error()};
       }
       remaining -= static_cast<std::uint64_t>(received);
     }
     char extra{};
     if (input.get(extra)) {
-      return std::unexpected{"WGC stdin 数据长于声明的单帧，已拒绝。"};
+      return awj::compat::unexpected{"WGC stdin 数据长于声明的单帧，已拒绝。"};
     }
-    if (!input.eof()) return std::unexpected{"读取 WGC stdin 失败。"};
+    if (!input.eof()) return awj::compat::unexpected{"读取 WGC stdin 失败。"};
 #ifdef _WIN32
     if (!FlushFileBuffers(output.get())) {
-      return std::unexpected{"刷新 WGC raw 临时文件失败。"};
+      return awj::compat::unexpected{"刷新 WGC raw 临时文件失败。"};
     }
     const HANDLE output_handle = output.get();
     if (!CloseHandle(output_handle)) {
-      return std::unexpected{"关闭 WGC raw 临时文件失败。"};
+      return awj::compat::unexpected{"关闭 WGC raw 临时文件失败。"};
     }
 #else
     const int output_handle = output.get();
     if (::fsync(output_handle) != 0 || ::close(output_handle) != 0) {
-      return std::unexpected{"关闭 WGC raw 临时文件失败。"};
+      return awj::compat::unexpected{"关闭 WGC raw 临时文件失败。"};
     }
 #endif
     output.release();
     cleanup.release();
     return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"WGC raw stdin 内存不足。"};
+    return awj::compat::unexpected{"WGC raw stdin 内存不足。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"WGC raw stdin 文件系统访问失败。"};
+    return awj::compat::unexpected{"WGC raw stdin 文件系统访问失败。"};
   }
 }
 
-std::expected<void, std::string> write_raw_image_file(
+awj::compat::expected<void, std::string> write_raw_image_file(
     const fs::path& path,
     const ImageBuffer& image) {
   try {
     if (image.pixel_format != PixelFormat::rgba || image.planes.empty()) {
-      return std::unexpected{"raw 图像写入需要 RGBA ImageBuffer。"};
+      return awj::compat::unexpected{"raw 图像写入需要 RGBA ImageBuffer。"};
     }
     const auto& plane = image.planes.front();
     if (image.width == 0 || image.height == 0 || plane.stride == 0 ||
         plane.read_bytes().empty()) {
-      return std::unexpected{"raw 图像写入收到空图像。"};
+      return awj::compat::unexpected{"raw 图像写入收到空图像。"};
     }
     if (image.width > std::numeric_limits<std::uint32_t>::max() ||
         image.height > std::numeric_limits<std::uint32_t>::max() ||
         plane.stride > std::numeric_limits<std::uint32_t>::max() ||
         plane.stride > std::numeric_limits<std::uint64_t>::max() / image.height) {
-      return std::unexpected{"raw 图像尺寸超过文件格式限制。"};
+      return awj::compat::unexpected{"raw 图像尺寸超过文件格式限制。"};
     }
     if (image.bit_depth != 8 && image.bit_depth != 10 && image.bit_depth != 12 &&
         image.bit_depth != 16) {
-      return std::unexpected{"raw 图像写入收到不支持的位深。"};
+      return awj::compat::unexpected{"raw 图像写入收到不支持的位深。"};
     }
     const auto bytes_per_sample = image.bit_depth > 8 ? 2ull : 1ull;
     if (image.width > std::numeric_limits<std::uint64_t>::max() / 4ull / bytes_per_sample) {
-      return std::unexpected{"raw 图像尺寸超过文件格式限制。"};
+      return awj::compat::unexpected{"raw 图像尺寸超过文件格式限制。"};
     }
     const auto min_stride = static_cast<std::uint64_t>(image.width) * 4ull * bytes_per_sample;
     if (plane.stride < min_stride) {
-      return std::unexpected{"raw 图像 stride 小于像素格式要求。"};
+      return awj::compat::unexpected{"raw 图像 stride 小于像素格式要求。"};
     }
     const auto min_bytes = static_cast<std::uint64_t>(plane.stride) * image.height;
     if (plane.read_bytes().size() < min_bytes) {
-      return std::unexpected{"raw 图像 payload 小于尺寸要求。"};
+      return awj::compat::unexpected{"raw 图像 payload 小于尺寸要求。"};
     }
     if (min_bytes > encoding_defaults::effective_max_input_file_bytes() - sizeof(raw_image_detail::Header)) {
-      return std::unexpected{"raw 图像输出超过当前运行时上限。"};
+      return awj::compat::unexpected{"raw 图像输出超过当前运行时上限。"};
     }
     raw_image_detail::Header header{};
-    std::ranges::copy(raw_image_detail::magic, header.magic);
+    awj::compat::ranges::copy(raw_image_detail::magic, header.magic);
     header.width = static_cast<std::uint32_t>(image.width);
     header.height = static_cast<std::uint32_t>(image.height);
     header.pixel_format = raw_image_detail::pixel_format_rgba;
@@ -352,7 +351,7 @@ std::expected<void, std::string> write_raw_image_file(
     if (!parent.empty()) {
       fs::create_directories(parent, ec);
       if (ec) {
-        return std::unexpected{std::format("无法创建 raw 图像目录: {}；系统错误：{}",
+        return awj::compat::unexpected{awj::compat::format("无法创建 raw 图像目录: {}；系统错误：{}",
                                            display_path_for_user(parent), ec.message())};
       }
     }
@@ -362,9 +361,9 @@ std::expected<void, std::string> write_raw_image_file(
     if (file == INVALID_HANDLE_VALUE) {
       const auto error = GetLastError();
       if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS) {
-        return std::unexpected{std::format("raw 图像文件已存在: {}", display_path_for_user(path))};
+        return awj::compat::unexpected{awj::compat::format("raw 图像文件已存在: {}", display_path_for_user(path))};
       }
-      return std::unexpected{std::format("无法创建 raw 图像文件: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("无法创建 raw 图像文件: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          win32_error_message(error))};
     }
@@ -373,9 +372,9 @@ std::expected<void, std::string> write_raw_image_file(
     if (file < 0) {
       const int error = errno;
       if (error == EEXIST) {
-        return std::unexpected{std::format("raw 图像文件已存在: {}", display_path_for_user(path))};
+        return awj::compat::unexpected{awj::compat::format("raw 图像文件已存在: {}", display_path_for_user(path))};
       }
-      return std::unexpected{std::format("无法创建 raw 图像文件: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("无法创建 raw 图像文件: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          posix_error_message(error))};
     }
@@ -383,32 +382,32 @@ std::expected<void, std::string> write_raw_image_file(
     raw_image_detail::OutputFileCleanup cleanup{path};
     raw_image_detail::UniqueFileHandle output{file};
     if (auto written = raw_image_detail::write_all(output.get(), &header, sizeof(header), path); !written) {
-      return std::unexpected{written.error()};
+      return awj::compat::unexpected{written.error()};
     }
     if (auto written = raw_image_detail::write_all(output.get(), plane.read_bytes().data(), min_bytes, path); !written) {
-      return std::unexpected{written.error()};
+      return awj::compat::unexpected{written.error()};
     }
 #ifdef _WIN32
     if (!FlushFileBuffers(output.get())) {
-      return std::unexpected{std::format("刷新 raw 图像文件失败: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("刷新 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          win32_error_message(GetLastError()))};
     }
     const HANDLE output_handle = output.get();
     if (!CloseHandle(output_handle)) {
-      return std::unexpected{std::format("关闭 raw 图像文件失败: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("关闭 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          win32_error_message(GetLastError()))};
     }
 #else
     const int output_handle = output.get();
     if (::fsync(output_handle) != 0) {
-      return std::unexpected{std::format("刷新 raw 图像文件失败: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("刷新 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          posix_error_message(errno))};
     }
     if (::close(output_handle) != 0) {
-      return std::unexpected{std::format("关闭 raw 图像文件失败: {}；系统错误：{}",
+      return awj::compat::unexpected{awj::compat::format("关闭 raw 图像文件失败: {}；系统错误：{}",
                                          display_path_for_user(path),
                                          posix_error_message(errno))};
     }
@@ -417,63 +416,63 @@ std::expected<void, std::string> write_raw_image_file(
     cleanup.release();
     return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"raw 图像写入内存不足。"};
+    return awj::compat::unexpected{"raw 图像写入内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"raw 图像写入数据超过运行时限制。"};
+    return awj::compat::unexpected{"raw 图像写入数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"raw 图像写入文件系统访问失败。"};
+    return awj::compat::unexpected{"raw 图像写入文件系统访问失败。"};
   }
 }
 
-std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs::path& path) {
+awj::compat::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs::path& path) {
   try {
     std::ifstream input{path, std::ios::binary};
     if (!input) {
-      return std::unexpected{std::format("无法读取 raw 图像文件: {}", display_path_for_user(path))};
+      return awj::compat::unexpected{awj::compat::format("无法读取 raw 图像文件: {}", display_path_for_user(path))};
     }
     raw_image_detail::Header header{};
     input.read(reinterpret_cast<char*>(&header), sizeof(header));
     if (!input || (!raw_image_detail::is_raw_magic(header) &&
                    !raw_image_detail::is_wgc_scrgb_magic(header))) {
-      return std::unexpected{"raw 图像文件头无效。"};
+      return awj::compat::unexpected{"raw 图像文件头无效。"};
     }
     if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
         (header.bit_depth != 8 && header.bit_depth != 10 && header.bit_depth != 12 &&
          header.bit_depth != 16) ||
         !raw_image_detail::alpha_mode_is_valid(header.alpha_mode)) {
-      return std::unexpected{"raw 图像格式不受支持。"};
+      return awj::compat::unexpected{"raw 图像格式不受支持。"};
     }
     if (header.width == 0 || header.height == 0 || header.stride == 0 ||
         header.width > std::numeric_limits<std::uint64_t>::max() / 4ull /
                            (header.bit_depth > 8 ? 2ull : 1ull)) {
-      return std::unexpected{"raw 图像尺寸无效。"};
+      return awj::compat::unexpected{"raw 图像尺寸无效。"};
     }
     const auto expected_min_stride = static_cast<std::uint64_t>(header.width) * 4ull *
                                      (header.bit_depth > 8 ? 2ull : 1ull);
     if (header.stride < expected_min_stride ||
         header.height > std::numeric_limits<std::uint64_t>::max() / header.stride) {
-      return std::unexpected{"raw 图像尺寸无效。"};
+      return awj::compat::unexpected{"raw 图像尺寸无效。"};
     }
     const auto min_bytes = static_cast<std::uint64_t>(header.stride) * header.height;
     if (header.byte_count != min_bytes) {
-      return std::unexpected{"raw 图像 byte count 无效。"};
+      return awj::compat::unexpected{"raw 图像 byte count 无效。"};
     }
     input.seekg(0, std::ios::end);
     if (!input) {
-      return std::unexpected{"读取 raw 图像文件大小失败。"};
+      return awj::compat::unexpected{"读取 raw 图像文件大小失败。"};
     }
     const auto file_size = input.tellg();
     if (file_size < 0) {
-      return std::unexpected{"读取 raw 图像文件大小失败。"};
+      return awj::compat::unexpected{"读取 raw 图像文件大小失败。"};
     }
     const auto file_size_bytes = static_cast<std::uint64_t>(file_size);
     if (file_size_bytes > encoding_defaults::effective_max_input_file_bytes()) {
-      return std::unexpected{std::format("raw 图像文件超过当前输入上限: {}",
+      return awj::compat::unexpected{awj::compat::format("raw 图像文件超过当前输入上限: {}",
                                          display_path_for_user(path))};
     }
     if (file_size_bytes < sizeof(raw_image_detail::Header) ||
         file_size_bytes - sizeof(raw_image_detail::Header) != header.byte_count) {
-      return std::unexpected{"raw 图像文件大小与 header 不一致。"};
+      return awj::compat::unexpected{"raw 图像文件大小与 header 不一致。"};
     }
     auto dimensions = make_image_dimensions(header.width, header.height);
     dimensions.source_bit_depth = static_cast<int>(header.bit_depth);
@@ -483,82 +482,82 @@ std::expected<ImageDimensions, std::string> probe_raw_image_dimensions(const fs:
     dimensions.decoded_storage_bytes = header.byte_count;
     return dimensions;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"raw 图像尺寸探测内存不足。"};
+    return awj::compat::unexpected{"raw 图像尺寸探测内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"raw 图像尺寸探测数据超过运行时限制。"};
+    return awj::compat::unexpected{"raw 图像尺寸探测数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"raw 图像尺寸探测文件系统访问失败。"};
+    return awj::compat::unexpected{"raw 图像尺寸探测文件系统访问失败。"};
   }
 }
 
-std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path) {
+awj::compat::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path) {
   try {
     std::ifstream input{path, std::ios::binary};
     if (!input) {
-      return std::unexpected{std::format("无法读取 raw 图像文件: {}", display_path_for_user(path))};
+      return awj::compat::unexpected{awj::compat::format("无法读取 raw 图像文件: {}", display_path_for_user(path))};
     }
     raw_image_detail::Header header{};
     input.read(reinterpret_cast<char*>(&header), sizeof(header));
     if (!input || (!raw_image_detail::is_raw_magic(header) &&
                    !raw_image_detail::is_wgc_scrgb_magic(header))) {
-      return std::unexpected{"raw 图像文件头无效。"};
+      return awj::compat::unexpected{"raw 图像文件头无效。"};
     }
     if (header.pixel_format != raw_image_detail::pixel_format_rgba ||
         (header.bit_depth != 8 && header.bit_depth != 10 && header.bit_depth != 12 &&
          header.bit_depth != 16) ||
         !raw_image_detail::alpha_mode_is_valid(header.alpha_mode)) {
-      return std::unexpected{"raw 图像格式不受支持。"};
+      return awj::compat::unexpected{"raw 图像格式不受支持。"};
     }
     if (header.width == 0 || header.height == 0 || header.stride == 0 ||
         header.width > std::numeric_limits<std::uint64_t>::max() / 4ull /
                            (header.bit_depth > 8 ? 2ull : 1ull)) {
-      return std::unexpected{"raw 图像尺寸无效。"};
+      return awj::compat::unexpected{"raw 图像尺寸无效。"};
     }
     const auto expected_min_stride = static_cast<std::uint64_t>(header.width) * 4ull *
                                      (header.bit_depth > 8 ? 2ull : 1ull);
     if (header.width == 0 || header.height == 0 || header.stride < expected_min_stride ||
         header.height > std::numeric_limits<std::uint64_t>::max() / header.stride) {
-      return std::unexpected{"raw 图像尺寸无效。"};
+      return awj::compat::unexpected{"raw 图像尺寸无效。"};
     }
     const auto min_bytes = static_cast<std::uint64_t>(header.stride) * header.height;
     if (header.byte_count < min_bytes || header.byte_count != min_bytes ||
         header.byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::size_t>::max()) ||
         header.byte_count > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
-      return std::unexpected{"raw 图像 byte count 无效。"};
+      return awj::compat::unexpected{"raw 图像 byte count 无效。"};
     }
     input.seekg(0, std::ios::end);
     if (!input) {
-      return std::unexpected{"读取 raw 图像文件大小失败。"};
+      return awj::compat::unexpected{"读取 raw 图像文件大小失败。"};
     }
     const auto file_size = input.tellg();
     if (file_size < 0) {
-      return std::unexpected{"读取 raw 图像文件大小失败。"};
+      return awj::compat::unexpected{"读取 raw 图像文件大小失败。"};
     }
     const auto file_size_bytes = static_cast<std::uint64_t>(file_size);
     if (file_size_bytes > encoding_defaults::effective_max_input_file_bytes()) {
-      return std::unexpected{std::format("raw 图像文件超过当前输入上限: {}",
+      return awj::compat::unexpected{awj::compat::format("raw 图像文件超过当前输入上限: {}",
                                          display_path_for_user(path))};
     }
     if (file_size_bytes < sizeof(raw_image_detail::Header) ||
         file_size_bytes - sizeof(raw_image_detail::Header) != header.byte_count) {
-      return std::unexpected{"raw 图像文件大小与 header 不一致。"};
+      return awj::compat::unexpected{"raw 图像文件大小与 header 不一致。"};
     }
     input.seekg(static_cast<std::streamoff>(sizeof(raw_image_detail::Header)), std::ios::beg);
     if (!input) {
-      return std::unexpected{"定位 raw 图像 payload 失败。"};
+      return awj::compat::unexpected{"定位 raw 图像 payload 失败。"};
     }
     ImagePlane plane{.stride = header.stride};
     try {
       plane.bytes.resize(static_cast<std::size_t>(header.byte_count));
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"raw 图像读取 payload 内存不足。"};
+      return awj::compat::unexpected{"raw 图像读取 payload 内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"raw 图像读取 payload 尺寸超过运行时限制。"};
+      return awj::compat::unexpected{"raw 图像读取 payload 尺寸超过运行时限制。"};
     }
     input.read(reinterpret_cast<char*>(plane.bytes.data()),
                static_cast<std::streamsize>(plane.bytes.size()));
     if (!input) {
-      return std::unexpected{"读取 raw 图像 payload 失败。"};
+      return awj::compat::unexpected{"读取 raw 图像 payload 失败。"};
     }
     const bool wgc_scrgb = raw_image_detail::is_wgc_scrgb_magic(header);
     ImageBuffer image{.width = header.width,
@@ -586,17 +585,17 @@ std::expected<ImageBuffer, std::string> read_raw_image_file(const fs::path& path
     try {
       image.planes.push_back(std::move(plane));
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"raw 图像读取 plane list 内存不足。"};
+      return awj::compat::unexpected{"raw 图像读取 plane list 内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"raw 图像读取 plane list 尺寸超过运行时限制。"};
+      return awj::compat::unexpected{"raw 图像读取 plane list 尺寸超过运行时限制。"};
     }
     return image;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"raw 图像读取内存不足。"};
+    return awj::compat::unexpected{"raw 图像读取内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"raw 图像读取数据超过运行时限制。"};
+    return awj::compat::unexpected{"raw 图像读取数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"raw 图像读取文件系统访问失败。"};
+    return awj::compat::unexpected{"raw 图像读取文件系统访问失败。"};
   }
 }
 

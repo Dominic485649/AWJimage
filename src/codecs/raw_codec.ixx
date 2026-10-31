@@ -1,6 +1,6 @@
 module;
+#include "../compat/stdlib_compat.h"
 
-#include <expected>
 #include <filesystem>
 #include <new>
 #include <stdexcept>
@@ -26,28 +26,28 @@ class RawImageDecoder final : public ImageDecoder {
     return decoder_common::extension_is_one_of(path, extensions);
   }
 
-  std::expected<ImageDimensions, std::string> probe_dimensions(
+  awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
     auto dimensions = probe_raw_image_dimensions(path);
     if (!dimensions) {
-      return std::unexpected{dimensions.error()};
+      return awj::compat::unexpected{dimensions.error()};
     }
     return *dimensions;
   }
 
-  std::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
+  awj::compat::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
     try {
       auto image = read_raw_image_file(path);
       if (!image) {
-        return std::unexpected{image.error()};
+        return awj::compat::unexpected{image.error()};
       }
       return ImageDecodeResult{.image = std::move(*image), .decoder_id = "awj-raw"};
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"raw 图像解码内存不足。"};
+      return awj::compat::unexpected{"raw 图像解码内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"raw 图像解码数据超过运行时限制。"};
+      return awj::compat::unexpected{"raw 图像解码数据超过运行时限制。"};
     } catch (const std::filesystem::filesystem_error&) {
-      return std::unexpected{"raw 图像解码文件系统访问失败。"};
+      return awj::compat::unexpected{"raw 图像解码文件系统访问失败。"};
     }
   }
 };

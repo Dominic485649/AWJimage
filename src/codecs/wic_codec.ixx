@@ -1,12 +1,11 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <limits>
 #include <memory>
 #include <new>
@@ -108,26 +107,26 @@ struct ProbeFrameResult {
 };
 
 std::string hresult_message(HRESULT hr) {
-  return std::format("HRESULT 0x{:08X}", static_cast<unsigned int>(hr));
+  return awj::compat::format("HRESULT 0x{:08X}", static_cast<unsigned int>(hr));
 }
 
-std::expected<void, std::string> check_input_file_size(const fs::path& path) {
+awj::compat::expected<void, std::string> check_input_file_size(const fs::path& path) {
   std::error_code ec;
   const auto file_size = fs::file_size(path, ec);
   if (ec) {
-    return std::unexpected{std::format("读取 WIC 文件大小失败: {}；系统错误：{}",
+    return awj::compat::unexpected{awj::compat::format("读取 WIC 文件大小失败: {}；系统错误：{}",
                                        display_path_for_user(path), ec.message())};
   }
   if (file_size > static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
-    return std::unexpected{std::format("WIC 文件超过当前输入上限: {}",
+    return awj::compat::unexpected{awj::compat::format("WIC 文件超过当前输入上限: {}",
                                        display_path_for_user(path))};
   }
   return {};
 }
 
-std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& path) {
+awj::compat::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& path) {
   if (auto file_size = check_input_file_size(path); !file_size) {
-    return std::unexpected{file_size.error()};
+    return awj::compat::unexpected{file_size.error()};
   }
 
   ProbeFrameResult result{};
@@ -137,16 +136,16 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
     // scoped to the frame rather than retaining an apartment-bound pointer.
     result.borrowed_com.emplace();
     if (!result.borrowed_com->usable())
-      return std::unexpected{std::format("WIC COM 初始化失败: {}",
+      return awj::compat::unexpected{awj::compat::format("WIC COM 初始化失败: {}",
                                          hresult_message(result.borrowed_com->init))};
     IWICImagingFactory* value = nullptr;
     const HRESULT status = CoCreateInstance(CLSID_WICImagingFactory, nullptr,
         CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&value));
     result.owned_factory.reset(value);
-    if (FAILED(status)) return std::unexpected{std::format("WIC 不可用: {}", hresult_message(status))};
+    if (FAILED(status)) return awj::compat::unexpected{awj::compat::format("WIC 不可用: {}", hresult_message(status))};
     result.factory = result.owned_factory.get();
   } else if (!cached.factory) {
-    return std::unexpected{std::format("WIC 不可用: {}", hresult_message(cached.status))};
+    return awj::compat::unexpected{awj::compat::format("WIC 不可用: {}", hresult_message(cached.status))};
   } else {
     result.factory = cached.factory.get();
   }
@@ -156,17 +155,17 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
   hr = result.factory->CreateDecoderFromFilename(path.c_str(), nullptr, GENERIC_READ,
                                                  WICDecodeMetadataCacheOnDemand, &raw_decoder);
   if (FAILED(hr)) {
-    return std::unexpected{std::format("WIC 打开失败: {}", hresult_message(hr))};
+    return awj::compat::unexpected{awj::compat::format("WIC 打开失败: {}", hresult_message(hr))};
   }
   result.decoder.reset(raw_decoder);
 
   UINT frame_count = 0;
   hr = result.decoder->GetFrameCount(&frame_count);
   if (FAILED(hr)) {
-    return std::unexpected{std::format("WIC 读取帧数失败: {}", hresult_message(hr))};
+    return awj::compat::unexpected{awj::compat::format("WIC 读取帧数失败: {}", hresult_message(hr))};
   }
   if (frame_count == 0) {
-    return std::unexpected{"WIC 不包含图像帧。"};
+    return awj::compat::unexpected{"WIC 不包含图像帧。"};
   }
   UINT frame_index = 0;
   static constexpr std::wstring_view ico_extensions[] = {L".ico"};
@@ -197,7 +196,7 @@ std::expected<ProbeFrameResult, std::string> open_first_frame(const fs::path& pa
   IWICBitmapFrameDecode* raw_frame = nullptr;
   hr = result.decoder->GetFrame(frame_index, &raw_frame);
   if (FAILED(hr)) {
-    return std::unexpected{std::format("WIC 读取首帧失败: {}", hresult_message(hr))};
+    return awj::compat::unexpected{awj::compat::format("WIC 读取首帧失败: {}", hresult_message(hr))};
   }
   result.frame.reset(raw_frame);
   return std::move(result);
@@ -298,7 +297,7 @@ PixelFormatDetails source_info_from_pixel_format(IWICImagingFactory& factory,
   return result;
 }
 
-std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
+awj::compat::expected<std::vector<std::byte>, std::string> copy_icc_profile(
     IWICImagingFactory& factory,
     IWICBitmapFrameDecode& frame) {
   UINT context_count = 0;
@@ -308,7 +307,7 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
   }
   if (context_count >
       static_cast<UINT>(encoding_defaults::wic_max_color_contexts)) {
-    return std::unexpected{"WIC 色彩上下文数量超过 16 个上限。"};
+    return awj::compat::unexpected{"WIC 色彩上下文数量超过 16 个上限。"};
   }
 
   std::vector<ComPtr<IWICColorContext>> contexts{};
@@ -319,7 +318,7 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
     IWICColorContext* raw_context = nullptr;
     hr = factory.CreateColorContext(&raw_context);
     if (FAILED(hr)) {
-      return std::unexpected{std::format("WIC 创建色彩上下文失败: {}", hresult_message(hr))};
+      return awj::compat::unexpected{awj::compat::format("WIC 创建色彩上下文失败: {}", hresult_message(hr))};
     }
     contexts.emplace_back(raw_context);
     raw_contexts.push_back(raw_context);
@@ -342,20 +341,20 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
       continue;
     }
     if (profile_size > encoding_defaults::codec_metadata_max_bytes) {
-      return std::unexpected{"WIC ICC profile 超过 64 MiB 上限。"};
+      return awj::compat::unexpected{"WIC ICC profile 超过 64 MiB 上限。"};
     }
     auto bytes = decoder_common::make_byte_buffer(profile_size, "WIC ICC profile");
     if (!bytes) {
-      return std::unexpected{bytes.error()};
+      return awj::compat::unexpected{bytes.error()};
     }
     hr = raw_contexts[index]->GetProfileBytes(profile_size,
                                               reinterpret_cast<BYTE*>(bytes->data()),
                                               &profile_size);
     if (FAILED(hr)) {
-      return std::unexpected{std::format("WIC 读取 ICC profile 失败: {}", hresult_message(hr))};
+      return awj::compat::unexpected{awj::compat::format("WIC 读取 ICC profile 失败: {}", hresult_message(hr))};
     }
     if (profile_size > bytes->size()) {
-      return std::unexpected{"WIC ICC profile 大小在读取期间发生变化。"};
+      return awj::compat::unexpected{"WIC ICC profile 大小在读取期间发生变化。"};
     }
     if (profile_size < bytes->size()) {
       bytes->resize(profile_size);
@@ -379,47 +378,47 @@ class WicImageDecoder final : public ImageDecoder {
     return decoder_common::extension_is_one_of(path, extensions);
   }
 
-  std::expected<ImageDimensions, std::string> probe_dimensions(
+  awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
     try {
       auto frame = wic_detail::open_first_frame(path);
       if (!frame) {
-        return std::unexpected{frame.error()};
+        return awj::compat::unexpected{frame.error()};
       }
       UINT width = 0;
       UINT height = 0;
       const HRESULT hr = frame->frame->GetSize(&width, &height);
       if (FAILED(hr)) {
-        return std::unexpected{std::format("WIC 尺寸无效: {}", wic_detail::hresult_message(hr))};
+        return awj::compat::unexpected{awj::compat::format("WIC 尺寸无效: {}", wic_detail::hresult_message(hr))};
       }
       return decoder_common::make_image_dimensions_checked(width, height, "WIC");
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"WIC 尺寸探测内存不足。"};
+      return awj::compat::unexpected{"WIC 尺寸探测内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"WIC 尺寸探测数据超过运行时限制。"};
+      return awj::compat::unexpected{"WIC 尺寸探测数据超过运行时限制。"};
     } catch (const std::filesystem::filesystem_error&) {
-      return std::unexpected{"WIC 尺寸探测文件系统访问失败。"};
+      return awj::compat::unexpected{"WIC 尺寸探测文件系统访问失败。"};
     }
   }
 
-  std::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
+  awj::compat::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
     try {
       auto frame_source = wic_detail::open_first_frame(path);
       if (!frame_source) {
-        return std::unexpected{frame_source.error()};
+        return awj::compat::unexpected{frame_source.error()};
       }
 
       UINT width = 0;
       UINT height = 0;
       HRESULT hr = frame_source->frame->GetSize(&width, &height);
       if (FAILED(hr) || width == 0 || height == 0) {
-        return std::unexpected{std::format("WIC 尺寸无效: {}", wic_detail::hresult_message(hr))};
+        return awj::compat::unexpected{awj::compat::format("WIC 尺寸无效: {}", wic_detail::hresult_message(hr))};
       }
 
       WICPixelFormatGUID source_pixel_format{};
       hr = frame_source->frame->GetPixelFormat(&source_pixel_format);
       if (FAILED(hr)) {
-        return std::unexpected{std::format("WIC 像素格式无效: {}", wic_detail::hresult_message(hr))};
+        return awj::compat::unexpected{awj::compat::format("WIC 像素格式无效: {}", wic_detail::hresult_message(hr))};
       }
 
       const auto source_details =
@@ -431,7 +430,7 @@ class WicImageDecoder final : public ImageDecoder {
         UINT context_count = 0;
         hr = frame_source->frame->GetColorContexts(0, nullptr, &context_count);
         if (FAILED(hr) || context_count != 0) {
-          return std::unexpected{"WIC 浮点 RGB 的色彩上下文无法安全解释，不能默认按 scRGB 解码。"};
+          return awj::compat::unexpected{"WIC 浮点 RGB 的色彩上下文无法安全解释，不能默认按 scRGB 解码。"};
         }
       }
       const bool wants_high_depth = source_is_rgb_float || output_source_info.bit_depth > 8;
@@ -444,7 +443,7 @@ class WicImageDecoder final : public ImageDecoder {
       IWICFormatConverter* raw_converter = nullptr;
       hr = frame_source->factory->CreateFormatConverter(&raw_converter);
       if (FAILED(hr)) {
-        return std::unexpected{std::format("WIC 创建格式转换器失败: {}", wic_detail::hresult_message(hr))};
+        return awj::compat::unexpected{awj::compat::format("WIC 创建格式转换器失败: {}", wic_detail::hresult_message(hr))};
       }
       converter.reset(raw_converter);
 
@@ -461,30 +460,30 @@ class WicImageDecoder final : public ImageDecoder {
                                    WICBitmapPaletteTypeCustom);
       }
       if (FAILED(hr)) {
-        return std::unexpected{std::format("WIC 转换 RGBA 失败: {}", wic_detail::hresult_message(hr))};
+        return awj::compat::unexpected{awj::compat::format("WIC 转换 RGBA 失败: {}", wic_detail::hresult_message(hr))};
       }
 
       const auto stride = decoder_common::checked_rgba_stride(
           width, "WIC decoder", output_bit_depth > 8 ? 2 : 1);
       if (!stride) {
-        return std::unexpected{stride.error()};
+        return awj::compat::unexpected{stride.error()};
       }
       const auto byte_count = decoder_common::checked_image_bytes(*stride, height, "WIC decoder");
       if (!byte_count) {
-        return std::unexpected{byte_count.error()};
+        return awj::compat::unexpected{byte_count.error()};
       }
       if (*stride > std::numeric_limits<UINT>::max() || *byte_count > std::numeric_limits<UINT>::max()) {
-        return std::unexpected{"WIC 输出 buffer 超过 API 限制。"};
+        return awj::compat::unexpected{"WIC 输出 buffer 超过 API 限制。"};
       }
 
       auto rgba = decoder_common::make_byte_buffer(*byte_count, "WIC decoder");
       if (!rgba) {
-        return std::unexpected{rgba.error()};
+        return awj::compat::unexpected{rgba.error()};
       }
       hr = converter->CopyPixels(nullptr, static_cast<UINT>(*stride), static_cast<UINT>(rgba->size()),
                                  reinterpret_cast<BYTE*>(rgba->data()));
       if (FAILED(hr)) {
-        return std::unexpected{std::format("WIC 复制像素失败: {}", wic_detail::hresult_message(hr))};
+        return awj::compat::unexpected{awj::compat::format("WIC 复制像素失败: {}", wic_detail::hresult_message(hr))};
       }
 
       const bool retained_scrgb_half = source_is_rgb_float && output_bit_depth == 16;
@@ -503,11 +502,11 @@ class WicImageDecoder final : public ImageDecoder {
                                   ? AlphaMode::straight
                                   : AlphaMode::none;
       auto icc_profile = retained_scrgb_half
-                              ? std::expected<std::vector<std::byte>, std::string>{std::vector<std::byte>{}}
+                              ? awj::compat::expected<std::vector<std::byte>, std::string>{std::vector<std::byte>{}}
                              : wic_detail::copy_icc_profile(*frame_source->factory,
                                                             *frame_source->frame);
       if (!icc_profile) {
-        return std::unexpected{icc_profile.error()};
+        return awj::compat::unexpected{icc_profile.error()};
       }
       if (!icc_profile->empty()) {
         output_source_info.color_metadata_source = "source-icc";
@@ -519,7 +518,7 @@ class WicImageDecoder final : public ImageDecoder {
                                                        ? SampleRepresentation::ieee_half_float
                                                        : SampleRepresentation::unorm);
       if (!image) {
-        return std::unexpected{image.error()};
+        return awj::compat::unexpected{image.error()};
       }
       if (!icc_profile->empty()) {
         image->metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
@@ -527,11 +526,11 @@ class WicImageDecoder final : public ImageDecoder {
       }
       return ImageDecodeResult{.image = std::move(*image), .decoder_id = "wic"};
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"WIC 解码内存不足。"};
+      return awj::compat::unexpected{"WIC 解码内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"WIC 解码数据超过运行时限制。"};
+      return awj::compat::unexpected{"WIC 解码数据超过运行时限制。"};
     } catch (const std::filesystem::filesystem_error&) {
-      return std::unexpected{"WIC 解码文件系统访问失败。"};
+      return awj::compat::unexpected{"WIC 解码文件系统访问失败。"};
     }
   }
 };

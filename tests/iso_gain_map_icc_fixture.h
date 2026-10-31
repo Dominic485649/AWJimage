@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #pragma once
 
 // 本头仅供 iso_gain_map_tests.cpp 在匿名命名空间中引用，复用该文件的 BMFF 与像素 helper。
@@ -533,7 +534,7 @@ void check_result(const awj::ImageDecodeResult& result, const References& expect
         "ICC fixture headroom endpoint direction changed");
   }
 }
-void check_rejection(const std::expected<awj::ImageDecodeResult, std::string>& result) {
+void check_rejection(const awj::compat::expected<awj::ImageDecodeResult, std::string>& result) {
   require(!result && result.error().starts_with("Gain Map:") && result.error().find("ISO 21496-1") != std::string::npos &&
       result.error().find("ICC") != std::string::npos, "Invalid or conflicting ICC was not explicitly rejected at the ISO boundary");
 }
@@ -626,7 +627,7 @@ void contract(const Sandbox& sandbox) {
       check_failure_facts(file_facts, test.color);
     }
   }
-  std::stop_source cancellation; cancellation.request_stop();
+  awj::compat::stop_source cancellation; cancellation.request_stop();
   awj::HeifImageDecoder canceled{1, cancellation.get_token()};
   for (const auto mode : {Mode::hdr_only, Mode::sdr_only, Mode::preserve_both}) {
     const auto memory = canceled.decode_memory(fixture.paired, "canceled synthetic ICC grid", {.gain_map_mode = mode});

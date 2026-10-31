@@ -1,6 +1,6 @@
 module;
+#include "../compat/stdlib_compat.h"
 
-#include <expected>
 #include <filesystem>
 #include <new>
 #include <stdexcept>
@@ -26,15 +26,15 @@ class JxrImageDecoder final : public ImageDecoder {
     return decoder_common::extension_is_one_of(path, extensions);
   }
 
-  std::expected<ImageDimensions, std::string> probe_dimensions(
+  awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
     return WicImageDecoder{}.probe_dimensions(path);
   }
 
-  std::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
+  awj::compat::expected<ImageDecodeResult, std::string> decode(const fs::path& path) const override {
     auto decoded = WicImageDecoder{}.decode(path);
     if (!decoded) {
-      return std::unexpected{decoded.error()};
+      return awj::compat::unexpected{decoded.error()};
     }
     decoded->decoder_id = "windows-jxr";
     decoded->used_fallback = false;

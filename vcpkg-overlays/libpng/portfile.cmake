@@ -1,3 +1,7 @@
+set(AWJ_PNG_TARGET_PATCHES)
+if(VCPKG_TARGET_IS_OHOS)
+    list(APPEND AWJ_PNG_TARGET_PATCHES ohos-preprocessor-target.patch)
+endif()
 vcpkg_from_github(
     OUT_SOURCE_PATH SOURCE_PATH
     REPO pnggroup/libpng
@@ -5,6 +9,7 @@ vcpkg_from_github(
     SHA512 2d753e764846a0a75a10f2a00c6f4ae23d2ae37237c69d59d5e619da3f143d59f4ea9ce29c1fb39435df1cef77877c83b042a2275934c353a6603061da2d2dd9
     HEAD_REF master
     PATCHES
+        ${AWJ_PNG_TARGET_PATCHES}
         cmake.patch
 )
 

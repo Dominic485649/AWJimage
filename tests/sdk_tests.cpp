@@ -38,7 +38,7 @@ awj_status AWJ_CALL bad_write(void*, const uint8_t*, uint64_t size, uint64_t* tr
 
 int main() {
   CHECK(awj_abi_version() == 1);
-  CHECK(std::strcmp(awj_version(), "1.3.0") == 0);
+  CHECK(std::strcmp(awj_version(), AWJ_EXPECTED_VERSION) == 0);
   CHECK(awj_capabilities() & AWJ_CAP_CPU_FRAMES);
   awj_context_options options;
   awj_context_options_init(&options);

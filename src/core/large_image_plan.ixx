@@ -1,9 +1,8 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <cstdint>
-#include <expected>
-#include <format>
 #include <limits>
 #include <string>
 #include <vector>
@@ -141,7 +140,7 @@ LargeImageDecision classify_large_image(ImageDimensions dimensions,
   if (dimension_exceeded) {
     decision.klass = LargeImageClass::large_mode_required;
     decision.reason = LargeImageReason::dimension_limit_exceeded;
-    decision.reason_text = std::format(
+    decision.reason_text = awj::compat::format(
         "输入尺寸 {}x{} 超过 {} 单图上限 {}x{}，已转入自动大图链路。",
         dimensions.width, dimensions.height, limits.encoder_name,
         limits.max_width, limits.max_height);
@@ -150,7 +149,7 @@ LargeImageDecision classify_large_image(ImageDimensions dimensions,
   if (pixel_limit_exceeded) {
     decision.klass = LargeImageClass::large_mode_required;
     decision.reason = LargeImageReason::pixel_limit_exceeded;
-    decision.reason_text = std::format(
+    decision.reason_text = awj::compat::format(
         "输入像素数 {} 超过 {} 单图上限 {}，已转入自动大图链路。",
         dimensions.pixel_count, limits.encoder_name, limits.max_pixels);
     return decision;
@@ -177,13 +176,13 @@ std::uint32_t ceil_div(std::uint32_t value, std::uint32_t divisor) noexcept {
   return divisor == 0 ? 0u : value / divisor + (value % divisor == 0 ? 0u : 1u);
 }
 
-std::expected<std::uint32_t, std::string> next_divisible_partition(
+awj::compat::expected<std::uint32_t, std::string> next_divisible_partition(
     std::uint32_t dimension,
     std::uint32_t min_candidate,
     std::uint32_t max_candidate,
     std::string_view axis) {
   if (dimension == 0) {
-    return std::unexpected{"grid 输入尺寸不能为 0。"};
+    return awj::compat::unexpected{"grid 输入尺寸不能为 0。"};
   }
   const auto start = std::clamp(min_candidate, 1u, max_candidate);
   std::vector<unsigned char> impossible(static_cast<std::size_t>(max_candidate) + 1u);
@@ -198,7 +197,7 @@ std::expected<std::uint32_t, std::string> next_divisible_partition(
       impossible[multiple] = 1;
     }
   }
-  return std::unexpected{std::format(
+  return awj::compat::unexpected{awj::compat::format(
       "{}方向无法在 {}..{} 内找到可整除的 grid 分割数。",
       axis, start, max_candidate)};
 }
@@ -210,43 +209,43 @@ std::string indivisible_grid_error(std::uint32_t width,
   const bool width_bad = cols == 0 || width % cols != 0;
   const bool height_bad = rows == 0 || height % rows != 0;
   std::string axis = width_bad && height_bad ? "宽、高" : (width_bad ? "宽" : "高");
-  return std::format(
+  return awj::compat::format(
       "grid 分割不可整除：当前宽高 {}x{}，cols={} rows={}，{}方向不能整除。请改用可整除分割数，或启用 padding 规划后在支持安全裁切的编码路径中处理。",
       width, height, cols, rows, axis);
 }
 
-std::expected<void, std::string> validate_grid_counts(std::uint32_t cols,
+awj::compat::expected<void, std::string> validate_grid_counts(std::uint32_t cols,
                                                        std::uint32_t rows) {
   if (cols == 0 || rows == 0) {
-    return std::unexpected{"grid cols/rows 必须大于 0。"};
+    return awj::compat::unexpected{"grid cols/rows 必须大于 0。"};
   }
   if (cols > encoding_defaults::grid_max_cols || rows > encoding_defaults::grid_max_rows) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "grid cols/rows 不能超过 {}x{}，当前 cols={} rows={}。",
         encoding_defaults::grid_max_cols, encoding_defaults::grid_max_rows, cols, rows)};
   }
   return {};
 }
 
-std::expected<GridPlan, std::string> make_plan(std::uint32_t width,
+awj::compat::expected<GridPlan, std::string> make_plan(std::uint32_t width,
                                                std::uint32_t height,
                                                std::uint32_t cols,
                                                std::uint32_t rows,
                                                bool padding) {
   if (auto valid = validate_grid_counts(cols, rows); !valid) {
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   }
   if (width == 0 || height == 0) {
-    return std::unexpected{"grid 输入尺寸不能为 0。"};
+    return awj::compat::unexpected{"grid 输入尺寸不能为 0。"};
   }
   if (!padding && (width % cols != 0 || height % rows != 0)) {
-    return std::unexpected{indivisible_grid_error(width, height, cols, rows)};
+    return awj::compat::unexpected{indivisible_grid_error(width, height, cols, rows)};
   }
   const auto tile_width = padding ? ceil_div(width, cols) : width / cols;
   const auto tile_height = padding ? ceil_div(height, rows) : height / rows;
   const auto max_uint32 = std::numeric_limits<std::uint32_t>::max();
   if (tile_width > max_uint32 / cols || tile_height > max_uint32 / rows) {
-    return std::unexpected{"grid padding 后尺寸超过运行时限制。"};
+    return awj::compat::unexpected{"grid padding 后尺寸超过运行时限制。"};
   }
   const auto padded_width = tile_width * cols;
   const auto padded_height = tile_height * rows;
@@ -263,9 +262,9 @@ std::expected<GridPlan, std::string> make_plan(std::uint32_t width,
 
 }  // namespace large_image_plan_detail
 
-std::expected<GridPlan, std::string> plan_grid(GridPlanRequest request) {
+awj::compat::expected<GridPlan, std::string> plan_grid(GridPlanRequest request) {
   if (request.width == 0 || request.height == 0) {
-    return std::unexpected{"grid 输入尺寸不能为 0。"};
+    return awj::compat::unexpected{"grid 输入尺寸不能为 0。"};
   }
 
   std::uint32_t cols{};
@@ -293,7 +292,7 @@ std::expected<GridPlan, std::string> plan_grid(GridPlanRequest request) {
         request.width, request.height, *divisible_cols, *divisible_rows, false);
   }
   if (!request.clamped_padding_enabled) {
-    return std::unexpected{large_image_plan_detail::indivisible_grid_error(
+    return awj::compat::unexpected{large_image_plan_detail::indivisible_grid_error(
         request.width, request.height, cols, rows)};
   }
 

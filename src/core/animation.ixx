@@ -1,14 +1,13 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -39,7 +38,7 @@ class AnimationReader {
  public:
   virtual ~AnimationReader() = default;
   virtual const AnimationInfo& info() const noexcept = 0;
-  virtual std::expected<bool, std::string> next(std::stop_token stop = {}) = 0;
+  virtual awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop = {}) = 0;
   virtual const ImageBuffer& frame() const noexcept = 0;
   virtual std::uint64_t memory_usage_bytes() const noexcept = 0;
 };

@@ -1,9 +1,8 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <cstdint>
-#include <expected>
-#include <format>
 #include <limits>
 #include <optional>
 #include <string>

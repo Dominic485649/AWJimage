@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <array>
@@ -6,9 +7,7 @@ module;
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <iterator>
 #include <limits>
 #include <memory>
@@ -16,7 +15,6 @@ module;
 #include <setjmp.h>
 #include <span>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -121,48 +119,48 @@ struct RawEncodeContext {
   }
 };
 
-std::expected<NativeEncodeResult, std::string> encode_yuv(
-    const ImageBuffer& image, const NativeEncodeSettings& settings, std::stop_token stop);
+awj::compat::expected<NativeEncodeResult, std::string> encode_yuv(
+    const ImageBuffer& image, const NativeEncodeSettings& settings, awj::compat::stop_token stop);
 
-std::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
+awj::compat::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
   if (image.pixel_format != PixelFormat::rgba || image.bit_depth != 8 ||
       image.planes.empty()) {
-    return std::unexpected{"JPG encoder 当前需要 8-bit RGBA ImageBuffer。"};
+    return awj::compat::unexpected{"JPG encoder 当前需要 8-bit RGBA ImageBuffer。"};
   }
   const auto& plane = image.planes.front();
   const auto expected_stride =
       decoder_common::checked_rgba_stride(image.width, "JPG encoder");
   if (!expected_stride) {
-    return std::unexpected{expected_stride.error()};
+    return awj::compat::unexpected{expected_stride.error()};
   }
   if (plane.stride < *expected_stride) {
-    return std::unexpected{"JPG encoder 输入 RGBA stride 无效。"};
+    return awj::compat::unexpected{"JPG encoder 输入 RGBA stride 无效。"};
   }
   const auto expected_bytes =
       decoder_common::checked_image_bytes(plane.stride, image.height, "JPG encoder");
   if (!expected_bytes) {
-    return std::unexpected{expected_bytes.error()};
+    return awj::compat::unexpected{expected_bytes.error()};
   }
   if (!plane.contains_rows(image.height, *expected_stride)) {
-    return std::unexpected{"JPG encoder 输入 RGBA buffer 尺寸无效。"};
+    return awj::compat::unexpected{"JPG encoder 输入 RGBA buffer 尺寸无效。"};
   }
   return &plane;
 }
 
-std::expected<std::vector<std::byte>, std::string> make_rgb_buffer(
+awj::compat::expected<std::vector<std::byte>, std::string> make_rgb_buffer(
     const ImagePlane& plane, std::size_t width, std::size_t height) {
   if (width == 0 || width > std::numeric_limits<std::size_t>::max() / 3) {
-    return std::unexpected{"JPG encoder RGB 输入宽度无效。"};
+    return awj::compat::unexpected{"JPG encoder RGB 输入宽度无效。"};
   }
   const auto rgb_stride = width * 3;
   const auto rgb_size =
       decoder_common::checked_image_bytes(rgb_stride, height, "JPG encoder RGB");
   if (!rgb_size) {
-    return std::unexpected{rgb_size.error()};
+    return awj::compat::unexpected{rgb_size.error()};
   }
   auto rgb = decoder_common::make_byte_buffer(*rgb_size, "JPG encoder RGB");
   if (!rgb) {
-    return std::unexpected{rgb.error()};
+    return awj::compat::unexpected{rgb.error()};
   }
   const auto* rgba_data = reinterpret_cast<const std::uint8_t*>(plane.read_bytes().data());
   auto* rgb_data = reinterpret_cast<std::uint8_t*>(rgb->data());
@@ -218,7 +216,7 @@ void apply_chroma_sampling(jpeg_compress_struct& cinfo, ChromaMode chroma) {
   }
 }
 
-std::expected<void, std::string> write_app1_marker(jpeg_compress_struct& cinfo,
+awj::compat::expected<void, std::string> write_app1_marker(jpeg_compress_struct& cinfo,
                                                    const char* signature,
                                                    std::size_t signature_size,
                                                    std::span<const std::byte> payload,
@@ -226,19 +224,19 @@ std::expected<void, std::string> write_app1_marker(jpeg_compress_struct& cinfo,
   if (payload.size() > encoding_defaults::jpeg_marker_payload_max_bytes ||
       signature_size >
           encoding_defaults::jpeg_marker_payload_max_bytes - payload.size()) {
-    return std::unexpected{std::format("JPG {} metadata 超过单个 JPEG marker 上限。", label)};
+    return awj::compat::unexpected{awj::compat::format("JPG {} metadata 超过单个 JPEG marker 上限。", label)};
   }
   std::vector<JOCTET> marker;
   try {
     marker.resize(signature_size + payload.size());
   } catch (const std::bad_alloc&) {
-    return std::unexpected{std::format("JPG {} metadata buffer 内存不足。", label)};
+    return awj::compat::unexpected{awj::compat::format("JPG {} metadata buffer 内存不足。", label)};
   } catch (const std::length_error&) {
-    return std::unexpected{std::format("JPG {} metadata buffer 尺寸超过运行时限制。", label)};
+    return awj::compat::unexpected{awj::compat::format("JPG {} metadata buffer 尺寸超过运行时限制。", label)};
   }
-  std::ranges::copy_n(reinterpret_cast<const JOCTET*>(signature), signature_size,
+  awj::compat::ranges::copy_n(reinterpret_cast<const JOCTET*>(signature), signature_size,
                       marker.begin());
-  std::ranges::copy_n(reinterpret_cast<const JOCTET*>(payload.data()), payload.size(),
+  awj::compat::ranges::copy_n(reinterpret_cast<const JOCTET*>(payload.data()), payload.size(),
                       marker.begin() + static_cast<std::ptrdiff_t>(signature_size));
   jpegli_write_marker(&cinfo, JPEG_APP0 + 1, marker.data(),
                       static_cast<unsigned int>(marker.size()));
@@ -263,8 +261,8 @@ struct EssentialSdrIcc {
 };
 
 // 借用源 ICC 或仅生成小型 profile，拥有者在 setjmp 前构造并活到同步编码返回。
-std::expected<EssentialSdrIcc, std::string> prepare_essential_sdr_icc(
-    const ImageBuffer& image, const NativeEncodeSettings& settings, std::stop_token stop) {
+awj::compat::expected<EssentialSdrIcc, std::string> prepare_essential_sdr_icc(
+    const ImageBuffer& image, const NativeEncodeSettings& settings, awj::compat::stop_token stop) {
   EssentialSdrIcc result;
   if (image.source_info && image.source_info->has_hdr_metadata) return result;
   const auto* source = image.source_info ? &*image.source_info : nullptr;
@@ -274,18 +272,18 @@ std::expected<EssentialSdrIcc, std::string> prepare_essential_sdr_icc(
   if (!essential) return result;
   if (settings.jpegli_xyb) {
     if (!known_color || non_srgb)
-      return std::unexpected{"JPG XYB 需要明确 BT.709/sRGB 输入；不能删除必要 ICC 后错误套用其内置 ICC。"};
+      return awj::compat::unexpected{"JPG XYB 需要明确 BT.709/sRGB 输入；不能删除必要 ICC 后错误套用其内置 ICC。"};
     return result;
   }
   result.borrowed = first_metadata(image, MetadataKind::icc);
   if (result.borrowed) {
     if (!jpeg_icc_size_supported(result.borrowed->bytes.size()))
-      return std::unexpected{"JPG 必要 SDR ICC 为空或超过 JPEG 的255分片上限。"};
+      return awj::compat::unexpected{"JPG 必要 SDR ICC 为空或超过 JPEG 的255分片上限。"};
   } else if (non_srgb) {
     auto profile = gain_map_detail::sdr_presentation_icc(*source, stop);
-    if (!profile) return std::unexpected{profile.error()};
+    if (!profile) return awj::compat::unexpected{profile.error()};
     if (!jpeg_icc_size_supported(profile->size()))
-      return std::unexpected{"JPG 生成的必要 SDR ICC 超过 JPEG 的255分片上限。"};
+      return awj::compat::unexpected{"JPG 生成的必要 SDR ICC 超过 JPEG 的255分片上限。"};
     result.generated = std::move(*profile);
   }
   return result;
@@ -299,13 +297,13 @@ void record_essential_sdr_icc(EncodeDiagnostics& diagnostics, const EssentialSdr
   diagnostics.color_reason = "写入解释已有 SDR 呈现所需的 ICC；不重新 tone-map，strip 仅移除可选元数据";
 }
 
-std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
+awj::compat::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
                                                 const ImageBuffer& image,
                                                 const NativeEncodeSettings& settings,
                                                 std::span<const std::byte> essential_icc = {}) {
   if (!essential_icc.empty()) {
     if (!jpeg_icc_size_supported(essential_icc.size()))
-      return std::unexpected{"JPG 必要 ICC 超过 JPEG 的255分片上限。"};
+      return awj::compat::unexpected{"JPG 必要 ICC 超过 JPEG 的255分片上限。"};
     jpegli_write_icc_profile(&cinfo, reinterpret_cast<const JOCTET*>(essential_icc.data()),
                              static_cast<unsigned int>(essential_icc.size()));
   }
@@ -315,7 +313,7 @@ std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
   if (essential_icc.empty() && !settings.jpegli_xyb && settings.applied_icc == "kept") {
     if (const auto* icc = first_metadata(image, MetadataKind::icc); icc != nullptr) {
       if (!jpeg_icc_size_supported(icc->bytes.size())) {
-        return std::unexpected{"JPG ICC profile 为空或超过 JPEG 的255分片上限。"};
+        return awj::compat::unexpected{"JPG ICC profile 为空或超过 JPEG 的255分片上限。"};
       }
       jpegli_write_icc_profile(&cinfo,
                                reinterpret_cast<const JOCTET*>(icc->bytes.data()),
@@ -328,7 +326,7 @@ std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
                                          sizeof(exif_signature) - 1, exif->bytes,
                                          "Exif");
         !written) {
-      return std::unexpected{written.error()};
+      return awj::compat::unexpected{written.error()};
     }
   }
   if (const auto* xmp = first_metadata(image, MetadataKind::xmp); xmp != nullptr) {
@@ -337,13 +335,13 @@ std::expected<void, std::string> write_metadata(jpeg_compress_struct& cinfo,
                                          sizeof(xmp_signature) - 1, xmp->bytes,
                                          "XMP");
         !written) {
-      return std::unexpected{written.error()};
+      return awj::compat::unexpected{written.error()};
     }
   }
   return {};
 }
 
-std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
+awj::compat::expected<std::vector<std::byte>, std::string> copy_icc_profile(
     jpeg_decompress_struct& cinfo) {
   JOCTET* icc_data = nullptr;
   unsigned int icc_size = 0;
@@ -354,14 +352,14 @@ std::expected<std::vector<std::byte>, std::string> copy_icc_profile(
   }
   auto bytes = decoder_common::make_byte_buffer(icc_size, "JPG ICC profile");
   if (!bytes) {
-    return std::unexpected{bytes.error()};
+    return awj::compat::unexpected{bytes.error()};
   }
-  std::ranges::copy_n(reinterpret_cast<const std::byte*>(icc_data), icc_size,
+  awj::compat::ranges::copy_n(reinterpret_cast<const std::byte*>(icc_data), icc_size,
                       bytes->begin());
   return std::move(*bytes);
 }
 
-std::expected<void, std::string> validate_mpf_primary_image(
+awj::compat::expected<void, std::string> validate_mpf_primary_image(
     const jpeg_decompress_struct& cinfo, std::string_view source_name) {
   static constexpr char signature[] = "MPF\0";
   for (auto* marker = cinfo.marker_list; marker != nullptr; marker = marker->next) {
@@ -370,9 +368,9 @@ std::expected<void, std::string> validate_mpf_primary_image(
             signature, sizeof(signature) - 1)) continue;
     auto count = jpeg_detail::parse_mpf_image_count(marker->data, marker->data_length);
     if (!count)
-      return std::unexpected{std::format("暂不支持多图 JPEG MPF 输入: {}; {}", source_name, count.error())};
+      return awj::compat::unexpected{awj::compat::format("暂不支持多图 JPEG MPF 输入: {}; {}", source_name, count.error())};
     if (*count == 0)
-      return std::unexpected{std::format("JPEG MPF 图像数量不能为零: {}", source_name)};
+      return awj::compat::unexpected{awj::compat::format("JPEG MPF 图像数量不能为零: {}", source_name)};
   }
   return {};
 }
@@ -406,7 +404,7 @@ bool opaque_sdr8_yuv420_header(const jpeg_decompress_struct& cinfo) noexcept {
   return true;
 }
 
-std::expected<void, std::string> copy_app1_metadata(
+awj::compat::expected<void, std::string> copy_app1_metadata(
     ImageBuffer& image, const jpeg_decompress_struct& cinfo) {
   static constexpr char exif_signature[] = "Exif\0\0";
   static constexpr char xmp_signature[] = "http://ns.adobe.com/xap/1.0/\0";
@@ -418,7 +416,7 @@ std::expected<void, std::string> copy_app1_metadata(
             exif_signature, sizeof(exif_signature) - 1)) {
       auto exif = jpeg_detail::copy_marker_payload(marker->data, marker->data_length,
           sizeof(exif_signature) - 1, "JPEG Exif metadata");
-      if (!exif) return std::unexpected{exif.error()};
+      if (!exif) return awj::compat::unexpected{exif.error()};
       if (!exif->empty()) {
         image.metadata.push_back(MetadataBlock{.kind = MetadataKind::exif, .bytes = std::move(*exif)});
         copied_exif = true;
@@ -429,7 +427,7 @@ std::expected<void, std::string> copy_app1_metadata(
             xmp_signature, sizeof(xmp_signature) - 1)) {
       auto xmp = jpeg_detail::copy_marker_payload(marker->data, marker->data_length,
           sizeof(xmp_signature) - 1, "JPEG XMP metadata");
-      if (!xmp) return std::unexpected{xmp.error()};
+      if (!xmp) return awj::compat::unexpected{xmp.error()};
       if (!xmp->empty()) {
         image.metadata.push_back(MetadataBlock{.kind = MetadataKind::xmp, .bytes = std::move(*xmp)});
         copied_xmp = true;
@@ -439,22 +437,22 @@ std::expected<void, std::string> copy_app1_metadata(
   return {};
 }
 
-std::expected<ImageDecodeResult, std::string> decode_bytes(
+awj::compat::expected<ImageDecodeResult, std::string> decode_bytes(
     std::span<const std::byte> bytes, std::string_view source_name,
     bool copy_metadata_payloads, bool native_pixels = false,
     GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only) {
   try {
     if (bytes.empty()) {
-      return std::unexpected{std::format("JPG 输入为空: {}", source_name)};
+      return awj::compat::unexpected{awj::compat::format("JPG 输入为空: {}", source_name)};
     }
     if (bytes.size() > static_cast<std::size_t>(std::numeric_limits<unsigned long>::max())) {
-      return std::unexpected{"JPG 输入超过 libjpeg API 限制。"};
+      return awj::compat::unexpected{"JPG 输入超过 libjpeg API 限制。"};
     }
 
     // Recognized legacy/broken HDR is terminal, never a plain-JPEG fallback.
     // The ISO decoder uses its internal libjpeg path and cannot recurse here.
     auto enhanced = decode_jpeg_gain_map(bytes, {}, 1, gain_map_mode);
-    if (!enhanced) return std::unexpected{enhanced.error()};
+    if (!enhanced) return awj::compat::unexpected{enhanced.error()};
     if (*enhanced) {
       if (!copy_metadata_payloads) {
         (**enhanced).image.metadata.clear();
@@ -467,7 +465,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     try {
       context = std::make_unique<jpegli_detail::DecodeContext>();
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"JPG decoder 内存不足。"};
+      return awj::compat::unexpected{"JPG decoder 内存不足。"};
     }
 
     jpeg_decompress_struct cinfo{};
@@ -480,7 +478,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     error.pub.error_exit = jpegli_detail::error_exit;
     DecompressCleanup cleanup{.cinfo = &cinfo};
     if (setjmp(error.jump) != 0) {
-      return std::unexpected{std::format("JPG 解码失败: {}", error.message)};
+      return awj::compat::unexpected{awj::compat::format("JPG 解码失败: {}", error.message)};
     }
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -492,7 +490,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     if (auto metadata_budget = jpeg_detail::validate_saved_metadata_budget_from_memory(
             owned_bytes, source_name, copy_metadata_payloads);
         !metadata_budget) {
-      return std::unexpected{metadata_budget.error()};
+      return awj::compat::unexpected{metadata_budget.error()};
     }
     jpegli_mem_src(&cinfo, reinterpret_cast<const unsigned char*>(bytes.data()),
                    static_cast<unsigned long>(bytes.size()));
@@ -501,21 +499,21 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     }
     jpegli_save_markers(&cinfo, JPEG_APP0 + 2, 0xFFFFu);
     if (jpegli_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-      return std::unexpected{std::format("JPG/JPEG 文件头无效: {}", source_name)};
+      return awj::compat::unexpected{awj::compat::format("JPG/JPEG 文件头无效: {}", source_name)};
     }
     if (auto mpf = jpegli_detail::validate_mpf_primary_image(cinfo, source_name); !mpf) {
-      return std::unexpected{mpf.error()};
+      return awj::compat::unexpected{mpf.error()};
     }
     const auto source_info = jpegli_detail::source_info_from_header(cinfo);
     auto icc_profile = jpegli_detail::copy_icc_profile(cinfo);
     if (!icc_profile) {
-      return std::unexpected{icc_profile.error()};
+      return awj::compat::unexpected{icc_profile.error()};
     }
     context->icc_profile = std::move(*icc_profile);
     if (copy_metadata_payloads) {
       ImageBuffer metadata_image{};
       if (auto copied = jpegli_detail::copy_app1_metadata(metadata_image, cinfo); !copied) {
-        return std::unexpected{copied.error()};
+        return awj::compat::unexpected{copied.error()};
       }
       context->app1_metadata = std::move(metadata_image.metadata);
     }
@@ -538,9 +536,9 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
         const auto rows = static_cast<std::size_t>(component.v_samp_factor) * DCTSIZE;
         const auto height = (static_cast<std::size_t>(component.downsampled_height) + rows - 1) / rows * rows;
         auto count = decoder_common::checked_image_bytes(stride, height, "JPG native YUV");
-        if (!count) return std::unexpected{count.error()};
+        if (!count) return awj::compat::unexpected{count.error()};
         auto storage = decoder_common::make_byte_buffer(*count, "JPG native YUV");
-        if (!storage) return std::unexpected{storage.error()};
+        if (!storage) return awj::compat::unexpected{storage.error()};
         native.planes[c] = ImagePlane{.bytes = std::move(*storage), .stride = stride};
         context->rows[c].resize(rows);
       }
@@ -552,35 +550,35 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
         }
         JSAMPARRAY rows[3]{context->rows[0].data(), context->rows[1].data(), context->rows[2].data()};
         if (!jpegli_read_raw_data(&cinfo, rows, cinfo.max_v_samp_factor * DCTSIZE))
-          return std::unexpected{"JPG 原生 YUV 读取未推进。"};
+          return awj::compat::unexpected{"JPG 原生 YUV 读取未推进。"};
       }
       jpegli_finish_decompress(&cinfo);
       if (!context->icc_profile.empty()) native.metadata.push_back(MetadataBlock{.kind = MetadataKind::icc, .bytes = std::move(context->icc_profile)});
       if (copy_metadata_payloads) native.metadata.insert(native.metadata.end(),
           std::make_move_iterator(context->app1_metadata.begin()), std::make_move_iterator(context->app1_metadata.end()));
-      if (auto valid = validate_image_pixels(native); !valid) return std::unexpected{valid.error()};
+      if (auto valid = validate_image_pixels(native); !valid) return awj::compat::unexpected{valid.error()};
       return ImageDecodeResult{.image = std::move(native), .decoder_id = "jpegli"};
     }
     cinfo.out_color_space = JCS_EXT_RGBA;
     jpegli_start_decompress(&cinfo);
     if (cinfo.output_width == 0 || cinfo.output_height == 0 ||
         cinfo.output_components != 4) {
-      return std::unexpected{std::format("JPG 输出格式无效: {}", source_name)};
+      return awj::compat::unexpected{awj::compat::format("JPG 输出格式无效: {}", source_name)};
     }
     const auto width = static_cast<std::size_t>(cinfo.output_width);
     const auto height = static_cast<std::size_t>(cinfo.output_height);
     const auto stride = decoder_common::checked_rgba_stride(width, "JPG decoder");
     if (!stride) {
-      return std::unexpected{stride.error()};
+      return awj::compat::unexpected{stride.error()};
     }
     const auto byte_count =
         decoder_common::checked_image_bytes(*stride, height, "JPG decoder");
     if (!byte_count) {
-      return std::unexpected{byte_count.error()};
+      return awj::compat::unexpected{byte_count.error()};
     }
     auto rgba = decoder_common::make_byte_buffer(*byte_count, "JPG decoder");
     if (!rgba) {
-      return std::unexpected{rgba.error()};
+      return awj::compat::unexpected{rgba.error()};
     }
     context->rgba = std::move(*rgba);
 
@@ -588,7 +586,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
       auto* row =
           reinterpret_cast<JSAMPROW>(context->rgba.data() + cinfo.output_scanline * *stride);
       if (jpegli_read_scanlines(&cinfo, &row, 1) != 1) {
-        return std::unexpected{std::format("JPG 扫描行读取未推进: {}", source_name)};
+        return awj::compat::unexpected{awj::compat::format("JPG 扫描行读取未推进: {}", source_name)};
       }
     }
     jpegli_finish_decompress(&cinfo);
@@ -596,7 +594,7 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     auto image = decoder_common::make_rgba_image(width, height, std::move(context->rgba),
                                                  AlphaMode::none, "JPG decoder", source_info);
     if (!image) {
-      return std::unexpected{image.error()};
+      return awj::compat::unexpected{image.error()};
     }
     if (!context->icc_profile.empty()) {
       image->metadata.push_back(MetadataBlock{.kind = MetadataKind::icc,
@@ -609,11 +607,11 @@ std::expected<ImageDecodeResult, std::string> decode_bytes(
     }
     return ImageDecodeResult{.image = std::move(*image), .decoder_id = "jpegli"};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"JPG 解码内存不足。"};
+    return awj::compat::unexpected{"JPG 解码内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"JPG 解码数据超过运行时限制。"};
+    return awj::compat::unexpected{"JPG 解码数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"JPG 解码文件系统访问失败。"};
+    return awj::compat::unexpected{"JPG 解码文件系统访问失败。"};
   }
 }
 
@@ -628,15 +626,15 @@ class JpegliImageDecoder final : public ImageDecoder {
     return decoder_common::extension_is_one_of(path, extensions);
   }
 
-  std::expected<ImageDimensions, std::string> probe_dimensions(
+  awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
     try {
       auto enhanced = probe_jpeg_gain_map_dimensions(path);
-      if (!enhanced) return std::unexpected{enhanced.error()};
+      if (!enhanced) return awj::compat::unexpected{enhanced.error()};
       if (*enhanced) return **enhanced;
       jpeg_detail::FileCleanup input{jpeg_detail::open_binary_file(path)};
       if (input.file == nullptr) {
-        return std::unexpected{std::format("无法读取 JPG/JPEG 文件: {}",
+        return awj::compat::unexpected{awj::compat::format("无法读取 JPG/JPEG 文件: {}",
                                            display_path_for_user(path))};
       }
 
@@ -650,7 +648,7 @@ class JpegliImageDecoder final : public ImageDecoder {
       error.pub.error_exit = jpegli_detail::error_exit;
       jpegli_detail::DecompressCleanup cleanup{.cinfo = &cinfo};
       if (setjmp(error.jump) != 0) {
-        return std::unexpected{std::format("JPG 读取尺寸失败: {}", error.message)};
+        return awj::compat::unexpected{awj::compat::format("JPG 读取尺寸失败: {}", error.message)};
       }
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -660,16 +658,16 @@ class JpegliImageDecoder final : public ImageDecoder {
       if (auto metadata_budget = jpeg_detail::validate_saved_metadata_budget_from_file(
               input.file, display_path_for_user(path), false);
           !metadata_budget) {
-        return std::unexpected{metadata_budget.error()};
+        return awj::compat::unexpected{metadata_budget.error()};
       }
       jpegli_stdio_src(&cinfo, input.file);
       jpegli_save_markers(&cinfo, JPEG_APP0 + 2, 0xFFFFu);
       if (jpegli_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-        return std::unexpected{std::format("JPG/JPEG 文件头无效: {}",
+        return awj::compat::unexpected{awj::compat::format("JPG/JPEG 文件头无效: {}",
                                            display_path_for_user(path))};
       }
       if (auto mpf = jpegli_detail::validate_mpf_primary_image(cinfo, display_path_for_user(path)); !mpf) {
-        return std::unexpected{mpf.error()};
+        return awj::compat::unexpected{mpf.error()};
       }
       auto dimensions = decoder_common::make_image_dimensions_checked(cinfo.image_width,
                                                            cinfo.image_height, "JPG");
@@ -685,30 +683,30 @@ class JpegliImageDecoder final : public ImageDecoder {
       }
       return dimensions;
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"JPG 尺寸探测内存不足。"};
+      return awj::compat::unexpected{"JPG 尺寸探测内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"JPG 尺寸探测数据超过运行时限制。"};
+      return awj::compat::unexpected{"JPG 尺寸探测数据超过运行时限制。"};
     } catch (const std::filesystem::filesystem_error&) {
-      return std::unexpected{"JPG 尺寸探测文件系统访问失败。"};
+      return awj::compat::unexpected{"JPG 尺寸探测文件系统访问失败。"};
     }
   }
 
-  std::expected<ImageDecodeResult, std::string> decode(
+  awj::compat::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path) const override {
     return decode(path, {});
   }
 
-  std::expected<ImageDecodeResult, std::string> decode(
+  awj::compat::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path, DecodeOptions options) const override {
     auto bytes = decoder_common::read_file_bytes(path, "JPG/JPEG");
     if (!bytes) {
-      return std::unexpected{bytes.error()};
+      return awj::compat::unexpected{bytes.error()};
     }
     return jpegli_detail::decode_bytes(*bytes, display_path_for_user(path),
         options.copy_metadata_payloads.value_or(true), options.native_pixels, options.gain_map_mode);
   }
 
-  std::expected<ImageDecodeResult, std::string> decode_memory(
+  awj::compat::expected<ImageDecodeResult, std::string> decode_memory(
       std::span<const std::byte> bytes,
       std::string_view source_name,
       DecodeOptions options = {}) const override {
@@ -731,25 +729,25 @@ class JpegliImageEncoder final : public ImageEncoder {
                              .bit_depths = {8}};
   }
 
-  std::expected<NativeEncodeResult, std::string> encode(
+  awj::compat::expected<NativeEncodeResult, std::string> encode(
       const ImageBuffer& image,
       const NativeEncodeSettings& settings,
-      std::stop_token stop_token = {}) const override {
+      awj::compat::stop_token stop_token = {}) const override {
     try {
       if (stop_token.stop_requested()) {
-        return std::unexpected{"任务已取消。"};
+        return awj::compat::unexpected{"任务已取消。"};
       }
       if (settings.jpegli_progressive_level < 0 ||
           settings.jpegli_progressive_level > 2) {
-        return std::unexpected{"JPG progressive level 只支持 0、1、2。"};
+        return awj::compat::unexpected{"JPG progressive level 只支持 0、1、2。"};
       }
       if (settings.jpegli_progressive_level > 0 &&
           !settings.jpegli_optimize_huffman) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "JPG 渐进 JPEG 需要优化哈夫曼表；若要关闭优化，请将渐进设为 0。"};
       }
       if (!supports_chroma_mode(OutputFormat::jpgli, settings.chroma_mode)) {
-        return std::unexpected{"JPG 不支持 400；请使用 auto/444/422/420。"};
+        return awj::compat::unexpected{"JPG 不支持 400；请使用 auto/444/422/420。"};
       }
       const auto effective_chroma =
           settings.chroma_mode == ChromaMode::auto_keep && !settings.jpegli_xyb
@@ -764,7 +762,7 @@ class JpegliImageEncoder final : public ImageEncoder {
         std::optional<ImageBuffer> converted;
         if (!pixels_match(image, request)) {
           auto normalized = convert_image_pixels(image, request, stop_token, settings.resources);
-          if (!normalized) return std::unexpected{normalized.error()};
+          if (!normalized) return awj::compat::unexpected{normalized.error()};
           converted = std::move(*normalized);
         }
         auto normalized_settings = settings;
@@ -775,11 +773,11 @@ class JpegliImageEncoder final : public ImageEncoder {
       }
       auto plane = jpegli_detail::rgba_plane(image);
       if (!plane) {
-        return std::unexpected{plane.error()};
+        return awj::compat::unexpected{plane.error()};
       }
       if (image.width > static_cast<std::size_t>(std::numeric_limits<JDIMENSION>::max()) ||
           image.height > static_cast<std::size_t>(std::numeric_limits<JDIMENSION>::max())) {
-        return std::unexpected{"JPG encoder 输入尺寸超过 libjpeg API 限制。"};
+        return awj::compat::unexpected{"JPG encoder 输入尺寸超过 libjpeg API 限制。"};
       }
 
       const auto rgb_input = settings.jpegli_rgb8_input;
@@ -789,12 +787,12 @@ class JpegliImageEncoder final : public ImageEncoder {
         row_buffer.resize(row_stride);
       } else {
         const auto expected_size = decoder_common::checked_image_bytes(row_stride, image.height, "JPG encoder RGB");
-        if (!expected_size) return std::unexpected{expected_size.error()};
-        if (rgb_input.size() != *expected_size) return std::unexpected{"JPG encoder RGB 输入缓存尺寸无效。"};
+        if (!expected_size) return awj::compat::unexpected{expected_size.error()};
+        if (rgb_input.size() != *expected_size) return awj::compat::unexpected{"JPG encoder RGB 输入缓存尺寸无效。"};
       }
 
       auto essential_icc = jpegli_detail::prepare_essential_sdr_icc(image, settings, stop_token);
-      if (!essential_icc) return std::unexpected{essential_icc.error()};
+      if (!essential_icc) return awj::compat::unexpected{essential_icc.error()};
       unsigned char* output = nullptr;
       unsigned long output_size = 0;
       jpegli_detail::MallocCleanup output_cleanup{};
@@ -809,7 +807,7 @@ class JpegliImageEncoder final : public ImageEncoder {
       jpegli_detail::CompressCleanup cleanup{.cinfo = &cinfo};
       if (setjmp(error.jump) != 0) {
         output_cleanup.data = output;
-        return std::unexpected{std::format("JPG 编码失败: {}", error.message)};
+        return awj::compat::unexpected{awj::compat::format("JPG 编码失败: {}", error.message)};
       }
 #if defined(_MSC_VER)
 #pragma warning(pop)
@@ -837,11 +835,11 @@ class JpegliImageEncoder final : public ImageEncoder {
       cinfo.optimize_coding = settings.jpegli_optimize_huffman ? TRUE : FALSE;
       jpegli_start_compress(&cinfo, TRUE);
       if (auto metadata = jpegli_detail::write_metadata(cinfo, image, settings, essential_icc->bytes()); !metadata) {
-        return std::unexpected{metadata.error()};
+        return awj::compat::unexpected{metadata.error()};
       }
 
       while (cinfo.next_scanline < cinfo.image_height) {
-        if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+        if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         const auto y = static_cast<std::size_t>(cinfo.next_scanline);
         const std::byte* data{};
         if (rgb_input.empty()) {
@@ -855,20 +853,20 @@ class JpegliImageEncoder final : public ImageEncoder {
         }
         JSAMPROW row = const_cast<JSAMPROW>(reinterpret_cast<const JSAMPLE*>(data));
         if (jpegli_write_scanlines(&cinfo, &row, 1) != 1) {
-          return std::unexpected{"JPG scanline 写入未推进。"};
+          return awj::compat::unexpected{"JPG scanline 写入未推进。"};
         }
       }
       jpegli_finish_compress(&cinfo);
       if (output == nullptr || output_size == 0) {
-        return std::unexpected{"JPG encoder 输出失败。"};
+        return awj::compat::unexpected{"JPG encoder 输出失败。"};
       }
       output_cleanup.data = output;
 
       auto bytes = decoder_common::make_byte_buffer(output_size, "JPG encoder output");
       if (!bytes) {
-        return std::unexpected{bytes.error()};
+        return awj::compat::unexpected{bytes.error()};
       }
-      std::ranges::copy_n(reinterpret_cast<const std::byte*>(output), output_size,
+      awj::compat::ranges::copy_n(reinterpret_cast<const std::byte*>(output), output_size,
                           bytes->begin());
 
       auto diagnostics = diagnostics_from_settings(settings);
@@ -889,30 +887,30 @@ class JpegliImageEncoder final : public ImageEncoder {
                                 .lossless = false,
                                 .search_attempt_count = 1};
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"JPG 编码内存不足。"};
+      return awj::compat::unexpected{"JPG 编码内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"JPG 编码数据超过运行时限制。"};
+      return awj::compat::unexpected{"JPG 编码数据超过运行时限制。"};
     } catch (const std::filesystem::filesystem_error&) {
-      return std::unexpected{"JPG 编码文件系统访问失败。"};
+      return awj::compat::unexpected{"JPG 编码文件系统访问失败。"};
     }
   }
 };
 
 namespace jpegli_detail {
 
-std::expected<NativeEncodeResult, std::string> encode_yuv(
-    const ImageBuffer& image, const NativeEncodeSettings& settings, std::stop_token stop) {
-  if (auto valid = validate_image_pixels(image); !valid) return std::unexpected{valid.error()};
+awj::compat::expected<NativeEncodeResult, std::string> encode_yuv(
+    const ImageBuffer& image, const NativeEncodeSettings& settings, awj::compat::stop_token stop) {
+  if (auto valid = validate_image_pixels(image); !valid) return awj::compat::unexpected{valid.error()};
   if (image.width > JPEG_MAX_DIMENSION || image.height > JPEG_MAX_DIMENSION ||
       image.bit_depth != 8 || image.pixel_format == PixelFormat::gray)
-    return std::unexpected{"JPG YUV 编码尺寸或布局无效。"};
+    return awj::compat::unexpected{"JPG YUV 编码尺寸或布局无效。"};
   auto essential_icc = prepare_essential_sdr_icc(image, settings, stop);
-  if (!essential_icc) return std::unexpected{essential_icc.error()};
+  if (!essential_icc) return awj::compat::unexpected{essential_icc.error()};
   auto context = std::make_unique<RawEncodeContext>();
   auto& cinfo = context->cinfo;
   auto& error = context->error;
   cinfo.err = jpegli_std_error(&error.pub); error.pub.error_exit = jpegli_detail::error_exit;
-  if (setjmp(error.jump) != 0) return std::unexpected{std::format("JPG YUV 编码失败: {}", error.message)};
+  if (setjmp(error.jump) != 0) return awj::compat::unexpected{awj::compat::format("JPG YUV 编码失败: {}", error.message)};
   jpegli_create_compress(&cinfo); context->created = true;
   jpegli_mem_dest(&cinfo, &context->output, &context->output_size);
   cinfo.image_width = static_cast<JDIMENSION>(image.width);
@@ -929,7 +927,7 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
   jpegli_set_progressive_level(&cinfo, settings.jpegli_progressive_level);
   cinfo.optimize_coding = settings.jpegli_optimize_huffman ? TRUE : FALSE;
   jpegli_start_compress(&cinfo, TRUE);
-  if (auto metadata = write_metadata(cinfo, image, settings, essential_icc->bytes()); !metadata) return std::unexpected{metadata.error()};
+  if (auto metadata = write_metadata(cinfo, image, settings, essential_icc->bytes()); !metadata) return awj::compat::unexpected{metadata.error()};
   for (std::size_t c = 0; c < 3; ++c) {
     const auto& component = cinfo.comp_info[c];
     const auto width = static_cast<std::size_t>(component.width_in_blocks) * DCTSIZE;
@@ -939,7 +937,7 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
     for (std::size_t row = 0; row < rows; ++row) context->rows[c][row] = context->samples[c].data() + row * width;
   }
   while (cinfo.next_scanline < cinfo.image_height) {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     for (std::size_t c = 0; c < 3; ++c) {
       const auto& component = cinfo.comp_info[c];
       const auto width = static_cast<std::size_t>(component.downsampled_width);
@@ -955,12 +953,12 @@ std::expected<NativeEncodeResult, std::string> encode_yuv(
     }
     JSAMPARRAY rows[3]{context->rows[0].data(), context->rows[1].data(), context->rows[2].data()};
     if (!jpegli_write_raw_data(&cinfo, rows, cinfo.max_v_samp_factor * DCTSIZE))
-      return std::unexpected{"JPG 原生 YUV 写入未推进。"};
+      return awj::compat::unexpected{"JPG 原生 YUV 写入未推进。"};
   }
   jpegli_finish_compress(&cinfo);
-  if (!context->output || !context->output_size) return std::unexpected{"JPG 原生 YUV 输出为空。"};
+  if (!context->output || !context->output_size) return awj::compat::unexpected{"JPG 原生 YUV 输出为空。"};
   auto storage = decoder_common::make_byte_buffer(context->output_size, "JPG raw output");
-  if (!storage) return std::unexpected{storage.error()};
+  if (!storage) return awj::compat::unexpected{storage.error()};
   std::memcpy(storage->data(), context->output, context->output_size);
   auto diagnostics = diagnostics_from_settings(settings);
   record_essential_sdr_icc(diagnostics, *essential_icc, image);

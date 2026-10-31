@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <atomic>
@@ -7,14 +8,11 @@ module;
 #include <cstdint>
 #include <cmath>
 #include <cstring>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -67,11 +65,11 @@ double elapsed_seconds(Clock::time_point started) {
 }
 
 std::string format_timing_seconds(double seconds) {
-  return seconds >= 0.0 ? std::format("{:.3f}", seconds) : std::string{""};
+  return seconds >= 0.0 ? awj::compat::format("{:.3f}", seconds) : std::string{""};
 }
 
 std::string format_timing_share(double part, double total) {
-  return part >= 0.0 && total > 0.0 ? std::format("{:.1f}", part * 100.0 / total) : std::string{""};
+  return part >= 0.0 && total > 0.0 ? awj::compat::format("{:.1f}", part * 100.0 / total) : std::string{""};
 }
 
 template <class Function>
@@ -104,8 +102,8 @@ class UnsupportedDecoder final : public ImageDecoder {
 
   [[nodiscard]] std::string_view id() const noexcept override { return id_; }
   [[nodiscard]] bool can_decode(const fs::path&) const override { return false; }
-  std::expected<ImageDecodeResult, std::string> decode(const fs::path&) const override {
-    return std::unexpected{std::format("native backend 当前不支持该输入解码器: {}", id_)};
+  awj::compat::expected<ImageDecodeResult, std::string> decode(const fs::path&) const override {
+    return awj::compat::unexpected{awj::compat::format("native backend 当前不支持该输入解码器: {}", id_)};
   }
 
  private:
@@ -242,14 +240,14 @@ struct SourceFileTimes {
   FILETIME access{};
 };
 
-std::expected<SourceFileTimes, std::string> capture_source_file_times(
+awj::compat::expected<SourceFileTimes, std::string> capture_source_file_times(
     const fs::path& path) {
   const HANDLE raw_file = CreateFileW(
       path.c_str(), FILE_READ_ATTRIBUTES,
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (raw_file == INVALID_HANDLE_VALUE) {
-    return std::unexpected{std::format("无法读取源文件时间 {}: {}",
+    return awj::compat::unexpected{awj::compat::format("无法读取源文件时间 {}: {}",
                                        display_path_for_user(path),
                                        win32_error_message(GetLastError()))};
   }
@@ -257,14 +255,14 @@ std::expected<SourceFileTimes, std::string> capture_source_file_times(
   SourceFileTimes times{};
   if (!GetFileTime(file.get(), &times.creation, &times.access,
                    &times.modification)) {
-    return std::unexpected{std::format("无法读取源文件时间 {}: {}",
+    return awj::compat::unexpected{awj::compat::format("无法读取源文件时间 {}: {}",
                                        display_path_for_user(path),
                                        win32_error_message(GetLastError()))};
   }
   return times;
 }
 
-std::expected<void, std::string> apply_source_file_times(
+awj::compat::expected<void, std::string> apply_source_file_times(
     const fs::path& path, const SourceFileTimes& source,
     bool preserve_creation, bool preserve_modification, bool preserve_access) {
   const HANDLE raw_file = CreateFileW(
@@ -272,7 +270,7 @@ std::expected<void, std::string> apply_source_file_times(
       FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
       OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
   if (raw_file == INVALID_HANDLE_VALUE) {
-    return std::unexpected{std::format("无法写入输出文件时间 {}: {}",
+    return awj::compat::unexpected{awj::compat::format("无法写入输出文件时间 {}: {}",
                                        display_path_for_user(path),
                                        win32_error_message(GetLastError()))};
   }
@@ -280,7 +278,7 @@ std::expected<void, std::string> apply_source_file_times(
   if (!SetFileTime(file.get(), preserve_creation ? &source.creation : nullptr,
                    preserve_access ? &source.access : nullptr,
                    preserve_modification ? &source.modification : nullptr)) {
-    return std::unexpected{std::format("无法写入输出文件时间 {}: {}",
+    return awj::compat::unexpected{awj::compat::format("无法写入输出文件时间 {}: {}",
                                        display_path_for_user(path),
                                        win32_error_message(GetLastError()))};
   }
@@ -288,13 +286,13 @@ std::expected<void, std::string> apply_source_file_times(
 }
 #endif
 
-std::expected<void, std::string> clear_transient_file_attributes(const fs::path& path,
+awj::compat::expected<void, std::string> clear_transient_file_attributes(const fs::path& path,
                                                                  std::string_view label) {
 #ifdef _WIN32
   const DWORD attributes = GetFileAttributesW(path.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES) {
     const auto error = GetLastError();
-    return std::unexpected{std::format("无法读取{}属性 {}: {}",
+    return awj::compat::unexpected{awj::compat::format("无法读取{}属性 {}: {}",
                                        label,
                                        display_path_for_user(path),
                                        win32_error_message(error))};
@@ -309,7 +307,7 @@ std::expected<void, std::string> clear_transient_file_attributes(const fs::path&
   }
   if (!SetFileAttributesW(path.c_str(), normalized_attributes)) {
     const auto error = GetLastError();
-    return std::unexpected{std::format("无法更新{}属性 {}: {}",
+    return awj::compat::unexpected{awj::compat::format("无法更新{}属性 {}: {}",
                                        label,
                                        display_path_for_user(path),
                                        win32_error_message(error))};
@@ -334,11 +332,11 @@ bool output_temp_name_collision(int error) noexcept {
 #endif
 }
 
-std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs::path& path,
+awj::compat::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs::path& path,
                                                                          std::span<const std::byte> bytes) {
   if (bytes.size() > encoding_defaults::effective_max_input_file_bytes()) {
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("临时输出文件内容超过当前运行时上限: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("临时输出文件内容超过当前运行时上限: {}",
                                display_path_for_user(path))}};
   }
 #ifdef _WIN32
@@ -347,8 +345,8 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
                                    nullptr);
   if (raw_file == INVALID_HANDLE_VALUE) {
     const auto error = GetLastError();
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("无法创建临时输出文件 {}: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("无法创建临时输出文件 {}: {}",
                                display_path_for_user(path),
                                win32_error_message(error)),
         .create_error = static_cast<int>(error)}};
@@ -357,8 +355,8 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
   const int raw_file = ::open(path.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0666);
   if (raw_file < 0) {
     const int error = errno;
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("无法创建临时输出文件 {}: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("无法创建临时输出文件 {}: {}",
                                display_path_for_user(path),
                                posix_error_message(error)),
         .create_error = error}};
@@ -375,8 +373,8 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
         std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
     DWORD written = 0;
     if (!WriteFile(file.get(), cursor, chunk, &written, nullptr)) {
-      return std::unexpected{TempOutputWriteFailure{
-          .message = std::format("写入临时输出文件失败 {}: {}",
+      return awj::compat::unexpected{TempOutputWriteFailure{
+          .message = awj::compat::format("写入临时输出文件失败 {}: {}",
                                  display_path_for_user(path),
                                  win32_error_message(GetLastError()))}};
     }
@@ -386,44 +384,44 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
       if (errno == EINTR) {
         continue;
       }
-      return std::unexpected{TempOutputWriteFailure{
-          .message = std::format("写入临时输出文件失败 {}: {}",
+      return awj::compat::unexpected{TempOutputWriteFailure{
+          .message = awj::compat::format("写入临时输出文件失败 {}: {}",
                                  display_path_for_user(path),
                                  posix_error_message(errno))}};
     }
 #endif
     if (written == 0) {
-      return std::unexpected{TempOutputWriteFailure{
-          .message = std::format("写入临时输出文件失败 {}", display_path_for_user(path))}};
+      return awj::compat::unexpected{TempOutputWriteFailure{
+          .message = awj::compat::format("写入临时输出文件失败 {}", display_path_for_user(path))}};
     }
     cursor += written;
     remaining -= static_cast<std::size_t>(written);
   }
 #ifdef _WIN32
   if (!FlushFileBuffers(file.get())) {
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("刷新临时输出文件失败 {}: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("刷新临时输出文件失败 {}: {}",
                                display_path_for_user(path),
                                win32_error_message(GetLastError()))}};
   }
   const HANDLE file_handle = file.get();
   if (!CloseHandle(file_handle)) {
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("关闭临时输出文件失败 {}: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("关闭临时输出文件失败 {}: {}",
                                display_path_for_user(path),
                                win32_error_message(GetLastError()))}};
   }
 #else
   const int file_handle = file.get();
   if (::fsync(file_handle) != 0) {
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("刷新临时输出文件失败 {}: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("刷新临时输出文件失败 {}: {}",
                                display_path_for_user(path),
                                posix_error_message(errno))}};
   }
   if (::close(file_handle) != 0) {
-    return std::unexpected{TempOutputWriteFailure{
-        .message = std::format("关闭临时输出文件失败 {}: {}",
+    return awj::compat::unexpected{TempOutputWriteFailure{
+        .message = awj::compat::format("关闭临时输出文件失败 {}: {}",
                                display_path_for_user(path),
                                posix_error_message(errno))}};
   }
@@ -433,7 +431,7 @@ std::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(const fs:
   return {};
 }
 
-std::expected<void, std::string> commit_temp_output(const fs::path& temp_path,
+awj::compat::expected<void, std::string> commit_temp_output(const fs::path& temp_path,
                                                     const fs::path& path,
                                                     bool replace_existing) {
 #ifdef _WIN32
@@ -443,24 +441,24 @@ std::expected<void, std::string> commit_temp_output(const fs::path& temp_path,
   if (!MoveFileExW(temp_path.c_str(), path.c_str(), move_flags)) {
     const auto error = GetLastError();
     if (!replace_existing && output_temp_name_collision(static_cast<int>(error))) {
-      return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+      return awj::compat::unexpected{awj::compat::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
     }
-    return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+    return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
                                        win32_error_message(error))};
   }
 #else
   if (replace_existing) {
     if (::rename(temp_path.c_str(), path.c_str()) != 0) {
-      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
                                          posix_error_message(errno))};
     }
   } else {
     if (::link(temp_path.c_str(), path.c_str()) != 0) {
       const int error = errno;
       if (error == EEXIST) {
-        return std::unexpected{std::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+        return awj::compat::unexpected{awj::compat::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
       }
-      return std::unexpected{std::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
                                          posix_error_message(error))};
     }
     (void)::unlink(temp_path.c_str());
@@ -640,7 +638,7 @@ std::string alpha_mode_name(AlphaMode mode) {
 }
 
 bool image_has_metadata(const ImageBuffer& image, MetadataKind kind) noexcept {
-  return std::ranges::find_if(image.metadata, [kind](const MetadataBlock& block) {
+  return awj::compat::ranges::find_if(image.metadata, [kind](const MetadataBlock& block) {
            return block.kind == kind && !block.bytes.empty();
          }) != image.metadata.end();
 }
@@ -656,36 +654,36 @@ bool sdr_only_format_conversion_needed(OutputFormat format, const ImageBuffer& i
          hdr_transfer || (image.source_info && image.source_info->has_hdr_metadata);
 }
 
-std::expected<void, std::string> select_output_rendition(
-    ImageDecodeResult& decoded, const AppConfig& cfg, std::stop_token stop) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<void, std::string> select_output_rendition(
+    ImageDecodeResult& decoded, const AppConfig& cfg, awj::compat::stop_token stop) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (!decoded.gain_map_alternative) return {};
   auto& alternative = *decoded.gain_map_alternative;
   const auto main_headroom = alternative.main_hdr_headroom_log2;
   const auto alternate_headroom = alternative.alternate_hdr_headroom_log2;
   if (!std::isfinite(main_headroom) || !std::isfinite(alternate_headroom) ||
       main_headroom < 0 || alternate_headroom < 0) {
-    return std::unexpected{"Gain Map: 两端呈现 headroom 无效。"};
+    return awj::compat::unexpected{"Gain Map: 两端呈现 headroom 无效。"};
   }
   if (decoded.image.width != alternative.image.width || decoded.image.height != alternative.image.height) {
-    return std::unexpected{"Gain Map: 两端呈现的逻辑尺寸不一致。"};
+    return awj::compat::unexpected{"Gain Map: 两端呈现的逻辑尺寸不一致。"};
   }
   for (const auto* image : {&decoded.image, &alternative.image}) {
     if (auto valid = hdr::hdr_detail::validate_rgba(*image, "Gain Map 呈现选择"); !valid)
-      return std::unexpected{valid.error()};
+      return awj::compat::unexpected{valid.error()};
   }
   auto main_color = gain_map_detail::resolve_iso_color(decoded.image, stop);
-  if (!main_color) return std::unexpected{main_color.error()};
+  if (!main_color) return awj::compat::unexpected{main_color.error()};
   auto alternate_color = gain_map_detail::resolve_iso_color(alternative.image, stop);
-  if (!alternate_color) return std::unexpected{alternate_color.error()};
+  if (!alternate_color) return awj::compat::unexpected{alternate_color.error()};
   gain_map_detail::normalize_iso_base(decoded.image, *main_color);
   gain_map_detail::normalize_iso_base(alternative.image, *alternate_color);
   const auto main_hdr = hdr::has_explicit_hdr_signal(decoded.image);
-  if (!main_hdr) return std::unexpected{main_hdr.error()};
+  if (!main_hdr) return awj::compat::unexpected{main_hdr.error()};
   const auto alternate_hdr = hdr::has_explicit_hdr_signal(alternative.image);
-  if (!alternate_hdr) return std::unexpected{alternate_hdr.error()};
+  if (!alternate_hdr) return awj::compat::unexpected{alternate_hdr.error()};
   if (*main_hdr != (main_headroom > 0) || *alternate_hdr != (alternate_headroom > 0)) {
-    return std::unexpected{"Gain Map: 呈现 headroom 与 SDR/HDR 色彩解释冲突。"};
+    return awj::compat::unexpected{"Gain Map: 呈现 headroom 与 SDR/HDR 色彩解释冲突。"};
   }
   if (main_headroom < alternate_headroom) {
     std::swap(decoded.image, alternative.image);
@@ -702,25 +700,25 @@ std::expected<void, std::string> select_output_rendition(
   return {};
 }
 
-std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
+awj::compat::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
     const ImageBuffer& image, std::size_t new_width, std::size_t new_height) {
   if (is_yuv_format(image.pixel_format)) return resize_native_pixels(image, new_width, new_height);
   if (image.pixel_format != PixelFormat::rgba || image.planes.empty() ||
       (image.bit_depth != 8 && image.bit_depth != 16)) {
-    return std::unexpected{"图片尺寸限制当前只支持 8/16-bit RGBA buffer。"};
+    return awj::compat::unexpected{"图片尺寸限制当前只支持 8/16-bit RGBA buffer。"};
   }
   const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
   const auto stride = decoder_common::checked_rgba_stride(new_width, "image size limit", bytes_per_sample);
   if (!stride) {
-    return std::unexpected{stride.error()};
+    return awj::compat::unexpected{stride.error()};
   }
   const auto bytes = decoder_common::checked_image_bytes(*stride, new_height, "image size limit");
   if (!bytes) {
-    return std::unexpected{bytes.error()};
+    return awj::compat::unexpected{bytes.error()};
   }
   auto out = decoder_common::make_byte_buffer(*bytes, "image size limit");
   if (!out) {
-    return std::unexpected{out.error()};
+    return awj::compat::unexpected{out.error()};
   }
   const auto& src = image.planes.front();
   const auto pixel_bytes = 4 * bytes_per_sample;
@@ -730,7 +728,7 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
     auto* dst_row = out->data() + y * *stride;
     for (std::size_t x = 0; x < new_width; ++x) {
       const auto sx = std::min(image.width - 1, x * image.width / new_width);
-      std::ranges::copy_n(src_row + sx * pixel_bytes, pixel_bytes, dst_row + x * pixel_bytes);
+      awj::compat::ranges::copy_n(src_row + sx * pixel_bytes, pixel_bytes, dst_row + x * pixel_bytes);
     }
   }
   auto resized = decoder_common::make_rgba_image(new_width, new_height, std::move(*out),
@@ -738,18 +736,18 @@ std::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
                                                  image.source_info, image.bit_depth,
                                                  image.sample_representation);
   if (!resized) {
-    return std::unexpected{resized.error()};
+    return awj::compat::unexpected{resized.error()};
   }
   resized->metadata = image.metadata;
   resized->significant_bits = image.significant_bits; // Nearest-neighbor copies samples unchanged.
   return resized;
 }
 
-std::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
+awj::compat::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
                                                        const AppConfig& cfg) {
   const auto dims = limited_dimensions(decoded.image.width, decoded.image.height, cfg);
   if (!dims) return {};
-  const auto resize = [&](ImageBuffer& image) -> std::expected<void, std::string> {
+  const auto resize = [&](ImageBuffer& image) -> awj::compat::expected<void, std::string> {
     if (!cfg.visual_quality) {
       if (!image.geometry) image.geometry = ImageGeometry{
           .stored_width = image.width, .stored_height = image.height,
@@ -758,7 +756,7 @@ std::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decod
       return {};
     }
     auto resized = resize_rgba_image_nearest(image, dims->first, dims->second);
-    if (!resized) return std::unexpected{resized.error()};
+    if (!resized) return awj::compat::unexpected{resized.error()};
     image = std::move(*resized);
     return {};
   };
@@ -783,13 +781,13 @@ class SizedAnimationReader final : public AnimationReader {
   std::uint64_t memory_usage_bytes() const noexcept override {
     return reader_->memory_usage_bytes() + (resized_ ? resized_->planes.front().bytes.capacity() : 0);
   }
-  std::expected<bool, std::string> next(std::stop_token stop = {}) override {
+  awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop = {}) override {
     resized_.reset();
     auto next = reader_->next(stop);
     if (!next || !*next) return next;
     if (reader_->frame().width != info_.width || reader_->frame().height != info_.height) {
       auto resized = resize_rgba_image_nearest(reader_->frame(), info_.width, info_.height);
-      if (!resized) return std::unexpected{resized.error()};
+      if (!resized) return awj::compat::unexpected{resized.error()};
       resized_ = std::move(*resized);
     }
     return true;
@@ -935,14 +933,14 @@ std::string applied_alpha_name(bool source_has_alpha_channel,
   return "stripped";
 }
 
-std::expected<void, std::string> populate_regular_alpha_decision(
+awj::compat::expected<void, std::string> populate_regular_alpha_decision(
     NativeEncodeSettings& settings,
     const ImageBuffer& image,
     const AppConfig& cfg) {
   const auto has_non_opaque_alpha = decoder_common::has_non_opaque_alpha(image,
                                                                          "native encoder");
   if (!has_non_opaque_alpha) {
-    return std::unexpected{has_non_opaque_alpha.error()};
+    return awj::compat::unexpected{has_non_opaque_alpha.error()};
   }
   settings.has_non_opaque_alpha = *has_non_opaque_alpha;
   settings.encoder_supports_alpha = encoder_supports_alpha(cfg.output_format);
@@ -1192,22 +1190,22 @@ std::atomic<std::uint64_t> output_temp_counter{};
 fs::path make_output_temp_path(const fs::path& target) {
   const auto parent = target.parent_path();
   const auto id = output_temp_counter.fetch_add(1, std::memory_order_relaxed);
-  return parent / std::format(L".awj-output-{}-{}.tmp", current_process_id(), id);
+  return parent / awj::compat::format(L".awj-output-{}-{}.tmp", current_process_id(), id);
 }
 
-std::expected<void, std::string> write_output_bytes(const fs::path& path,
+awj::compat::expected<void, std::string> write_output_bytes(const fs::path& path,
                                                     std::span<const std::byte> bytes,
                                                     bool replace_existing,
-                                                    std::stop_token stop_token = {}) {
+                                                    awj::compat::stop_token stop_token = {}) {
   try {
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     if (bytes.empty()) {
-      return std::unexpected{std::format("输出内容为空，无法写入输出文件: {}", display_path_for_user(path))};
+      return awj::compat::unexpected{awj::compat::format("输出内容为空，无法写入输出文件: {}", display_path_for_user(path))};
     }
     if (bytes.size() > encoding_defaults::effective_max_input_file_bytes()) {
-      return std::unexpected{std::format("输出内容超过当前运行时上限，无法写入输出文件: {}",
+      return awj::compat::unexpected{awj::compat::format("输出内容超过当前运行时上限，无法写入输出文件: {}",
                                         display_path_for_user(path))};
     }
     const auto parent = path.parent_path();
@@ -1215,12 +1213,12 @@ std::expected<void, std::string> write_output_bytes(const fs::path& path,
     if (!parent.empty()) {
       fs::create_directories(parent, ec);
       if (ec) {
-        return std::unexpected{std::format("无法创建输出目录 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("无法创建输出目录 {}: {}",
                                            display_path_for_user(parent), ec.message())};
       }
     }
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     std::optional<fs::path> temp_path;
     for (int attempt = 0;
@@ -1236,56 +1234,56 @@ std::expected<void, std::string> write_output_bytes(const fs::path& path,
       } else {
         auto failure = std::move(written.error());
         if (!output_temp_name_collision(failure.create_error)) {
-          return std::unexpected{std::move(failure.message)};
+          return awj::compat::unexpected{std::move(failure.message)};
         }
       }
     }
     if (!temp_path) {
-      return std::unexpected{std::format("无法创建唯一临时输出路径: {}",
+      return awj::compat::unexpected{awj::compat::format("无法创建唯一临时输出路径: {}",
                                          display_path_for_user(path))};
     }
     TempOutputFile temp{*temp_path};
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     if (auto attributes = clear_transient_file_attributes(*temp_path, "临时输出文件"); !attributes) {
-      return std::unexpected{attributes.error()};
+      return awj::compat::unexpected{attributes.error()};
     }
     if (auto committed = commit_temp_output(*temp_path, path, replace_existing); !committed) {
-      return std::unexpected{committed.error()};
+      return awj::compat::unexpected{committed.error()};
     }
     temp.release();
     return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"写入输出文件时内存不足。"};
+    return awj::compat::unexpected{"写入输出文件时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"写入输出文件路径超过运行时限制。"};
+    return awj::compat::unexpected{"写入输出文件路径超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"写入输出文件时文件系统访问失败。"};
+    return awj::compat::unexpected{"写入输出文件时文件系统访问失败。"};
   }
 }
 
-std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& source,
+awj::compat::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& source,
                                                                const fs::path& path,
                                                                bool replace_existing,
-                                                               std::stop_token stop_token = {}) {
+                                                               awj::compat::stop_token stop_token = {}) {
   try {
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     std::error_code source_size_error;
     const auto source_size = fs::file_size(source, source_size_error);
     if (source_size_error) {
-      return std::unexpected{std::format("读取 AVIF 直通输入文件大小失败 {}: {}",
+      return awj::compat::unexpected{awj::compat::format("读取 AVIF 直通输入文件大小失败 {}: {}",
                                          display_path_for_user(source),
                                          source_size_error.message())};
     }
     if (source_size == 0) {
-      return std::unexpected{std::format("AVIF 直通输入文件为空: {}",
+      return awj::compat::unexpected{awj::compat::format("AVIF 直通输入文件为空: {}",
                                          display_path_for_user(source))};
     }
     if (source_size > encoding_defaults::effective_max_input_file_bytes()) {
-      return std::unexpected{std::format("AVIF 直通输入超过当前输入上限: {}",
+      return awj::compat::unexpected{awj::compat::format("AVIF 直通输入超过当前输入上限: {}",
                                          display_path_for_user(source))};
     }
     const auto parent = path.parent_path();
@@ -1293,12 +1291,12 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
     if (!parent.empty()) {
       fs::create_directories(parent, ec);
       if (ec) {
-        return std::unexpected{std::format("无法创建输出目录 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("无法创建输出目录 {}: {}",
                                            display_path_for_user(parent), ec.message())};
       }
     }
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     std::uintmax_t copied_bytes = 0;
     std::optional<fs::path> temp_path;
@@ -1310,14 +1308,14 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
                                            FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN,
                                            nullptr);
       if (raw_source == INVALID_HANDLE_VALUE) {
-        return std::unexpected{std::format("无法读取 AVIF 直通输入文件 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("无法读取 AVIF 直通输入文件 {}: {}",
                                            display_path_for_user(source),
                                            win32_error_message(GetLastError()))};
       }
 #else
       const int raw_source = ::open(source.c_str(), O_RDONLY | O_CLOEXEC);
       if (raw_source < 0) {
-        return std::unexpected{std::format("无法读取 AVIF 直通输入文件 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("无法读取 AVIF 直通输入文件 {}: {}",
                                            display_path_for_user(source),
                                            posix_error_message(errno))};
       }
@@ -1342,7 +1340,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
           if (output_temp_name_collision(static_cast<int>(error))) {
             continue;
           }
-          return std::unexpected{std::format("无法创建临时输出文件 {}: {}",
+          return awj::compat::unexpected{awj::compat::format("无法创建临时输出文件 {}: {}",
                                              display_path_for_user(candidate),
                                              win32_error_message(error))};
         }
@@ -1353,7 +1351,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
           if (output_temp_name_collision(error)) {
             continue;
           }
-          return std::unexpected{std::format("无法创建临时输出文件 {}: {}",
+          return awj::compat::unexpected{awj::compat::format("无法创建临时输出文件 {}: {}",
                                              display_path_for_user(candidate),
                                              posix_error_message(error))};
         }
@@ -1364,20 +1362,20 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
         break;
       }
       if (!temp_path || !output_file) {
-        return std::unexpected{std::format("无法创建唯一临时输出路径: {}",
+        return awj::compat::unexpected{awj::compat::format("无法创建唯一临时输出路径: {}",
                                            display_path_for_user(path))};
       }
 
       std::vector<std::byte> buffer(encoding_defaults::output_copy_buffer_bytes);
       while (true) {
         if (stop_token.stop_requested()) {
-          return std::unexpected{"任务已取消。"};
+          return awj::compat::unexpected{"任务已取消。"};
         }
 #ifdef _WIN32
         DWORD read = 0;
         if (!ReadFile(source_file.get(), buffer.data(), static_cast<DWORD>(buffer.size()),
                       &read, nullptr)) {
-          return std::unexpected{std::format("读取 AVIF 直通输入文件失败 {}: {}",
+          return awj::compat::unexpected{awj::compat::format("读取 AVIF 直通输入文件失败 {}: {}",
                                              display_path_for_user(source),
                                              win32_error_message(GetLastError()))};
         }
@@ -1387,7 +1385,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
           if (errno == EINTR) {
             continue;
           }
-          return std::unexpected{std::format("读取 AVIF 直通输入文件失败 {}: {}",
+          return awj::compat::unexpected{awj::compat::format("读取 AVIF 直通输入文件失败 {}: {}",
                                              display_path_for_user(source),
                                              posix_error_message(errno))};
         }
@@ -1396,7 +1394,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
           break;
         }
         if (copied_bytes > encoding_defaults::effective_max_input_file_bytes() - static_cast<std::uintmax_t>(read)) {
-          return std::unexpected{std::format("AVIF 直通输入超过当前输入上限: {}",
+          return awj::compat::unexpected{awj::compat::format("AVIF 直通输入超过当前输入上限: {}",
                                              display_path_for_user(source))};
         }
         const auto* cursor = reinterpret_cast<const std::uint8_t*>(buffer.data());
@@ -1409,7 +1407,7 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
 #ifdef _WIN32
           DWORD written = 0;
           if (!WriteFile(output_file.get(), cursor, remaining, &written, nullptr)) {
-            return std::unexpected{std::format("写入临时输出文件失败 {}: {}",
+            return awj::compat::unexpected{awj::compat::format("写入临时输出文件失败 {}: {}",
                                                display_path_for_user(*temp_path),
                                                win32_error_message(GetLastError()))};
           }
@@ -1419,13 +1417,13 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
             if (errno == EINTR) {
               continue;
             }
-            return std::unexpected{std::format("写入临时输出文件失败 {}: {}",
+            return awj::compat::unexpected{awj::compat::format("写入临时输出文件失败 {}: {}",
                                                display_path_for_user(*temp_path),
                                                posix_error_message(errno))};
           }
 #endif
           if (written == 0) {
-            return std::unexpected{std::format("写入临时输出文件失败 {}", display_path_for_user(*temp_path))};
+            return awj::compat::unexpected{awj::compat::format("写入临时输出文件失败 {}", display_path_for_user(*temp_path))};
           }
           cursor += written;
           remaining -= written;
@@ -1433,29 +1431,29 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
         copied_bytes += static_cast<std::uintmax_t>(read);
       }
       if (copied_bytes == 0) {
-        return std::unexpected{std::format("AVIF 直通输入文件为空: {}", display_path_for_user(source))};
+        return awj::compat::unexpected{awj::compat::format("AVIF 直通输入文件为空: {}", display_path_for_user(source))};
       }
 #ifdef _WIN32
       if (!FlushFileBuffers(output_file.get())) {
-        return std::unexpected{std::format("刷新临时输出文件失败 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("刷新临时输出文件失败 {}: {}",
                                            display_path_for_user(*temp_path),
                                            win32_error_message(GetLastError()))};
       }
       const HANDLE output_handle = output_file.get();
       if (!CloseHandle(output_handle)) {
-        return std::unexpected{std::format("关闭临时输出文件失败 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("关闭临时输出文件失败 {}: {}",
                                            display_path_for_user(*temp_path),
                                            win32_error_message(GetLastError()))};
       }
 #else
       const int output_handle = output_file.get();
       if (::fsync(output_handle) != 0) {
-        return std::unexpected{std::format("刷新临时输出文件失败 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("刷新临时输出文件失败 {}: {}",
                                            display_path_for_user(*temp_path),
                                            posix_error_message(errno))};
       }
       if (::close(output_handle) != 0) {
-        return std::unexpected{std::format("关闭临时输出文件失败 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("关闭临时输出文件失败 {}: {}",
                                            display_path_for_user(*temp_path),
                                            posix_error_message(errno))};
       }
@@ -1464,22 +1462,22 @@ std::expected<std::uintmax_t, std::string> copy_file_to_output(const fs::path& s
     }
 
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     if (auto attributes = clear_transient_file_attributes(*temp_path, "临时输出文件"); !attributes) {
-      return std::unexpected{attributes.error()};
+      return awj::compat::unexpected{attributes.error()};
     }
     if (auto committed = commit_temp_output(*temp_path, path, replace_existing); !committed) {
-      return std::unexpected{committed.error()};
+      return awj::compat::unexpected{committed.error()};
     }
     temp->release();
     return copied_bytes;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"复制输出文件时内存不足。"};
+    return awj::compat::unexpected{"复制输出文件时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"复制输出文件路径超过运行时限制。"};
+    return awj::compat::unexpected{"复制输出文件路径超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"复制输出文件时文件系统访问失败。"};
+    return awj::compat::unexpected{"复制输出文件时文件系统访问失败。"};
   }
 }
 
@@ -1610,7 +1608,7 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.msssim_weight = MSSSIM_WEIGHT;
   const auto format_name = result.output_format.empty() ? std::string{"native"}
                                                         : result.output_format;
-  result.command = std::format("native:{}:{}:{} q{} speed={}",
+  result.command = awj::compat::format("native:{}:{}:{} q{} speed={}",
                                format_name,
                                result.decoder_id,
                                native.diagnostics.encoder_id,
@@ -1619,9 +1617,9 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
                                    ? std::to_string(native.diagnostics.speed_mapping.user_speed)
                                    : std::string{"n/a"});
   if (native.diagnostics.encoder_id == "jpegli") {
-    result.command += std::format(" chroma={} bit-depth={} progressive={} huffman={} xyb={}",
+    result.command += awj::compat::format(" chroma={} bit-depth={} progressive={} huffman={} xyb={}",
                                   result.applied_chroma.empty() ? "auto" : result.applied_chroma,
-                                  result.applied_bit_depth ? std::format("{}", *result.applied_bit_depth) : std::string{"8"},
+                                  result.applied_bit_depth ? awj::compat::format("{}", *result.applied_bit_depth) : std::string{"8"},
                                   native.diagnostics.jpegli_progressive_level,
                                   native.diagnostics.jpegli_optimize_huffman ? "optimized" : "fixed",
                                   native.diagnostics.jpegli_xyb ? "on" : "off");
@@ -1770,13 +1768,13 @@ class NativeBackend final {
       : cfg_{cfg}, logger_{logger}, resources_{resources} {}
 
   EncodeResult encode(const ImageFile& image,
-                      std::stop_token stop_token = {}) const {
+                      awj::compat::stop_token stop_token = {}) const {
     return encode_with_requested_file_times(image, EncodeOverrides{}, stop_token);
   }
 
   EncodeResult encode_avif_grid(const ImageFile& image,
                                 GridPlan plan,
-                                std::stop_token stop_token = {}) const {
+                                awj::compat::stop_token stop_token = {}) const {
     EncodeOverrides overrides{};
     overrides.avif_encoder = AvifEncoderMode::aom;
     overrides.avif_grid_plan = std::move(plan);
@@ -1784,16 +1782,16 @@ class NativeBackend final {
   }
 
   // 内存入口只复用参数决策和编码；不扫描文件、不初始化文件结果、不写出。
-  std::expected<NativeEncodeResult, std::string> encode_memory(
-      ImageDecodeResult decoded, std::stop_token stop_token = {}) const {
-    if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+  awj::compat::expected<NativeEncodeResult, std::string> encode_memory(
+      ImageDecodeResult decoded, awj::compat::stop_token stop_token = {}) const {
+    if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (auto selected = native_backend_detail::select_output_rendition(decoded, cfg_, stop_token); !selected)
-      return std::unexpected{selected.error()};
+      return awj::compat::unexpected{selected.error()};
     if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_); !limited)
-      return std::unexpected{limited.error()};
+      return awj::compat::unexpected{limited.error()};
     const ImageFile source{};
     auto prepared = prepare_encoding(source, decoded, {});
-    if (!prepared) return std::unexpected{prepared.error().message};
+    if (!prepared) return awj::compat::unexpected{prepared.error().message};
     // 路径形参在候选搜索中仅用作输出码流的格式提示，不是输入或候选文件。
     const auto format_hint = fs::path{std::wstring{L"memory"} + output_extension_for(cfg_)};
     return execute_encode(decoded, prepared->encoder.get(), prepared->settings, format_hint, stop_token);
@@ -1818,15 +1816,15 @@ class NativeBackend final {
     NativeEncodeSettings settings{};
   };
 
-  static std::unexpected<PrepareError> prepare_failed(std::string message,
+  static awj::compat::unexpected<PrepareError> prepare_failed(std::string message,
                                                        const NativeEncodeSettings& settings) {
-    return std::unexpected{PrepareError{.message = std::move(message), .settings = settings}};
+    return awj::compat::unexpected{PrepareError{.message = std::move(message), .settings = settings}};
   }
 
   [[nodiscard]] EncodeResult initialize_result(const ImageFile& image) const {
     const auto planned_output_path = output_path_for(cfg_, image);
     auto output_path = image.output_path_resolved
-                           ? std::expected<fs::path, std::string>{planned_output_path}
+                           ? awj::compat::expected<fs::path, std::string>{planned_output_path}
                            : resolve_collision_output_path(
                                  planned_output_path, cfg_.collision_mode, nullptr,
                                  output_extension_for(cfg_));
@@ -1862,7 +1860,7 @@ class NativeBackend final {
     result.message = std::move(message);
   }
 
-  static bool cancel_if_requested(EncodeResult& result, std::stop_token stop_token) {
+  static bool cancel_if_requested(EncodeResult& result, awj::compat::stop_token stop_token) {
     if (!stop_token.stop_requested()) {
       return false;
     }
@@ -1878,9 +1876,9 @@ class NativeBackend final {
     }
     result.message = result.message.empty() || result.message == "OK"
                          ? std::move(warning)
-                         : std::format("{}；{}", result.message, warning);
+                         : awj::compat::format("{}；{}", result.message, warning);
     try {
-      logger_.warn(std::format("native encode warning: item={:04} {}",
+      logger_.warn(awj::compat::format("native encode warning: item={:04} {}",
                                result.index + 1, result.message));
     } catch (...) {
     }
@@ -1888,7 +1886,7 @@ class NativeBackend final {
 
   EncodeResult encode_with_requested_file_times(
       const ImageFile& image, EncodeOverrides overrides,
-      std::stop_token stop_token) const {
+      awj::compat::stop_token stop_token) const {
 #ifdef _WIN32
     const bool preserve_any_time = cfg_.preserve_creation_time ||
                                    cfg_.preserve_modification_time ||
@@ -1900,7 +1898,7 @@ class NativeBackend final {
       if (captured) {
         source_times = *captured;
       } else {
-        time_warning = std::format("保留文件时间失败：{}", captured.error());
+        time_warning = awj::compat::format("保留文件时间失败：{}", captured.error());
       }
     }
     auto result = encode_with_overrides(image, std::move(overrides), stop_token);
@@ -1916,7 +1914,7 @@ class NativeBackend final {
             cfg_.preserve_modification_time, cfg_.preserve_access_time);
         !applied) {
       append_success_warning(result,
-                             std::format("保留文件时间失败：{}", applied.error()));
+                             awj::compat::format("保留文件时间失败：{}", applied.error()));
     }
     return result;
 #else
@@ -1928,7 +1926,7 @@ class NativeBackend final {
       const ImageFile& image,
       const EncodeResult& base_result,
       EncodeStartedAt started,
-      std::stop_token stop_token) const {
+      awj::compat::stop_token stop_token) const {
     if (!native_backend_detail::avif_lossless_passthrough_allowed(cfg_, image.path)) {
       return std::nullopt;
     }
@@ -1986,7 +1984,7 @@ class NativeBackend final {
     result.ok = true;
     result.message = "OK";
     native_backend_detail::log_info_noexcept(logger_, [&] {
-      return std::format("native avif lossless passthrough ok: item={:04}",
+      return awj::compat::format("native avif lossless passthrough ok: item={:04}",
                          result.index + 1);
     });
     return result;
@@ -1996,7 +1994,7 @@ class NativeBackend final {
       const ImageFile& image,
       const EncodeResult& base_result,
       EncodeStartedAt started,
-      std::stop_token stop_token) const {
+      awj::compat::stop_token stop_token) const {
     if (!native_backend_detail::jxl_jpeg_bitstream_transcode_allowed(cfg_, image.path)) {
       return std::nullopt;
     }
@@ -2045,7 +2043,7 @@ class NativeBackend final {
         return result;
       }
       native_backend_detail::log_info_noexcept(logger_, [&] {
-        return std::format("native jpeg bitstream transcode unavailable, fallback to pixels: item={:04}",
+        return awj::compat::format("native jpeg bitstream transcode unavailable, fallback to pixels: item={:04}",
                            result.index + 1);
       });
       return std::nullopt;
@@ -2079,14 +2077,14 @@ class NativeBackend final {
     result.ok = true;
     result.message = "OK";
     native_backend_detail::log_info_noexcept(logger_, [&] {
-      return std::format("native jpeg bitstream transcode ok: item={:04}",
+      return awj::compat::format("native jpeg bitstream transcode ok: item={:04}",
                          result.index + 1);
     });
     return result;
   }
 
-  [[nodiscard]] std::expected<DecodedInput, std::string> decode_input(
-      const ImageFile& image, std::stop_token stop_token, DecodeDiagnostics& diagnostics) const {
+  [[nodiscard]] awj::compat::expected<DecodedInput, std::string> decode_input(
+      const ImageFile& image, awj::compat::stop_token stop_token, DecodeDiagnostics& diagnostics) const {
     auto decoded = decode_image_for_path(
         image.path,
         DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback,
@@ -2096,21 +2094,21 @@ class NativeBackend final {
                                .gain_map_mode = gain_map_mode_for_output(cfg_.output_format, cfg_.jpeg_hdr),
                                .diagnostics = &diagnostics});
     if (!decoded) {
-      return std::unexpected{redact_path_for_user(decoded.error(), image.path)};
+      return awj::compat::unexpected{redact_path_for_user(decoded.error(), image.path)};
     }
 
     const bool decoder_used_fallback = decoded->used_fallback;
     if (auto selected = native_backend_detail::select_output_rendition(*decoded, cfg_, stop_token); !selected) {
-      return std::unexpected{selected.error()};
+      return awj::compat::unexpected{selected.error()};
     }
     if (auto limited = native_backend_detail::apply_image_size_limit(*decoded, cfg_); !limited) {
-      return std::unexpected{limited.error()};
+      return awj::compat::unexpected{limited.error()};
     }
     return DecodedInput{.decoded = std::move(*decoded),
                         .decoder_used_fallback = decoder_used_fallback};
   }
 
-  [[nodiscard]] std::expected<PreparedEncoding, PrepareError> prepare_encoding(
+  [[nodiscard]] awj::compat::expected<PreparedEncoding, PrepareError> prepare_encoding(
       const ImageFile& image,
       const ImageDecodeResult& decoded,
       EncodeOverrides overrides) const {
@@ -2229,7 +2227,7 @@ class NativeBackend final {
         prepared.settings.chroma_reason = "用户请求 chroma";
       } else {
         selection_requested_chroma = native_backend_detail::lossless_source_chroma(decoded.image);
-        prepared.settings.chroma_reason = std::format(
+        prepared.settings.chroma_reason = awj::compat::format(
             "chroma auto 参考 avifenc 根据源图选择 {} chroma",
             chroma_mode_name(selection_requested_chroma));
       }
@@ -2318,7 +2316,7 @@ class NativeBackend final {
                                                                      avif_lossless);
       prepared.avif_bit_depth_reason = prepared.settings.bit_depth_reason;
       native_backend_detail::log_info_noexcept(logger_, [&] {
-        return std::format(
+        return awj::compat::format(
             "AVIF decision: item={:04} user_encoder={} user_chroma={} source_chroma={} color_representation_requested={} color_representation_applied={} source_bit_depth={} alpha_policy={} source_alpha={} non_opaque_alpha={} selected_encoder={} requested_chroma={} applied_chroma={} requested_bit_depth={} applied_bit_depth={} applied_alpha={} fallback={} chroma_reason={} alpha_reason={} bit_depth_reason={} color_source={}",
             image.index + 1,
             prepared.settings.user_encoder_id,
@@ -2328,15 +2326,15 @@ class NativeBackend final {
                 prepared.settings.requested_avif_color_representation),
             avif_color_representation_name(
                 prepared.settings.avif_color_representation),
-            prepared.settings.source_bit_depth ? std::format("{}", *prepared.settings.source_bit_depth) : std::string{""},
+            prepared.settings.source_bit_depth ? awj::compat::format("{}", *prepared.settings.source_bit_depth) : std::string{""},
             prepared.settings.alpha_policy_name,
             prepared.settings.source_alpha_mode,
             *has_non_opaque_alpha ? "true" : "false",
             avif_encoder_mode_name(selection->applied_encoder),
             chroma_mode_name(selection->requested_chroma),
             chroma_mode_name(selection->applied_chroma),
-            selection->requested_bit_depth ? std::format("{}", *selection->requested_bit_depth) : std::string{""},
-            selection->applied_bit_depth ? std::format("{}", *selection->applied_bit_depth) : std::string{""},
+            selection->requested_bit_depth ? awj::compat::format("{}", *selection->requested_bit_depth) : std::string{""},
+            selection->applied_bit_depth ? awj::compat::format("{}", *selection->applied_bit_depth) : std::string{""},
             prepared.settings.applied_alpha,
             selection->fallback_reason,
             prepared.settings.chroma_reason,
@@ -2388,7 +2386,7 @@ class NativeBackend final {
           prepared.settings.chroma_reason =
               cfg_.chroma_mode == ChromaMode::auto_keep
                   ? (cfg_.jpegli_xyb ? "XYB 模式使用 Jpegli 默认 RGB/XYB 采样"
-                                     : std::format("JPG chroma auto 根据源图选择 {} chroma（灰度回退三分量 444）",
+                                     : awj::compat::format("JPG chroma auto 根据源图选择 {} chroma（灰度回退三分量 444）",
                                                    chroma_mode_name(prepared.settings.chroma_mode)))
                   : "用户请求 JPG 色度采样";
           if (cfg_.jpegli_xyb && !cfg_.strip_metadata) {
@@ -2408,23 +2406,23 @@ class NativeBackend final {
     }
 
     if (!prepared.encoder) {
-      return prepare_failed(std::format("native backend 暂不支持输出格式: {}",
+      return prepare_failed(awj::compat::format("native backend 暂不支持输出格式: {}",
                                         output_format_name(cfg_.output_format)),
                             prepared.settings);
     }
     return std::move(prepared);
   }
 
-  [[nodiscard]] std::expected<NativeEncodeResult, std::string> execute_encode(
+  [[nodiscard]] awj::compat::expected<NativeEncodeResult, std::string> execute_encode(
       ImageDecodeResult& decoded,
       ImageEncoder* encoder,
       const NativeEncodeSettings& settings,
       const fs::path& output_path,
-      std::stop_token stop_token) const {
+      awj::compat::stop_token stop_token) const {
     const bool source_has_gain_map = decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
     const auto encode_started = native_backend_detail::Clock::now();
     if (stop_token.stop_requested()) {
-      return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"任务已取消。"};
     }
     auto effective_settings = settings;
     double color_convert_seconds = -1.0;
@@ -2432,7 +2430,7 @@ class NativeBackend final {
       const auto conversion_started = native_backend_detail::Clock::now();
       if (native_backend_detail::image_has_metadata(decoded.image, MetadataKind::icc)) {
         auto verified = gain_map_detail::resolve_iso_color(decoded.image, stop_token);
-        if (!verified) return std::unexpected{verified.error()};
+        if (!verified) return awj::compat::unexpected{verified.error()};
         gain_map_detail::normalize_iso_base(decoded.image, *verified);
       }
       if (native_backend_detail::requested_color_conversion_needed(decoded.image, cfg_)) {
@@ -2441,7 +2439,7 @@ class NativeBackend final {
             .preserve_alpha = effective_settings.applied_alpha == "kept",
             .color_primaries = cfg_.color_primaries,
             .transfer_characteristics = cfg_.transfer_characteristics}, stop_token, effective_settings.resources);
-        if (!converted) return std::unexpected{converted.error()};
+        if (!converted) return awj::compat::unexpected{converted.error()};
         decoded.image = std::move(*converted);
       }
       if (decoded.image.source_info) {
@@ -2455,7 +2453,7 @@ class NativeBackend final {
     }
     if (cfg_.output_format == OutputFormat::jpgli) {
       auto signal = hdr::has_explicit_hdr_signal(decoded.image);
-      if (!signal) return std::unexpected{signal.error()};
+      if (!signal) return awj::compat::unexpected{signal.error()};
       if (cfg_.jpeg_hdr == JpegHdrMode::hdr && !*signal) {
         effective_settings.encoder_fallback_reason = "SDR input -> SDR JPEG";
         effective_settings.color_reason += "；原输入仅有 SDR，保留单层且不伪造 HDR/Gain Map";
@@ -2467,11 +2465,11 @@ class NativeBackend final {
           auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{.format = PixelFormat::rgba,
               .bit_depth = decoded.image.bit_depth > 8 ? 16 : 8, .preserve_alpha = false},
               stop_token, effective_settings.resources);
-          if (!converted) return std::unexpected{converted.error()};
+          if (!converted) return awj::compat::unexpected{converted.error()};
           rgb = std::move(*converted);
         } else if (decoded.image.geometry) {
           auto transformed = resize_native_pixels(decoded.image, decoded.image.width, decoded.image.height, stop_token);
-          if (!transformed) return std::unexpected{transformed.error()};
+          if (!transformed) return awj::compat::unexpected{transformed.error()};
           rgb = std::move(*transformed);
         }
         auto result = encode_hdr_jpeg(rgb ? *rgb : decoded.image, effective_settings, stop_token);
@@ -2487,7 +2485,7 @@ class NativeBackend final {
     std::optional<ImageBuffer> search_reference;
     if (native_backend_detail::sdr_only_format_conversion_needed(cfg_.output_format, decoded.image)) {
       auto signal = hdr::has_explicit_hdr_signal(decoded.image);
-      if (!signal) return std::unexpected{signal.error()};
+      if (!signal) return awj::compat::unexpected{signal.error()};
       effective_settings.tone_map_to_sdr_pixels = *signal;
       if (cfg_.output_format != OutputFormat::png) effective_settings.bit_depth = 8;
       else effective_settings.bit_depth = settings.bit_depth.value_or(8);
@@ -2525,7 +2523,7 @@ class NativeBackend final {
           .preserve_alpha = effective_settings.applied_alpha == "kept",
           .tone_map_to_sdr = effective_settings.tone_map_to_sdr_pixels},
           stop_token, effective_settings.resources);
-      if (!converted) return std::unexpected{converted.error()};
+      if (!converted) return awj::compat::unexpected{converted.error()};
       search_reference = std::move(*converted); effective_image = &*search_reference;
       effective_settings.tone_map_to_sdr_pixels = false;
     }
@@ -2540,7 +2538,7 @@ class NativeBackend final {
                                                              *output_decoder, effective_settings,
                                                              candidate_path, stop_token);
       if (!search) {
-        return std::unexpected{search.error()};
+        return awj::compat::unexpected{search.error()};
       }
       search->encode_result.diagnostics.timing.encode_seconds =
           search->encode_result.diagnostics.timing.visual_quality_candidate_encode_seconds;
@@ -2565,7 +2563,7 @@ class NativeBackend final {
                                              bool decoder_used_fallback,
                                              std::string avif_bit_depth_reason,
                                              EncodeStartedAt started,
-                                             std::stop_token stop_token) const {
+                                             awj::compat::stop_token stop_token) const {
     const auto write_started = native_backend_detail::Clock::now();
     if (auto written = native_backend_detail::write_output_bytes(
             result.output_path, std::span<const std::byte>{encoded.encoded.bytes},
@@ -2587,7 +2585,7 @@ class NativeBackend final {
     native_backend_detail::copy_native_result(encoded, result);
     if (!decoded.decoder_id.empty()) {
       result.decoder_id = decoded.decoder_id;
-      result.command = std::format("native:{}:{}:{} q{} speed={}",
+      result.command = awj::compat::format("native:{}:{}:{} q{} speed={}",
                                    result.output_format,
                                    result.decoder_id,
                                    result.encoder_id,
@@ -2603,10 +2601,10 @@ class NativeBackend final {
     result.ok = true;
     result.message = "OK";
     native_backend_detail::log_info_noexcept(logger_, [&] {
-      return std::format("native encode ok: item={:04}", result.index + 1);
+      return awj::compat::format("native encode ok: item={:04}", result.index + 1);
     });
     native_backend_detail::log_info_noexcept(logger_, [&] {
-      return std::format(
+      return awj::compat::format(
           "native timing: item={:04} total={}s decode={}s prepare={}s encode={}s vq={}s metrics={}s write={}s",
           result.index + 1,
           native_backend_detail::format_timing_seconds(result.seconds),
@@ -2618,7 +2616,7 @@ class NativeBackend final {
           native_backend_detail::format_timing_seconds(result.write_seconds));
     });
     native_backend_detail::log_info_noexcept(logger_, [&] {
-      return std::format(
+      return awj::compat::format(
           "native rendition: item={:04} selected={} origin={} reference_depth={} reference_chroma={} reused_sdr={} tone_mapped={} gain_map={} map={}x{} map_depth={}",
           result.index + 1, result.rendition.selected, result.rendition.origin,
           result.rendition.reference_bit_depth.value_or(0), result.rendition.reference_chroma,
@@ -2626,7 +2624,7 @@ class NativeBackend final {
           result.rendition.gain_map_width, result.rendition.gain_map_height, result.rendition.gain_map_bit_depth);
     });
     native_backend_detail::log_info_noexcept(logger_, [&] {
-      return std::format(
+      return awj::compat::format(
           "native HDR breakdown: item={:04} base_decode={}s aux_decode={}s map_render={}s map_compute={}s color_convert={}s render_workers={} compute_workers={} heif_tile_budget={} heif_codec_budget={}",
           result.index + 1, native_backend_detail::format_timing_seconds(result.base_decode_seconds),
           native_backend_detail::format_timing_seconds(result.auxiliary_decode_seconds),
@@ -2638,7 +2636,7 @@ class NativeBackend final {
     });
     if (result.visual_quality_search_seconds >= 0.0) {
       native_backend_detail::log_info_noexcept(logger_, [&] {
-        return std::format(
+        return awj::compat::format(
             "native vq breakdown: item={:04} candidates={} memory_fallback_decodes={} gpu_requested={} gpu_used={} gpu_path={} gpu_fallbacks={} gpu_fallback_reason={} candidate_encode={}s candidate_decode={}s candidate_io={}s luma={}s gmsd={}s ms_ssim={}s metrics={}s metric_share={}%",
             result.index + 1,
             result.visual_quality_candidate_count,
@@ -2662,7 +2660,7 @@ class NativeBackend final {
       });
       if (!result.visual_quality_search_trace.empty()) {
         native_backend_detail::log_info_noexcept(logger_, [&] {
-          return std::format("native vq trace: item={:04} {}",
+          return awj::compat::format("native vq trace: item={:04} {}",
                              result.index + 1,
                              result.visual_quality_search_trace);
         });
@@ -2673,7 +2671,7 @@ class NativeBackend final {
 
   EncodeResult encode_with_overrides(const ImageFile& image,
                                      EncodeOverrides overrides,
-                                     std::stop_token stop_token = {}) const {
+                                     awj::compat::stop_token stop_token = {}) const {
     const auto started = native_backend_detail::Clock::now();
     auto result = encode_with_overrides_impl(image, std::move(overrides), stop_token);
     if (result.processed && !result.ok) result.seconds = native_backend_detail::elapsed_seconds(started);
@@ -2682,7 +2680,7 @@ class NativeBackend final {
 
   EncodeResult encode_with_overrides_impl(const ImageFile& image,
                                           EncodeOverrides overrides,
-                                          std::stop_token stop_token) const {
+                                          awj::compat::stop_token stop_token) const {
     try {
       const auto started = std::chrono::steady_clock::now();
       auto result = initialize_result(image);
@@ -2700,7 +2698,7 @@ class NativeBackend final {
         if (exists_ec) {
           result.processed = true;
           result.ok = false;
-          result.message = std::format("无法检查输出路径 {}: {}",
+          result.message = awj::compat::format("无法检查输出路径 {}: {}",
                                        display_path_for_user(result.output_path), exists_ec.message());
           return result;
         }

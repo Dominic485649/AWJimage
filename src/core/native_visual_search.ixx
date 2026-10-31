@@ -1,18 +1,16 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <limits>
 #include <new>
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,7 +43,7 @@ std::string_view gpu_session_path() noexcept {
 }
 
 std::string gpu_session_cpu_fallback_path() {
-  return std::format("{}+cpu-fallback", gpu_session_path());
+  return awj::compat::format("{}+cpu-fallback", gpu_session_path());
 }
 
 double elapsed_seconds(Clock::time_point started) {
@@ -91,46 +89,46 @@ int midpoint_quality(int low, int high) noexcept {
   return low + (high - low) / 2;
 }
 
-std::expected<std::size_t, std::string> checked_visual_quality_stride(
+awj::compat::expected<std::size_t, std::string> checked_visual_quality_stride(
     std::size_t width, std::size_t channels, std::string_view context) {
   if (channels == 0 || width == 0 ||
       width > std::numeric_limits<std::size_t>::max() / channels) {
-    return std::unexpected{std::format("{} 输入宽度无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输入宽度无效。", context)};
   }
   return width * channels;
 }
 
-std::expected<std::size_t, std::string> checked_visual_quality_image_bytes(
+awj::compat::expected<std::size_t, std::string> checked_visual_quality_image_bytes(
     std::size_t stride, std::size_t height, std::string_view context) {
   if (stride == 0 || height == 0 ||
       height > std::numeric_limits<std::size_t>::max() / stride) {
-    return std::unexpected{std::format("{} 输入尺寸过大。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输入尺寸过大。", context)};
   }
   const auto byte_count = stride * height;
   if (static_cast<std::uint64_t>(byte_count) >
       encoding_defaults::effective_max_input_file_bytes()) {
-    return std::unexpected{
-        std::format("{} 图像 buffer 超过当前运行时上限。", context)};
+    return awj::compat::unexpected{
+        awj::compat::format("{} 图像 buffer 超过当前运行时上限。", context)};
   }
   return byte_count;
 }
 
-std::expected<std::vector<std::byte>, std::string>
+awj::compat::expected<std::vector<std::byte>, std::string>
 make_visual_quality_byte_buffer(std::size_t byte_count,
                                 std::string_view context) {
   if (static_cast<std::uint64_t>(byte_count) >
       encoding_defaults::effective_max_input_file_bytes()) {
-    return std::unexpected{
-        std::format("{} 输出缓冲区超过当前运行时上限。", context)};
+    return awj::compat::unexpected{
+        awj::compat::format("{} 输出缓冲区超过当前运行时上限。", context)};
   }
   std::vector<std::byte> buffer;
   try {
     buffer.resize(byte_count);
   } catch (const std::bad_alloc&) {
-    return std::unexpected{std::format("{} 输出缓冲区内存不足。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出缓冲区内存不足。", context)};
   } catch (const std::length_error&) {
-    return std::unexpected{
-        std::format("{} 输出缓冲区尺寸超过运行时限制。", context)};
+    return awj::compat::unexpected{
+        awj::compat::format("{} 输出缓冲区尺寸超过运行时限制。", context)};
   }
   return buffer;
 }
@@ -144,7 +142,7 @@ std::string_view rgb8_cache_context(OutputFormat format) noexcept {
                                        : "JXL visual_quality RGB";
 }
 
-std::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
+awj::compat::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
     const ImageBuffer& image, const NativeEncodeSettings& settings) {
   if (!output_format_uses_rgb8_cache(settings.output_format) ||
       settings.applied_alpha == "kept") {
@@ -157,37 +155,37 @@ std::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
   const auto context = rgb8_cache_context(settings.output_format);
   if (image.width == 0 ||
       image.width > std::numeric_limits<std::size_t>::max() / 3) {
-    return std::unexpected{std::format("{} 输入宽度无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输入宽度无效。", context)};
   }
   const auto rgb_stride =
       checked_visual_quality_stride(image.width, 3, context);
   if (!rgb_stride) {
-    return std::unexpected{rgb_stride.error()};
+    return awj::compat::unexpected{rgb_stride.error()};
   }
   const auto rgb_size = checked_visual_quality_image_bytes(
       *rgb_stride, image.height, context);
   if (!rgb_size) {
-    return std::unexpected{rgb_size.error()};
+    return awj::compat::unexpected{rgb_size.error()};
   }
   const auto rgba_stride =
       checked_visual_quality_stride(image.width, 4, context);
   if (!rgba_stride) {
-    return std::unexpected{rgba_stride.error()};
+    return awj::compat::unexpected{rgba_stride.error()};
   }
   const auto& plane = image.planes.front();
   const auto rgba_size = checked_visual_quality_image_bytes(
       plane.stride, image.height, context);
   if (!rgba_size) {
-    return std::unexpected{rgba_size.error()};
+    return awj::compat::unexpected{rgba_size.error()};
   }
   if (plane.stride < *rgba_stride || plane.read_bytes().size() < *rgba_size) {
-    return std::unexpected{
-        std::format("{} 输入 RGBA buffer 尺寸无效。", context)};
+    return awj::compat::unexpected{
+        awj::compat::format("{} 输入 RGBA buffer 尺寸无效。", context)};
   }
 
   auto rgb = make_visual_quality_byte_buffer(*rgb_size, context);
   if (!rgb) {
-    return std::unexpected{rgb.error()};
+    return awj::compat::unexpected{rgb.error()};
   }
   const auto* rgba_data =
       reinterpret_cast<const std::uint8_t*>(plane.read_bytes().data());
@@ -204,7 +202,7 @@ std::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
   return rgb;
 }
 
-std::expected<std::span<const std::byte>, std::string> make_rgb8_input_view(
+awj::compat::expected<std::span<const std::byte>, std::string> make_rgb8_input_view(
     const ImageBuffer& image, const NativeEncodeSettings& settings,
     std::vector<std::byte>& cache) {
   if (!output_format_uses_rgb8_cache(settings.output_format) ||
@@ -214,7 +212,7 @@ std::expected<std::span<const std::byte>, std::string> make_rgb8_input_view(
   if (cache.empty()) {
     auto prepared = make_rgb8_input_cache(image, settings);
     if (!prepared) {
-      return std::unexpected{prepared.error()};
+      return awj::compat::unexpected{prepared.error()};
     }
     cache = std::move(*prepared);
   }
@@ -241,7 +239,7 @@ void append_visual_quality_probe(VisualQualitySearchTrace& trace,
 std::string format_visual_quality_trace(const VisualQualitySearchTrace& trace) {
   std::string text;
   try {
-    text = std::format("requested={} range=q{}..q{} predicted=q{}",
+    text = awj::compat::format("requested={} range=q{}..q{} predicted=q{}",
                        trace.requested_visual_quality,
                        trace.q_min,
                        trace.q_max,
@@ -253,7 +251,7 @@ std::string format_visual_quality_trace(const VisualQualitySearchTrace& trace) {
         if (index != 0) {
           text += "; ";
         }
-        text += std::format("q{}:{} vq={:.2f} bytes={} ({})",
+        text += awj::compat::format("q{}:{} vq={:.2f} bytes={} ({})",
                             probe.quality,
                             probe.target_met ? "pass" : "fail",
                             probe.visual_score,
@@ -263,7 +261,7 @@ std::string format_visual_quality_trace(const VisualQualitySearchTrace& trace) {
       text += "]";
     }
     if (!trace.selection_reason.empty()) {
-      text += std::format(" selected={}", trace.selection_reason);
+      text += awj::compat::format(" selected={}", trace.selection_reason);
     }
     if (trace.fallback_used) {
       text += " fallback=true";
@@ -288,7 +286,7 @@ struct EvaluatedVisualQualityCandidate {
   EncodeTimingDiagnostics timing{};
 };
 
-std::expected<EvaluatedVisualQualityCandidate, std::string>
+awj::compat::expected<EvaluatedVisualQualityCandidate, std::string>
 evaluate_visual_quality_candidate(
     std::optional<LumaImage>& reference_luma,
     CpuVisualMetricWorkspace& cpu_workspace,
@@ -296,13 +294,13 @@ evaluate_visual_quality_candidate(
     const ImageDecoder& decoder, NativeEncodeSettings settings, int quality,
     const fs::path& candidate_path,
     AcceleratedVisualMetricSession* metric_session = nullptr,
-    std::stop_token stop_token = {}) {
+    awj::compat::stop_token stop_token = {}) {
   auto timing = native_visual_search_detail::make_visual_quality_timing();
   timing.visual_quality_candidate_count = 1;
   settings.quality = quality;
   settings.visual_quality.reset();
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
   auto started = native_visual_search_detail::Clock::now();
@@ -311,10 +309,10 @@ evaluate_visual_quality_candidate(
       native_visual_search_detail::elapsed_seconds(started);
   timing.encode_seconds += timing.visual_quality_candidate_encode_seconds;
   if (!encoded) {
-    return std::unexpected{encoded.error()};
+    return awj::compat::unexpected{encoded.error()};
   }
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
   started = native_visual_search_detail::Clock::now();
@@ -325,10 +323,10 @@ evaluate_visual_quality_candidate(
   timing.visual_quality_candidate_decode_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
   if (!decoded) {
-    return std::unexpected{decoded.error()};
+    return awj::compat::unexpected{decoded.error()};
   }
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
   std::optional<VisualMetricResult> accelerated_metrics;
@@ -357,7 +355,7 @@ evaluate_visual_quality_candidate(
   }
 
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
   if (accelerated_metrics) {
     const auto encoded_bytes = encoded->encoded.bytes.size();
@@ -383,7 +381,7 @@ evaluate_visual_quality_candidate(
   }
 
   started = native_visual_search_detail::Clock::now();
-  auto candidate_luma = [&]() -> std::expected<LumaImage, std::string> {
+  auto candidate_luma = [&]() -> awj::compat::expected<LumaImage, std::string> {
     if (settings.visual_quality_gpu && !metric_session_failed) {
       return make_luma_image_accelerated(decoded->image);
     }
@@ -393,27 +391,27 @@ evaluate_visual_quality_candidate(
   timing.visual_quality_luma_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
   if (!candidate_luma) {
-    return std::unexpected{candidate_luma.error()};
+    return awj::compat::unexpected{candidate_luma.error()};
   }
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
   auto ensure_reference_luma =
-      [&]() -> std::expected<const LumaImage*, std::string> {
+      [&]() -> awj::compat::expected<const LumaImage*, std::string> {
     if (!reference_luma) {
       if (stop_token.stop_requested()) {
-        return std::unexpected{"visual_quality 搜索已取消。"};
+        return awj::compat::unexpected{"visual_quality 搜索已取消。"};
       }
       const auto luma_started = native_visual_search_detail::Clock::now();
       auto luma = make_luma_image(reference_image);
       timing.visual_quality_luma_seconds +=
           native_visual_search_detail::elapsed_seconds(luma_started);
       if (!luma) {
-        return std::unexpected{luma.error()};
+        return awj::compat::unexpected{luma.error()};
       }
       if (stop_token.stop_requested()) {
-        return std::unexpected{"visual_quality 搜索已取消。"};
+        return awj::compat::unexpected{"visual_quality 搜索已取消。"};
       }
       reference_luma = std::move(*luma);
     }
@@ -421,7 +419,7 @@ evaluate_visual_quality_candidate(
   };
 
   auto record_gmsd_metric =
-      [&](std::expected<double, std::string> result,
+      [&](awj::compat::expected<double, std::string> result,
           native_visual_search_detail::Clock::time_point metric_started) {
         const auto metric_seconds =
             native_visual_search_detail::elapsed_seconds(metric_started);
@@ -431,7 +429,7 @@ evaluate_visual_quality_candidate(
       };
 
   auto record_ms_ssim_metric =
-      [&](std::expected<double, std::string> result,
+      [&](awj::compat::expected<double, std::string> result,
           native_visual_search_detail::Clock::time_point metric_started) {
         const auto metric_seconds =
             native_visual_search_detail::elapsed_seconds(metric_started);
@@ -440,10 +438,10 @@ evaluate_visual_quality_candidate(
         return result;
       };
 
-  auto gmsd = [&]() -> std::expected<double, std::string> {
+  auto gmsd = [&]() -> awj::compat::expected<double, std::string> {
     auto current_reference_luma = ensure_reference_luma();
     if (!current_reference_luma) {
-      return std::unexpected{current_reference_luma.error()};
+      return awj::compat::unexpected{current_reference_luma.error()};
     }
     started = native_visual_search_detail::Clock::now();
     if (settings.visual_quality_gpu && !metric_session_failed) {
@@ -455,17 +453,17 @@ evaluate_visual_quality_candidate(
         compute_gmsd(**current_reference_luma, *candidate_luma), started);
   }();
   if (!gmsd) {
-    return std::unexpected{gmsd.error()};
+    return awj::compat::unexpected{gmsd.error()};
   }
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
   auto current_reference_luma = ensure_reference_luma();
   if (!current_reference_luma) {
-    return std::unexpected{current_reference_luma.error()};
+    return awj::compat::unexpected{current_reference_luma.error()};
   }
-  auto ms_ssim = [&]() -> std::expected<double, std::string> {
+  auto ms_ssim = [&]() -> awj::compat::expected<double, std::string> {
     started = native_visual_search_detail::Clock::now();
     if (settings.visual_quality_gpu && !metric_session_failed) {
       return record_ms_ssim_metric(
@@ -477,10 +475,10 @@ evaluate_visual_quality_candidate(
         compute_ms_ssim_cached(**current_reference_luma, *candidate_luma, cpu_workspace), started);
   }();
   if (!ms_ssim) {
-    return std::unexpected{ms_ssim.error()};
+    return awj::compat::unexpected{ms_ssim.error()};
   }
   if (stop_token.stop_requested()) {
-    return std::unexpected{"visual_quality 搜索已取消。"};
+    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
   started = native_visual_search_detail::Clock::now();
@@ -509,17 +507,17 @@ evaluate_visual_quality_candidate(
       .timing = timing};
 }
 
-std::expected<NativeVisualQualitySearchResult, std::string>
+awj::compat::expected<NativeVisualQualitySearchResult, std::string>
 encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
                                          const ImageEncoder& encoder,
                                          const ImageDecoder& decoder,
                                          NativeEncodeSettings settings,
                                          const fs::path& candidate_path,
-                                         std::stop_token stop_token = {}) {
+                                         awj::compat::stop_token stop_token = {}) {
   if (!settings.visual_quality) {
     auto encoded = encoder.encode(reference_image, settings, stop_token);
     if (!encoded) {
-      return std::unexpected{encoded.error()};
+      return awj::compat::unexpected{encoded.error()};
     }
     return NativeVisualQualitySearchResult{.encode_result = std::move(*encoded),
                                            .target_met = true};
@@ -548,7 +546,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     timing.visual_quality_search_seconds =
         native_visual_search_detail::elapsed_seconds(search_started);
     if (!encoded) {
-      return std::unexpected{encoded.error()};
+      return awj::compat::unexpected{encoded.error()};
     }
     const auto encoded_bytes = encoded->encoded.bytes.size();
     encoded->final_quality = 100;
@@ -600,9 +598,9 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     candidates.reserve(reserve_candidate_count);
     evaluated_qualities.reserve(reserve_candidate_count);
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"visual_quality 候选记录内存不足。"};
+    return awj::compat::unexpected{"visual_quality 候选记录内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"visual_quality 候选记录数量超过运行时限制。"};
+    return awj::compat::unexpected{"visual_quality 候选记录数量超过运行时限制。"};
   }
 
   auto candidate_matches = [](const VisualQualityCandidate& left,
@@ -649,13 +647,13 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   bool gpu_session_available = metric_session.has_value();
 
   auto evaluate_quality =
-      [&](int quality) -> std::expected<VisualQualityCandidate, std::string> {
+      [&](int quality) -> awj::compat::expected<VisualQualityCandidate, std::string> {
     quality = std::clamp(quality, search_q_min, search_q_max);
     if (const auto existing = find_evaluated_candidate(quality)) {
       return *existing;
     }
     if (stop_token.stop_requested()) {
-      return std::unexpected{"visual_quality 搜索已取消。"};
+      return awj::compat::unexpected{"visual_quality 搜索已取消。"};
     }
     auto candidate_settings = settings;
     // visual_quality 搜索只使用可复用 session；session 不可用时直接 CPU，
@@ -664,7 +662,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     auto rgb8_input = native_visual_search_detail::make_rgb8_input_view(
         reference_image, candidate_settings, rgb8_input_cache);
     if (!rgb8_input) {
-      return std::unexpected{rgb8_input.error()};
+      return awj::compat::unexpected{rgb8_input.error()};
     }
     if (candidate_settings.output_format == OutputFormat::jxl) {
       candidate_settings.jxl_rgb8_input = *rgb8_input;
@@ -676,7 +674,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
         quality, candidate_path, metric_session ? &*metric_session : nullptr,
         stop_token);
     if (!candidate) {
-      return std::unexpected{candidate.error()};
+      return awj::compat::unexpected{candidate.error()};
     }
     auto candidate_summary = candidate->candidate;
     try {
@@ -686,12 +684,12 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       if (candidates.size() > evaluated_qualities.size()) {
         candidates.pop_back();
       }
-      return std::unexpected{"visual_quality 候选记录内存不足。"};
+      return awj::compat::unexpected{"visual_quality 候选记录内存不足。"};
     } catch (const std::length_error&) {
       if (candidates.size() > evaluated_qualities.size()) {
         candidates.pop_back();
       }
-      return std::unexpected{"visual_quality 候选记录数量超过运行时限制。"};
+      return awj::compat::unexpected{"visual_quality 候选记录数量超过运行时限制。"};
     }
     native_visual_search_detail::accumulate_visual_quality_timing(
         timing, candidate->timing);
@@ -729,7 +727,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   search_trace.predicted_quality = predicted_quality;
   auto predicted_candidate = evaluate_quality(predicted_quality);
   if (!predicted_candidate) {
-    return std::unexpected{predicted_candidate.error()};
+    return awj::compat::unexpected{predicted_candidate.error()};
   }
   if (visual_quality_candidate_meets_target(*predicted_candidate, requested)) {
     high = predicted_quality;
@@ -741,7 +739,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
         native_visual_search_detail::midpoint_quality(low, high);
     auto midpoint_candidate = evaluate_quality(midpoint);
     if (!midpoint_candidate) {
-      return std::unexpected{midpoint_candidate.error()};
+      return awj::compat::unexpected{midpoint_candidate.error()};
     }
     if (visual_quality_candidate_meets_target(*midpoint_candidate, requested)) {
       high = midpoint;
@@ -752,7 +750,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
 
   auto final_candidate = evaluate_quality(high);
   if (!final_candidate) {
-    return std::unexpected{final_candidate.error()};
+    return awj::compat::unexpected{final_candidate.error()};
   }
 
   if (visual_quality_candidate_meets_target(*final_candidate, requested)) {
@@ -760,7 +758,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
         select_smallest_passing_visual_quality_candidate(candidates, requested);
     target_met = selected.found;
     if (target_met) {
-      search_trace.selection_reason = std::format(
+      search_trace.selection_reason = awj::compat::format(
           "smallest-passing q{} vq={:.2f} bytes={}",
           selected.candidate.quality,
           selected.candidate.visual_score,
@@ -770,20 +768,20 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     if (!settings.visual_quality_fallback) {
       const auto closest = select_closest_visual_quality_candidate(candidates);
       if (closest.found) {
-        return std::unexpected{std::format(
+        return awj::compat::unexpected{awj::compat::format(
             "未找到达到 visual_quality={} 的候选，最接近候选为 q{}、VQ "
             "{:.2f}；请降低 visual_quality 或使用 visual_quality=100 无损。",
             requested, closest.candidate.quality, closest.candidate.visual_score)};
       }
-      return std::unexpected{
-          std::format("未找到达到 visual_quality={} 的候选，请降低 "
+      return awj::compat::unexpected{
+          awj::compat::format("未找到达到 visual_quality={} 的候选，请降低 "
                       "visual_quality 或使用 visual_quality=100 无损。",
                       requested)};
     }
     selected = select_closest_visual_quality_candidate(candidates);
     if (selected.found) {
       search_trace.fallback_used = true;
-      search_trace.selection_reason = std::format(
+      search_trace.selection_reason = awj::compat::format(
           "closest-fallback q{} vq={:.2f} bytes={}",
           selected.candidate.quality,
           selected.candidate.visual_score,
@@ -792,7 +790,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   }
 
   if (!selected.found) {
-    return std::unexpected{"visual_quality 搜索没有产生候选。"};
+    return awj::compat::unexpected{"visual_quality 搜索没有产生候选。"};
   }
 
   EvaluatedVisualQualityCandidate* selected_result = nullptr;
@@ -806,7 +804,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     selected_result = &*closest_candidate_result;
   }
   if (selected_result == nullptr) {
-    return std::unexpected{"visual_quality 搜索无法匹配已选候选。"};
+    return awj::compat::unexpected{"visual_quality 搜索无法匹配已选候选。"};
   }
 
   auto encoded = std::move(selected_result->encode_result);

@@ -36,10 +36,12 @@ Windows 的 Clang 23 缓存可通过 `release.ps1 -Generator Ninja -CompilerDire
 
 ### SDK 与对应源码（1.3.0 起）
 
-- SDK 使用独立 Clang 21 构建和 `AWJimageSDK` 安装组件，Windows/Linux 分别在原生环境运行 `scripts/package-sdk-release.cmake`。参数为 `WORK_ROOT`、`INSTALL_DIRECTORY`、全新的 `OUTPUT_DIRECTORY`、实际 `BUILD_EVIDENCE` 和 CTest `TEST_REPORT`；Windows 可通过 `LLVM_DIRECTORY` 指定导出检查工具。
-- 构建记录必须包含同一干净 tag 的提交、源码指纹、编译器版本、完整 native codecs 状态、实际库 SHA-256 与对应 JUnit SHA-256。打包器在归档回解位置核对 C 导出，构建并运行 C99/C++11 消费者，执行迁移后的 `awj-stream`，核对成员、符号链接与内容摘要。
+- 1.3.1 使用严格独立 profile：Windows SDK 为 `windows-x64-clang21`，Linux 为 `linux-x64-clang23`，HMOS 为 `hmos-arm64-api26-clang23`。各平台在原生 host 运行 `scripts/package-sdk-release.cmake`，显式提供 `TARGET_PROFILE`，并传入 `WORK_ROOT`、`INSTALL_DIRECTORY`、全新的 `OUTPUT_DIRECTORY`、实际 `BUILD_EVIDENCE` 和 CTest `TEST_REPORT`；`LLVM_DIRECTORY` 指定可信编译器和检查工具。仅 1.3.0 保留旧 Clang21 隐式 profile。
+- 构建记录必须包含同一干净 tag 的提交、源码指纹、编译器版本、完整 native codecs 状态、实际库 SHA-256 与对应 JUnit SHA-256。打包器在归档回解位置核对 C 导出，构建 C99/C++11/C++17 消费者并按目标执行，执行迁移后的 `awj-stream`，核对成员、符号链接与内容摘要。
 - `scripts/package-source-release.ps1 -OutputDirectory <本项目build下的新目录>` 从正式提交生成对应源码归档，并校验版本及 SDK、构建脚本和许可成员。
-- 将双平台 SDK 及源码的三份 `asset-evidence.json` 一起传入正式应用打包器的 `-AdditionalAssetEvidencePaths`。正式 1.3.0 起必须三者齐备；它们与应用一起进入最终 SHA256SUMS 和 acceptance.json，应用更新包的固定成员白名单保持不变。
+- 将 SDK 与源码的 `asset-evidence.json` 一起传入正式应用打包器的 `-AdditionalAssetEvidencePaths`。1.3.0 固定双平台 SDK 与源码三个角色；1.3.1 起固定 Windows/Linux/HMOS 三份 SDK 与源码四个角色，未知、重复、缺失及大小写变体均拒绝。统一生成七项资产、SHA256SUMS 与 acceptance.json，应用更新包的成员白名单不变。
+- HMOS 正式打包另提供 `TARGET_CMAKE_TOOLCHAIN_FILE`、`TARGET_NATIVE_SDK_DIRECTORY`、`TARGET_LINK_MAP`，在进程环境设置匹配的 `AWJ_OHOS_NATIVE_ROOT`、`AWJ_OHOS_RESOURCE_DIR`、`AWJ_OHOS_LLVM_ROOT`；仅从可信 CLI 路径调用 compiler/runner。`TARGET_RUNNER` 与 `TARGET_EXECUTION_EVIDENCE` 二选一，证据必须含真实目标 SDK 测试、三个安装消费者及 loader 原始记录，不接受宿主通过或单独的 passed 字段。
+- HMOS 使用无版本实际文件 `libawj_sdk.so`，仅 CPU C 头及完整五编码器；按能力检查，不强求桌面 SHM/stream。所有源、库、工具链、Native 静态运行库、link map 与目标报告均绑定摘要。缺少目标运行门禁时完成其他本地版本化交付，但不发布承诺三平台支持的正式版本。
 
 ### main 与旧版更新入口
 

@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -25,9 +26,7 @@ module;
 #include <cstdint>
 #include <cwctype>
 #include <codecvt>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
@@ -286,9 +285,9 @@ bool has_path_separator(std::wstring_view text) {
 
 std::string trim_copy(std::string text) {
   const auto not_space = [](unsigned char ch) { return !std::isspace(ch); };
-  const auto first = std::ranges::find_if(text, not_space);
+  const auto first = awj::compat::ranges::find_if(text, not_space);
   const auto last =
-      std::ranges::find_if(text | std::views::reverse, not_space).base();
+      std::find_if(text.rbegin(), text.rend(), not_space).base();
   if (first >= last) {
     return {};
   }
@@ -507,7 +506,7 @@ PathText sanitize_output_stem(PathText value, std::size_t index) {
     value.pop_back();
   }
   if (value.empty()) {
-    value = native_path_text(std::format(L"image-{:04}", index + 1));
+    value = native_path_text(awj::compat::format(L"image-{:04}", index + 1));
   }
 
   auto reserved = value;
@@ -515,7 +514,7 @@ PathText sanitize_output_stem(PathText value, std::size_t index) {
   if (dot != PathText::npos) {
     reserved.resize(dot);
   }
-  std::ranges::transform(reserved, reserved.begin(),
+  awj::compat::ranges::transform(reserved, reserved.begin(),
                          [](auto ch) { return ch >= 'a' && ch <= 'z'
                              ? static_cast<fs::path::value_type>(ch - 'a' + 'A') : ch; });
 #ifdef _WIN32
@@ -609,7 +608,7 @@ std::string redact_path_for_user(std::string message, const fs::path& path) {
 PathText normalized_lower_path_key(const fs::path& path) {
   auto key = path.lexically_normal().native();
 #ifdef _WIN32
-  std::ranges::transform(key, key.begin(),
+  awj::compat::ranges::transform(key, key.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
 #endif
   return key;
@@ -626,7 +625,7 @@ std::string win32_error_message(DWORD error) {
                      reinterpret_cast<wchar_t*>(&raw_buffer), 0, nullptr);
   std::unique_ptr<wchar_t, core_detail::LocalFreeDeleter> buffer{raw_buffer};
   if (length == 0 || buffer == nullptr) {
-    return std::format("Win32 error {}", error);
+    return awj::compat::format("Win32 error {}", error);
   }
   // FormatMessageW 用 LocalAlloc 返回系统缓冲区，交给 unique_ptr
   // 确保所有早退路径都调用 LocalFree。
@@ -639,14 +638,14 @@ std::string posix_error_message(int error) {
   return std::generic_category().message(error);
 }
 
-std::expected<fs::path, std::string> executable_path() {
+awj::compat::expected<fs::path, std::string> executable_path() {
 #ifdef _WIN32
   std::wstring buffer(MAX_PATH, L'\0');
   while (true) {
     const DWORD length = GetModuleFileNameW(nullptr, buffer.data(),
                                             static_cast<DWORD>(buffer.size()));
     if (length == 0) {
-      return std::unexpected{std::format("获取程序路径失败: {}",
+      return awj::compat::unexpected{awj::compat::format("获取程序路径失败: {}",
                                          win32_error_message(GetLastError()))};
     }
     if (length < buffer.size()) {
@@ -655,7 +654,7 @@ std::expected<fs::path, std::string> executable_path() {
     }
     if (buffer.size() >
         static_cast<std::size_t>(std::numeric_limits<DWORD>::max() / 2)) {
-      return std::unexpected{"程序路径超过 Win32 API 长度限制。"};
+      return awj::compat::unexpected{"程序路径超过 Win32 API 长度限制。"};
     }
     buffer.assign(buffer.size() * 2, L'\0');
   }
@@ -664,7 +663,7 @@ std::expected<fs::path, std::string> executable_path() {
   while (true) {
     const auto length = ::readlink("/proc/self/exe", buffer.data(), buffer.size());
     if (length < 0) {
-      return std::unexpected{std::format("获取程序路径失败: {}",
+      return awj::compat::unexpected{awj::compat::format("获取程序路径失败: {}",
                                          posix_error_message(errno))};
     }
     if (static_cast<std::size_t>(length) < buffer.size()) {
@@ -672,17 +671,17 @@ std::expected<fs::path, std::string> executable_path() {
       return fs::path{buffer};
     }
     if (buffer.size() > 1024u * 1024u) {
-      return std::unexpected{"程序路径超过运行时长度限制。"};
+      return awj::compat::unexpected{"程序路径超过运行时长度限制。"};
     }
     buffer.assign(buffer.size() * 2, '\0');
   }
 #endif
 }
 
-std::expected<fs::path, std::string> executable_directory() {
+awj::compat::expected<fs::path, std::string> executable_directory() {
   auto path = executable_path();
   if (!path) {
-    return std::unexpected{path.error()};
+    return awj::compat::unexpected{path.error()};
   }
   return path->parent_path();
 }
@@ -810,8 +809,8 @@ bool valid_log_line(std::string_view line) noexcept {
   if (line.size() < 29 || !valid_utf8(line) || line[0] != '[' ||
       line[5] != '-' || line[8] != '-' || line[11] != ' ' ||
       line[14] != ':' || line[17] != ':' || line[20] != ']' ||
-      std::ranges::any_of(line, invalid_log_control) ||
-      !std::ranges::all_of(digit_positions, [&](std::size_t position) {
+      awj::compat::ranges::any_of(line, invalid_log_control) ||
+      !awj::compat::ranges::all_of(digit_positions, [&](std::size_t position) {
         return std::isdigit(static_cast<unsigned char>(line[position]));
       })) {
     return false;
@@ -888,14 +887,14 @@ class FileLogger {
       fs::create_directories(log_dir_, ec);
       if (ec) {
         disable_with_error("无法创建日志目录。", [&] {
-          return std::format("无法创建日志目录 {}: {}",
+          return awj::compat::format("无法创建日志目录 {}: {}",
                              display_path_for_user(log_dir_), ec.message());
         });
         return;
       }
       if (!interprocess_lock_.open(lock_file_)) {
         disable_with_error("无法创建日志锁文件。", [&] {
-          return std::format("无法创建日志锁文件 {}",
+          return awj::compat::format("无法创建日志锁文件 {}",
                              display_path_for_user(lock_file_));
         });
         return;
@@ -903,7 +902,7 @@ class FileLogger {
       core_detail::ScopedLogFileLock file_lock{interprocess_lock_};
       if (!file_lock) {
         disable_with_error("无法锁定日志文件。", [&] {
-          return std::format("无法锁定日志文件 {}",
+          return awj::compat::format("无法锁定日志文件 {}",
                              display_path_for_user(log_file_));
         });
         return;
@@ -911,7 +910,7 @@ class FileLogger {
       const bool log_exists = fs::exists(log_file_, ec);
       if (ec) {
         disable_with_error("无法检查日志文件。", [&] {
-          return std::format("无法检查日志文件 {}: {}",
+          return awj::compat::format("无法检查日志文件 {}: {}",
                              display_path_for_user(log_file_), ec.message());
         });
         return;
@@ -920,7 +919,7 @@ class FileLogger {
         std::ofstream reset{log_file_, std::ios::binary | std::ios::trunc};
         if (!reset) {
           disable_with_error("无法清空无效日志文件。", [&] {
-            return std::format("无法清空无效日志文件 {}",
+            return awj::compat::format("无法清空无效日志文件 {}",
                                display_path_for_user(log_file_));
           });
           return;
@@ -929,19 +928,19 @@ class FileLogger {
       stream_.open(log_file_, std::ios::binary | std::ios::app);
       if (!stream_) {
         disable_with_error("无法写入日志文件。", [&] {
-          return std::format("无法写入日志文件 {}",
+          return awj::compat::format("无法写入日志文件 {}",
                              display_path_for_user(log_file_));
         });
         return;
       }
       const auto now = std::chrono::floor<std::chrono::seconds>(
           std::chrono::system_clock::now());
-      stream_ << std::format("[{:%F %T}] [INFO] ===== NEW SESSION START =====\n",
+      stream_ << awj::compat::format("[{:%F %T}] [INFO] ===== NEW SESSION START =====\n",
                              now);
       stream_.flush();
       if (!stream_) {
         disable_with_error("无法写入日志文件。", [&] {
-          return std::format("无法写入日志文件 {}",
+          return awj::compat::format("无法写入日志文件 {}",
                              display_path_for_user(log_file_));
         });
       }
@@ -991,7 +990,7 @@ class FileLogger {
       core_detail::ScopedLogFileLock file_lock{interprocess_lock_};
       if (!file_lock) {
         disable_with_error("无法锁定日志文件。", [&] {
-          return std::format("无法锁定日志文件 {}",
+          return awj::compat::format("无法锁定日志文件 {}",
                              display_path_for_user(log_file_));
         });
         return;
@@ -999,20 +998,20 @@ class FileLogger {
       std::string normalized_message;
       if (!core_detail::valid_utf8(message)) {
         message = "[invalid UTF-8 log message]";
-      } else if (std::ranges::any_of(message,
+      } else if (awj::compat::ranges::any_of(message,
                                      core_detail::invalid_log_control)) {
         normalized_message.assign(message);
-        std::ranges::replace_if(normalized_message,
+        awj::compat::ranges::replace_if(normalized_message,
                                 core_detail::invalid_log_control, ' ');
         message = normalized_message;
       }
       const auto now = std::chrono::floor<std::chrono::seconds>(
           std::chrono::system_clock::now());
-      stream_ << std::format("[{:%F %T}] [{}] {}\n", now, level, message);
+      stream_ << awj::compat::format("[{:%F %T}] [{}] {}\n", now, level, message);
       stream_.flush();
       if (!stream_) {
         disable_with_error("无法写入日志文件。", [&] {
-          return std::format("无法写入日志文件 {}",
+          return awj::compat::format("无法写入日志文件 {}",
                              display_path_for_user(log_file_));
         });
       }
@@ -1043,7 +1042,7 @@ constexpr std::string_view kSupportedImageExtensionsText =
 
 bool is_supported_image_extension(const fs::path& path) {
   auto ext = wide_from_utf8(path_to_utf8(path.extension()));
-  std::ranges::transform(ext, ext.begin(),
+  awj::compat::ranges::transform(ext, ext.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
   return ext == L".jpg" || ext == L".jpeg" || ext == L".jpe" ||
          ext == L".jfif" || ext == L".png" || ext == L".apng" || ext == L".webp" ||
@@ -1139,27 +1138,27 @@ ImageFile make_image_file(std::size_t index, const fs::path& path,
       .path = path,
       .relative_dir = std::move(relative_dir),
       .bytes = bytes,
-      .date_token = std::format(L"{:%Y%m%d}", seconds),
-      .time_token = std::format(L"{:%H%M%S}", seconds),
-      .datetime_token = std::format(L"{:%Y%m%d-%H%M%S}", seconds),
-      .unix_token = std::format(L"{}", unix_seconds),
-      .random_token = std::format(
+      .date_token = awj::compat::format(L"{:%Y%m%d}", seconds),
+      .time_token = awj::compat::format(L"{:%H%M%S}", seconds),
+      .datetime_token = awj::compat::format(L"{:%Y%m%d-%H%M%S}", seconds),
+      .unix_token = awj::compat::format(L"{}", unix_seconds),
+      .random_token = awj::compat::format(
           L"{:08x}", static_cast<unsigned int>(random_value & 0xffffffffu)),
       .hash_token = std::move(hash_token),
       .sha256_token = std::move(sha256_token)};
 }
 
-std::expected<void, std::string> check_scanned_input_file_size(
+awj::compat::expected<void, std::string> check_scanned_input_file_size(
     const fs::path& path, std::uintmax_t bytes) {
   if (bytes >
       static_cast<std::uintmax_t>(encoding_defaults::effective_max_input_file_bytes())) {
-    return std::unexpected{std::format("输入文件超过当前输入上限: {}。",
+    return awj::compat::unexpected{awj::compat::format("输入文件超过当前输入上限: {}。",
                                        display_path_for_user(path))};
   }
   return {};
 }
 
-std::expected<void, std::string> file_hash_token(const fs::path& path,
+awj::compat::expected<void, std::string> file_hash_token(const fs::path& path,
                                                  std::wstring& out) {
   try {
     constexpr std::uint64_t offset = 14695981039346656037ull;
@@ -1169,12 +1168,12 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
     std::error_code ec;
     const auto file_size = fs::file_size(path, ec);
     if (ec) {
-      return std::unexpected{std::format(
+      return awj::compat::unexpected{awj::compat::format(
           "读取用于 {{hash}}/{{hash8}} 的文件大小失败: {}；系统错误：{}。",
           display_path_for_user(path), ec.message())};
     }
     if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
-      return std::unexpected{std::format(
+      return awj::compat::unexpected{awj::compat::format(
           "用于 {{hash}}/{{hash8}} 的输入文件超过当前输入上限: {}。",
           display_path_for_user(path))};
     }
@@ -1182,7 +1181,7 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
 
     std::ifstream stream{path, std::ios::binary};
     if (!stream) {
-      return std::unexpected{std::format(
+      return awj::compat::unexpected{awj::compat::format(
           "无法读取用于 {{hash}}/{{hash8}} 的文件内容: "
           "{}。请检查文件是否仍存在、是否被占用，或当前用户是否有读取权限。",
           display_path_for_user(path))};
@@ -1195,7 +1194,7 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
       if (hashed_bytes >
           encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
-        return std::unexpected{std::format(
+        return awj::compat::unexpected{awj::compat::format(
             "用于 {{hash}}/{{hash8}} 的输入文件超过当前输入上限: {}。",
             display_path_for_user(path))};
       }
@@ -1206,18 +1205,18 @@ std::expected<void, std::string> file_hash_token(const fs::path& path,
       }
     }
     if (!stream.eof()) {
-      return std::unexpected{std::format(
+      return awj::compat::unexpected{awj::compat::format(
           "读取文件哈希时发生 I/O 错误: {}。请检查磁盘、权限或杀毒软件拦截。",
           display_path_for_user(path))};
     }
-    out = std::format(L"{:016x}", hash);
+    out = awj::compat::format(L"{:016x}", hash);
     return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"读取文件哈希时内存不足。"};
+    return awj::compat::unexpected{"读取文件哈希时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"读取文件哈希时数据超过运行时限制。"};
+    return awj::compat::unexpected{"读取文件哈希时数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"读取文件哈希时文件系统访问失败。"};
+    return awj::compat::unexpected{"读取文件哈希时文件系统访问失败。"};
   }
 }
 
@@ -1340,23 +1339,23 @@ std::array<unsigned char, 32> sha256_final(Sha256State& state) noexcept {
 }  // namespace core_detail
 #endif
 
-std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
+awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
   try {
     std::error_code ec;
     if (!fs::is_regular_file(path, ec) || ec) {
-      return std::unexpected{
-          std::format("无法计算 SHA-256，路径不是文件或不可访问: {}。",
+      return awj::compat::unexpected{
+          awj::compat::format("无法计算 SHA-256，路径不是文件或不可访问: {}。",
                       display_path_for_user(path))};
     }
     const auto file_size = fs::file_size(path, ec);
     if (ec) {
-      return std::unexpected{
-          std::format("读取 SHA-256 文件大小失败: {}；系统错误：{}。",
+      return awj::compat::unexpected{
+          awj::compat::format("读取 SHA-256 文件大小失败: {}；系统错误：{}。",
                       display_path_for_user(path), ec.message())};
     }
     if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
-      return std::unexpected{
-          std::format("用于 SHA-256 的文件超过当前输入上限: {}。",
+      return awj::compat::unexpected{
+          awj::compat::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                       display_path_for_user(path))};
     }
 
@@ -1364,7 +1363,7 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
     BCRYPT_ALG_HANDLE algorithm{};
     if (!bcrypt_success(BCryptOpenAlgorithmProvider(
             &algorithm, kBcryptSha256Algorithm, nullptr, 0))) {
-      return std::unexpected{"初始化 SHA-256 算法失败。"};
+      return awj::compat::unexpected{"初始化 SHA-256 算法失败。"};
     }
     struct AlgorithmCloser {
       BCRYPT_ALG_HANDLE handle{};
@@ -1381,21 +1380,21 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
             BCryptGetProperty(algorithm, kBcryptObjectLength,
                               reinterpret_cast<PUCHAR>(&object_length),
                               sizeof(object_length), &property_size, 0))) {
-      return std::unexpected{"读取 SHA-256 对象长度失败。"};
+      return awj::compat::unexpected{"读取 SHA-256 对象长度失败。"};
     }
     DWORD hash_length{};
     if (!bcrypt_success(
             BCryptGetProperty(algorithm, kBcryptHashLength,
                               reinterpret_cast<PUCHAR>(&hash_length),
                               sizeof(hash_length), &property_size, 0))) {
-      return std::unexpected{"读取 SHA-256 输出长度失败。"};
+      return awj::compat::unexpected{"读取 SHA-256 输出长度失败。"};
     }
 
     std::vector<unsigned char> object(object_length);
     BCRYPT_HASH_HANDLE hash{};
     if (!bcrypt_success(BCryptCreateHash(algorithm, &hash, object.data(),
                                          object_length, nullptr, 0, 0))) {
-      return std::unexpected{"创建 SHA-256 状态失败。"};
+      return awj::compat::unexpected{"创建 SHA-256 状态失败。"};
     }
     struct HashCloser {
       BCRYPT_HASH_HANDLE handle{};
@@ -1408,8 +1407,8 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
 
     std::ifstream stream{path, std::ios::binary};
     if (!stream) {
-      return std::unexpected{
-          std::format("无法读取用于 SHA-256 的文件内容: {}。",
+      return awj::compat::unexpected{
+          awj::compat::format("无法读取用于 SHA-256 的文件内容: {}。",
                       display_path_for_user(path))};
     }
     std::array<char, 64 * 1024> buffer{};
@@ -1420,33 +1419,33 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
       if (hashed_bytes >
           encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
-        return std::unexpected{
-            std::format("用于 SHA-256 的文件超过当前输入上限: {}。",
+        return awj::compat::unexpected{
+            awj::compat::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                         display_path_for_user(path))};
       }
       hashed_bytes += chunk_bytes;
       if (read > 0 && !bcrypt_success(BCryptHashData(
                           hash, reinterpret_cast<PUCHAR>(buffer.data()),
                           static_cast<ULONG>(read), 0))) {
-        return std::unexpected{"更新 SHA-256 状态失败。"};
+        return awj::compat::unexpected{"更新 SHA-256 状态失败。"};
       }
     }
     if (!stream.eof()) {
-      return std::unexpected{
-          std::format("读取 SHA-256 文件时发生 I/O 错误: {}。",
+      return awj::compat::unexpected{
+          awj::compat::format("读取 SHA-256 文件时发生 I/O 错误: {}。",
                       display_path_for_user(path))};
     }
 
     std::vector<unsigned char> digest(hash_length);
     if (!bcrypt_success(
             BCryptFinishHash(hash, digest.data(), hash_length, 0))) {
-      return std::unexpected{"完成 SHA-256 计算失败。"};
+      return awj::compat::unexpected{"完成 SHA-256 计算失败。"};
     }
 #else
     std::ifstream stream{path, std::ios::binary};
     if (!stream) {
-      return std::unexpected{
-          std::format("无法读取用于 SHA-256 的文件内容: {}。",
+      return awj::compat::unexpected{
+          awj::compat::format("无法读取用于 SHA-256 的文件内容: {}。",
                       display_path_for_user(path))};
     }
     core_detail::Sha256State state{};
@@ -1457,8 +1456,8 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
       if (hashed_bytes > encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
-        return std::unexpected{
-            std::format("用于 SHA-256 的文件超过当前输入上限: {}。",
+        return awj::compat::unexpected{
+            awj::compat::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                         display_path_for_user(path))};
       }
       hashed_bytes += chunk_bytes;
@@ -1469,8 +1468,8 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
       }
     }
     if (!stream.eof()) {
-      return std::unexpected{
-          std::format("读取 SHA-256 文件时发生 I/O 错误: {}。",
+      return awj::compat::unexpected{
+          awj::compat::format("读取 SHA-256 文件时发生 I/O 错误: {}。",
                       display_path_for_user(path))};
     }
     const auto digest = core_detail::sha256_final(state);
@@ -1478,24 +1477,24 @@ std::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
     std::string out;
     out.reserve(digest.size() * 2);
     for (const auto byte : digest) {
-      out += std::format("{:02x}", byte);
+      out += awj::compat::format("{:02x}", byte);
     }
     return out;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"计算 SHA-256 时内存不足。"};
+    return awj::compat::unexpected{"计算 SHA-256 时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"计算 SHA-256 时数据超过运行时限制。"};
+    return awj::compat::unexpected{"计算 SHA-256 时数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"计算 SHA-256 时文件系统访问失败。"};
+    return awj::compat::unexpected{"计算 SHA-256 时文件系统访问失败。"};
   }
 }
 
-std::expected<void, std::string> file_sha256_token(const fs::path& path,
+awj::compat::expected<void, std::string> file_sha256_token(const fs::path& path,
                                                    std::wstring& out) {
   out.clear();
   auto digest = file_sha256_hex(path);
   if (!digest) {
-    return std::unexpected{digest.error()};
+    return awj::compat::unexpected{digest.error()};
   }
   out.assign(digest->begin(), digest->end());
   return {};
@@ -1542,14 +1541,14 @@ fs::path planned_output_path_for(const AppConfig& cfg, const ImageFile& image) {
   return output_dir / output_name_for(cfg, image);
 }
 
-std::expected<void, std::string> apply_source_extension_disambiguation(
+awj::compat::expected<void, std::string> apply_source_extension_disambiguation(
     const AppConfig& cfg, std::vector<ImageFile>& files) {
   // 例如 1.jpg 和 1.bmp 都套用 {name}<输出扩展名>
   // 时会同名；保留源扩展避免互相覆盖。
   std::unordered_map<PathText, std::vector<std::size_t>> by_output;
   try {
     by_output.reserve(files.size());
-    for (const auto i : std::views::iota(std::size_t{}, files.size())) {
+    for (std::size_t i = 0, count = files.size(); i < count; ++i) {
       by_output[normalized_lower_path_key(
                     planned_output_path_for(cfg, files[i]))]
           .push_back(i);
@@ -1564,7 +1563,7 @@ std::expected<void, std::string> apply_source_extension_disambiguation(
       source_extensions.reserve(indices.size());
       for (const auto index : indices) {
         auto ext = wide_from_utf8(path_to_utf8(files[index].path.extension()));
-        std::ranges::transform(ext, ext.begin(),
+        awj::compat::ranges::transform(ext, ext.begin(),
                                [](wchar_t ch) { return std::towlower(ch); });
         source_extensions.try_emplace(std::move(ext), 0);
       }
@@ -1579,11 +1578,11 @@ std::expected<void, std::string> apply_source_extension_disambiguation(
       }
     }
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"输出路径冲突检测内存不足。"};
+    return awj::compat::unexpected{"输出路径冲突检测内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"输出路径冲突检测数量超过运行时限制。"};
+    return awj::compat::unexpected{"输出路径冲突检测数量超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"输出路径冲突检测文件系统访问失败。"};
+    return awj::compat::unexpected{"输出路径冲突检测文件系统访问失败。"};
   }
   return {};
 }
@@ -1648,13 +1647,13 @@ std::wstring collision_suffix(CollisionMode mode) {
       std::chrono::system_clock::now());
   switch (mode) {
     case CollisionMode::suffix_time:
-      return std::format(L"-{:%Y%m%d-%H%M%S}", now);
+      return awj::compat::format(L"-{:%Y%m%d-%H%M%S}", now);
     case CollisionMode::suffix_random: {
       const auto value =
           output_collision_counter.fetch_add(1, std::memory_order_relaxed);
       const auto tick = static_cast<std::uint64_t>(
           std::chrono::steady_clock::now().time_since_epoch().count());
-      return std::format(
+      return awj::compat::format(
           L"-{:08x}",
           static_cast<unsigned int>((value ^ tick) & 0xffffffffu));
     }
@@ -1666,14 +1665,14 @@ std::wstring collision_suffix(CollisionMode mode) {
   }
 }
 
-std::expected<fs::path, std::string> resolve_collision_output_path(
+awj::compat::expected<fs::path, std::string> resolve_collision_output_path(
     const fs::path& planned, CollisionMode mode,
     std::unordered_map<PathText, int>* reserved_outputs = nullptr,
     std::wstring_view complete_extension = {}) {
   const auto native_extension = native_path_text(complete_extension);
   try {
     const auto reserve_available =
-        [&](const fs::path& path) -> std::expected<bool, std::string> {
+        [&](const fs::path& path) -> awj::compat::expected<bool, std::string> {
       if (reserved_outputs == nullptr) {
         return true;
       }
@@ -1690,17 +1689,17 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
         mode != CollisionMode::suffix_random &&
         mode != CollisionMode::suffix_number) {
       if (auto reserved = reserve_available(planned); !reserved) {
-        return std::unexpected{reserved.error()};
+        return awj::compat::unexpected{reserved.error()};
       }
       return planned;
     }
 
     std::error_code ec;
     const auto path_available =
-        [&](const fs::path& path) -> std::expected<bool, std::string> {
+        [&](const fs::path& path) -> awj::compat::expected<bool, std::string> {
       const auto exists = fs::exists(path, ec);
       if (ec) {
-        return std::unexpected{std::format("无法检查输出路径 {}: {}",
+        return awj::compat::unexpected{awj::compat::format("无法检查输出路径 {}: {}",
                                            display_path_for_user(path),
                                            ec.message())};
       }
@@ -1708,14 +1707,14 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
         return false;
       }
       if (auto reserved = reserve_available(path); !reserved) {
-        return std::unexpected{reserved.error()};
+        return awj::compat::unexpected{reserved.error()};
       } else {
         return *reserved;
       }
     };
 
     if (auto available = path_available(planned); !available) {
-      return std::unexpected{available.error()};
+      return awj::compat::unexpected{available.error()};
     } else if (*available) {
       return planned;
     }
@@ -1735,69 +1734,69 @@ std::expected<fs::path, std::string> resolve_collision_output_path(
 
     if (mode == CollisionMode::suffix_number) {
       auto numbered = numbered_collision_stem(stem);
-      for (const auto offset : std::views::iota(0ULL, 10000ULL)) {
+      for (auto offset = 0ULL; offset < 10000ULL; ++offset) {
         const auto number = numbered.next + offset;
         auto candidate = parent /
-                         (numbered.base + native_path_text(std::format(L"({})", number)) +
+                         (numbered.base + native_path_text(awj::compat::format(L"({})", number)) +
                           extension);
         if (normalized_lower_path_key(candidate) == planned_key) {
           continue;
         }
         if (auto available = path_available(candidate); !available) {
-          return std::unexpected{available.error()};
+          return awj::compat::unexpected{available.error()};
         } else if (*available) {
           return candidate;
         }
       }
       const auto fallback =
           parent / (numbered.base +
-                    native_path_text(std::format(L"({}-{})", numbered.next, current_process_id())) +
+                    native_path_text(awj::compat::format(L"({}-{})", numbered.next, current_process_id())) +
                     extension);
       if (auto available = path_available(fallback); !available) {
-        return std::unexpected{available.error()};
+        return awj::compat::unexpected{available.error()};
       } else if (*available) {
         return fallback;
       }
-      return std::unexpected{std::format("无法找到可用输出路径: {}",
+      return awj::compat::unexpected{awj::compat::format("无法找到可用输出路径: {}",
                                          display_path_for_user(planned))};
     }
 
     const auto suffix = native_path_text(collision_suffix(mode));
-    for (const auto attempt : std::views::iota(0, 1000)) {
+    for (int attempt = 0; attempt < 1000; ++attempt) {
       auto candidate = parent / (stem + suffix +
                                  (attempt == 0 ? PathText{}
-                                               : native_path_text(std::format(L"-{}", attempt))) +
+                                               : native_path_text(awj::compat::format(L"-{}", attempt))) +
                                  extension);
       if (normalized_lower_path_key(candidate) == planned_key) {
         continue;
       }
       if (auto available = path_available(candidate); !available) {
-        return std::unexpected{available.error()};
+        return awj::compat::unexpected{available.error()};
       } else if (*available) {
         return candidate;
       }
     }
 
     const auto fallback =
-        parent / (stem + suffix + native_path_text(std::format(L"-{}", current_process_id())) +
+        parent / (stem + suffix + native_path_text(awj::compat::format(L"-{}", current_process_id())) +
                   extension);
     if (auto available = path_available(fallback); !available) {
-      return std::unexpected{available.error()};
+      return awj::compat::unexpected{available.error()};
     } else if (*available) {
       return fallback;
     }
-    return std::unexpected{std::format("无法找到可用输出路径: {}",
+    return awj::compat::unexpected{awj::compat::format("无法找到可用输出路径: {}",
                                        display_path_for_user(planned))};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"输出路径冲突检测内存不足。"};
+    return awj::compat::unexpected{"输出路径冲突检测内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"输出路径冲突检测数量超过运行时限制。"};
+    return awj::compat::unexpected{"输出路径冲突检测数量超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"输出路径冲突检测文件系统访问失败。"};
+    return awj::compat::unexpected{"输出路径冲突检测文件系统访问失败。"};
   }
 }
 
-std::expected<void, std::string> resolve_batch_output_paths(
+awj::compat::expected<void, std::string> resolve_batch_output_paths(
     const AppConfig& cfg, std::vector<ImageFile>& files) {
   if (cfg.collision_mode != CollisionMode::suffix_time &&
       cfg.collision_mode != CollisionMode::suffix_random &&
@@ -1813,36 +1812,36 @@ std::expected<void, std::string> resolve_batch_output_paths(
           output_path_for(cfg, image), cfg.collision_mode, &reserved_outputs,
           output_extension_for(cfg));
       if (!output) {
-        return std::unexpected{output.error()};
+        return awj::compat::unexpected{output.error()};
       }
       image.resolved_output_path = std::move(*output);
       image.output_path_resolved = true;
     }
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"输出路径冲突检测内存不足。"};
+    return awj::compat::unexpected{"输出路径冲突检测内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"输出路径冲突检测数量超过运行时限制。"};
+    return awj::compat::unexpected{"输出路径冲突检测数量超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"输出路径冲突检测文件系统访问失败。"};
+    return awj::compat::unexpected{"输出路径冲突检测文件系统访问失败。"};
   }
   return {};
 }
 
-std::expected<void, std::string> scan_images(const AppConfig& cfg,
+awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
                                              std::vector<ImageFile>& files) {
   // 输入可以是单张图片或一个目录。这里不再抛异常，而是把失败原因、路径和建议
-  // 作为 std::expected 的 error 返回给 CLI/UI，避免用户只看到“未知异常”。
+  // 作为 awj::compat::expected 的 error 返回给 CLI/UI，避免用户只看到“未知异常”。
   std::error_code ec;
   const auto input_path = long_existing_path_or_self(cfg.input_path);
   const bool exists = fs::exists(input_path, ec);
   if (ec) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "检查输入路径失败: "
         "{}；系统错误：{}。请确认路径可访问，或尝试用管理员权限/本地磁盘路径。",
         display_path_for_user(input_path), ec.message())};
   }
   if (!exists) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "输入路径不存在: "
         "{}。请检查路径是否写错、盘符是否挂载，或文件是否已被移动。",
         display_path_for_user(input_path))};
@@ -1861,7 +1860,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
       core_detail::contains_token(cfg.output_template, L"{sha256_8}");
   const auto build_hash =
       [&](const fs::path& path,
-          std::wstring& out) -> std::expected<void, std::string> {
+          std::wstring& out) -> awj::compat::expected<void, std::string> {
     out.clear();
     if (!template_needs_hash) {
       return {};
@@ -1870,7 +1869,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
   };
   const auto build_sha256 =
       [&](const fs::path& path,
-          std::wstring& out) -> std::expected<void, std::string> {
+          std::wstring& out) -> awj::compat::expected<void, std::string> {
     out.clear();
     if (!template_needs_sha256) {
       return {};
@@ -1880,59 +1879,59 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
 
   if (fs::is_regular_file(input_path, ec) && !ec) {
     if (!is_supported_image_extension(input_path)) {
-      return std::unexpected{std::format("输入文件格式不受支持: {}。支持 {}。",
+      return awj::compat::unexpected{awj::compat::format("输入文件格式不受支持: {}。支持 {}。",
                                          display_path_for_user(input_path),
                                          kSupportedImageExtensionsText)};
     }
     auto bytes = fs::file_size(input_path, ec);
     if (ec) {
-      return std::unexpected{
-          std::format("读取输入文件大小失败: {}；系统错误：{}。",
+      return awj::compat::unexpected{
+          awj::compat::format("读取输入文件大小失败: {}；系统错误：{}。",
                       display_path_for_user(input_path), ec.message())};
     }
     if (auto within_limit = check_scanned_input_file_size(input_path, bytes);
         !within_limit) {
-      return std::unexpected{within_limit.error()};
+      return awj::compat::unexpected{within_limit.error()};
     }
     std::wstring hash;
     if (auto ok = build_hash(input_path, hash); !ok) {
-      return std::unexpected{ok.error()};
+      return awj::compat::unexpected{ok.error()};
     }
     std::wstring sha256;
     if (auto ok = build_sha256(input_path, sha256); !ok) {
-      return std::unexpected{ok.error()};
+      return awj::compat::unexpected{ok.error()};
     }
     try {
       files.push_back(make_image_file(0, input_path, {}, bytes, rng,
                                       std::move(hash), std::move(sha256)));
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"文件列表内存不足，无法记录输入图片。"};
+      return awj::compat::unexpected{"文件列表内存不足，无法记录输入图片。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"文件列表数量超过运行时限制。"};
+      return awj::compat::unexpected{"文件列表数量超过运行时限制。"};
     }
     if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
         !disambiguated) {
-      return std::unexpected{disambiguated.error()};
+      return awj::compat::unexpected{disambiguated.error()};
     }
     if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
-      return std::unexpected{resolved.error()};
+      return awj::compat::unexpected{resolved.error()};
     }
     return {};
   }
 
   if (ec) {
-    return std::unexpected{
-        std::format("判断输入路径类型失败: {}；系统错误：{}。",
+    return awj::compat::unexpected{
+        awj::compat::format("判断输入路径类型失败: {}；系统错误：{}。",
                     display_path_for_user(input_path), ec.message())};
   }
   const auto input_is_directory = fs::is_directory(input_path, ec);
   if (ec) {
-    return std::unexpected{
-        std::format("判断输入路径类型失败: {}；系统错误：{}。",
+    return awj::compat::unexpected{
+        awj::compat::format("判断输入路径类型失败: {}；系统错误：{}。",
                     display_path_for_user(input_path), ec.message())};
   }
   if (!input_is_directory) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "输入路径不是文件或文件夹: {}。请确认输入模式和实际路径一致。",
         display_path_for_user(input_path))};
   }
@@ -1943,7 +1942,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
   fs::recursive_directory_iterator it{
       input_path, fs::directory_options::skip_permission_denied, ec};
   if (ec) {
-    return std::unexpected{std::format("扫描输入目录失败: {}；系统错误：{}。",
+    return awj::compat::unexpected{awj::compat::format("扫描输入目录失败: {}；系统错误：{}。",
                                        display_path_for_user(input_path),
                                        ec.message())};
   }
@@ -1990,54 +1989,54 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
     }
     if (auto within_limit = check_scanned_input_file_size(image_path, bytes);
         !within_limit) {
-      return std::unexpected{within_limit.error()};
+      return awj::compat::unexpected{within_limit.error()};
     }
     std::wstring hash;
     if (auto ok = build_hash(image_path, hash); !ok) {
-      return std::unexpected{ok.error()};
+      return awj::compat::unexpected{ok.error()};
     }
     std::wstring sha256;
     if (auto ok = build_sha256(image_path, sha256); !ok) {
-      return std::unexpected{ok.error()};
+      return awj::compat::unexpected{ok.error()};
     }
     try {
       files.push_back(make_image_file(
           files.size(), image_path, relative_output_dir(input_path, image_path),
           bytes, rng, std::move(hash), std::move(sha256)));
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"文件列表内存不足，无法继续扫描输入目录。"};
+      return awj::compat::unexpected{"文件列表内存不足，无法继续扫描输入目录。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"文件列表数量超过运行时限制。"};
+      return awj::compat::unexpected{"文件列表数量超过运行时限制。"};
     }
     ec.clear();
   }
 
   if (files.empty() && skipped_access > 0) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "未找到可转换图片，并且扫描时跳过了 {} "
         "个无权限或不可访问的条目。请检查目录权限或复制到本地目录后重试。",
         skipped_access)};
   }
 
-  std::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
+  awj::compat::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
     return normalized_lower_path_key(left.path) <
            normalized_lower_path_key(right.path);
   });
-  for (const auto i : std::views::iota(std::size_t{}, files.size())) {
+  for (std::size_t i = 0, count = files.size(); i < count; ++i) {
     files[i].index = i;
   }
   if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
       !disambiguated) {
-    return std::unexpected{disambiguated.error()};
+    return awj::compat::unexpected{disambiguated.error()};
   }
   if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
-    return std::unexpected{resolved.error()};
+    return awj::compat::unexpected{resolved.error()};
   }
   return {};
 }
 
 
-std::expected<void, std::string> scan_images(const AppConfig& cfg,
+awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
                                              std::span<const fs::path> input_paths,
                                              std::vector<ImageFile>& files) {
   if (input_paths.empty()) {
@@ -2058,7 +2057,7 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
       one_cfg.input_path = raw_input;
       std::vector<ImageFile> batch;
       if (auto scanned = scan_images(one_cfg, batch); !scanned) {
-        return std::unexpected{scanned.error()};
+        return awj::compat::unexpected{scanned.error()};
       }
       const auto input_path = long_existing_path_or_self(raw_input);
       std::error_code type_ec;
@@ -2084,39 +2083,39 @@ std::expected<void, std::string> scan_images(const AppConfig& cfg,
         files.push_back(std::move(image));
       }
     }
-    std::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
+    awj::compat::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
       return normalized_lower_path_key(left.path) <
              normalized_lower_path_key(right.path);
     });
-    for (const auto i : std::views::iota(std::size_t{}, files.size())) {
+    for (std::size_t i = 0, count = files.size(); i < count; ++i) {
       files[i].index = i;
     }
     if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
         !disambiguated) {
-      return std::unexpected{disambiguated.error()};
+      return awj::compat::unexpected{disambiguated.error()};
     }
     if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
-      return std::unexpected{resolved.error()};
+      return awj::compat::unexpected{resolved.error()};
     }
     return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"文件列表内存不足，无法记录多选图片。"};
+    return awj::compat::unexpected{"文件列表内存不足，无法记录多选图片。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"文件列表数量超过运行时限制。"};
+    return awj::compat::unexpected{"文件列表数量超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"扫描多选输入时文件系统访问失败。"};
+    return awj::compat::unexpected{"扫描多选输入时文件系统访问失败。"};
   }
 }
 
 std::wstring encode_params_token_for(const AppConfig& cfg) {
   std::wstring token = cfg.visual_quality
-                           ? std::format(L"vq{}", *cfg.visual_quality)
-                           : std::format(L"q{}", cfg.quality);
+                           ? awj::compat::format(L"vq{}", *cfg.visual_quality)
+                           : awj::compat::format(L"q{}", cfg.quality);
   if (cfg.visual_quality && *cfg.visual_quality == 100) {
     token += L"_lossless";
   }
   if (cfg.speed) {
-    token += std::format(L"t{}", *cfg.speed);
+    token += awj::compat::format(L"t{}", *cfg.speed);
   }
   if (cfg.chroma_mode != ChromaMode::auto_keep) {
     switch (cfg.chroma_mode) {
@@ -2135,10 +2134,10 @@ std::wstring encode_params_token_for(const AppConfig& cfg) {
     }
   }
   if (cfg.bit_depth) {
-    token += std::format(L"_{}", *cfg.bit_depth);
+    token += awj::compat::format(L"_{}", *cfg.bit_depth);
   }
   if (cfg.output_format == OutputFormat::jpgli) {
-    token += std::format(L"_p{}", cfg.jpegli_progressive_level);
+    token += awj::compat::format(L"_p{}", cfg.jpegli_progressive_level);
     token += cfg.jpegli_optimize_huffman ? L"_hopt" : L"_hfix";
     if (cfg.jpegli_xyb) {
       token += L"_xyb";
@@ -2154,7 +2153,7 @@ PathText output_name_for(const AppConfig& cfg, const ImageFile& image) {
     ext.erase(ext.begin());
   }
 
-  const auto index_token = std::format(L"{:04}", image.index + 1);
+  const auto index_token = awj::compat::format(L"{:04}", image.index + 1);
   const auto params_token = encode_params_token_for(cfg);
   const auto hash_token = image.hash_token.empty()
                               ? std::wstring{L"hash-unavailable"}
@@ -2250,12 +2249,12 @@ std::string format_size(std::uintmax_t bytes) {
   constexpr double kib = 1024.0;
   constexpr double mib = kib * 1024.0;
   if (bytes >= static_cast<std::uintmax_t>(mib)) {
-    return std::format("{:.2f} MiB", static_cast<double>(bytes) / mib);
+    return awj::compat::format("{:.2f} MiB", static_cast<double>(bytes) / mib);
   }
   if (bytes >= static_cast<std::uintmax_t>(kib)) {
-    return std::format("{:.1f} KiB", static_cast<double>(bytes) / kib);
+    return awj::compat::format("{:.1f} KiB", static_cast<double>(bytes) / kib);
   }
-  return std::format("{} B", bytes);
+  return awj::compat::format("{} B", bytes);
 }
 
 std::string display_path_for_report(const fs::path& path) {
@@ -2344,13 +2343,13 @@ class UniqueFileHandle {
 
 namespace core_detail {
 
-std::expected<void, std::string> clear_transient_file_attributes(
+awj::compat::expected<void, std::string> clear_transient_file_attributes(
     const fs::path& path, std::string_view label) {
 #ifdef _WIN32
   const DWORD attributes = GetFileAttributesW(path.c_str());
   if (attributes == INVALID_FILE_ATTRIBUTES) {
     const auto error = GetLastError();
-    return std::unexpected{std::format("无法读取{}属性 {}: {}", label,
+    return awj::compat::unexpected{awj::compat::format("无法读取{}属性 {}: {}", label,
                                        display_path_for_user(path),
                                        win32_error_message(error))};
   }
@@ -2364,7 +2363,7 @@ std::expected<void, std::string> clear_transient_file_attributes(
   }
   if (!SetFileAttributesW(path.c_str(), normalized_attributes)) {
     const auto error = GetLastError();
-    return std::unexpected{std::format("无法更新{}属性 {}: {}", label,
+    return awj::compat::unexpected{awj::compat::format("无法更新{}属性 {}: {}", label,
                                        display_path_for_user(path),
                                        win32_error_message(error))};
   }
@@ -2376,11 +2375,11 @@ std::expected<void, std::string> clear_transient_file_attributes(
 }
 }  // namespace core_detail
 
-std::expected<UniqueFileHandle, std::string> create_summary_csv_temp_file(
+awj::compat::expected<UniqueFileHandle, std::string> create_summary_csv_temp_file(
     const fs::path& output_dir, fs::path& path) {
   for (std::uint64_t attempt = 0; attempt < 1000; ++attempt) {
     const auto id = summary_csv_temp_counter.fetch_add(1, std::memory_order_relaxed);
-    path = output_dir / std::format(L"summary.csv.tmp-{}-{}", current_process_id(), id);
+    path = output_dir / awj::compat::format(L"summary.csv.tmp-{}-{}", current_process_id(), id);
 #ifdef _WIN32
     const HANDLE file = CreateFileW(
         path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
@@ -2390,7 +2389,7 @@ std::expected<UniqueFileHandle, std::string> create_summary_csv_temp_file(
     }
     const auto error = GetLastError();
     if (error != ERROR_FILE_EXISTS && error != ERROR_ALREADY_EXISTS) {
-      return std::unexpected{std::format("无法创建报告临时文件 {}: {}",
+      return awj::compat::unexpected{awj::compat::format("无法创建报告临时文件 {}: {}",
                                          display_path_for_user(path),
                                          win32_error_message(error))};
     }
@@ -2401,13 +2400,13 @@ std::expected<UniqueFileHandle, std::string> create_summary_csv_temp_file(
     }
     const int error = errno;
     if (error != EEXIST) {
-      return std::unexpected{std::format("无法创建报告临时文件 {}: {}",
+      return awj::compat::unexpected{awj::compat::format("无法创建报告临时文件 {}: {}",
                                          display_path_for_user(path),
                                          posix_error_message(error))};
     }
 #endif
   }
-  return std::unexpected{std::format("无法创建唯一报告临时文件: {}",
+  return awj::compat::unexpected{awj::compat::format("无法创建唯一报告临时文件: {}",
                                      display_path_for_user(output_dir))};
 }
 
@@ -2424,7 +2423,7 @@ class SummaryCsvWriter {
 
   SummaryCsvWriter& operator<<(const char* value) {
     if (value == nullptr) {
-      error_ = std::format("写入报告文件失败: {}",
+      error_ = awj::compat::format("写入报告文件失败: {}",
                            display_path_for_user(report_path_));
       return *this;
     }
@@ -2450,38 +2449,38 @@ class SummaryCsvWriter {
   template <typename T>
     requires std::is_arithmetic_v<T>
   SummaryCsvWriter& operator<<(T value) {
-    return *this << std::format("{}", value);
+    return *this << awj::compat::format("{}", value);
   }
 
   explicit operator bool() const noexcept { return error_.empty(); }
 
   const std::string& error() const noexcept { return error_; }
 
-  std::expected<void, std::string> close() {
+  awj::compat::expected<void, std::string> close() {
     if (!error_.empty()) {
-      return std::unexpected{error_};
+      return awj::compat::unexpected{error_};
     }
 #ifdef _WIN32
     if (!FlushFileBuffers(file_.get())) {
-      return std::unexpected{std::format("刷新报告文件失败: {}；系统错误：{}。",
+      return awj::compat::unexpected{awj::compat::format("刷新报告文件失败: {}；系统错误：{}。",
                                          display_path_for_user(report_path_),
                                          win32_error_message(GetLastError()))};
     }
     const HANDLE file_handle = file_.get();
     if (!CloseHandle(file_handle)) {
-      return std::unexpected{std::format("关闭报告文件失败: {}；系统错误：{}。",
+      return awj::compat::unexpected{awj::compat::format("关闭报告文件失败: {}；系统错误：{}。",
                                          display_path_for_user(report_path_),
                                          win32_error_message(GetLastError()))};
     }
 #else
     const int file_handle = file_.get();
     if (::fsync(file_handle) != 0) {
-      return std::unexpected{std::format("刷新报告文件失败: {}；系统错误：{}。",
+      return awj::compat::unexpected{awj::compat::format("刷新报告文件失败: {}；系统错误：{}。",
                                          display_path_for_user(report_path_),
                                          posix_error_message(errno))};
     }
     if (::close(file_handle) != 0) {
-      return std::unexpected{std::format("关闭报告文件失败: {}；系统错误：{}。",
+      return awj::compat::unexpected{awj::compat::format("关闭报告文件失败: {}；系统错误：{}。",
                                          display_path_for_user(report_path_),
                                          posix_error_message(errno))};
     }
@@ -2503,13 +2502,13 @@ class SummaryCsvWriter {
           std::min<std::size_t>(remaining, std::numeric_limits<DWORD>::max()));
       DWORD written = 0;
       if (!WriteFile(file_.get(), cursor, chunk, &written, nullptr)) {
-        error_ = std::format("写入报告文件失败: {}；系统错误：{}。",
+        error_ = awj::compat::format("写入报告文件失败: {}；系统错误：{}。",
                              display_path_for_user(report_path_),
                              win32_error_message(GetLastError()));
         return;
       }
       if (written == 0) {
-        error_ = std::format("写入报告文件失败: {}",
+        error_ = awj::compat::format("写入报告文件失败: {}",
                              display_path_for_user(report_path_));
         return;
       }
@@ -2519,13 +2518,13 @@ class SummaryCsvWriter {
         if (errno == EINTR) {
           continue;
         }
-        error_ = std::format("写入报告文件失败: {}；系统错误：{}。",
+        error_ = awj::compat::format("写入报告文件失败: {}；系统错误：{}。",
                              display_path_for_user(report_path_),
                              posix_error_message(errno));
         return;
       }
       if (written == 0) {
-        error_ = std::format("写入报告文件失败: {}",
+        error_ = awj::compat::format("写入报告文件失败: {}",
                              display_path_for_user(report_path_));
         return;
       }
@@ -2540,12 +2539,12 @@ class SummaryCsvWriter {
   std::string error_;
 };
 
-std::expected<void, std::string> write_csv(
+awj::compat::expected<void, std::string> write_csv(
     const fs::path& output_dir, std::span<const EncodeResult> results) try {
   std::error_code ec;
   fs::create_directories(output_dir, ec);
   if (ec) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "无法创建报告目录: "
         "{}；系统错误：{}"
         "。请确认输出目录可写、磁盘未满，且路径没有被其他程序锁定。",
@@ -2556,7 +2555,7 @@ std::expected<void, std::string> write_csv(
   fs::path temp_path;
   auto created = create_summary_csv_temp_file(output_dir, temp_path);
   if (!created) {
-    return std::unexpected{created.error()};
+    return awj::compat::unexpected{created.error()};
   }
   SummaryTempFile temp_file{temp_path};
   SummaryCsvWriter csv{std::move(*created), report_path};
@@ -2633,7 +2632,7 @@ std::expected<void, std::string> write_csv(
                    : std::string{};
     };
     const auto metric = [](double value) {
-      return value > 0.0 ? std::format("{:.6f}", value) : std::string{};
+      return value > 0.0 ? awj::compat::format("{:.6f}", value) : std::string{};
     };
     const std::string visual_quality_target_met =
         result.ok && !result.skipped &&
@@ -2646,10 +2645,10 @@ std::expected<void, std::string> write_csv(
         result.requested_visual_quality.has_value() &&
         result.search_attempt_count > 0;
     const auto visual_metric = [&](double value) {
-      return has_visual_metrics ? std::format("{:.6f}", value) : std::string{};
+      return has_visual_metrics ? awj::compat::format("{:.6f}", value) : std::string{};
     };
     const auto duration = [](double value) {
-      return value >= 0.0 ? std::format("{:.6f}", value) : std::string{};
+      return value >= 0.0 ? awj::compat::format("{:.6f}", value) : std::string{};
     };
     const auto sha256_or_empty = [](const fs::path& path) {
       if (path.empty()) {
@@ -2674,7 +2673,7 @@ std::expected<void, std::string> write_csv(
         << ',' << core_detail::csv_escape(result.encoder_id)
         << ',' << input_sha256 << ',' << output_sha256 << ','
         << result.original_bytes << ',' << result.output_bytes << ','
-        << std::format("{:.4f}", ratio) << ',' << result.quality << ',' << speed
+        << awj::compat::format("{:.4f}", ratio) << ',' << result.quality << ',' << speed
         << ',' << requested_visual_quality << ','
         << visual_metric(result.visual_score) << ','
         << visual_metric(result.raw_gmsd) << ','
@@ -2710,7 +2709,7 @@ std::expected<void, std::string> write_csv(
         << (result.memory_source_has_gain_map ? "true" : "false") << ','
         << (result.quality_overridden_by_visual_quality ? "true" : "false")
         << ',' << (result.lossless ? "true" : "false") << ','
-        << std::format("{:.3f}", result.seconds) << ','
+        << awj::compat::format("{:.3f}", result.seconds) << ','
         << duration(result.decode_seconds) << ','
         << duration(result.prepare_seconds) << ','
         << duration(result.encode_seconds) << ','
@@ -2784,23 +2783,23 @@ std::expected<void, std::string> write_csv(
   }
 
   if (auto closed = csv.close(); !closed) {
-    return std::unexpected{closed.error()};
+    return awj::compat::unexpected{closed.error()};
   }
   if (auto attributes = core_detail::clear_transient_file_attributes(
           temp_path, "报告临时文件");
       !attributes) {
-    return std::unexpected{attributes.error()};
+    return awj::compat::unexpected{attributes.error()};
   }
 #ifdef _WIN32
   if (!MoveFileExW(temp_path.c_str(), report_path.c_str(),
                    MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    return std::unexpected{std::format("替换报告文件失败: {}；系统错误：{}。",
+    return awj::compat::unexpected{awj::compat::format("替换报告文件失败: {}；系统错误：{}。",
                                        display_path_for_user(report_path),
                                        win32_error_message(GetLastError()))};
   }
 #else
   if (::rename(temp_path.c_str(), report_path.c_str()) != 0) {
-    return std::unexpected{std::format("替换报告文件失败: {}；系统错误：{}。",
+    return awj::compat::unexpected{awj::compat::format("替换报告文件失败: {}；系统错误：{}。",
                                        display_path_for_user(report_path),
                                        posix_error_message(errno))};
   }
@@ -2816,11 +2815,11 @@ std::expected<void, std::string> write_csv(
   temp_file.release();
   return {};
 } catch (const std::bad_alloc&) {
-  return std::unexpected{"summary.csv 内容内存不足，报告未写入。"};
+  return awj::compat::unexpected{"summary.csv 内容内存不足，报告未写入。"};
 } catch (const std::length_error&) {
-  return std::unexpected{"summary.csv 内容超过运行时限制，报告未写入。"};
+  return awj::compat::unexpected{"summary.csv 内容超过运行时限制，报告未写入。"};
 } catch (const std::filesystem::filesystem_error&) {
-  return std::unexpected{"summary.csv 文件系统访问失败，报告未写入。"};
+  return awj::compat::unexpected{"summary.csv 文件系统访问失败，报告未写入。"};
 }
 
 }  // namespace awj

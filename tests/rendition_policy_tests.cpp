@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -7,13 +8,10 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
-#include <expected>
-#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -41,7 +39,7 @@ void require(bool condition, std::string_view message) {
 }
 
 template <class T>
-T take(std::expected<T, std::string> result) {
+T take(awj::compat::expected<T, std::string> result) {
   if (!result) throw std::runtime_error(result.error());
   return std::move(*result);
 }
@@ -218,7 +216,7 @@ void invalid_pairs(awj::FileLogger& logger) {
     }
     require(!backend.encode_memory(std::move(decoded)), "丢弃备用端／缩放掩盖了无效配对");
   }
-  std::stop_source stopped; stopped.request_stop();
+  awj::compat::stop_source stopped; stopped.request_stop();
   require(!backend.encode_memory(input(Kind::pair), stopped.get_token()), "呈现选择忽略取消");
 }
 
@@ -235,12 +233,12 @@ void file_cases(const fs::path& root, awj::FileLogger& logger) {
         .quality = 100, .speed = 10, .bit_depth = 16, .resources = resources};
     settings.gain_map_alternative = decoded.gain_map_alternative ? &*decoded.gain_map_alternative : nullptr;
     const auto encoded = take(awj::JXLImageEncoder{}.encode(decoded.image, settings));
-    const auto path = root / std::format("input-{}.jxl", static_cast<int>(kind));
+    const auto path = root / awj::compat::format("input-{}.jxl", static_cast<int>(kind));
     write_bytes(path, encoded.encoded.bytes);
     for (const auto format : {awj::OutputFormat::jxl, awj::OutputFormat::avif, awj::OutputFormat::jpgli,
                               awj::OutputFormat::webp, awj::OutputFormat::png}) {
       auto cfg = config(format, awj::JpegHdrMode::automatic, false);
-      cfg.output_dir = root / std::format("output-{}-{}", static_cast<int>(kind), static_cast<int>(format));
+      cfg.output_dir = root / awj::compat::format("output-{}-{}", static_cast<int>(kind), static_cast<int>(format));
       awj::NativeBackend backend{cfg, logger, resources};
       const auto result = backend.encode({.path = path, .bytes = encoded.encoded.bytes.size()});
       require(result.ok, result.message);
@@ -259,7 +257,7 @@ void file_cases(const fs::path& root, awj::FileLogger& logger) {
 int main(int argc, char** argv) {
   try {
     require(argc == 2, "用法：awj_rendition_policy_tests <项目内证据目录>");
-    const auto root = fs::path{argv[1]} / std::format("run-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+    const auto root = fs::path{argv[1]} / awj::compat::format("run-{}", std::chrono::steady_clock::now().time_since_epoch().count());
     fs::create_directories(root);
     awj::FileLogger logger{root, false};
     unsigned cases{};

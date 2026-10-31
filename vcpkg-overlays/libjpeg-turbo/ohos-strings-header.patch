@@ -1,0 +1,12 @@
+--- a/src/turbojpeg.c
++++ b/src/turbojpeg.c
+@@ -36,6 +36,9 @@
+ #include <stdint.h>
+ #endif
+ #include "jinclude.h"
++#ifndef _WIN32
++#include <strings.h>
++#endif
+ #define JPEG_INTERNALS
+ #include "jpeglib.h"
+ #include "jerror.h"

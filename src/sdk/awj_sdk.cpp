@@ -3,7 +3,7 @@
 #include <cmath>
 
 #ifndef AWJ_SDK_VERSION
-#define AWJ_SDK_VERSION "1.3.0"
+#error "AWJ_SDK_VERSION must be provided by the build"
 #endif
 
 namespace {

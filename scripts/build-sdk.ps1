@@ -1,6 +1,6 @@
 param(
-    [string]$BuildDirectory = 'build/sdk-clang23',
-    [string]$CompilerDirectory = 'D:/Scoop/apps/llvm/current/bin',
+    [string]$BuildDirectory = 'build/sdk-native-clang21',
+    [string]$CompilerDirectory = 'build/sdk-tools/clang21-extracted/bin',
     [switch]$CoreOnly,
     [int]$Parallelism = 2,
     [string[]]$ExtraCMakeArguments = @(),

@@ -1,9 +1,9 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <cstddef>
 #include <array>
 #include <cstdint>
-#include <expected>
 #include <filesystem>
 #include <optional>
 #include <memory>

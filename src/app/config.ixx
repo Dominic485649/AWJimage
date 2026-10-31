@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -17,14 +18,11 @@ module;
 #include <cmath>
 #include <cstdint>
 #include <cwctype>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <functional>
 #include <limits>
 #include <new>
 #include <optional>
-#include <print>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -141,35 +139,35 @@ constexpr unsigned cpu_affinity_capacity() noexcept {
 #endif
 }
 
-std::expected<void, std::string> apply_cpu_affinity(const std::vector<unsigned>& cpus) {
+awj::compat::expected<void, std::string> apply_cpu_affinity(const std::vector<unsigned>& cpus) {
   if (cpus.empty()) return {};
 #ifdef _WIN32
   DWORD_PTR allowed{}, system{}, requested{};
   if (!GetProcessAffinityMask(GetCurrentProcess(), &allowed, &system) || !allowed)
-    return std::unexpected{"无法读取进程 CPU 亲和性。"};
+    return awj::compat::unexpected{"无法读取进程 CPU 亲和性。"};
   for (const auto cpu : cpus) {
     if (cpu >= cpu_affinity_capacity() || !(allowed & (DWORD_PTR{1} << cpu)))
-      return std::unexpected{std::format("CPU {} 不在进程允许的 CPU 集合内。", cpu)};
+      return awj::compat::unexpected{awj::compat::format("CPU {} 不在进程允许的 CPU 集合内。", cpu)};
     requested |= DWORD_PTR{1} << cpu;
   }
   if (!SetProcessAffinityMask(GetCurrentProcess(), requested))
-    return std::unexpected{std::format("无法设置 CPU 亲和性，Windows 错误 {}。", GetLastError())};
+    return awj::compat::unexpected{awj::compat::format("无法设置 CPU 亲和性，Windows 错误 {}。", GetLastError())};
   if (!GetProcessAffinityMask(GetCurrentProcess(), &allowed, &system) || allowed != requested)
-    return std::unexpected{"CPU 亲和性回读与请求不一致。"};
+    return awj::compat::unexpected{"CPU 亲和性回读与请求不一致。"};
 #else
   cpu_set_t allowed{}, requested{};
   if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0)
-    return std::unexpected{"无法读取进程 CPU 亲和性。"};
+    return awj::compat::unexpected{"无法读取进程 CPU 亲和性。"};
   CPU_ZERO(&requested);
   for (const auto cpu : cpus) {
     if (cpu >= cpu_affinity_capacity() || !CPU_ISSET(cpu, &allowed))
-      return std::unexpected{std::format("CPU {} 不在进程允许的 CPU 集合内。", cpu)};
+      return awj::compat::unexpected{awj::compat::format("CPU {} 不在进程允许的 CPU 集合内。", cpu)};
     CPU_SET(cpu, &requested);
   }
   if (sched_setaffinity(0, sizeof(requested), &requested) != 0)
-    return std::unexpected{"无法设置 CPU 亲和性。"};
+    return awj::compat::unexpected{"无法设置 CPU 亲和性。"};
   if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0 || !CPU_EQUAL(&allowed, &requested))
-    return std::unexpected{"CPU 亲和性回读与请求不一致。"};
+    return awj::compat::unexpected{"CPU 亲和性回读与请求不一致。"};
 #endif
   return {};
 }
@@ -337,7 +335,7 @@ AppConfig default_app_config() { return AppConfig{}; }
 std::wstring argument_text_from_native(std::string_view value) {
   try {
     const auto unicode = std::filesystem::path{value}.u32string();
-    if (std::ranges::none_of(unicode, [](char32_t ch) {
+    if (awj::compat::ranges::none_of(unicode, [](char32_t ch) {
           return ch >= 0xd800 && ch <= 0xdfff;
         })) return {unicode.begin(), unicode.end()};
   } catch (const std::runtime_error&) {
@@ -373,7 +371,7 @@ std::filesystem::path path_from_argument_text(std::wstring_view value) {
 #endif
 }
 
-std::expected<std::filesystem::path, std::string> normalize_path_argument(
+awj::compat::expected<std::filesystem::path, std::string> normalize_path_argument(
     std::wstring_view value, std::string_view label) {
   const auto is_space = [](wchar_t ch) {
     return std::iswspace(static_cast<wint_t>(ch)) != 0;
@@ -385,12 +383,12 @@ std::expected<std::filesystem::path, std::string> normalize_path_argument(
     value.remove_suffix(1);
   }
   if (value.empty()) {
-    return std::unexpected{std::format("{}不能为空。", label)};
+    return awj::compat::unexpected{awj::compat::format("{}不能为空。", label)};
   }
   const bool starts_quote = value.front() == L'\"';
   const bool ends_quote = value.back() == L'\"';
   if (starts_quote != ends_quote) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "{}的双引号必须成对并包住整个路径，例如 \"D:\\\\example.jxr\"。",
         label)};
   }
@@ -398,12 +396,12 @@ std::expected<std::filesystem::path, std::string> normalize_path_argument(
     value.remove_prefix(1);
     value.remove_suffix(1);
     if (value.empty()) {
-      return std::unexpected{std::format("{}不能为空。", label)};
+      return awj::compat::unexpected{awj::compat::format("{}不能为空。", label)};
     }
   }
   if (value.find(L'\"') != std::wstring_view::npos) {
-    return std::unexpected{
-        std::format("{}中的双引号只能成对包住整个路径。", label)};
+    return awj::compat::unexpected{
+        awj::compat::format("{}中的双引号只能成对包住整个路径。", label)};
   }
   return path_from_argument_text(value);
 }
@@ -431,7 +429,7 @@ constexpr std::size_t max_output_template_length = 512;
 
 std::wstring lower_copy(std::wstring_view text) {
   std::wstring out{text};
-  std::ranges::transform(out, out.begin(),
+  awj::compat::ranges::transform(out, out.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
   return out;
 }
@@ -460,7 +458,7 @@ std::filesystem::path::string_type shell_input_key(const std::filesystem::path& 
   const auto absolute = std::filesystem::absolute(path, ec);
   auto key = (ec ? path : absolute).lexically_normal().native();
 #ifdef _WIN32
-  std::ranges::transform(key, key.begin(),
+  awj::compat::ranges::transform(key, key.begin(),
                          [](wchar_t ch) { return std::towlower(ch); });
 #endif
   return key;
@@ -487,7 +485,7 @@ std::optional<Number> scan_number(std::wstring_view text) {
   return scanned->value();
 }
 
-std::expected<int, std::string> parse_quality(std::wstring_view text) {
+awj::compat::expected<int, std::string> parse_quality(std::wstring_view text) {
   // 同时接受 90、q90 和 0.9；内部统一归一化到 native 编码质量 1..100。
   auto quality_text = lower_copy(text);
   if (!quality_text.empty() && quality_text.front() == L'q') {
@@ -495,37 +493,37 @@ std::expected<int, std::string> parse_quality(std::wstring_view text) {
   }
   const auto value = scan_number<double>(quality_text);
   if (!value) {
-    return std::unexpected{"质量参数必须是数字，例如 90 或 q90。"};
+    return awj::compat::unexpected{"质量参数必须是数字，例如 90 或 q90。"};
   }
 
   if (!std::isfinite(*value)) {
-    return std::unexpected{"质量参数必须是有限数字。"};
+    return awj::compat::unexpected{"质量参数必须是有限数字。"};
   }
 
   const double normalized =
       (*value > 0.0 && *value <= 1.0) ? (*value * 100.0) : *value;
   if (normalized < 0.5 || normalized >= 100.5) {
-    return std::unexpected{"质量范围必须在 1 到 100 之间。"};
+    return awj::compat::unexpected{"质量范围必须在 1 到 100 之间。"};
   }
   const int quality = static_cast<int>(std::lround(normalized));
   return quality;
 }
 
-std::expected<int, std::string> parse_int_range(std::wstring_view text,
+awj::compat::expected<int, std::string> parse_int_range(std::wstring_view text,
                                                 int min_value, int max_value,
                                                 std::string_view name) {
   const auto value = scan_number<int>(text);
   if (!value) {
-    return std::unexpected{std::format("{} 必须是整数。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 必须是整数。", name)};
   }
   if (*value < min_value || *value > max_value) {
-    return std::unexpected{std::format("{} 范围必须在 {} 到 {} 之间。", name,
+    return awj::compat::unexpected{awj::compat::format("{} 范围必须在 {} 到 {} 之间。", name,
                                        min_value, max_value)};
   }
   return *value;
 }
 
-std::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
+awj::compat::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
   // CLI 和 UI 都允许“自动/auto/jthread”，避免用户必须手算预留线程数。
   const auto lower = lower_copy(text);
   if (lower == L"auto" || lower == L"jthread" || lower == L"自动") {
@@ -534,11 +532,11 @@ std::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
   return parse_int_range(text, 1, 128, "并发数量");
 }
 
-std::expected<std::vector<unsigned>, std::string> parse_cpu_affinity(std::wstring_view text) {
+awj::compat::expected<std::vector<unsigned>, std::string> parse_cpu_affinity(std::wstring_view text) {
   std::vector<unsigned> cpus;
-  const auto parse_id = [](std::wstring_view value) -> std::expected<int, std::string> {
-    if (value.empty() || !std::ranges::all_of(value, [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; }))
-      return std::unexpected{"cpu-affinity 使用从 0 开始的 CPU 编号，例如 0-3,6。"};
+  const auto parse_id = [](std::wstring_view value) -> awj::compat::expected<int, std::string> {
+    if (value.empty() || !awj::compat::ranges::all_of(value, [](wchar_t ch) { return ch >= L'0' && ch <= L'9'; }))
+      return awj::compat::unexpected{"cpu-affinity 使用从 0 开始的 CPU 编号，例如 0-3,6。"};
     return parse_int_range(value, 0, static_cast<int>(cpu_affinity_capacity() - 1), "CPU 编号");
   };
   do {
@@ -547,12 +545,12 @@ std::expected<std::vector<unsigned>, std::string> parse_cpu_affinity(std::wstrin
     const auto dash = item.find(L'-');
     const auto first = parse_id(item.substr(0, dash));
     const auto last = dash == std::wstring_view::npos ? first : parse_id(item.substr(dash + 1));
-    if (!first) return std::unexpected{first.error()};
-    if (!last) return std::unexpected{last.error()};
-    if (*last < *first) return std::unexpected{"cpu-affinity 范围必须从小到大。"};
+    if (!first) return awj::compat::unexpected{first.error()};
+    if (!last) return awj::compat::unexpected{last.error()};
+    if (*last < *first) return awj::compat::unexpected{"cpu-affinity 范围必须从小到大。"};
     for (auto cpu = *first; cpu <= *last; ++cpu) {
-      if (std::ranges::find(cpus, static_cast<unsigned>(cpu)) != cpus.end())
-        return std::unexpected{"cpu-affinity 不允许重复 CPU 编号。"};
+      if (awj::compat::ranges::find(cpus, static_cast<unsigned>(cpu)) != cpus.end())
+        return awj::compat::unexpected{"cpu-affinity 不允许重复 CPU 编号。"};
       cpus.push_back(static_cast<unsigned>(cpu));
     }
     if (comma == std::wstring_view::npos) break;
@@ -561,7 +559,7 @@ std::expected<std::vector<unsigned>, std::string> parse_cpu_affinity(std::wstrin
   return cpus;
 }
 
-std::expected<std::uint64_t, std::string> parse_memory_limit(
+awj::compat::expected<std::uint64_t, std::string> parse_memory_limit(
     std::wstring_view text) {
   const auto lower = lower_copy(text);
   if (lower == L"auto" || lower == L"自动") {
@@ -586,75 +584,75 @@ std::expected<std::uint64_t, std::string> parse_memory_limit(
       consume_suffix(L"b", 1ull);
   const auto value = scan_number<double>(number_part);
   if (!value || !std::isfinite(*value) || *value < 0.0) {
-    return std::unexpected{
+    return awj::compat::unexpected{
         "memory-limit 必须是 auto 或非负数字，可带 KiB/MiB/GiB 后缀。"};
   }
   const double scaled = *value * static_cast<double>(multiplier);
   constexpr double uint64_limit =
       static_cast<double>(std::numeric_limits<std::uint64_t>::max());
   if (!std::isfinite(scaled) || scaled >= uint64_limit) {
-    return std::unexpected{"memory-limit 超过运行时可表示范围。"};
+    return awj::compat::unexpected{"memory-limit 超过运行时可表示范围。"};
   }
   if (scaled > 0.0 && scaled < 1.0) {
-    return std::unexpected{
+    return awj::compat::unexpected{
         "memory-limit 不能小于 1 字节；使用 auto 可由程序自动估算。"};
   }
   return static_cast<std::uint64_t>(scaled);
 }
 
-std::expected<double, std::string> parse_double_range(std::wstring_view text,
+awj::compat::expected<double, std::string> parse_double_range(std::wstring_view text,
                                                       double min_value,
                                                       double max_value,
                                                       std::string_view name) {
   const auto value = scan_number<double>(text);
   if (!value) {
-    return std::unexpected{std::format("{} 必须是数字。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 必须是数字。", name)};
   }
   if (!std::isfinite(*value)) {
-    return std::unexpected{std::format("{} 必须是有限数字。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 必须是有限数字。", name)};
   }
   if (*value < min_value || *value > max_value) {
-    return std::unexpected{std::format("{} 范围必须在 {:.3f} 到 {:.3f} 之间。",
+    return awj::compat::unexpected{awj::compat::format("{} 范围必须在 {:.3f} 到 {:.3f} 之间。",
                                        name, min_value, max_value)};
   }
   return *value;
 }
 
-std::expected<void, std::string> validate_native_option(std::wstring_view value,
+awj::compat::expected<void, std::string> validate_native_option(std::wstring_view value,
                                                         std::string_view name) {
   constexpr std::size_t max_option_length = 512;
   if (value.empty()) {
-    return std::unexpected{std::format("{} 不能为空。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 不能为空。", name)};
   }
   if (value.size() > max_option_length) {
-    return std::unexpected{std::format("{} 长度不能超过 512 个字符。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 长度不能超过 512 个字符。", name)};
   }
   const auto pos = value.find(L'=');
   const auto key =
       pos == std::wstring_view::npos ? value : value.substr(0, pos);
   if (key.empty()) {
-    return std::unexpected{std::format("{} 的 key 不能为空。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 的 key 不能为空。", name)};
   }
   for (const wchar_t ch : value) {
     if (ch < 0x20 || ch == 0x7f) {
-      return std::unexpected{std::format("{} 不能包含控制字符。", name)};
+      return awj::compat::unexpected{awj::compat::format("{} 不能包含控制字符。", name)};
     }
   }
   return {};
 }
 
-std::expected<void, std::string> validate_native_option(
+awj::compat::expected<void, std::string> validate_native_option(
     std::wstring_view value) {
   return validate_native_option(value, "--option");
 }
 
-std::expected<void, std::string> validate_native_key_value_option(
+awj::compat::expected<void, std::string> validate_native_key_value_option(
     std::wstring_view value, std::string_view name) {
   if (auto valid = validate_native_option(value, name); !valid) {
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   }
   if (value.find(L'=') == std::wstring_view::npos) {
-    return std::unexpected{std::format("{} 必须为 key=value。", name)};
+    return awj::compat::unexpected{awj::compat::format("{} 必须为 key=value。", name)};
   }
   return {};
 }
@@ -858,63 +856,63 @@ std::string alpha_mode_policy_name(AlphaModePolicy policy) {
   return config_detail::alpha_policy_name(policy);
 }
 
-std::expected<void, std::string> validate_native_option(
+awj::compat::expected<void, std::string> validate_native_option(
     std::wstring_view value) {
   return config_detail::validate_native_option(value);
 }
 
-std::expected<int, std::string> parse_quality(std::wstring_view text) {
+awj::compat::expected<int, std::string> parse_quality(std::wstring_view text) {
   return config_detail::parse_quality(text);
 }
 
-std::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
+awj::compat::expected<int, std::string> parse_auto_jobs(std::wstring_view text) {
   return config_detail::parse_auto_jobs(text);
 }
 
-std::expected<std::uint64_t, std::string> parse_memory_limit(
+awj::compat::expected<std::uint64_t, std::string> parse_memory_limit(
     std::wstring_view text) {
   return config_detail::parse_memory_limit(text);
 }
 
-std::expected<void, std::string> validate_config(const AppConfig& cfg) {
+awj::compat::expected<void, std::string> validate_config(const AppConfig& cfg) {
   if (cfg.avif_animation_keyframe < 0 || static_cast<int>(cfg.avif_animation_tune) < 0 || static_cast<int>(cfg.avif_animation_tune) > 2)
-    return std::unexpected{"动画参数无效。"};
+    return awj::compat::unexpected{"动画参数无效。"};
   if (cfg.image_size_limit.scale_percent &&
       (*cfg.image_size_limit.scale_percent < 1 || *cfg.image_size_limit.scale_percent > 100)) {
-    return std::unexpected{"scale-percent 必须为 1～100 的整数。"};
+    return awj::compat::unexpected{"scale-percent 必须为 1～100 的整数。"};
   }
   // 路径存在性在 scan_images 中校验；这里专注于格式自身不能违反的编码约束。
   if (cfg.output_template.size() > config_detail::max_output_template_length) {
-    return std::unexpected{
-        std::format("输出命名模板长度不能超过 {} 个字符。",
+    return awj::compat::unexpected{
+        awj::compat::format("输出命名模板长度不能超过 {} 个字符。",
                     config_detail::max_output_template_length)};
   }
   if (cfg.append_png_suffix && cfg.output_format != OutputFormat::avif) {
-    return std::unexpected{
+    return awj::compat::unexpected{
         "--append-png-suffix 仅可与 AVIF 输出一起使用。"};
   }
   switch (cfg.output_format) {
     case OutputFormat::png:
       if (cfg.visual_quality) {
-        return std::unexpected{"PNG 不支持视觉质量搜索；请使用 --quality。"};
+        return awj::compat::unexpected{"PNG 不支持视觉质量搜索；请使用 --quality。"};
       }
       if (cfg.speed) {
-        return std::unexpected{"PNG 不支持 --speed；请移除该参数。"};
+        return awj::compat::unexpected{"PNG 不支持 --speed；请移除该参数。"};
       }
       if (cfg.bit_depth && *cfg.bit_depth != 8 && *cfg.bit_depth != 16) {
-        return std::unexpected{"PNG 输出仅支持 8-bit 或 16-bit RGBA；请把位深设为 8/16，或留空。"};
+        return awj::compat::unexpected{"PNG 输出仅支持 8-bit 或 16-bit RGBA；请把位深设为 8/16，或留空。"};
       }
       if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode)) {
-        return std::unexpected{"PNG 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
+        return awj::compat::unexpected{"PNG 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
       }
       break;
     case OutputFormat::avif:
       if (cfg.avif_encoder != AvifEncoderMode::automatic && cfg.avif_encoder != AvifEncoderMode::aom) {
-        return std::unexpected{"AVIF 编码器已移除或无效；请使用 auto/aom。"};
+        return awj::compat::unexpected{"AVIF 编码器已移除或无效；请使用 auto/aom。"};
       }
       if (cfg.bit_depth &&
           !config_detail::avif_bit_depth_supported(*cfg.bit_depth)) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "当前 native AVIF 输出仅支持 8、10、12-bit "
             "位深；留空表示自动选择。"};
       }
@@ -922,92 +920,92 @@ std::expected<void, std::string> validate_config(const AppConfig& cfg) {
           AvifColorRepresentation::rgb_identity) {
         if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode,
                                   cfg.avif_color_representation)) {
-          return std::unexpected{
+          return awj::compat::unexpected{
               "RGB(A)/GBR(A) Identity AVIF 必须使用 4:4:4；请使用 --chroma auto/444。"};
         }
 
         if (cfg.matrix_coefficients && *cfg.matrix_coefficients != 0) {
-          return std::unexpected{
+          return awj::compat::unexpected{
               "RGB(A)/GBR(A) Identity 与非 Identity matrix-coefficients 冲突。"};
         }
       } else if (cfg.avif_color_representation ==
                      AvifColorRepresentation::yuv &&
                  cfg.matrix_coefficients && *cfg.matrix_coefficients == 0) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "YUV 颜色表示不能使用 Identity matrix-coefficients；请选择 RGB(A)/GBR(A) 或移除该参数。"};
       }
 
       break;
     case OutputFormat::webp:
       if (cfg.bit_depth && *cfg.bit_depth != 8) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "WebP bitstream 只支持 8-bit；请把位深设为 8，或留空保持原片。"};
       }
       if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode)) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "WebP 不支持手动选择 444/422/420；有损 WebP 为 8-bit 4:2:0，"
             "无损 WebP 为 8-bit ARGB。"};
       }
       break;
     case OutputFormat::jxl:
       if (cfg.bit_depth && *cfg.bit_depth != 8 && *cfg.bit_depth != 10 && *cfg.bit_depth != 12 && *cfg.bit_depth != 16)
-        return std::unexpected{"JXL 输出仅支持 8/10/12/16-bit；请使用支持的位深或留空自动16-bit。"};
+        return awj::compat::unexpected{"JXL 输出仅支持 8/10/12/16-bit；请使用支持的位深或留空自动16-bit。"};
       if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode)) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "JXL 不支持手动选择 444/422/420；请将 chroma 设为 auto。"};
       }
       break;
     case OutputFormat::jpgli:
       if (!supports_chroma_mode(cfg.output_format, cfg.chroma_mode))
-        return std::unexpected{"400 强制灰度仅支持 AVIF；JPG 支持 auto/444/422/420。"};
+        return awj::compat::unexpected{"400 强制灰度仅支持 AVIF；JPG 支持 auto/444/422/420。"};
       if (cfg.speed) {
-        return std::unexpected{"JPG 不支持 --speed；请移除该参数。"};
+        return awj::compat::unexpected{"JPG 不支持 --speed；请移除该参数。"};
       }
       if (cfg.bit_depth && *cfg.bit_depth != 8) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "JPG 底图使用 8-bit；HDR 通过 Gain Map 保存。请把输出位深设为 8，或留空。"};
       }
       if (!config_detail::jpegli_progressive_level_supported(
               cfg.jpegli_progressive_level)) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "JPG progressive level 只支持 0、1、2；0 表示顺序 JPEG。"};
       }
       if (cfg.jpegli_progressive_level > 0 && !cfg.jpegli_optimize_huffman) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "JPG 渐进 JPEG 需要优化哈夫曼表；若要关闭优化，请将渐进设为 0。"};
       }
       if (cfg.alpha_policy == AlphaModePolicy::force) {
-        return std::unexpected{
+        return awj::compat::unexpected{
             "JPG 不支持 alpha 输出；请使用 --alpha auto/off，或选择支持透明通道的格式。"};
       }
       break;
   }
   if (!visual_quality_weights_are_valid()) {
-    return std::unexpected{
+    return awj::compat::unexpected{
         "视觉质量权重配置无效：GMSD_WEIGHT + MSSSIM_WEIGHT 必须等于 1。"};
   }
   if (cfg.visual_quality &&
       (*cfg.visual_quality < 1 || *cfg.visual_quality > 100)) {
-    return std::unexpected{"visual-quality 范围必须在 1 到 100 之间。"};
+    return awj::compat::unexpected{"visual-quality 范围必须在 1 到 100 之间。"};
   }
   // visual_quality 未设置时 fallback 没有工作可做，因此允许默认值保留；一旦
   // 启用搜索，native backend 才读取该开关。
   if (cfg.memory_limit_bytes > 0 &&
       cfg.memory_limit_bytes < 64ull * 1024ull * 1024ull) {
-    return std::unexpected{
+    return awj::compat::unexpected{
         "memory-limit 不能低于 64MiB；使用 auto 可由程序自动估算。"};
   }
   return {};
 }
 
-std::expected<void, std::string> validate_execution_config(const AppConfig& cfg) {
+awj::compat::expected<void, std::string> validate_execution_config(const AppConfig& cfg) {
   if (cfg.avif_encoder != AvifEncoderMode::automatic && cfg.avif_encoder != AvifEncoderMode::aom) {
-    return std::unexpected{"AVIF 编码器已移除；请将 avif_encoder 修正为 auto/aom。"};
+    return awj::compat::unexpected{"AVIF 编码器已移除；请将 avif_encoder 修正为 auto/aom。"};
   }
   return {};
 }
 
-std::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
+awj::compat::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
                                                           bool quality_was_set,
                                                           bool preset_was_set) {
 #ifndef _WIN32
@@ -1139,16 +1137,16 @@ std::string help_text() {
     }
   };
   replace_all(help, "@AVIF_QUALITY@",
-              std::format("{}", default_quality_for(OutputFormat::avif)));
+              awj::compat::format("{}", default_quality_for(OutputFormat::avif)));
   replace_all(help, "@WEBP_QUALITY@",
-              std::format("{}", default_quality_for(OutputFormat::webp)));
+              awj::compat::format("{}", default_quality_for(OutputFormat::webp)));
   replace_all(help, "@JXL_QUALITY@",
-              std::format("{}", default_quality_for(OutputFormat::jxl)));
+              awj::compat::format("{}", default_quality_for(OutputFormat::jxl)));
   replace_all(help, "@JPEGLI_QUALITY@",
-              std::format("{}", default_quality_for(OutputFormat::jpgli)));
+              awj::compat::format("{}", default_quality_for(OutputFormat::jpgli)));
   replace_all(help, "@INPUT_PATH@", encoding_defaults::default_input_path_text);
   replace_all(help, "@WEBP_BIT_DEPTH@",
-              std::format("{}", encoding_defaults::default_webp_bit_depth));
+              awj::compat::format("{}", encoding_defaults::default_webp_bit_depth));
   replace_all(help, "@OUTPUT_TEMPLATE@",
               encoding_defaults::default_output_template_text);
 #ifdef _WIN32
@@ -1162,16 +1160,16 @@ std::string help_text() {
 #endif
   replace_all(
       help, "@ENCODE_TIMEOUT@",
-      std::format("{}", encoding_defaults::default_encode_timeout_minutes));
+      awj::compat::format("{}", encoding_defaults::default_encode_timeout_minutes));
   return help;
 }
 
 void print_help() {
   const auto help = help_text();
-  std::println("{}", help);
+  awj::compat::println("{}", help);
 }
 
-std::expected<ParseResult, std::string> parse_arguments_impl(
+awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     const std::vector<std::wstring>& args, AppConfig cfg,
     bool preset_base_active) {
   // CLI 参数直接落到 AppConfig，确保命令行和 Slint UI 走同一套核心逻辑。
@@ -1186,9 +1184,9 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
   std::vector<std::string> warnings;
 
   auto require_value = [&](std::size_t& index, std::wstring_view option)
-      -> std::expected<std::wstring, std::string> {
+      -> awj::compat::expected<std::wstring, std::string> {
     if (index + 1 >= args.size()) {
-      return std::unexpected{std::format(
+      return awj::compat::unexpected{awj::compat::format(
           "{} 需要一个参数。请在该选项后补充具体值，例如路径、数字或枚举值。",
           config_detail::narrow_ascii_for_diagnostics(option))};
     }
@@ -1205,7 +1203,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     }
 
     if (lower == L"--version") {
-      std::println("AWJimage {}", AWJ_BUILD_VERSION);
+      awj::compat::println("AWJimage {}", AWJ_BUILD_VERSION);
       return ParseResult{.should_exit = true, .exit_code = 0, .config = cfg};
     }
 
@@ -1216,9 +1214,9 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
     if (lower == L"--scale-percent") {
       const auto value = require_value(i, args[i]);
-      if (!value) return std::unexpected{value.error()};
+      if (!value) return awj::compat::unexpected{value.error()};
       const auto parsed = config_detail::parse_int_range(*value, 1, 100, "scale-percent");
-      if (!parsed) return std::unexpected{parsed.error()};
+      if (!parsed) return awj::compat::unexpected{parsed.error()};
       cfg.image_size_limit.scale_percent = *parsed;
       continue;
     }
@@ -1226,11 +1224,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"-i" || lower == L"--input") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto path = normalize_path_argument(*value, "输入路径");
       if (!path) {
-        return std::unexpected{path.error()};
+        return awj::compat::unexpected{path.error()};
       }
       cfg.input_path = *path;
       shell_inputs.push_back(*path);
@@ -1240,11 +1238,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"-o" || lower == L"--output") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto path = normalize_path_argument(*value, "输出目录");
       if (!path) {
-        return std::unexpected{path.error()};
+        return awj::compat::unexpected{path.error()};
       }
       cfg.output_dir = *path;
       continue;
@@ -1253,12 +1251,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"-f" || lower == L"--format" || lower == L"--output-format") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto format = config_detail::parse_output_format(*value);
       if (!format) {
-        return std::unexpected{
-            std::format("输出格式不支持: {}。可选值：png、avif、webp、jxl、jpg。",
+        return awj::compat::unexpected{
+            awj::compat::format("输出格式不支持: {}。可选值：png、avif、webp、jxl、jpg。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.output_format = *format;
@@ -1273,7 +1271,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--output-policy") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto policy = config_detail::lower_copy(*value);
       if (policy == L"shell") {
@@ -1281,7 +1279,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       } else if (policy == L"normal") {
         cfg.output_policy = OutputPolicy::normal;
       } else {
-        return std::unexpected{"output-policy 只支持 normal 或 shell。"};
+        return awj::compat::unexpected{"output-policy 只支持 normal 或 shell。"};
       }
       continue;
     }
@@ -1290,7 +1288,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--output-template") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       cfg.output_template = *value;
       continue;
@@ -1299,10 +1297,10 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"-p" || lower == L"--preset") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       if (value->empty()) {
-        return std::unexpected{"--preset 名称不能为空。"};
+        return awj::compat::unexpected{"--preset 名称不能为空。"};
       }
       preset_name = *value;
       continue;
@@ -1311,11 +1309,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--preset-file") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto path = normalize_path_argument(*value, "预设文件路径");
       if (!path) {
-        return std::unexpected{path.error()};
+        return awj::compat::unexpected{path.error()};
       }
       preset_file = *path;
       continue;
@@ -1324,11 +1322,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"-q" || lower == L"--quality") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto quality = config_detail::parse_quality(*value);
       if (!quality) {
-        return std::unexpected{quality.error()};
+        return awj::compat::unexpected{quality.error()};
       }
       cfg.quality = *quality;
       quality_was_set = true;
@@ -1338,12 +1336,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--visual-quality" || lower == L"--visual_quality") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto visual_quality =
           config_detail::parse_int_range(*value, 1, 100, "visual-quality");
       if (!visual_quality) {
-        return std::unexpected{visual_quality.error()};
+        return awj::compat::unexpected{visual_quality.error()};
       }
       cfg.visual_quality = *visual_quality;
       continue;
@@ -1352,7 +1350,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--studio-cancel-event") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       cfg.studio_cancel_event_name = *value;
       continue;
@@ -1361,7 +1359,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--studio-queue-manifest") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       cfg.studio_queue_manifest = path_from_argument_text(*value);
       continue;
@@ -1370,11 +1368,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--studio-large-action") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto lower_value = config_detail::lower_copy(*value);
       if (lower_value != L"grid") {
-        return std::unexpected{"studio-large-action 只支持 grid；旧编码路径已移除。"};
+        return awj::compat::unexpected{"studio-large-action 只支持 grid；旧编码路径已移除。"};
       }
       cfg.studio_large_action = lower_value;
       continue;
@@ -1382,7 +1380,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
 
     if (lower == L"--large-image-priority") {
-      return std::unexpected{"large-image-priority 已移除；超出单图上限时自动使用 AOM Grid。"};
+      return awj::compat::unexpected{"large-image-priority 已移除；超出单图上限时自动使用 AOM Grid。"};
     }
 
     if (lower == L"--unlock-memory-limit" || lower == L"--no-unlock-memory-limit") {
@@ -1444,12 +1442,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--bitdepth") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto bit_depth =
           config_detail::parse_int_range(*value, 1, 16, "bit-depth");
       if (!bit_depth) {
-        return std::unexpected{bit_depth.error()};
+        return awj::compat::unexpected{bit_depth.error()};
       }
       cfg.bit_depth = std::optional<int>{*bit_depth};
       continue;
@@ -1459,12 +1457,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--subsampling") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto chroma = config_detail::parse_chroma(*value);
       if (!chroma) {
-        return std::unexpected{
-            std::format("chroma 不支持: {}。可选值：auto、444、422、420、400。",
+        return awj::compat::unexpected{
+            awj::compat::format("chroma 不支持: {}。可选值：auto、444、422、420、400。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.chroma_mode = *chroma;
@@ -1475,12 +1473,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--avif_color_representation") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto representation =
           config_detail::parse_avif_color_representation(*value);
       if (!representation) {
-        return std::unexpected{std::format(
+        return awj::compat::unexpected{awj::compat::format(
             "avif-color-representation 不支持: {}。可选值：yuv、source、rgb。",
             config_detail::narrow_ascii_for_diagnostics(*value))};
       }
@@ -1494,27 +1492,27 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     }
     if (lower == L"--jpeg-hdr" || lower == L"--avif-animation-tune") {
       const auto value = require_value(i, args[i]);
-      if (!value) return std::unexpected{value.error()};
+      if (!value) return awj::compat::unexpected{value.error()};
       const auto mode = config_detail::lower_copy(*value);
       if (lower == L"--jpeg-hdr") {
         if (mode == L"auto") cfg.jpeg_hdr = JpegHdrMode::automatic;
         else if (mode == L"sdr") cfg.jpeg_hdr = JpegHdrMode::sdr;
         else if (mode == L"hdr") cfg.jpeg_hdr = JpegHdrMode::hdr;
-        else return std::unexpected{"jpeg-hdr 只支持 auto、sdr、hdr。"};
+        else return awj::compat::unexpected{"jpeg-hdr 只支持 auto、sdr、hdr。"};
       } else {
         if (mode == L"auto") cfg.avif_animation_tune = AvifAnimationTune::automatic;
         else if (mode == L"ssim") cfg.avif_animation_tune = AvifAnimationTune::ssim;
         else if (mode == L"psnr") cfg.avif_animation_tune = AvifAnimationTune::psnr;
-        else return std::unexpected{"avif-animation-tune 只支持 auto、ssim、psnr。"};
+        else return awj::compat::unexpected{"avif-animation-tune 只支持 auto、ssim、psnr。"};
       }
       continue;
     }
     if (lower == L"--avif-animation-keyframe") {
       const auto value = require_value(i, args[i]);
-      if (!value) return std::unexpected{value.error()};
+      if (!value) return awj::compat::unexpected{value.error()};
       const auto count = config_detail::parse_int_range(*value, 0, std::numeric_limits<int>::max(), "avif-animation-keyframe");
-      if (!count) return std::unexpected{count.error()};
-      if (*count < 0) return std::unexpected{"avif-animation-keyframe 必须大于等于 0。"};
+      if (!count) return awj::compat::unexpected{count.error()};
+      if (*count < 0) return awj::compat::unexpected{"avif-animation-keyframe 必须大于等于 0。"};
       cfg.avif_animation_keyframe = *count;
       continue;
     }
@@ -1534,12 +1532,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--jpgli-progressive_level") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto level =
           config_detail::parse_int_range(*value, 0, 2, "jpeg-progressive-level");
       if (!level) {
-        return std::unexpected{level.error()};
+        return awj::compat::unexpected{level.error()};
       }
       cfg.jpegli_progressive_level = *level;
       if (cfg.jpegli_progressive_level > 0) {
@@ -1594,12 +1592,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--avif-encoder" || lower == L"--avif_encoder") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto encoder = config_detail::parse_avif_encoder(*value);
       if (!encoder) {
-        return std::unexpected{
-            std::format("AVIF encoder 不支持: "
+        return awj::compat::unexpected{
+            awj::compat::format("AVIF encoder 不支持: "
                         "{}。仅支持 auto/aom；旧 SVT/Zen 编码器已移除。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
@@ -1611,12 +1609,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--alpha_mode") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto policy = config_detail::parse_alpha_policy(*value);
       if (!policy) {
-        return std::unexpected{
-            std::format("alpha 不支持: {}。可选值：force、auto、off。",
+        return awj::compat::unexpected{
+            awj::compat::format("alpha 不支持: {}。可选值：force、auto、off。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
       cfg.alpha_policy = *policy;
@@ -1625,7 +1623,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
 
     if (lower == L"--experimental-encoders" || lower == L"--enable-experimental-encoders" ||
         lower == L"--no-experimental-encoders") {
-      return std::unexpected{"experimental-encoders 已移除；AVIF 仅支持 AOM。"};
+      return awj::compat::unexpected{"experimental-encoders 已移除；AVIF 仅支持 AOM。"};
     }
 
     if (lower == L"--experimental-clamped-grid-padding") {
@@ -1657,11 +1655,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
         lower == L"--jobs" || lower == L"--max-jobs") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto jobs = config_detail::parse_auto_jobs(*value);
       if (!jobs) {
-        return std::unexpected{jobs.error()};
+        return awj::compat::unexpected{jobs.error()};
       }
       cfg.max_jobs = *jobs;
       const auto mode = config_detail::lower_copy(*value);
@@ -1671,11 +1669,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     }
 
     if (lower == L"--cpu-affinity") {
-      if (!cfg.cpu_affinity.empty()) return std::unexpected{"cpu-affinity 只能指定一次。"};
+      if (!cfg.cpu_affinity.empty()) return awj::compat::unexpected{"cpu-affinity 只能指定一次。"};
       const auto value = require_value(i, args[i]);
-      if (!value) return std::unexpected{value.error()};
+      if (!value) return awj::compat::unexpected{value.error()};
       auto cpus = config_detail::parse_cpu_affinity(*value);
-      if (!cpus) return std::unexpected{cpus.error()};
+      if (!cpus) return awj::compat::unexpected{cpus.error()};
       cfg.cpu_affinity = std::move(*cpus);
       continue;
     }
@@ -1683,11 +1681,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--memory-limit" || lower == L"--memory") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto memory_limit = config_detail::parse_memory_limit(*value);
       if (!memory_limit) {
-        return std::unexpected{memory_limit.error()};
+        return awj::compat::unexpected{memory_limit.error()};
       }
       cfg.memory_limit_bytes = *memory_limit;
       continue;
@@ -1696,11 +1694,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--image-size-limit") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto mode = config_detail::parse_image_size_limit_mode(*value);
       if (!mode) {
-        return std::unexpected{"image-size-limit 只支持 auto、none 或 manual。"};
+        return awj::compat::unexpected{"image-size-limit 只支持 auto、none 或 manual。"};
       }
       cfg.image_size_limit.mode = *mode;
       continue;
@@ -1709,11 +1707,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--max-width" || lower == L"--image-max-width") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-width");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.image_size_limit.max_width = *parsed;
       continue;
@@ -1722,11 +1720,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--max-height" || lower == L"--image-max-height") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-height");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.image_size_limit.max_height = *parsed;
       continue;
@@ -1735,11 +1733,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--max-long-edge" || lower == L"--image-max-long-edge") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-long-edge");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.image_size_limit.max_long_edge = *parsed;
       continue;
@@ -1748,11 +1746,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--max-short-edge" || lower == L"--image-max-short-edge") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed = config_detail::parse_int_range(*value, 1, 1000000, "max-short-edge");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.image_size_limit.max_short_edge = *parsed;
       continue;
@@ -1761,11 +1759,11 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--speed") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto speed = config_detail::parse_int_range(*value, 0, 10, "speed");
       if (!speed) {
-        return std::unexpected{speed.error()};
+        return awj::compat::unexpected{speed.error()};
       }
       cfg.speed = *speed;
       continue;
@@ -1799,19 +1797,19 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower.starts_with(L"--svtav1hdr-") || lower.starts_with(L"--svt-av1-hdr-") ||
         lower.starts_with(L"--zenrav") || lower == L"--mastering-display" ||
         lower == L"--content-light") {
-      return std::unexpected{std::format("参数 {} 所属编码器已移除；请移除此参数并使用 auto/aom。",
+      return awj::compat::unexpected{awj::compat::format("参数 {} 所属编码器已移除；请移除此参数并使用 auto/aom。",
           config_detail::narrow_ascii_for_diagnostics(args[i]))};
     }
 
     if (lower == L"--color-primaries") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed =
           config_detail::parse_int_range(*value, 0, 255, "color-primaries");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.color_primaries = *parsed;
       continue;
@@ -1820,12 +1818,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--transfer-characteristics") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed = config_detail::parse_int_range(
           *value, 0, 255, "transfer-characteristics");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.transfer_characteristics = *parsed;
       continue;
@@ -1834,12 +1832,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--matrix-coefficients") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed =
           config_detail::parse_int_range(*value, 0, 255, "matrix-coefficients");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.matrix_coefficients = *parsed;
       continue;
@@ -1848,12 +1846,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--color-range") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto parsed =
           config_detail::parse_int_range(*value, 0, 1, "color-range");
       if (!parsed) {
-        return std::unexpected{parsed.error()};
+        return awj::compat::unexpected{parsed.error()};
       }
       cfg.color_range = *parsed;
       continue;
@@ -1862,12 +1860,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--timeout-encode") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto timeout =
           config_detail::parse_int_range(*value, 1, 24 * 60, "timeout-encode");
       if (!timeout) {
-        return std::unexpected{timeout.error()};
+        return awj::compat::unexpected{timeout.error()};
       }
       cfg.encode_timeout_minutes = *timeout;
       continue;
@@ -1876,27 +1874,27 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--option") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       if (auto valid = config_detail::validate_native_option(*value); !valid) {
-        return std::unexpected{valid.error()};
+        return awj::compat::unexpected{valid.error()};
       }
       continue;
     }
 
     if (lower == L"--define") {
-      return std::unexpected{
+      return awj::compat::unexpected{
           "--define 是旧外部后端选项，当前版本仅支持 native 编码。"};
     }
 
     if (lower == L"--collision") {
       const auto value = require_value(i, args[i]);
       if (!value) {
-        return std::unexpected{value.error()};
+        return awj::compat::unexpected{value.error()};
       }
       const auto collision = config_detail::parse_collision(*value);
       if (!collision) {
-        return std::unexpected{std::format(
+        return awj::compat::unexpected{awj::compat::format(
             "冲突策略不支持: {}。可选值：overwrite、skip、number、time、random。",
             config_detail::narrow_ascii_for_diagnostics(*value))};
       }
@@ -1964,7 +1962,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "未知参数: {}", config_detail::narrow_ascii_for_diagnostics(args[i]))};
   }
 
@@ -1976,7 +1974,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
       shell_inputs.push_back(cfg.input_path);
     }
   } else if (!positional_args.empty()) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "未知参数: {}",
         config_detail::narrow_ascii_for_diagnostics(positional_args.front()))};
   }
@@ -1984,7 +1982,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
   if (auto valid =
           finalize_config_defaults(cfg, quality_was_set, preset_was_set);
       !valid) {
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   }
 
   std::vector<std::filesystem::path> unique_shell_inputs;
@@ -1998,7 +1996,7 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
     seen_keys.reserve(shell_inputs.size());
     for (const auto& input : shell_inputs) {
       const auto key = config_detail::shell_input_key(input);
-      if (std::ranges::find(seen_keys, key) != seen_keys.end()) {
+      if (awj::compat::ranges::find(seen_keys, key) != seen_keys.end()) {
         continue;
       }
       seen_keys.push_back(key);
@@ -2015,12 +2013,12 @@ std::expected<ParseResult, std::string> parse_arguments_impl(
                      .warnings = std::move(warnings)};
 }
 
-std::expected<ParseResult, std::string> parse_arguments(
+awj::compat::expected<ParseResult, std::string> parse_arguments(
     const std::vector<std::wstring>& args) {
   return parse_arguments_impl(args, default_app_config(), false);
 }
 
-std::expected<ParseResult, std::string> parse_arguments_with_preset_base(
+awj::compat::expected<ParseResult, std::string> parse_arguments_with_preset_base(
     const std::vector<std::wstring>& args, AppConfig base) {
   return parse_arguments_impl(args, std::move(base), true);
 }

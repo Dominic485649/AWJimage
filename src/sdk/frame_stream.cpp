@@ -4,7 +4,7 @@
 
 struct awj_stream_reader {
   awj_context_options options{};
-  std::stop_token stop{};
+  awj::compat::stop_token stop{};
   std::vector<std::shared_ptr<std::vector<uint8_t>>> slots{};
   bool failed{};
   bool ended{};
@@ -48,7 +48,7 @@ class Deadline {
 };
 
 awj_status read_all(awj_read_callback callback, void* user, std::span<uint8_t> bytes,
-                    Deadline& deadline, std::stop_token stop, bool header = false) {
+                    Deadline& deadline, awj::compat::stop_token stop, bool header = false) {
   size_t offset = 0;
   while (offset < bytes.size()) {
     if (stop.stop_requested()) return awj_sdk::fail(AWJ_CANCELLED, "帧流读取已取消。");
@@ -65,7 +65,7 @@ awj_status read_all(awj_read_callback callback, void* user, std::span<uint8_t> b
   return AWJ_OK;
 }
 awj_status write_all(awj_write_callback callback, void* user, std::span<const uint8_t> bytes,
-                     Deadline& deadline, std::stop_token stop) {
+                     Deadline& deadline, awj::compat::stop_token stop) {
   size_t offset = 0;
   while (offset < bytes.size()) {
     if (stop.stop_requested()) return awj_sdk::fail(AWJ_CANCELLED, "帧流写入已取消。");

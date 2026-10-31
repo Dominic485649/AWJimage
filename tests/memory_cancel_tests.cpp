@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -5,7 +6,6 @@
 #include <fstream>
 #include <initializer_list>
 #include <limits>
-#include <stop_token>
 #include <string_view>
 #include <utility>
 
@@ -124,7 +124,7 @@ int main() {
   awj::WebPImageEncoder webp;
   awj::WebPImageDecoder decoder;
   const auto candidate_path = std::filesystem::temp_directory_path() / "awjimage-vq-cancel.webp";
-  std::stop_source stop_source;
+  awj::compat::stop_source stop_source;
   stop_source.request_stop();
   auto canceled = awj::encode_with_native_visual_quality_search(
       make_test_image(), webp, decoder,

@@ -1137,5 +1137,22 @@ Cargo path override; the user's shared Cargo registry is not modified.
 The complete Apache License 2.0 terms are reproduced in the appendix above.
 
 -------------------------------------------------------------------------------
+33. tl::expected (private target compatibility)
+-------------------------------------------------------------------------------
+Version: v1.3.1, commit 1770e3559f2f6ea4a5fb4f577ad22aeb30fbd8e4
+Source: https://github.com/TartanLlama/expected
+License: CC0-1.0; complete terms: licenses/tl-expected-CC0.txt
+Used privately for targets whose standard library lacks expected.
+
+-------------------------------------------------------------------------------
+34. fmt (private target formatting)
+-------------------------------------------------------------------------------
+Version: 12.2.0, commit 1be298e1bd68957e4cd352e1f676f00e07dcfb57
+Source: https://github.com/fmtlib/fmt
+License: MIT; complete copyright and terms: licenses/fmt-MIT.txt
+Statically incorporated when the selected target needs formatting compatibility.
+Archive and retained-source identities: cmake/stdlib-compat-dependencies.json.
+
+-------------------------------------------------------------------------------
 END OF THIRD-PARTY NOTICES
 -------------------------------------------------------------------------------

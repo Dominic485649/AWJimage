@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <cstddef>
 #include <cstdio>
@@ -9,7 +10,6 @@
 #include <fstream>
 #include <limits>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -293,7 +293,7 @@ int verify_gain_map_sdr_icc(awj::JpegliImageEncoder& encoder) {
     return fail("JPEG 未借用并原样保留已有 SDR 的必要 ICC。");
   settings.jpegli_xyb = true;
   if (encoder.encode(image, settings)) return fail("非 sRGB 的 Gain Map SDR 被错误套用 XYB 内置 ICC。");
-  std::stop_source cancelled;
+  awj::compat::stop_source cancelled;
   cancelled.request_stop();
   settings.jpegli_xyb = false;
   if (encoder.encode(image, settings, cancelled.get_token())) return fail("必要 SDR ICC 编码忽略取消。");
@@ -588,7 +588,7 @@ int main(int argc, char** argv) {
     opts.visual_quality.reset(); opts.resources.memory_limit_bytes = 1;
     if (awj::encode_hdr_jpeg(hdr, opts)) return fail("HDR JPEG ignored its memory limit.");
     opts.resources.memory_limit_bytes = 128 * 1024 * 1024;
-    std::stop_source cancellation; cancellation.request_stop();
+    awj::compat::stop_source cancellation; cancellation.request_stop();
     if (awj::encode_hdr_jpeg(hdr, opts, cancellation.get_token())) return fail("HDR JPEG ignored cancellation.");
   }
   terminate_test_process(0);

@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -8,7 +9,6 @@
 #include <cstdint>
 #include <limits>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -177,7 +177,7 @@ int main(int argc, char** argv) {
   std::filesystem::create_directories(root);
   const auto gif_path = root / "disposal.gif", apng_path = root / "blend.png", webp_path = root / "blend.webp";
   gif(gif_path); write(apng_path, apng()); webp(webp_path);
-  std::stop_source stop; stop.request_stop();
+  awj::compat::stop_source stop; stop.request_stop();
   for (const auto& path : {gif_path, apng_path, webp_path}) {
     for (const std::uint64_t budget : {0ull, 128ull * 1024 * 1024}) {
       auto opened = awj::open_animation(path, budget);

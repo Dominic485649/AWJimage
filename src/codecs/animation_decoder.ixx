@@ -1,18 +1,17 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -78,13 +77,13 @@ class Canvas {
   FrameSpec last{};
   bool has_last{};
 
-  std::expected<void, std::string> initialize(const AnimationInfo& info, int depth) {
+  awj::compat::expected<void, std::string> initialize(const AnimationInfo& info, int depth) {
     auto stride = decoder_common::checked_rgba_stride(info.width, "动画画布", depth == 16 ? 2 : 1);
-    if (!stride) return std::unexpected{stride.error()};
+    if (!stride) return awj::compat::unexpected{stride.error()};
     auto bytes = decoder_common::checked_image_bytes(*stride, info.height, "动画画布");
-    if (!bytes) return std::unexpected{bytes.error()};
+    if (!bytes) return awj::compat::unexpected{bytes.error()};
     auto pixels = decoder_common::make_byte_buffer(*bytes, "动画画布");
-    if (!pixels) return std::unexpected{pixels.error()};
+    if (!pixels) return awj::compat::unexpected{pixels.error()};
     image = ImageBuffer{.width = info.width, .height = info.height,
         .pixel_format = PixelFormat::rgba, .alpha_mode = AlphaMode::straight, .bit_depth = depth};
     image.planes.push_back({std::move(*pixels), *stride});
@@ -92,7 +91,7 @@ class Canvas {
     return {};
   }
 
-  bool fill(const FrameSpec& spec, std::array<std::uint16_t, 4> color, std::stop_token stop = {}) {
+  bool fill(const FrameSpec& spec, std::array<std::uint16_t, 4> color, awj::compat::stop_token stop = {}) {
     auto& plane = image.planes.front();
     const auto sample_bytes = image.bit_depth == 16 ? 2u : 1u;
     for (std::size_t y = 0; y < spec.height; ++y) {
@@ -106,14 +105,14 @@ class Canvas {
     return true;
   }
 
-  std::expected<void, std::string> before(const FrameSpec& spec, std::stop_token stop) {
+  awj::compat::expected<void, std::string> before(const FrameSpec& spec, awj::compat::stop_token stop) {
     const auto pixel_bytes = image.bit_depth == 16 ? 8u : 4u;
     auto& plane = image.planes.front();
     if (has_last) {
-      if (last.dispose == 1 && !fill(last, background, stop)) return std::unexpected{"任务已取消。"};
+      if (last.dispose == 1 && !fill(last, background, stop)) return awj::compat::unexpected{"任务已取消。"};
       else if (last.dispose == 2) {
         for (std::size_t y = 0; y < last.height; ++y) {
-          if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+          if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
           std::memcpy(plane.bytes.data() + (last.y + y) * plane.stride + last.x * pixel_bytes,
               previous.data() + y * last.width * pixel_bytes, last.width * pixel_bytes);
         }
@@ -122,11 +121,11 @@ class Canvas {
     previous.clear();
     if (spec.dispose == 2) {
       auto size = decoder_common::checked_image_bytes(spec.width * pixel_bytes, spec.height, "动画 PREVIOUS");
-      if (!size) return std::unexpected{size.error()};
+      if (!size) return awj::compat::unexpected{size.error()};
       auto resized = decoder_common::resize_buffer(previous, *size, "动画 PREVIOUS");
-      if (!resized) return std::unexpected{resized.error()};
+      if (!resized) return awj::compat::unexpected{resized.error()};
       for (std::size_t y = 0; y < spec.height; ++y) {
-        if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         std::memcpy(previous.data() + y * spec.width * pixel_bytes,
             plane.bytes.data() + (spec.y + y) * plane.stride + spec.x * pixel_bytes, spec.width * pixel_bytes);
       }
@@ -136,7 +135,7 @@ class Canvas {
     return {};
   }
 
-  std::expected<void, std::string> blend(const ImageBuffer& frame, const FrameSpec& spec, std::stop_token stop) {
+  awj::compat::expected<void, std::string> blend(const ImageBuffer& frame, const FrameSpec& spec, awj::compat::stop_token stop) {
     const auto sample_bytes = image.bit_depth == 16 ? 2u : 1u;
     const std::uint64_t maximum = sample_bytes == 2 ? 65535 : 255;
     auto read = [sample_bytes](const std::byte* p) -> std::uint64_t {
@@ -148,7 +147,7 @@ class Canvas {
       else { auto v = static_cast<std::uint16_t>(value); std::memcpy(p, &v, 2); }
     };
     for (std::size_t y = 0; y < spec.height; ++y) {
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       for (std::size_t x = 0; x < spec.width; ++x) {
       const auto* src = frame.planes.front().bytes.data() + y * frame.planes.front().stride + x * 4 * sample_bytes;
       auto* dst = image.planes.front().bytes.data() + (spec.y + y) * image.planes.front().stride + (spec.x + x) * 4 * sample_bytes;
@@ -186,20 +185,20 @@ class GifReader final : public AnimationReader {
     return size;
   }
 
-  std::expected<void, std::string> open(std::stop_token stop) {
+  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop) {
     if (bytes.size() < 13 || (std::memcmp(bytes.data(), "GIF87a", 6) && std::memcmp(bytes.data(), "GIF89a", 6)))
-      return std::unexpected{"GIF 签名无效。"};
+      return awj::compat::unexpected{"GIF 签名无效。"};
     details.width = gif_detail::read_le_u16(bytes, 6);
     details.height = gif_detail::read_le_u16(bytes, 8);
     auto dimensions = decoder_common::make_image_dimensions_checked(details.width, details.height, "GIF 动画");
-    if (!dimensions) return std::unexpected{dimensions.error()};
+    if (!dimensions) return awj::compat::unexpected{dimensions.error()};
     std::size_t pos = 13;
     const auto packed = std::to_integer<unsigned>(bytes[10]);
     if (packed & 128) {
       const auto size = 3u * (2u << (packed & 7));
-      if (size > bytes.size() - pos) return std::unexpected{"GIF 全局色表截断。"};
+      if (size > bytes.size() - pos) return awj::compat::unexpected{"GIF 全局色表截断。"};
       const auto bg = std::to_integer<unsigned>(bytes[11]);
-      if (bg * 3 + 2 >= size) return std::unexpected{"GIF 背景色索引无效。"};
+      if (bg * 3 + 2 >= size) return awj::compat::unexpected{"GIF 背景色索引无效。"};
       for (std::size_t c = 0; c < 3; ++c) opaque_background[c] = std::to_integer<unsigned char>(bytes[pos + bg * 3 + c]);
       pos += size;
     }
@@ -209,20 +208,20 @@ class GifReader final : public AnimationReader {
     std::optional<int> loop;
     std::vector<std::byte> icc;
     while (pos < bytes.size()) {
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       const auto marker = std::to_integer<unsigned>(bytes[pos++]);
       if (marker == 0x3b) { terminated = true; break; }
       if (marker == 0x21) {
-        if (pos >= bytes.size()) return std::unexpected{"GIF 扩展截断。"};
+        if (pos >= bytes.size()) return awj::compat::unexpected{"GIF 扩展截断。"};
         const auto label = std::to_integer<unsigned>(bytes[pos++]);
-        if (label == 1) return std::unexpected{"GIF Plain Text 图形扩展暂不支持，不能保真合成。"};
+        if (label == 1) return awj::compat::unexpected{"GIF Plain Text 图形扩展暂不支持，不能保真合成。"};
         if (label == 0xf9) {
           if (bytes.size() - pos < 6 || bytes[pos] != std::byte{4} || bytes[pos + 5] != std::byte{0})
-            return std::unexpected{"GIF GCE 无效。"};
+            return awj::compat::unexpected{"GIF GCE 无效。"};
           const auto flags = std::to_integer<unsigned>(bytes[pos + 1]);
-          if (flags & 2) return std::unexpected{"GIF user-input 帧需要交互，无法转换为固定时间动画。"};
+          if (flags & 2) return awj::compat::unexpected{"GIF user-input 帧需要交互，无法转换为固定时间动画。"};
           const auto disposal = (flags >> 2) & 7;
-          if (disposal > 3) return std::unexpected{"GIF disposal 未定义。"};
+          if (disposal > 3) return awj::compat::unexpected{"GIF disposal 未定义。"};
           control.dispose = disposal == 2 ? 1 : disposal == 3 ? 2 : 0;
           control.transparent = flags & 1 ? std::to_integer<unsigned char>(bytes[pos + 4]) : -1;
           duration = {gif_detail::read_le_u16(bytes, pos + 2), 100};
@@ -232,7 +231,7 @@ class GifReader final : public AnimationReader {
           bool netscape = false, profile = false;
           if (label == 0xff) {
             if (pos >= bytes.size() || std::to_integer<unsigned>(bytes[pos]) != 11 || bytes.size() - pos < 12)
-              return std::unexpected{"GIF application 扩展无效。"};
+              return awj::compat::unexpected{"GIF application 扩展无效。"};
             const std::string_view app{reinterpret_cast<const char*>(bytes.data() + pos + 1), 11};
             netscape = app == "NETSCAPE2.0" || app == "ANIMEXTS1.0";
             profile = app == "ICCRGBG1012";
@@ -240,19 +239,19 @@ class GifReader final : public AnimationReader {
           }
           bool first = true;
           for (;;) {
-            if (pos >= bytes.size()) return std::unexpected{"GIF 扩展数据截断。"};
+            if (pos >= bytes.size()) return awj::compat::unexpected{"GIF 扩展数据截断。"};
             const auto size = std::to_integer<unsigned>(bytes[pos++]);
             if (!size) break;
-            if (size > bytes.size() - pos) return std::unexpected{"GIF 扩展数据截断。"};
+            if (size > bytes.size() - pos) return awj::compat::unexpected{"GIF 扩展数据截断。"};
             if (netscape && first) {
-              if (size != 3 || bytes[pos] != std::byte{1}) return std::unexpected{"GIF loop 扩展无效。"};
+              if (size != 3 || bytes[pos] != std::byte{1}) return awj::compat::unexpected{"GIF loop 扩展无效。"};
               auto count = gif_detail::read_le_u16(bytes, pos + 1);
               const int repetitions = count ? count : -1;
-              if (loop && *loop != repetitions) return std::unexpected{"GIF 存在冲突的 loop 扩展。"};
+              if (loop && *loop != repetitions) return awj::compat::unexpected{"GIF 存在冲突的 loop 扩展。"};
               loop = repetitions;
             }
             if (profile) {
-              if (icc.size() + size > encoding_defaults::codec_metadata_max_bytes) return std::unexpected{"GIF ICC 太大。"};
+              if (icc.size() + size > encoding_defaults::codec_metadata_max_bytes) return awj::compat::unexpected{"GIF ICC 太大。"};
               icc.insert(icc.end(), bytes.begin() + pos, bytes.begin() + pos + size);
             }
             pos += size;
@@ -260,45 +259,45 @@ class GifReader final : public AnimationReader {
           }
         }
       } else if (marker == 0x2c) {
-        if (bytes.size() - pos < 9) return std::unexpected{"GIF 帧描述截断。"};
+        if (bytes.size() - pos < 9) return awj::compat::unexpected{"GIF 帧描述截断。"};
         auto spec = control;
         spec.x = gif_detail::read_le_u16(bytes, pos);
         spec.y = gif_detail::read_le_u16(bytes, pos + 2);
         spec.width = gif_detail::read_le_u16(bytes, pos + 4);
         spec.height = gif_detail::read_le_u16(bytes, pos + 6);
-        if (!valid_rect(spec, details)) return std::unexpected{"GIF frame rect 超出画布。"};
+        if (!valid_rect(spec, details)) return awj::compat::unexpected{"GIF frame rect 超出画布。"};
         const auto flags = std::to_integer<unsigned>(bytes[pos + 8]);
         pos += 9;
         if (flags & 128) {
           const auto size = 3u * (2u << (flags & 7));
-          if (size > bytes.size() - pos) return std::unexpected{"GIF 局部色表截断。"};
+          if (size > bytes.size() - pos) return awj::compat::unexpected{"GIF 局部色表截断。"};
           pos += size;
         }
-        if (pos >= bytes.size()) return std::unexpected{"GIF LZW 数据截断。"};
+        if (pos >= bytes.size()) return awj::compat::unexpected{"GIF LZW 数据截断。"};
         ++pos;
         auto skipped = gif_detail::skip_sub_blocks(bytes, pos, "LZW");
-        if (!skipped) return std::unexpected{skipped.error()};
-        if (specs.size() == max_frames) return std::unexpected{"GIF 帧数超过 100000。"};
+        if (!skipped) return awj::compat::unexpected{skipped.error()};
+        if (specs.size() == max_frames) return awj::compat::unexpected{"GIF 帧数超过 100000。"};
         specs.push_back(spec);
         if (!duration.numerator) { duration.numerator = 1; details.zero_delay_adjusted = true; }
         details.durations.push_back(duration);
         if (exceeds_budget(bytes.capacity() + icc.capacity() + index_bytes(specs, details), budget))
-          return std::unexpected{"GIF 帧索引超出内存预算。"};
+          return awj::compat::unexpected{"GIF 帧索引超出内存预算。"};
         control = {};
         duration = {0, 100};
-      } else return std::unexpected{"GIF 记录类型无效。"};
+      } else return awj::compat::unexpected{"GIF 记录类型无效。"};
     }
-    if (!terminated || specs.empty()) return std::unexpected{"GIF 无帧或缺少 trailer。"};
+    if (!terminated || specs.empty()) return awj::compat::unexpected{"GIF 无帧或缺少 trailer。"};
     details.repetitions = loop.value_or(0);
     details.decoder_id = "giflib-animation";
     canvas.background = specs.front().transparent >= 0 ? std::array<std::uint16_t, 4>{} : opaque_background;
     auto stride = decoder_common::checked_rgba_stride(details.width, "GIF 动画");
-    if (!stride) return std::unexpected{stride.error()};
+    if (!stride) return awj::compat::unexpected{stride.error()};
     auto raw_bytes = decoder_common::checked_image_bytes(*stride, details.height, "GIF 动画");
-    if (!raw_bytes) return std::unexpected{raw_bytes.error()};
+    if (!raw_bytes) return awj::compat::unexpected{raw_bytes.error()};
     const auto owned = bytes.capacity() + icc.capacity() + index_bytes(specs, details);
     if (!fits_working_set(owned, *raw_bytes, 3, budget))
-      return std::unexpected{"GIF 画布/局部帧/PREVIOUS 超出内存预算。"};
+      return awj::compat::unexpected{"GIF 画布/局部帧/PREVIOUS 超出内存预算。"};
     auto initialized = canvas.initialize(details, 8);
     if (!initialized) return initialized;
     canvas.image.source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba, .bit_depth = 8,
@@ -308,31 +307,31 @@ class GifReader final : public AnimationReader {
     state = {.data = bytes.data(), .size = bytes.size()};
     int error = 0;
     gif.reset(DGifOpen(&state, gif_detail::read_callback, &error));
-    if (!gif) return std::unexpected{"giflib 无法打开动画。"};
+    if (!gif) return awj::compat::unexpected{"giflib 无法打开动画。"};
     return {};
   }
 
-  std::expected<bool, std::string> next(std::stop_token stop) override {
+  awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop) override {
     if (index == specs.size()) return false;
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     auto decoded = gif_detail::read_first_frame(gif.get());
-    if (!decoded) return std::unexpected{decoded.error()};
+    if (!decoded) return awj::compat::unexpected{decoded.error()};
     const auto& spec = specs[index];
     if (decoded->image.Width != spec.width || decoded->image.Height != spec.height ||
         decoded->image.Left != spec.x || decoded->image.Top != spec.y)
-      return std::unexpected{"giflib 与容器帧索引不一致。"};
+      return awj::compat::unexpected{"giflib 与容器帧索引不一致。"};
     if (canvas.has_last) canvas.background = specs[index - 1].transparent >= 0
         ? std::array<std::uint16_t, 4>{} : opaque_background;
     auto prepared = canvas.before(spec, stop);
-    if (!prepared) return std::unexpected{prepared.error()};
+    if (!prepared) return awj::compat::unexpected{prepared.error()};
     const auto* colors = gif_detail::active_color_map(gif.get(), decoded->image);
-    if (!colors) return std::unexpected{"GIF 帧缺少色表。"};
+    if (!colors) return awj::compat::unexpected{"GIF 帧缺少色表。"};
     for (std::size_t y = 0; y < spec.height; ++y) {
-      if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       for (std::size_t x = 0; x < spec.width; ++x) {
         const auto value = decoded->raster[y * spec.width + x];
         if (value == spec.transparent) continue;
-        if (value >= colors->ColorCount) return std::unexpected{"GIF 像素索引超出色表。"};
+        if (value >= colors->ColorCount) return awj::compat::unexpected{"GIF 像素索引超出色表。"};
         const auto& color = colors->Colors[value];
         auto* pixel = canvas.image.planes.front().bytes.data() + (spec.y + y) * canvas.image.planes.front().stride + (spec.x + x) * 4;
         pixel[0] = std::byte{color.Red}; pixel[1] = std::byte{color.Green};
@@ -367,7 +366,7 @@ class ApngReader final : public AnimationReader {
     return size;
   }
 
-  std::expected<void, std::string> open(std::stop_token stop) {
+  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop) {
     png_detail::PngAnimationLayout layout;
     auto append_data = [&](std::span<const std::byte> data) {
       auto& parts = specs.back().data;
@@ -377,7 +376,7 @@ class ApngReader final : public AnimationReader {
     };
     auto scanned = png_detail::visit_png_chunks(bytes, "APNG",
         [&](std::string_view type, std::span<const std::byte> prefix,
-            std::uint32_t size, std::uint64_t payload_offset) -> std::expected<void, std::string> {
+            std::uint32_t size, std::uint64_t payload_offset) -> awj::compat::expected<void, std::string> {
       if (auto accepted = layout.accept(type, prefix, size, payload_offset); !accepted) return accepted;
       const auto offset = static_cast<std::size_t>(payload_offset);
       const auto payload = std::span<const std::byte>{bytes}.subspan(offset, size);
@@ -404,39 +403,39 @@ class ApngReader final : public AnimationReader {
         append_data(payload.subspan(4));
       } else if (png_detail::is_global_decoding_chunk(type)) {
         if (inherited.size() + size + 12ull > encoding_defaults::codec_metadata_max_bytes + 1024ull)
-          return std::unexpected{"APNG 全局 metadata 过大。"};
+          return awj::compat::unexpected{"APNG 全局 metadata 过大。"};
         inherited.insert(inherited.end(), bytes.begin() + offset - 8, bytes.begin() + offset + size + 4);
       }
-      if (exceeds_budget(memory_usage_bytes(), budget)) return std::unexpected{"APNG 帧索引超出内存预算。"};
+      if (exceeds_budget(memory_usage_bytes(), budget)) return awj::compat::unexpected{"APNG 帧索引超出内存预算。"};
       return {};
     }, stop);
-    if (!scanned) return std::unexpected{scanned.error()};
+    if (!scanned) return awj::compat::unexpected{scanned.error()};
     if (!layout.uses_animation_reader())
-      return std::unexpected{"PNG 含独立默认静态图像或不含动画，应使用 PNG 静态 decoder。"};
+      return awj::compat::unexpected{"PNG 含独立默认静态图像或不含动画，应使用 PNG 静态 decoder。"};
     auto stride = decoder_common::checked_rgba_stride(details.width, "APNG", ihdr[8] == std::byte{16} ? 2 : 1);
-    if (!stride) return std::unexpected{stride.error()};
+    if (!stride) return awj::compat::unexpected{stride.error()};
     auto raw_bytes = decoder_common::checked_image_bytes(*stride, details.height, "APNG");
-    if (!raw_bytes) return std::unexpected{raw_bytes.error()};
+    if (!raw_bytes) return awj::compat::unexpected{raw_bytes.error()};
     // A synthesized frame duplicates compressed payloads while libpng decodes it.
     if (!fits_working_set(memory_usage_bytes(), *raw_bytes, 4, budget))
-      return std::unexpected{"APNG 画布/局部帧/PREVIOUS 超出内存预算。"};
+      return awj::compat::unexpected{"APNG 画布/局部帧/PREVIOUS 超出内存预算。"};
     details.decoder_id = "libpng-apng";
     return {};
   }
 
-  std::expected<bool, std::string> next(std::stop_token stop) override {
+  awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop) override {
     if (index == specs.size()) return false;
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     const auto& spec = specs[index];
     std::uint64_t encoded_size = 45 + inherited.size();
     const auto limit = encoding_defaults::effective_max_input_file_bytes();
     for (auto data : spec.data) {
       if (encoded_size > limit - 12 || data.size() > limit - encoded_size - 12)
-        return std::unexpected{"APNG 合成帧 buffer 超过当前运行时上限。"};
+        return awj::compat::unexpected{"APNG 合成帧 buffer 超过当前运行时上限。"};
       encoded_size += data.size() + 12;
     }
     if (encoded_size > std::numeric_limits<std::size_t>::max())
-      return std::unexpected{"APNG 合成帧 buffer 尺寸溢出。"};
+      return awj::compat::unexpected{"APNG 合成帧 buffer 尺寸溢出。"};
     std::vector<std::byte> frame_png(bytes.begin(), bytes.begin() + 8);
     frame_png.reserve(static_cast<std::size_t>(encoded_size));
     auto header = ihdr;
@@ -450,20 +449,20 @@ class ApngReader final : public AnimationReader {
     png_detail::append_png_chunk(frame_png, "IEND", {});
     PngImageDecoder decoder;
     auto decoded = decoder.decode_memory(frame_png, "APNG frame", DecodeOptions{.copy_metadata_payloads = index == 0});
-    if (!decoded) return std::unexpected{decoded.error()};
+    if (!decoded) return awj::compat::unexpected{decoded.error()};
     if (!index) {
       auto initialized = canvas.initialize(details, decoded->image.bit_depth);
-      if (!initialized) return std::unexpected{initialized.error()};
+      if (!initialized) return awj::compat::unexpected{initialized.error()};
       canvas.image.source_info = decoded->image.source_info;
       canvas.image.metadata = std::move(decoded->image.metadata);
       canvas.image.significant_bits.reset();
     }
     if (decoded->image.bit_depth != canvas.image.bit_depth || decoded->image.width != spec.width || decoded->image.height != spec.height)
-      return std::unexpected{"APNG 帧像素布局不一致。"};
+      return awj::compat::unexpected{"APNG 帧像素布局不一致。"};
     auto prepared = canvas.before(spec, stop);
-    if (!prepared) return std::unexpected{prepared.error()};
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-    if (auto blended = canvas.blend(decoded->image, spec, stop); !blended) return std::unexpected{blended.error()};
+    if (!prepared) return awj::compat::unexpected{prepared.error()};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (auto blended = canvas.blend(decoded->image, spec, stop); !blended) return awj::compat::unexpected{blended.error()};
     ++index;
     return true;
   }
@@ -485,41 +484,41 @@ struct WebpReader final : AnimationReader {
     for (const auto& block : current.metadata) size += block.bytes.capacity();
     return size;
   }
-  std::expected<void, std::string> open(std::stop_token stop = {}) {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop = {}) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     WebPBitstreamFeatures features{};
     if (WebPGetFeatures(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), &features) != VP8_STATUS_OK ||
         !features.has_animation || features.width <= 0 || features.height <= 0)
-      return std::unexpected{"WebP 动画尺寸/容器无效。"};
+      return awj::compat::unexpected{"WebP 动画尺寸/容器无效。"};
     auto stride = decoder_common::checked_rgba_stride(static_cast<std::size_t>(features.width), "WebP 动画");
-    if (!stride) return std::unexpected{stride.error()};
+    if (!stride) return awj::compat::unexpected{stride.error()};
     auto raw_bytes = decoder_common::checked_image_bytes(*stride, static_cast<std::size_t>(features.height), "WebP 动画");
-    if (!raw_bytes) return std::unexpected{raw_bytes.error()};
+    if (!raw_bytes) return awj::compat::unexpected{raw_bytes.error()};
     if (!fits_working_set(bytes.capacity(), *raw_bytes, 16, budget))
-      return std::unexpected{"WebP 动画工作区超出内存预算。"};
+      return awj::compat::unexpected{"WebP 动画工作区超出内存预算。"};
     WebPAnimDecoderOptions options{};
-    if (!WebPAnimDecoderOptionsInit(&options)) return std::unexpected{"初始化 WebP 动画失败。"};
+    if (!WebPAnimDecoderOptionsInit(&options)) return awj::compat::unexpected{"初始化 WebP 动画失败。"};
     options.color_mode = MODE_RGBA; options.use_threads = 0;
     const WebPData data{reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()};
     decoder.reset(WebPAnimDecoderNew(&data, &options));
     WebPAnimInfo info{};
     if (!decoder || !WebPAnimDecoderGetInfo(decoder.get(), &info) || !info.frame_count || info.frame_count > max_frames ||
         info.canvas_width != static_cast<unsigned>(features.width) || info.canvas_height != static_cast<unsigned>(features.height))
-      return std::unexpected{"WebP 动画容器无效。"};
+      return awj::compat::unexpected{"WebP 动画容器无效。"};
     description.width = info.canvas_width; description.height = info.canvas_height;
     description.decoder_id = "libwebp-animation";
     description.repetitions = info.loop_count ? static_cast<int>(info.loop_count) - 1 : -1;
     const auto* demux = WebPAnimDecoderGetDemuxer(decoder.get());
     WebPIterator iterator{};
-    if (!WebPDemuxGetFrame(demux, 1, &iterator)) return std::unexpected{"WebP 动画缺少帧。"};
+    if (!WebPDemuxGetFrame(demux, 1, &iterator)) return awj::compat::unexpected{"WebP 动画缺少帧。"};
     do {
-      if (stop.stop_requested()) { WebPDemuxReleaseIterator(&iterator); return std::unexpected{"任务已取消。"}; }
-      if (iterator.duration < 0) { WebPDemuxReleaseIterator(&iterator); return std::unexpected{"WebP 动画时长无效。"}; }
+      if (stop.stop_requested()) { WebPDemuxReleaseIterator(&iterator); return awj::compat::unexpected{"任务已取消。"}; }
+      if (iterator.duration < 0) { WebPDemuxReleaseIterator(&iterator); return awj::compat::unexpected{"WebP 动画时长无效。"}; }
       description.durations.push_back({static_cast<std::uint32_t>(std::max(iterator.duration, 1)), 1000});
       if (!iterator.duration) description.zero_delay_adjusted = true;
     } while (WebPDemuxNextFrame(&iterator));
     WebPDemuxReleaseIterator(&iterator);
-    if (description.durations.size() != info.frame_count) return std::unexpected{"WebP 动画帧数不一致。"};
+    if (description.durations.size() != info.frame_count) return awj::compat::unexpected{"WebP 动画帧数不一致。"};
     current.width = info.canvas_width; current.height = info.canvas_height;
     current.pixel_format = PixelFormat::rgba; current.alpha_mode = AlphaMode::straight;
     current.source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba, .bit_depth = 8};
@@ -527,30 +526,30 @@ struct WebpReader final : AnimationReader {
     auto owned = bytes.capacity() + description.durations.capacity() * sizeof(FrameDuration);
     for (const auto& block : current.metadata) owned += block.bytes.capacity();
     if (!fits_working_set(owned, *raw_bytes, 16, budget))
-      return std::unexpected{"WebP 动画 metadata/工作区超出内存预算。"};
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      return awj::compat::unexpected{"WebP 动画 metadata/工作区超出内存预算。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     auto pixels = decoder_common::make_byte_buffer(*raw_bytes, "WebP 动画");
-    if (!pixels) return std::unexpected{pixels.error()};
+    if (!pixels) return awj::compat::unexpected{pixels.error()};
     current.planes.push_back({std::move(*pixels), *stride});
     return {};
   }
-  std::expected<bool, std::string> next(std::stop_token stop) override {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop) override {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (index == description.durations.size()) return false;
     std::uint8_t* pixels{}; int timestamp{};
     if (!WebPAnimDecoderGetNext(decoder.get(), &pixels, &timestamp) || !pixels || timestamp < last_timestamp)
-      return std::unexpected{"WebP 动画帧解码失败。"};
+      return awj::compat::unexpected{"WebP 动画帧解码失败。"};
     std::memcpy(current.planes.front().bytes.data(), pixels, current.planes.front().bytes.size());
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     last_timestamp = timestamp; ++index;
     return true;
   }
 };
 } // namespace animation_detail
 
-std::expected<bool, std::string> input_uses_animation_reader(
-    const fs::path& path, std::stop_token stop = {}) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<bool, std::string> input_uses_animation_reader(
+    const fs::path& path, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   const auto extension = decoder_common::lower_extension(path);
   if (extension == L".gif") return true;
   if (extension == L".png" || extension == L".apng")
@@ -562,50 +561,50 @@ std::expected<bool, std::string> input_uses_animation_reader(
     file.read(reinterpret_cast<char*>(bytes.data()), bytes.size());
     WebPBitstreamFeatures features{};
     if (file.gcount() <= 0 || WebPGetFeatures(bytes.data(), static_cast<std::size_t>(file.gcount()), &features) != VP8_STATUS_OK)
-      return std::unexpected{"WebP 动画探测失败。"};
+      return awj::compat::unexpected{"WebP 动画探测失败。"};
     return features.has_animation != 0;
   }
   return false;
 }
 
 // budget == 0 disables only working-set admission, not input/buffer safety limits.
-std::expected<std::unique_ptr<AnimationReader>, std::string> open_animation(
-    const fs::path& path, std::uint64_t budget, std::stop_token stop = {}) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_animation(
+    const fs::path& path, std::uint64_t budget, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   auto animated = input_uses_animation_reader(path, stop);
-  if (!animated) return std::unexpected{animated.error()};
+  if (!animated) return awj::compat::unexpected{animated.error()};
   if (!*animated) return std::unique_ptr<AnimationReader>{};
   const auto extension = decoder_common::lower_extension(path);
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (extension == L".avif" || extension == L".avifs") return open_avif_animation(path, budget, stop);
   std::error_code size_error;
   const auto file_size = fs::file_size(path, size_error);
-  if (size_error) return std::unexpected{"无法读取动画输入大小。"};
+  if (size_error) return awj::compat::unexpected{"无法读取动画输入大小。"};
   if (file_size > encoding_defaults::effective_max_input_file_bytes())
-    return std::unexpected{"动画压缩输入超过当前运行时上限。"};
-  if (animation_detail::exceeds_budget(file_size, budget)) return std::unexpected{"动画压缩输入超出内存预算。"};
+    return awj::compat::unexpected{"动画压缩输入超过当前运行时上限。"};
+  if (animation_detail::exceeds_budget(file_size, budget)) return awj::compat::unexpected{"动画压缩输入超出内存预算。"};
   auto bytes = decoder_common::read_file_bytes(path, "动画");
-  if (!bytes) return std::unexpected{bytes.error()};
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-  if (animation_detail::exceeds_budget(bytes->capacity(), budget)) return std::unexpected{"动画压缩输入超出内存预算。"};
+  if (!bytes) return awj::compat::unexpected{bytes.error()};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+  if (animation_detail::exceeds_budget(bytes->capacity(), budget)) return awj::compat::unexpected{"动画压缩输入超出内存预算。"};
   if (extension == L".webp") {
     auto reader = std::make_unique<animation_detail::WebpReader>();
     reader->bytes = std::move(*bytes); reader->budget = budget;
     auto opened = reader->open(stop);
-    if (!opened) return std::unexpected{opened.error()};
+    if (!opened) return awj::compat::unexpected{opened.error()};
     return std::unique_ptr<AnimationReader>{std::move(reader)};
   }
   if (extension == L".gif") {
     auto reader = std::make_unique<animation_detail::GifReader>();
     reader->bytes = std::move(*bytes); reader->budget = budget;
     auto opened = reader->open(stop);
-    if (!opened) return std::unexpected{opened.error()};
+    if (!opened) return awj::compat::unexpected{opened.error()};
     return std::unique_ptr<AnimationReader>{std::move(reader)};
   }
   auto reader = std::make_unique<animation_detail::ApngReader>();
   reader->bytes = std::move(*bytes); reader->budget = budget;
   auto opened = reader->open(stop);
-  if (!opened) return std::unexpected{opened.error()};
+  if (!opened) return awj::compat::unexpected{opened.error()};
   return std::unique_ptr<AnimationReader>{std::move(reader)};
 }
 

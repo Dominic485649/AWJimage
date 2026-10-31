@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -7,7 +8,6 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <expected>
 #include <exception>
 #include <filesystem>
 #include <fstream>
@@ -15,7 +15,6 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -45,7 +44,7 @@ namespace fs = std::filesystem;
 void require(bool condition, std::string_view message) {
   if (!condition) throw std::runtime_error(std::string{message});
 }
-template<class T> T take(std::expected<T, std::string> result) {
+template<class T> T take(awj::compat::expected<T, std::string> result) {
   if (!result) throw std::runtime_error(result.error());
   return std::move(*result);
 }
@@ -102,7 +101,7 @@ struct Sandbox {
 };
 
 enum class Outcome { ordinary, iso, rejected };
-void check_image(const std::expected<awj::ImageDecodeResult, std::string>& result, Outcome expected) {
+void check_image(const awj::compat::expected<awj::ImageDecodeResult, std::string>& result, Outcome expected) {
   if (expected == Outcome::rejected) {
     require(!result && result.error().starts_with("Gain Map:"), "HDR must fail terminally, not fall back to SDR");
     require(result.error().find("ISO 21496-1") != std::string::npos, "HDR error must name ISO 21496-1");
@@ -117,7 +116,7 @@ void check_image(const std::expected<awj::ImageDecodeResult, std::string>& resul
     require(result->image.source_info->has_hdr_metadata && result->image.bit_depth == 16, "ISO output lost HDR precision");
   }
 }
-void check_dimensions(const std::expected<awj::ImageDimensions, std::string>& dimensions, Outcome expected) {
+void check_dimensions(const awj::compat::expected<awj::ImageDimensions, std::string>& dimensions, Outcome expected) {
   if (expected == Outcome::rejected)
     require(!dimensions && dimensions.error().starts_with("Gain Map:") && dimensions.error().find("ISO 21496-1") != std::string::npos,
         "Dimension probe hid or mislabeled a terminal HDR error");
@@ -648,7 +647,7 @@ void bidirectional_render_contract() {
         both.gain_map_alternative->alternate_hdr_headroom_log2 == 0,"Common renderer lost or reversed a headroom endpoint");
     same_alpha(high.image,low.image);
     // 两个输入方向与所有呈现模式都必须保留取消契约，不能因保留原端点而绕过。
-    std::stop_source cancellation; cancellation.request_stop();
+    awj::compat::stop_source cancellation; cancellation.request_stop();
     for (const auto mode : {Mode::hdr_only,Mode::sdr_only,Mode::preserve_both}) {
       auto canceled = awj::render_iso_gain_map(base,gain,*metadata,mode,cancellation.get_token());
       require(!canceled && canceled.error().find("取消") != std::string::npos,"Common ISO renderer ignored cancellation");

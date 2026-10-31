@@ -1,9 +1,8 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <cstdint>
-#include <expected>
-#include <format>
 #include <optional>
 #include <ranges>
 #include <span>
@@ -22,18 +21,18 @@ export namespace awj {
 namespace avif_registry_detail {
 
 bool contains_chroma(const AvifEncoderCapability& capability, ChromaMode chroma) {
-  return std::ranges::find(capability.chroma_modes, chroma) != capability.chroma_modes.end();
+  return awj::compat::ranges::find(capability.chroma_modes, chroma) != capability.chroma_modes.end();
 }
 
 bool contains_bit_depth(const AvifEncoderCapability& capability, int bit_depth) {
-  return std::ranges::find(capability.bit_depths, bit_depth) != capability.bit_depths.end();
+  return awj::compat::ranges::find(capability.bit_depths, bit_depth) != capability.bit_depths.end();
 }
 
 std::optional<int> max_bit_depth_for(const AvifEncoderCapability& capability) {
   if (capability.bit_depths.empty()) {
     return {};
   }
-  return *std::ranges::max_element(capability.bit_depths);
+  return *awj::compat::ranges::max_element(capability.bit_depths);
 }
 
 std::optional<int> nearest_supported_bit_depth_not_exceeding(
@@ -69,7 +68,7 @@ AppliedBitDepth applied_bit_depth_for(const AvifEncoderCapability& capability,
     const auto requested_reason =
         request.requested_bit_depth_reason.empty()
             ? (request.requested_bit_depth_explicit ? std::string{"用户明确请求 bit-depth"}
-                                                    : std::format("源图继承 {}-bit bit-depth", requested))
+                                                    : awj::compat::format("源图继承 {}-bit bit-depth", requested))
             : request.requested_bit_depth_reason;
     if (contains_bit_depth(capability, requested) || request.requested_bit_depth_explicit) {
       return AppliedBitDepth{.value = requested, .reason = requested_reason};
@@ -79,14 +78,14 @@ AppliedBitDepth applied_bit_depth_for(const AvifEncoderCapability& capability,
       const auto max_supported = max_bit_depth_for(capability);
       const auto clamp_reason =
           max_supported && requested > *max_supported
-              ? std::format("源图 {}-bit 超过 {} 支持上限，限制为 {}-bit 输出",
+              ? awj::compat::format("源图 {}-bit 超过 {} 支持上限，限制为 {}-bit 输出",
                             requested, capability.id, *clamped)
-              : std::format("源图 {}-bit 不受 {} 支持，限制为 {}-bit 输出",
+              : awj::compat::format("源图 {}-bit 不受 {} 支持，限制为 {}-bit 输出",
                             requested, capability.id, *clamped);
       return AppliedBitDepth{.value = *clamped,
                              .reason = requested_reason.empty()
                                            ? clamp_reason
-                                           : std::format("{}；{}", requested_reason, clamp_reason)};
+                                           : awj::compat::format("{}；{}", requested_reason, clamp_reason)};
     }
     return AppliedBitDepth{.value = requested, .reason = requested_reason};
   }
@@ -139,37 +138,37 @@ std::string explicit_rejection_reason(const AvifEncoderCapability& capability,
     if (!capability.unavailable_reason.empty()) {
       return capability.unavailable_reason;
     }
-    return std::format("AVIF encoder {} 在当前构建中不可用。",
+    return awj::compat::format("AVIF encoder {} 在当前构建中不可用。",
                        capability.id);
   }
 
   if (request.must_preserve_alpha && !capability.supports_alpha) {
-    return std::format("AVIF encoder {} 不支持保留 alpha。", capability.id);
+    return awj::compat::format("AVIF encoder {} 不支持保留 alpha。", capability.id);
   }
   const auto chroma = applied_chroma_for(capability, request.requested_chroma);
   if (!contains_chroma(capability, chroma)) {
-    return std::format("AVIF encoder {} 不支持请求的 chroma {}。",
+    return awj::compat::format("AVIF encoder {} 不支持请求的 chroma {}。",
                        capability.id, chroma_mode_name(request.requested_chroma));
   }
   const auto bit_depth = applied_bit_depth_for(capability, request);
   if (bit_depth.value && !contains_bit_depth(capability, *bit_depth.value)) {
-    return std::format("AVIF encoder {} 不支持请求的 {}-bit 输出。",
+    return awj::compat::format("AVIF encoder {} 不支持请求的 {}-bit 输出。",
                        capability.id, *bit_depth.value);
   }
   if (capability.max_single_image_width && request.width > *capability.max_single_image_width) {
-    return std::format("AVIF encoder {} 不支持输入宽度 {} 超过 {}。",
+    return awj::compat::format("AVIF encoder {} 不支持输入宽度 {} 超过 {}。",
                        capability.id, request.width, *capability.max_single_image_width);
   }
   if (capability.max_single_image_height && request.height > *capability.max_single_image_height) {
-    return std::format("AVIF encoder {} 不支持输入高度 {} 超过 {}。",
+    return awj::compat::format("AVIF encoder {} 不支持输入高度 {} 超过 {}。",
                        capability.id, request.height, *capability.max_single_image_height);
   }
   if (capability.mode == AvifEncoderMode::aom &&
       request.pixel_count > encoding_defaults::avif_single_image_max_pixels) {
-    return std::format("AOM/libaom AVIF 单图上限为 65536 边 / {} 像素；将自动走 AOM Grid 大图链路。",
+    return awj::compat::format("AOM/libaom AVIF 单图上限为 65536 边 / {} 像素；将自动走 AOM Grid 大图链路。",
                        encoding_defaults::avif_single_image_max_pixels);
   }
-  return std::format("AVIF encoder {} 不适用于当前请求。", capability.id);
+  return awj::compat::format("AVIF encoder {} 不适用于当前请求。", capability.id);
 }
 
 AvifEncoderSelection make_selection(const AvifEncoderCapability& capability,
@@ -221,25 +220,25 @@ std::vector<AvifEncoderCapability> avif_encoder_capabilities() {
   return avif_encoder_capabilities_for_build(true);
 }
 
-std::expected<AvifEncoderSelection, std::string> select_avif_encoder_from_capabilities(
+awj::compat::expected<AvifEncoderSelection, std::string> select_avif_encoder_from_capabilities(
     const AvifEncoderSelectionRequest& request,
     std::span<const AvifEncoderCapability> capabilities) {
   if (request.requested_bit_depth && request.requested_bit_depth_explicit &&
       *request.requested_bit_depth > 12) {
-    return std::unexpected{std::format("AVIF encoder 不支持请求的 {}-bit 输出。",
+    return awj::compat::unexpected{awj::compat::format("AVIF encoder 不支持请求的 {}-bit 输出。",
                                        *request.requested_bit_depth)};
   }
   const auto mode = request.requested_encoder == AvifEncoderMode::automatic
                         ? AvifEncoderMode::aom : request.requested_encoder;
   const auto* capability = avif_registry_detail::find_capability(capabilities, mode);
-  if (!capability) return std::unexpected{"请求的 AVIF 编码器已移除或未注册；请使用 auto/aom。"};
+  if (!capability) return awj::compat::unexpected{"请求的 AVIF 编码器已移除或未注册；请使用 auto/aom。"};
   if (!avif_registry_detail::capability_matches(*capability, request)) {
-    return std::unexpected{avif_registry_detail::explicit_rejection_reason(*capability, request)};
+    return awj::compat::unexpected{avif_registry_detail::explicit_rejection_reason(*capability, request)};
   }
   return avif_registry_detail::make_selection(*capability, request, {});
 }
 
-std::expected<AvifEncoderSelection, std::string> select_avif_encoder(
+awj::compat::expected<AvifEncoderSelection, std::string> select_avif_encoder(
     const AvifEncoderSelectionRequest& request) {
   const auto capabilities = avif_encoder_capabilities();
   return select_avif_encoder_from_capabilities(request, capabilities);

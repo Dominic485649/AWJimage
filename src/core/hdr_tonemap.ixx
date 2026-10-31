@@ -1,4 +1,5 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <array>
@@ -8,13 +9,10 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <expected>
-#include <format>
 #include <limits>
 #include <new>
 #include <optional>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -56,14 +54,14 @@ bool finite_matrix(const pl_matrix3x3& matrix) noexcept {
   return true;
 }
 
-std::expected<void, std::string> validate_rgba(const ImageBuffer& image,
+awj::compat::expected<void, std::string> validate_rgba(const ImageBuffer& image,
                                                std::string_view context) {
   if (image.pixel_format != PixelFormat::rgba || image.planes.empty() ||
       (image.bit_depth != 8 && image.bit_depth != 16)) {
-    return std::unexpected{std::format("{} 需要 8/16-bit RGBA 图像。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 需要 8/16-bit RGBA 图像。", context)};
   }
   if (image.sample_representation == SampleRepresentation::ieee_half_float && image.bit_depth != 16) {
-    return std::unexpected{std::format("{} 浮点 RGBA 位深无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 浮点 RGBA 位深无效。", context)};
   }
   const auto bytes_per_sample = image.bit_depth == 16 ? std::size_t{2} : std::size_t{1};
   const auto storage = image_storage_dimensions(image);
@@ -72,52 +70,52 @@ std::expected<void, std::string> validate_rgba(const ImageBuffer& image,
       image.height > std::numeric_limits<std::size_t>::max() / image.width ||
       storage[0] == 0 || storage[1] == 0 ||
       storage[0] > std::numeric_limits<std::size_t>::max() / 4 / bytes_per_sample) {
-    return std::unexpected{std::format("{} 图像尺寸无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 图像尺寸无效。", context)};
   }
   const auto minimum_stride = storage[0] * 4 * bytes_per_sample;
   const auto& plane = image.planes.front();
   if (!plane.contains_rows(storage[1], minimum_stride)) {
-    return std::unexpected{std::format("{} RGBA buffer 尺寸无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} RGBA buffer 尺寸无效。", context)};
   }
   return {};
 }
 
-std::expected<std::vector<std::byte>, std::string> make_rgba_bytes(
+awj::compat::expected<std::vector<std::byte>, std::string> make_rgba_bytes(
     std::size_t width, std::size_t height, std::size_t bytes_per_sample,
     std::string_view context) {
   if (bytes_per_sample == 0 || width == 0 || height == 0 ||
       width > std::numeric_limits<std::size_t>::max() / 4 / bytes_per_sample) {
-    return std::unexpected{std::format("{} 输出尺寸无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出尺寸无效。", context)};
   }
   const auto stride = width * 4 * bytes_per_sample;
   if (height > std::numeric_limits<std::size_t>::max() / stride) {
-    return std::unexpected{std::format("{} 输出尺寸过大。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出尺寸过大。", context)};
   }
   const auto size = stride * height;
   if (static_cast<std::uint64_t>(size) > encoding_defaults::effective_max_input_file_bytes()) {
-    return std::unexpected{std::format("{} 输出 buffer 超过当前运行时上限。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出 buffer 超过当前运行时上限。", context)};
   }
   try {
     return std::vector<std::byte>(size);
   } catch (const std::bad_alloc&) {
-    return std::unexpected{std::format("{} 输出 buffer 内存不足。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出 buffer 内存不足。", context)};
   } catch (const std::length_error&) {
-    return std::unexpected{std::format("{} 输出 buffer 尺寸超过运行时限制。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出 buffer 尺寸超过运行时限制。", context)};
   }
 }
 
-std::expected<ImageBuffer, std::string> make_rgba_image(
+awj::compat::expected<ImageBuffer, std::string> make_rgba_image(
     std::size_t width, std::size_t height, std::vector<std::byte> pixels,
     AlphaMode alpha_mode, int bit_depth, SampleRepresentation sample_representation,
     ImageSourceInfo source_info, std::string_view context) {
   const auto bytes_per_sample = bit_depth == 16 ? std::size_t{2} : std::size_t{1};
   if (width == 0 || height == 0 ||
       width > std::numeric_limits<std::size_t>::max() / 4 / bytes_per_sample) {
-    return std::unexpected{std::format("{} 输出尺寸无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出尺寸无效。", context)};
   }
   const auto stride = width * 4 * bytes_per_sample;
   if (height > std::numeric_limits<std::size_t>::max() / stride || pixels.size() != stride * height) {
-    return std::unexpected{std::format("{} 输出 RGBA buffer 尺寸无效。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出 RGBA buffer 尺寸无效。", context)};
   }
   ImageBuffer output{.width = width, .height = height, .pixel_format = PixelFormat::rgba,
                      .alpha_mode = alpha_mode, .bit_depth = bit_depth,
@@ -126,9 +124,9 @@ std::expected<ImageBuffer, std::string> make_rgba_image(
   try {
     output.planes.push_back(ImagePlane{.bytes = std::move(pixels), .stride = stride});
   } catch (const std::bad_alloc&) {
-    return std::unexpected{std::format("{} 输出 plane 内存不足。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出 plane 内存不足。", context)};
   } catch (const std::length_error&) {
-    return std::unexpected{std::format("{} 输出 plane 尺寸超过运行时限制。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输出 plane 尺寸超过运行时限制。", context)};
   }
   return output;
 }
@@ -172,7 +170,7 @@ const pl_raw_primaries* primaries_from_cicp(int value) noexcept {
   }
 }
 
-std::expected<SignalKind, std::string> signal_kind(const ImageBuffer& image) {
+awj::compat::expected<SignalKind, std::string> signal_kind(const ImageBuffer& image) {
   const bool marked_scrgb = image.source_info &&
       (image.source_info->color_metadata_source == "wic-scrgb-half-linear" ||
        image.source_info->color_metadata_source == "wgc-scrgb-half-linear");
@@ -184,13 +182,13 @@ std::expected<SignalKind, std::string> signal_kind(const ImageBuffer& image) {
         std::isfinite(*image.source_info->linear_reference_white_nits) &&
         *image.source_info->linear_reference_white_nits > 0;
     if (!marked_scrgb && !marked_linear) {
-      return std::unexpected{"浮点 RGBA 缺少线性原色与参考白亮度，拒绝猜测 HDR 色彩空间。"};
+      return awj::compat::unexpected{"浮点 RGBA 缺少线性原色与参考白亮度，拒绝猜测 HDR 色彩空间。"};
     }
     if ((image.source_info->linear_reference_white_nits &&
          (!std::isfinite(*image.source_info->linear_reference_white_nits) ||
           *image.source_info->linear_reference_white_nits <= 0)) ||
         (image.source_info->color_primaries && !primaries_from_cicp(*image.source_info->color_primaries))) {
-      return std::unexpected{"浮点 RGBA 的原色或线性参考白亮度无效。"};
+      return awj::compat::unexpected{"浮点 RGBA 的原色或线性参考白亮度无效。"};
     }
     return SignalKind::scrgb;
   }
@@ -199,12 +197,12 @@ std::expected<SignalKind, std::string> signal_kind(const ImageBuffer& image) {
   const auto transfer = source.transfer_characteristics.value_or(0);
   if (transfer == 16 || transfer == 18) {
     if (!source.color_primaries || !primaries_from_cicp(*source.color_primaries)) {
-      return std::unexpected{"HDR 输入缺少或使用了当前不支持的 CICP 色度原色，拒绝猜测。"};
+      return awj::compat::unexpected{"HDR 输入缺少或使用了当前不支持的 CICP 色度原色，拒绝猜测。"};
     }
     return transfer == 16 ? SignalKind::pq : SignalKind::hlg;
   }
   if (source.has_hdr_metadata || source.content_light) {
-    return std::unexpected{"HDR 元数据没有匹配的 PQ/HLG CICP 传递特性，拒绝按 BT.709 猜测。"};
+    return awj::compat::unexpected{"HDR 元数据没有匹配的 PQ/HLG CICP 传递特性，拒绝按 BT.709 猜测。"};
   }
   return SignalKind::none;
 }
@@ -216,12 +214,12 @@ struct SourceTransform {
   float linear_reference_white_nits{kScRgbReferenceWhiteNits};
 };
 
-std::expected<SourceTransform, std::string> make_source_transform(const ImageBuffer& image) {
+awj::compat::expected<SourceTransform, std::string> make_source_transform(const ImageBuffer& image) {
   auto kind = signal_kind(image);
-  if (!kind) return std::unexpected{kind.error()};
-  if (*kind == SignalKind::none) return std::unexpected{"输入不是带明确 CICP 语义的 HDR 图像。"};
+  if (!kind) return awj::compat::unexpected{kind.error()};
+  if (*kind == SignalKind::none) return awj::compat::unexpected{"输入不是带明确 CICP 语义的 HDR 图像。"};
   const auto* bt709 = pl_raw_primaries_get(PL_COLOR_PRIM_BT_709);
-  if (!bt709) return std::unexpected{"libplacebo 未提供 BT.709 原色定义。"};
+  if (!bt709) return awj::compat::unexpected{"libplacebo 未提供 BT.709 原色定义。"};
   SourceTransform result{.kind = *kind, .primaries = bt709};
   const auto& source = *image.source_info;
   if (*kind == SignalKind::scrgb) {
@@ -283,24 +281,24 @@ float read_source_alpha(const ImageBuffer& image, const RgbaPixelReader& reader,
   return read_sample(image, row, coordinate[0] * 4 + 3);
 }
 
-std::expected<std::array<float, 3>, std::string> linear_nits(
+awj::compat::expected<std::array<float, 3>, std::string> linear_nits(
     std::array<float, 3> rgb, const SourceTransform& transform) {
-  if (!finite_rgb(rgb)) return std::unexpected{"HDR 输入包含非有限 RGB 浮点值。"};
+  if (!finite_rgb(rgb)) return awj::compat::unexpected{"HDR 输入包含非有限 RGB 浮点值。"};
   if (transform.kind == SignalKind::scrgb) {
     for (auto& value : rgb) value *= transform.linear_reference_white_nits;
   } else {
     pl_color_linearize(&transform.color_space, rgb.data());
-    if (!finite_rgb(rgb)) return std::unexpected{"libplacebo HDR 线性化产生了非有限值。"};
+    if (!finite_rgb(rgb)) return awj::compat::unexpected{"libplacebo HDR 线性化产生了非有限值。"};
     // 锁定版本的 HLG 线性化返回相对于显示峰值的值，PQ 才是 203-nit 归一标尺。
     for (auto& value : rgb) value = transform.kind == SignalKind::hlg
         ? value * transform.color_space.hdr.max_luma
         : pl_hdr_rescale(PL_HDR_NORM, PL_HDR_NITS, value);
   }
-  if (!finite_rgb(rgb)) return std::unexpected{"HDR 参考白亮度缩放产生了非有限值。"};
+  if (!finite_rgb(rgb)) return awj::compat::unexpected{"HDR 参考白亮度缩放产生了非有限值。"};
   return rgb;
 }
 
-std::expected<std::array<float, 3>, std::string> linear_nits(
+awj::compat::expected<std::array<float, 3>, std::string> linear_nits(
     const ImageBuffer& image, const SourceTransform& transform,
     const std::byte* row, std::size_t sample) {
   return linear_nits({read_sample(image, row, sample), read_sample(image, row, sample + 1),
@@ -319,27 +317,27 @@ struct LuminanceStats {
 
 // Raw, scanned CIE Y only. Metadata and the tone mapper's 100-nit floor must
 // never overwrite these measurements (in particular, not for JPEG capacity).
-std::expected<LuminanceStats, std::string> luminance_stats(
+awj::compat::expected<LuminanceStats, std::string> luminance_stats(
     const ImageBuffer& image, const SourceTransform& transform,
-    const pl_matrix3x3& luma_matrix, std::stop_token stop = {}, const RgbaPixelReader& reader = {}) {
+    const pl_matrix3x3& luma_matrix, awj::compat::stop_token stop = {}, const RgbaPixelReader& reader = {}) {
   float peak{};
   double sum{};
   for (std::size_t y = 0; y < image.height; ++y) {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     for (std::size_t x = 0; x < image.width; ++x) {
-      if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       const auto rgba = read_source_rgba(image, reader, x, y);
       auto rgb = linear_nits({rgba[0], rgba[1], rgba[2]}, transform);
-      if (!rgb) return std::unexpected{rgb.error()};
+      if (!rgb) return awj::compat::unexpected{rgb.error()};
       const auto luma = luma_nits(*rgb, luma_matrix);
-      if (!std::isfinite(luma)) return std::unexpected{"HDR 亮度矩阵产生了非有限值。"};
-      if (!std::isfinite(rgba[3])) return std::unexpected{"HDR 输入包含非有限 alpha 浮点值。"};
+      if (!std::isfinite(luma)) return awj::compat::unexpected{"HDR 亮度矩阵产生了非有限值。"};
+      if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"HDR 输入包含非有限 alpha 浮点值。"};
       peak = std::max(peak, luma);
       sum += luma;
     }
   }
   const auto average = static_cast<float>(sum / (image.width * image.height));
-  if (!std::isfinite(average)) return std::unexpected{"HDR 平均亮度统计产生了非有限值。"};
+  if (!std::isfinite(average)) return awj::compat::unexpected{"HDR 平均亮度统计产生了非有限值。"};
   return LuminanceStats{.peak = peak, .average = average};
 }
 
@@ -399,21 +397,21 @@ bool matches_source(const PreparedToneMap& context, const ImageBuffer& image) no
       context.source_data == image.planes.front().read_bytes().data();
 }
 
-std::expected<PreparedToneMap, std::string> prepare_tone_context(
-    const ImageBuffer& image, std::stop_token stop, RgbaPixelReader reader = {}) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<PreparedToneMap, std::string> prepare_tone_context(
+    const ImageBuffer& image, awj::compat::stop_token stop, RgbaPixelReader reader = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (!reader.read) {
-    if (auto valid = validate_rgba(image, "HDR -> SDR"); !valid) return std::unexpected{valid.error()};
+    if (auto valid = validate_rgba(image, "HDR -> SDR"); !valid) return awj::compat::unexpected{valid.error()};
   } else if (!image.width || !image.height || image.planes.empty() || !valid_image_geometry(image) ||
       image.width > SIZE_MAX / image.height) {
     // The native reader owner validates all its plane layouts before binding.
-    return std::unexpected{"HDR borrowed reader 的图像尺寸无效。"};
+    return awj::compat::unexpected{"HDR borrowed reader 的图像尺寸无效。"};
   }
   auto transform = make_source_transform(image);
-  if (!transform) return std::unexpected{transform.error()};
+  if (!transform) return awj::compat::unexpected{transform.error()};
   const auto* bt709 = pl_raw_primaries_get(PL_COLOR_PRIM_BT_709);
   const auto* bt2020 = pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020);
-  if (!bt709 || !bt2020) return std::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
+  if (!bt709 || !bt2020) return awj::compat::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
   PreparedToneMap context;
   context.source = &image;
   context.source_data = image.planes.front().read_bytes().data();
@@ -433,9 +431,9 @@ std::expected<PreparedToneMap, std::string> prepare_tone_context(
   context.canonical_to_xyz = pl_get_rgb2xyz_matrix(bt2020);
   if (!finite_matrix(context.source_to_xyz) || !finite_matrix(context.source_to_lms) ||
       !finite_matrix(context.output_lms_to_rgb) || !finite_matrix(context.source_to_bt2020) ||
-      !finite_matrix(context.canonical_to_xyz)) return std::unexpected{"HDR 色彩矩阵包含非有限值。"};
+      !finite_matrix(context.canonical_to_xyz)) return awj::compat::unexpected{"HDR 色彩矩阵包含非有限值。"};
   auto stats = luminance_stats(image, *transform, context.source_to_xyz, stop, reader);
-  if (!stats) return std::unexpected{stats.error()};
+  if (!stats) return awj::compat::unexpected{stats.error()};
   context.scanned_y = *stats;
   context.effective_tone = effective_tone_stats(image, *stats);
   auto& tone = context.tone_params;
@@ -509,15 +507,15 @@ struct ToneCurve {
   }
 };
 
-std::expected<ToneCurve, std::string> make_tone_curve(const pl_tone_map_params& params,
-    bool use_lut, std::uint64_t scratch_budget, std::stop_token stop = {}) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<ToneCurve, std::string> make_tone_curve(const pl_tone_map_params& params,
+    bool use_lut, std::uint64_t scratch_budget, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (!params.function || params.input_scaling != PL_HDR_NITS || params.output_scaling != PL_HDR_NITS ||
       !std::isfinite(params.input_min) || !std::isfinite(params.input_max) || !std::isfinite(params.input_avg) ||
       !std::isfinite(params.output_min) || !std::isfinite(params.output_max) || params.input_min < 0.0F ||
       params.input_max <= params.input_min || params.input_avg < 0.0F || params.input_avg > params.input_max ||
       params.output_min < 0.0F || params.output_max <= params.output_min) {
-    return std::unexpected{"HDR tone curve 需要有限、合法的 nits 输入与输出参数。"};
+    return awj::compat::unexpected{"HDR tone curve 需要有限、合法的 nits 输入与输出参数。"};
   }
   ToneCurve curve{.scalar_params = params, .pq_params = params};
   auto& pq = curve.pq_params;
@@ -529,11 +527,11 @@ std::expected<ToneCurve, std::string> make_tone_curve(const pl_tone_map_params& 
   // Outputs intentionally remain nits, including output min/max scaling.
   if (!std::isfinite(pq.input_min) || !std::isfinite(pq.input_max) ||
       !std::isfinite(pq.input_avg) || pq.input_max <= pq.input_min) {
-    return std::unexpected{"HDR tone LUT 的 PQ 输入范围无效。"};
+    return awj::compat::unexpected{"HDR tone LUT 的 PQ 输入范围无效。"};
   }
   curve.index_scale = static_cast<double>(pq.lut_size - 1) /
       (static_cast<double>(pq.input_max) - pq.input_min);
-  if (!std::isfinite(curve.index_scale)) return std::unexpected{"HDR tone LUT 索引缩放无效。"};
+  if (!std::isfinite(curve.index_scale)) return awj::compat::unexpected{"HDR tone LUT 索引缩放无效。"};
   curve.mapping_params = pq;
   curve.mapping_params.output_scaling = PL_HDR_PQ;
   curve.mapping_params.output_min = static_cast<float>(tone_nits_to_pq(params.output_min));
@@ -547,16 +545,16 @@ std::expected<ToneCurve, std::string> make_tone_curve(const pl_tone_map_params& 
   } catch (const std::length_error&) {
     return curve;
   }
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   // 库的映射核心保留在 PQ 域；双精度换算消除单精度 PQ 往返噪声，表值仍为 nits。
   pl_tone_map_generate(curve.nits.data(), &curve.mapping_params);
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   for (std::size_t i = 0; i < curve.nits.size(); ++i) {
-    if (i % 1024 == 0 && stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (i % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     curve.nits[i] = static_cast<float>(tone_pq_to_nits(curve.nits[i]));
   }
-  if (!std::ranges::all_of(curve.nits, [](float x) { return std::isfinite(x); })) {
-    return std::unexpected{"HDR tone LUT 包含非有限值。"};
+  if (!awj::compat::ranges::all_of(curve.nits, [](float x) { return std::isfinite(x); })) {
+    return awj::compat::unexpected{"HDR tone LUT 包含非有限值。"};
   }
   // PQ 单精度往返在相邻采样点会产生微小反向噪声，曲线保持物理单调。
   for (std::size_t i = 1; i < curve.nits.size(); ++i) {
@@ -587,27 +585,27 @@ bool ipt_to_rgb_nits(std::array<float, 3>& ipt, const pl_matrix3x3& lms_to_rgb) 
   return finite_rgb(ipt);
 }
 
-std::expected<void, std::string> map_gamut_block(float* values, std::size_t count,
-    std::size_t stride, const pl_gamut_map_params& params, std::stop_token stop = {}) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<void, std::string> map_gamut_block(float* values, std::size_t count,
+    std::size_t stride, const pl_gamut_map_params& params, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (!values || count == 0 || count > hdr_cost::gamut_block_pixels || stride < 3 ||
       stride > static_cast<std::size_t>(std::numeric_limits<int>::max()) / count) {
-    return std::unexpected{"HDR gamut 块尺寸或 float stride 无效。"};
+    return awj::compat::unexpected{"HDR gamut 块尺寸或 float stride 无效。"};
   }
   if (!std::isfinite(params.min_luma) || !std::isfinite(params.max_luma) ||
       params.min_luma < 0.0F || params.max_luma <= params.min_luma) {
-    return std::unexpected{"HDR gamut 亮度范围无效。"};
+    return awj::compat::unexpected{"HDR gamut 亮度范围无效。"};
   }
   for (std::size_t i = 0; i < count; ++i) {
     if (!std::isfinite(values[i * stride]) || !std::isfinite(values[i * stride + 1]) ||
-        !std::isfinite(values[i * stride + 2])) return std::unexpected{"HDR gamut 输入包含非有限 IPT。"};
+        !std::isfinite(values[i * stride + 2])) return awj::compat::unexpected{"HDR gamut 输入包含非有限 IPT。"};
   }
   auto fixed = params;
   legalize_gamut_constants(fixed.constants);
   fixed.lut_size_C = fixed.lut_size_h = 1;
   fixed.lut_stride = static_cast<int>(stride);
   for (std::size_t first = 0; first < count;) {
-    if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     std::size_t last = first + 1;
     float previous_hue = std::atan2(values[first * stride + 2], values[first * stride + 1]);
     for (; last < count; ++last) {
@@ -621,10 +619,10 @@ std::expected<void, std::string> map_gamut_block(float* values, std::size_t coun
     pl_gamut_map_perceptual.map(values + first * stride, &fixed);
     first = last;
   }
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   for (std::size_t i = 0; i < count; ++i) {
     if (!std::isfinite(values[i * stride]) || !std::isfinite(values[i * stride + 1]) ||
-        !std::isfinite(values[i * stride + 2])) return std::unexpected{"HDR gamut 输出包含非有限 IPT。"};
+        !std::isfinite(values[i * stride + 2])) return awj::compat::unexpected{"HDR gamut 输出包含非有限 IPT。"};
   }
   return {};
 }
@@ -634,7 +632,7 @@ bool can_skip_gamut(const std::array<float, 3>& rgb, const PreparedToneMap& cont
   // Stay inside the display volume, away from numeric boundary classification.
   // Exact black is safe; negative, extended and wide-gamut RGB always map.
   constexpr float guard = 0.001F;
-  return std::ranges::all_of(rgb, [](float x) {
+  return awj::compat::ranges::all_of(rgb, [](float x) {
     return x == 0.0F || (x >= guard && x <= kSdrTargetPeakNits - guard);
   });
 }
@@ -651,16 +649,16 @@ std::uint8_t dithered_unorm8(float value, std::size_t x, std::size_t y) noexcept
       std::floor(std::clamp(value, 0.0F, 1.0F) * 255.0F + 0.5F + dither), 0.0F, 255.0F));
 }
 
-std::expected<void, std::string> copy_non_color_metadata(ImageBuffer& destination, const ImageBuffer& source) {
+awj::compat::expected<void, std::string> copy_non_color_metadata(ImageBuffer& destination, const ImageBuffer& source) {
   try {
     destination.metadata.reserve(source.metadata.size());
     for (const auto& block : source.metadata) {
       if (block.kind == MetadataKind::exif || block.kind == MetadataKind::xmp) destination.metadata.push_back(block);
     }
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"复制非色彩元数据时内存不足。"};
+    return awj::compat::unexpected{"复制非色彩元数据时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"复制非色彩元数据时尺寸超过运行时限制。"};
+    return awj::compat::unexpected{"复制非色彩元数据时尺寸超过运行时限制。"};
   }
   return {};
 }
@@ -691,17 +689,17 @@ struct ToneScratch {
   std::size_t* indices() noexcept { return positions.empty() ? &single_position : positions.data(); }
 };
 
-std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& image,
-    const PreparedToneMap& context, int output_depth, std::stop_token stop,
+awj::compat::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& image,
+    const PreparedToneMap& context, int output_depth, awj::compat::stop_token stop,
     const ResourcePlan& resources, ToneRunOptions options = {}) {
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-  if (output_depth != 8 && output_depth != 16) return std::unexpected{"SDR 输出位深必须为 8 或 16。"};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+  if (output_depth != 8 && output_depth != 16) return awj::compat::unexpected{"SDR 输出位深必须为 8 或 16。"};
   if (!context.reader.read) {
-    if (auto valid = validate_rgba(image, "HDR -> SDR"); !valid) return std::unexpected{valid.error()};
+    if (auto valid = validate_rgba(image, "HDR -> SDR"); !valid) return awj::compat::unexpected{valid.error()};
   }
-  if (!matches_source(context, image)) return std::unexpected{"HDR prepared context 不属于当前未修改的图像。"};
+  if (!matches_source(context, image)) return awj::compat::unexpected{"HDR prepared context 不属于当前未修改的图像。"};
   if (!options.block_pixels || options.block_pixels > hdr_cost::gamut_block_pixels) {
-    return std::unexpected{"HDR tone 块大小必须在 1 到 1024 之间。"};
+    return awj::compat::unexpected{"HDR tone 块大小必须在 1 到 1024 之间。"};
   }
   const auto total = image.width * image.height;
   const auto output_bytes = hdr_cost::multiply(total, 4 * (output_depth / 8));
@@ -711,12 +709,12 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
   // The scheduler already admits concurrent files. This is a whole-plan check,
   // not limit/file_parallelism, so an admitted large file may use spare capacity.
   if (resident == UINT64_MAX || (resources.memory_limit_bytes && resident > resources.memory_limit_bytes)) {
-    return std::unexpected{"HDR -> SDR 输入与输出工作集超出内存预算。"};
+    return awj::compat::unexpected{"HDR -> SDR 输入与输出工作集超出内存预算。"};
   }
   auto available = resources.memory_limit_bytes ? resources.memory_limit_bytes - resident : UINT64_MAX;
   auto curve = make_tone_curve(context.tone_params,
       options.use_lut && total >= options.lut_min_pixels, available, stop);
-  if (!curve) return std::unexpected{curve.error()};
+  if (!curve) return awj::compat::unexpected{curve.error()};
   if (!curve->nits.empty()) available -= hdr_cost::tone_lut_bytes;
   std::size_t block = options.block_pixels;
   auto workers = std::min<std::size_t>(tone_worker_budget(resources), (total - 1) / block + 1);
@@ -742,7 +740,7 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
     std::vector<ToneScratch>{}.swap(scratch); workers = 1; block = 1;
   }
   auto pixels = make_rgba_bytes(image.width, image.height, output_depth / 8, "HDR -> SDR");
-  if (!pixels) return std::unexpected{pixels.error()};
+  if (!pixels) return awj::compat::unexpected{pixels.error()};
   std::atomic<std::size_t> next{};
   std::atomic<const char*> error{};
   const auto set_error = [&](const char* text) noexcept {
@@ -827,7 +825,7 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
   };
   // The caller is worker zero. Never query hardware concurrency or detach a
   // task; all image access and scratch are joined before any later codec stage.
-  std::vector<std::jthread> threads;
+  std::vector<awj::compat::scoped_worker> threads;
   try {
     threads.reserve(workers - 1);
     for (std::size_t i = 1; i < workers; ++i) threads.emplace_back([&, i] { work(i); });
@@ -838,8 +836,8 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
   }
   work(0);
   for (auto& thread : threads) thread.join();
-  if (stop.stop_requested()) return std::unexpected{"任务已取消。"};
-  if (const auto* failure = error.load(std::memory_order_relaxed)) return std::unexpected{std::string(failure)};
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+  if (const auto* failure = error.load(std::memory_order_relaxed)) return awj::compat::unexpected{std::string(failure)};
   ImageSourceInfo source_info{.pixel_format = PixelFormat::rgba, .bit_depth = output_depth,
       .color_primaries = 1, .transfer_characteristics = 13, .matrix_coefficients = 0,
       .color_range = 1, .has_hdr_metadata = false,
@@ -848,8 +846,8 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
   const auto alpha_mode = image.alpha_mode == AlphaMode::premultiplied ? AlphaMode::straight : image.alpha_mode;
   auto output = make_rgba_image(image.width, image.height, std::move(*pixels), alpha_mode,
       output_depth, SampleRepresentation::unorm, std::move(source_info), "HDR -> SDR");
-  if (!output) return std::unexpected{output.error()};
-  if (auto copied = copy_non_color_metadata(*output, image); !copied) return std::unexpected{copied.error()};
+  if (!output) return awj::compat::unexpected{output.error()};
+  if (auto copied = copy_non_color_metadata(*output, image); !copied) return awj::compat::unexpected{copied.error()};
   return output;
 }
 
@@ -857,77 +855,77 @@ std::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuffer& ima
 
 using PreparedToneMap = hdr_detail::PreparedToneMap;
 
-std::expected<bool, std::string> has_explicit_hdr_signal(const ImageBuffer& image) {
+awj::compat::expected<bool, std::string> has_explicit_hdr_signal(const ImageBuffer& image) {
   auto kind = hdr_detail::signal_kind(image);
-  if (!kind) return std::unexpected{kind.error()};
+  if (!kind) return awj::compat::unexpected{kind.error()};
   return *kind != hdr_detail::SignalKind::none;
 }
 
-std::expected<PreparedToneMap, std::string> prepare_tone_map(
-    const ImageBuffer& image, std::stop_token stop = {}) {
+awj::compat::expected<PreparedToneMap, std::string> prepare_tone_map(
+    const ImageBuffer& image, awj::compat::stop_token stop = {}) {
   try {
     return hdr_detail::prepare_tone_context(image, stop);
-  } catch (const std::bad_alloc&) { return std::unexpected{"HDR prepared context 内存不足。"}; }
-    catch (const std::length_error&) { return std::unexpected{"HDR prepared context 数据超过运行时限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"HDR prepared context 内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"HDR prepared context 数据超过运行时限制。"}; }
 }
 
-std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& image,
-    const PreparedToneMap& context, int output_depth = 8, std::stop_token stop = {},
+awj::compat::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& image,
+    const PreparedToneMap& context, int output_depth = 8, awj::compat::stop_token stop = {},
     const ResourcePlan& resources = {}) {
   try {
     return hdr_detail::tone_map_prepared(image, context, output_depth, stop, resources);
-  } catch (const std::bad_alloc&) { return std::unexpected{"HDR -> SDR 内存不足。"}; }
-    catch (const std::length_error&) { return std::unexpected{"HDR -> SDR 数据超过运行时限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"HDR -> SDR 内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"HDR -> SDR 数据超过运行时限制。"}; }
 }
 
 // Compatible with the existing image/depth/stop API. The optional fourth
 // argument is the current file's plan; its thread count includes this caller.
-std::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& image,
-    int output_depth = 8, std::stop_token stop = {}, const ResourcePlan& resources = {}) {
-  if (output_depth != 8 && output_depth != 16) return std::unexpected{"SDR 输出位深必须为 8 或 16。"};
+awj::compat::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& image,
+    int output_depth = 8, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
+  if (output_depth != 8 && output_depth != 16) return awj::compat::unexpected{"SDR 输出位深必须为 8 或 16。"};
   auto context = prepare_tone_map(image, stop);
-  if (!context) return std::unexpected{context.error()};
+  if (!context) return awj::compat::unexpected{context.error()};
   return tone_map_to_sdr_srgb(image, *context, output_depth, stop, resources);
 }
 
-std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(ImageBuffer&& image,
-    std::stop_token stop_token = {}) {
-  if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
-  if (auto valid = hdr_detail::validate_rgba(image, "scRGB -> HDR"); !valid) return std::unexpected{valid.error()};
+awj::compat::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(ImageBuffer&& image,
+    awj::compat::stop_token stop_token = {}) {
+  if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+  if (auto valid = hdr_detail::validate_rgba(image, "scRGB -> HDR"); !valid) return awj::compat::unexpected{valid.error()};
   auto kind = hdr_detail::signal_kind(image);
-  if (!kind) return std::unexpected{kind.error()};
+  if (!kind) return awj::compat::unexpected{kind.error()};
   if (*kind != hdr_detail::SignalKind::scrgb) {
-    return std::unexpected{"只可将具有明确线性语义的 FP16 图像转换为 HDR 输出。"};
+    return awj::compat::unexpected{"只可将具有明确线性语义的 FP16 图像转换为 HDR 输出。"};
   }
   auto transform = hdr_detail::make_source_transform(image);
-  if (!transform) return std::unexpected{transform.error()};
+  if (!transform) return awj::compat::unexpected{transform.error()};
   const auto* bt2020 = pl_raw_primaries_get(PL_COLOR_PRIM_BT_2020);
-  if (!bt2020) return std::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
+  if (!bt2020) return awj::compat::unexpected{"libplacebo 未提供所需 BT.709/BT.2020 原色定义。"};
   const auto matrix = pl_raw_primaries_equal(transform->primaries, bt2020)
       ? pl_matrix3x3{.m = {{1.0F, 0.0F, 0.0F}, {0.0F, 1.0F, 0.0F}, {0.0F, 0.0F, 1.0F}}}
       : pl_get_color_mapping_matrix(transform->primaries, bt2020, PL_INTENT_RELATIVE_COLORIMETRIC);
   std::optional<std::vector<std::byte>> transformed;
   if (image.geometry || !image.planes.front().borrowed.empty()) {
     auto bytes = hdr_detail::make_rgba_bytes(image.width, image.height, 2, "scRGB borrowed/geometry -> HDR");
-    if (!bytes) return std::unexpected{bytes.error()};
+    if (!bytes) return awj::compat::unexpected{bytes.error()};
     transformed.emplace(std::move(*bytes));
   }
   for (std::size_t y = 0; y < image.height; ++y) {
-    if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+    if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     auto* row = transformed ? transformed->data() + y * image.width * 8
         : image.planes.front().bytes.data() + y * image.planes.front().stride;
     for (std::size_t x = 0; x < image.width; ++x) {
-      if (x % hdr_cost::gamut_block_pixels == 0 && stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+      if (x % hdr_cost::gamut_block_pixels == 0 && stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       const auto sample = x * 4;
       const auto rgba = hdr_detail::read_source_rgba(image, {}, x, y);
       auto rgb = hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, *transform);
-      if (!rgb) return std::unexpected{rgb.error()};
-      if (!std::isfinite(rgba[3])) return std::unexpected{"scRGB 输入包含非有限 alpha 浮点值。"};
+      if (!rgb) return awj::compat::unexpected{rgb.error()};
+      if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"scRGB 输入包含非有限 alpha 浮点值。"};
       pl_matrix3x3_apply(&matrix, rgb->data());
-      if (!hdr_detail::finite_rgb(*rgb)) return std::unexpected{"scRGB -> HDR 色彩矩阵产生了非有限值。"};
+      if (!hdr_detail::finite_rgb(*rgb)) return awj::compat::unexpected{"scRGB -> HDR 色彩矩阵产生了非有限值。"};
       for (std::size_t c = 0; c < 3; ++c) {
         const auto pq = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, (*rgb)[c]);
-        if (!std::isfinite(pq)) return std::unexpected{"scRGB -> HDR PQ 编码产生了非有限值。"};
+        if (!std::isfinite(pq)) return awj::compat::unexpected{"scRGB -> HDR PQ 编码产生了非有限值。"};
         hdr_detail::write_unorm16(row, sample + c, pq);
       }
       hdr_detail::write_unorm16(row, sample + 3, rgba[3]);
@@ -952,15 +950,15 @@ std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(ImageBuffer&&
   return std::move(image);
 }
 
-std::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(
-    const ImageBuffer& image, std::stop_token stop_token = {}) {
-  if (stop_token.stop_requested()) return std::unexpected{"任务已取消。"};
+awj::compat::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(
+    const ImageBuffer& image, awj::compat::stop_token stop_token = {}) {
+  if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   try {
     return materialize_scrgb_as_hdr10(ImageBuffer{image}, stop_token);
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"scRGB -> HDR 输入复制内存不足。"};
+    return awj::compat::unexpected{"scRGB -> HDR 输入复制内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"scRGB -> HDR 输入复制超过运行时限制。"};
+    return awj::compat::unexpected{"scRGB -> HDR 输入复制超过运行时限制。"};
   }
 }
 

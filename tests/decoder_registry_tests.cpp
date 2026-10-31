@@ -1,9 +1,9 @@
+#include "../src/compat/stdlib_compat.h"
 #include <filesystem>
 #include <iostream>
 #include <array>
 #include <cstdint>
 #include <span>
-#include <stop_token>
 
 import awj.decoder_registry;
 import awj.heif_codec;
@@ -49,7 +49,7 @@ int main(int argc, char** argv) {
   if (heif_decoder.decode_memory(truncated, "truncated.heic")) {
     return fail("HEIC decoder accepted a truncated container.");
   }
-  std::stop_source canceled;
+  awj::compat::stop_source canceled;
   canceled.request_stop();
   if (awj::HeifImageDecoder{1, canceled.get_token()}.decode_memory(truncated, "canceled.heic")) {
     return fail("HEIC decoder ignored cancellation.");

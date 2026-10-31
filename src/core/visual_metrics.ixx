@@ -1,12 +1,11 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
-#include <format>
 #include <limits>
 #include <new>
 #include <span>
@@ -42,50 +41,50 @@ struct VisualMetricResult {
 
 namespace visual_metrics_detail {
 
-std::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pixel_count,
+awj::compat::expected<std::vector<float>, std::string> make_float_buffer(std::size_t pixel_count,
                                                                  std::string_view context,
                                                                  std::vector<float> buffer = {}) {
   if (pixel_count == 0) {
-    return std::unexpected{std::format("{} 输入为空。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} 输入为空。", context)};
   }
   if (pixel_count > std::numeric_limits<std::size_t>::max() / sizeof(float)) {
-    return std::unexpected{std::format("{} luma buffer 尺寸超过运行时限制。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} luma buffer 尺寸超过运行时限制。", context)};
   }
   const auto byte_count = pixel_count * sizeof(float);
   if (static_cast<std::uint64_t>(byte_count) > encoding_defaults::effective_max_input_file_bytes()) {
-    return std::unexpected{std::format("{} luma buffer 超过当前运行时上限。", context)};
+    return awj::compat::unexpected{awj::compat::format("{} luma buffer 超过当前运行时上限。", context)};
   }
   try {
     buffer.resize(pixel_count);
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"luma buffer 内存不足。"};
+    return awj::compat::unexpected{"luma buffer 内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"luma buffer 尺寸超过运行时限制。"};
+    return awj::compat::unexpected{"luma buffer 尺寸超过运行时限制。"};
   }
   return buffer;
 }
 
 }  // namespace visual_metrics_detail
 
-std::expected<LumaImage, std::string> make_luma_image(
+awj::compat::expected<LumaImage, std::string> make_luma_image(
     const ImageBuffer& image, LumaImage recycled = {}) {
   if (image.width == 0 || image.height == 0 || image.planes.empty()) {
-    return std::unexpected{"输入图像为空，无法计算视觉指标。"};
+    return awj::compat::unexpected{"输入图像为空，无法计算视觉指标。"};
   }
   if (image.bit_depth != 8 && image.bit_depth != 10 &&
       image.bit_depth != 12 && image.bit_depth != 16) {
-    return std::unexpected{"当前视觉指标仅支持 8、10、12 或 16-bit 图像。"};
+    return awj::compat::unexpected{"当前视觉指标仅支持 8、10、12 或 16-bit 图像。"};
   }
 
   if (image.width > std::numeric_limits<std::size_t>::max() / image.height) {
-    return std::unexpected{"输入图像尺寸过大，无法计算视觉指标。"};
+    return awj::compat::unexpected{"输入图像尺寸过大，无法计算视觉指标。"};
   }
 
   const auto pixel_count = image.width * image.height;
   auto pixels = visual_metrics_detail::make_float_buffer(pixel_count, "视觉指标",
                                                         std::move(recycled.pixels));
   if (!pixels) {
-    return std::unexpected{pixels.error()};
+    return awj::compat::unexpected{pixels.error()};
   }
 
   const auto& plane = image.planes.front();
@@ -111,11 +110,11 @@ std::expected<LumaImage, std::string> make_luma_image(
     const std::size_t channels = image.pixel_format == PixelFormat::rgba ? 4 : 3;
     if (image.width > std::numeric_limits<std::size_t>::max() / channels /
                           bytes_per_sample) {
-      return std::unexpected{"RGB/RGBA 图像宽度过大，无法计算视觉指标。"};
+      return awj::compat::unexpected{"RGB/RGBA 图像宽度过大，无法计算视觉指标。"};
     }
     const std::size_t min_stride = image.width * channels * bytes_per_sample;
     if (!plane.contains_rows(image.height, min_stride)) {
-      return std::unexpected{"RGB/RGBA 图像 buffer 尺寸无效，无法计算视觉指标。"};
+      return awj::compat::unexpected{"RGB/RGBA 图像 buffer 尺寸无效，无法计算视觉指标。"};
     }
     const auto* bytes = reinterpret_cast<const unsigned char*>(plane.read_bytes().data());
     for (std::size_t y = 0; y < image.height; ++y) {
@@ -135,7 +134,7 @@ std::expected<LumaImage, std::string> make_luma_image(
   if (image.pixel_format == PixelFormat::gray) {
     if (image.width > std::numeric_limits<std::size_t>::max() / bytes_per_sample ||
         !plane.contains_rows(image.height, image.width * bytes_per_sample)) {
-      return std::unexpected{"灰度图像 buffer 尺寸无效，无法计算视觉指标。"};
+      return awj::compat::unexpected{"灰度图像 buffer 尺寸无效，无法计算视觉指标。"};
     }
     const auto* bytes = reinterpret_cast<const unsigned char*>(plane.read_bytes().data());
     for (std::size_t y = 0; y < image.height; ++y) {
@@ -148,41 +147,41 @@ std::expected<LumaImage, std::string> make_luma_image(
     return luma;
   }
 
-  return std::unexpected{"当前视觉指标仅支持 RGB、RGBA 或灰度图像。"};
+  return awj::compat::unexpected{"当前视觉指标仅支持 RGB、RGBA 或灰度图像。"};
 }
 
 namespace visual_metrics_detail {
 
-std::expected<void, std::string> validate_same_shape(const LumaImage& reference,
+awj::compat::expected<void, std::string> validate_same_shape(const LumaImage& reference,
                                                      const LumaImage& candidate) {
   if (reference.empty() || candidate.empty()) {
-    return std::unexpected{"视觉指标输入为空。"};
+    return awj::compat::unexpected{"视觉指标输入为空。"};
   }
   if (reference.width != candidate.width || reference.height != candidate.height ||
       reference.pixels.size() != candidate.pixels.size()) {
-    return std::unexpected{"视觉指标输入尺寸不一致。"};
+    return awj::compat::unexpected{"视觉指标输入尺寸不一致。"};
   }
   if (reference.width > std::numeric_limits<std::size_t>::max() / reference.height ||
       reference.width * reference.height != reference.pixels.size()) {
-    return std::unexpected{"视觉指标输入尺寸无效。"};
+    return awj::compat::unexpected{"视觉指标输入尺寸无效。"};
   }
   return {};
 }
 
-std::expected<LumaImage, std::string> downsample_2x(const LumaImage& source,
+awj::compat::expected<LumaImage, std::string> downsample_2x(const LumaImage& source,
                                                   LumaImage recycled = {}) {
   LumaImage result{.width = (source.width + 1) / 2,
                    .height = (source.height + 1) / 2};
   if (result.width == source.width && result.height == source.height) {
-    return std::unexpected{"视觉指标降采样尺寸无变化。"};
+    return awj::compat::unexpected{"视觉指标降采样尺寸无变化。"};
   }
   if (result.width > std::numeric_limits<std::size_t>::max() / result.height) {
-    return std::unexpected{"视觉指标降采样尺寸过大。"};
+    return awj::compat::unexpected{"视觉指标降采样尺寸过大。"};
   }
   auto pixels = make_float_buffer(result.width * result.height, "视觉指标降采样",
                                   std::move(recycled.pixels));
   if (!pixels) {
-    return std::unexpected{pixels.error()};
+    return awj::compat::unexpected{pixels.error()};
   }
   result.pixels = std::move(*pixels);
   for (std::size_t y = 0; y < result.height; ++y) {
@@ -244,11 +243,11 @@ double ssim_global(const LumaImage& reference, const LumaImage& candidate) noexc
 
 }  // namespace visual_metrics_detail
 
-std::expected<double, std::string> compute_gmsd(
+awj::compat::expected<double, std::string> compute_gmsd(
     const LumaImage& reference,
     const LumaImage& candidate) {
   if (auto valid = visual_metrics_detail::validate_same_shape(reference, candidate); !valid) {
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   }
 
   constexpr double c = 0.0026;
@@ -279,16 +278,16 @@ std::expected<double, std::string> compute_gmsd(
     }
   }
   if (count == 0) {
-    return std::unexpected{"视觉指标输入为空。"};
+    return awj::compat::unexpected{"视觉指标输入为空。"};
   }
   return std::sqrt(m2 / static_cast<double>(count));
 }
 
-std::expected<double, std::string> compute_ms_ssim(
+awj::compat::expected<double, std::string> compute_ms_ssim(
     const LumaImage& reference,
     const LumaImage& candidate) {
   if (auto valid = visual_metrics_detail::validate_same_shape(reference, candidate); !valid) {
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   }
 
   constexpr std::array<double, 5> weights{0.0448, 0.2856, 0.3001, 0.2363, 0.1333};
@@ -303,11 +302,11 @@ std::expected<double, std::string> compute_ms_ssim(
     if (level + 1 < weights.size() && ref_level->width > 1 && ref_level->height > 1) {
       auto next_ref = visual_metrics_detail::downsample_2x(*ref_level);
       if (!next_ref) {
-        return std::unexpected{next_ref.error()};
+        return awj::compat::unexpected{next_ref.error()};
       }
       auto next_candidate = visual_metrics_detail::downsample_2x(*candidate_level);
       if (!next_candidate) {
-        return std::unexpected{next_candidate.error()};
+        return awj::compat::unexpected{next_candidate.error()};
       }
       ref_owned = std::move(*next_ref);
       candidate_owned = std::move(*next_candidate);
@@ -328,11 +327,11 @@ struct CpuVisualMetricWorkspace {
   bool reference_ready{};
 };
 
-std::expected<double, std::string> compute_ms_ssim_cached(
+awj::compat::expected<double, std::string> compute_ms_ssim_cached(
     const LumaImage& reference, const LumaImage& candidate,
     CpuVisualMetricWorkspace& workspace) {
   if (auto valid = visual_metrics_detail::validate_same_shape(reference, candidate); !valid)
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   constexpr std::array<double, 5> weights{0.0448, 0.2856, 0.3001, 0.2363, 0.1333};
   if (!workspace.reference_ready) {
     const LumaImage* image = &reference;
@@ -349,7 +348,7 @@ std::expected<double, std::string> compute_ms_ssim_cached(
       stats.variance /= count;
       if (level + 1 < weights.size() && image->width > 1 && image->height > 1) {
         auto next = visual_metrics_detail::downsample_2x(*image);
-        if (!next) return std::unexpected{next.error()};
+        if (!next) return awj::compat::unexpected{next.error()};
         workspace.reference_levels[level] = std::move(*next);
         image = &workspace.reference_levels[level];
       }
@@ -382,7 +381,7 @@ std::expected<double, std::string> compute_ms_ssim_cached(
     if (level + 1 < weights.size() && ref_level->width > 1 && ref_level->height > 1) {
       auto next = visual_metrics_detail::downsample_2x(
           *candidate_level, std::move(workspace.candidate_levels[level]));
-      if (!next) return std::unexpected{next.error()};
+      if (!next) return awj::compat::unexpected{next.error()};
       workspace.candidate_levels[level] = std::move(*next);
       ref_level = &workspace.reference_levels[level];
       candidate_level = &workspace.candidate_levels[level];
@@ -397,26 +396,26 @@ VisualMetricResult make_visual_metric_result(double raw_gmsd, double raw_ms_ssim
                             .score = calculate_visual_score(raw_gmsd, raw_ms_ssim)};
 }
 
-std::expected<VisualMetricResult, std::string> calculate_visual_metrics_cpu(
+awj::compat::expected<VisualMetricResult, std::string> calculate_visual_metrics_cpu(
     const LumaImage& reference,
     const LumaImage& candidate) {
   auto gmsd = compute_gmsd(reference, candidate);
   if (!gmsd) {
-    return std::unexpected{gmsd.error()};
+    return awj::compat::unexpected{gmsd.error()};
   }
   auto ms_ssim = compute_ms_ssim(reference, candidate);
   if (!ms_ssim) {
-    return std::unexpected{ms_ssim.error()};
+    return awj::compat::unexpected{ms_ssim.error()};
   }
   return make_visual_metric_result(*gmsd, *ms_ssim);
 }
 
-std::expected<VisualScoreBreakdown, std::string> calculate_visual_score(
+awj::compat::expected<VisualScoreBreakdown, std::string> calculate_visual_score(
     const LumaImage& reference,
     const LumaImage& candidate) {
   auto metrics = calculate_visual_metrics_cpu(reference, candidate);
   if (!metrics) {
-    return std::unexpected{metrics.error()};
+    return awj::compat::unexpected{metrics.error()};
   }
   return metrics->score;
 }

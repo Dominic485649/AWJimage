@@ -1,5 +1,5 @@
 module;
-#include <expected>
+#include "../compat/expected_compat.h"
 #include <string>
 export module awj.visual_metrics_gpu;
 import awj.image;
@@ -16,24 +16,24 @@ class AcceleratedVisualMetricSession {
   AcceleratedVisualMetricSession& operator=(const AcceleratedVisualMetricSession&) = delete;
   AcceleratedVisualMetricSession(AcceleratedVisualMetricSession&&) = default;
   AcceleratedVisualMetricSession& operator=(AcceleratedVisualMetricSession&&) = default;
-  static std::expected<AcceleratedVisualMetricSession, std::string> create(const ImageBuffer&) {
-    return std::unexpected{"此构建未启用 GPU 视觉质量后端。"};
+  static awj::compat::expected<AcceleratedVisualMetricSession, std::string> create(const ImageBuffer&) {
+    return awj::compat::unexpected{"此构建未启用 GPU 视觉质量后端。"};
   }
-  std::expected<VisualMetricResult, std::string> calculate_candidate_metrics(
+  awj::compat::expected<VisualMetricResult, std::string> calculate_candidate_metrics(
       const ImageBuffer&, AcceleratedVisualMetricTiming* = nullptr) {
-    return std::unexpected{"此构建未启用 GPU 视觉质量后端。"};
+    return awj::compat::unexpected{"此构建未启用 GPU 视觉质量后端。"};
   }
 };
-std::expected<LumaImage, std::string> make_luma_image_accelerated(const ImageBuffer& image) {
+awj::compat::expected<LumaImage, std::string> make_luma_image_accelerated(const ImageBuffer& image) {
   return make_luma_image(image);
 }
-std::expected<double, std::string> compute_gmsd_accelerated(const LumaImage& a, const LumaImage& b) {
+awj::compat::expected<double, std::string> compute_gmsd_accelerated(const LumaImage& a, const LumaImage& b) {
   return compute_gmsd(a, b);
 }
-std::expected<double, std::string> compute_ms_ssim_accelerated(const LumaImage& a, const LumaImage& b) {
+awj::compat::expected<double, std::string> compute_ms_ssim_accelerated(const LumaImage& a, const LumaImage& b) {
   return compute_ms_ssim(a, b);
 }
-std::expected<VisualMetricResult, std::string> calculate_visual_metrics_accelerated(const LumaImage& a, const LumaImage& b) {
+awj::compat::expected<VisualMetricResult, std::string> calculate_visual_metrics_accelerated(const LumaImage& a, const LumaImage& b) {
   return calculate_visual_metrics_cpu(a, b);
 }
 }

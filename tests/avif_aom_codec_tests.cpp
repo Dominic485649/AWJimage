@@ -1,16 +1,14 @@
+#include "../src/compat/stdlib_compat.h"
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
 #include <cstdio>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -259,7 +257,7 @@ int decode_bytes_to_temp(const awj::EncodedImage& encoded,
       !decoded->image.source_info ||
       decoded->image.source_info->bit_depth != expected_source_bit_depth) {
     if (decoded) {
-      return fail(std::format("AVIF decode result invalid: got {}x{} {}-bit source {}-bit.",
+      return fail(awj::compat::format("AVIF decode result invalid: got {}x{} {}-bit source {}-bit.",
                               decoded->image.width, decoded->image.height,
                               decoded->image.bit_depth,
                               decoded->image.source_info
@@ -325,7 +323,7 @@ int verify_animation_sequence() {
     const awj::AnimationInfo& info() const noexcept override { return details; }
     const awj::ImageBuffer& frame() const noexcept override { return images[index]; }
     std::uint64_t memory_usage_bytes() const noexcept override { return 256; }
-    std::expected<bool, std::string> next(std::stop_token = {}) override { return ++index < details.durations.size(); }
+    awj::compat::expected<bool, std::string> next(awj::compat::stop_token = {}) override { return ++index < details.durations.size(); }
   };
   auto sequence_settings = settings(10, awj::ChromaMode::yuv444, awj::AvifEncoderMode::aom);
   sequence_settings.quality = 100;
@@ -398,7 +396,7 @@ int verify_animation_sequence() {
     if (!still) return fail(still.error());
     Frames tiny; tiny.details.durations = {{1,4000000000u},{1,4000000000u},{1,4000000000u},{1,4000000000u}};
     if (awj::encode_avif_animation(tiny, sequence_settings)) return fail("Unrepresentable animation timing accepted.");
-    std::stop_source stop; stop.request_stop(); Frames canceled;
+    awj::compat::stop_source stop; stop.request_stop(); Frames canceled;
     if (awj::encode_avif_animation(canceled, sequence_settings, stop.get_token())) return fail("Sequence cancellation ignored.");
     sequence_settings.resources.memory_limit_bytes = 1; Frames limited;
     if (awj::encode_avif_animation(limited, sequence_settings)) return fail("Sequence memory budget ignored.");

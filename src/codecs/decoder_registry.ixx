@@ -1,13 +1,11 @@
 module;
+#include "../compat/stdlib_compat.h"
 
 #include <algorithm>
 #include <concepts>
-#include <expected>
 #include <filesystem>
-#include <format>
 #include <memory>
 #include <new>
-#include <stop_token>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -50,7 +48,7 @@ export namespace awj {
 struct DecoderRegistryOptions {
   bool allow_wic_fallback{true};
   int decode_threads{1};
-  std::stop_token stop_token{};
+  awj::compat::stop_token stop_token{};
   bool native_pixels{};
   GainMapDecodeMode gain_map_mode{GainMapDecodeMode::hdr_only};
   DecodeDiagnostics* diagnostics{};
@@ -65,9 +63,9 @@ namespace decoder_registry_detail {
 
 template <class Decoder>
 bool try_select(const fs::path& path, DecoderSelection& selection, int decode_threads,
-                std::stop_token stop_token = {}) {
+                awj::compat::stop_token stop_token = {}) {
   auto decoder = [&] {
-    if constexpr (std::constructible_from<Decoder, int, std::stop_token>) {
+    if constexpr (std::constructible_from<Decoder, int, awj::compat::stop_token>) {
       return std::make_unique<Decoder>(decode_threads, stop_token);
     } else if constexpr (std::constructible_from<Decoder, int>) {
       return std::make_unique<Decoder>(decode_threads);
@@ -114,7 +112,7 @@ std::string fallback_error(std::string_view primary_context,
                            const std::string& primary_error,
                            std::string_view fallback_context,
                            const std::string& fallback_error) {
-  return std::format("{}: {}；{}失败: {}",
+  return awj::compat::format("{}: {}；{}失败: {}",
                      primary_context,
                      primary_error,
                      fallback_context,
@@ -132,14 +130,14 @@ bool selected_jpegli_decoder(const DecoderSelection& selection) noexcept {
 
 std::string with_jpeg_turbo_fallback_error(std::string primary_error,
                                            const std::string& fallback_error) {
-  return std::format("{}；libjpeg-turbo 回退失败: {}",
+  return awj::compat::format("{}；libjpeg-turbo 回退失败: {}",
                      std::move(primary_error),
                      fallback_error);
 }
 
 }  // namespace decoder_registry_detail
 
-std::expected<DecoderSelection, std::string> select_decoder_for_path(
+awj::compat::expected<DecoderSelection, std::string> select_decoder_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
@@ -176,17 +174,17 @@ std::expected<DecoderSelection, std::string> select_decoder_for_path(
     const auto extension = path.extension();
     const auto extension_label = extension.empty() ? std::string{"<无扩展名>"}
                                                   : display_path_for_user(extension);
-    return std::unexpected{std::format("native backend 暂不支持输入格式: {}", extension_label)};
+    return awj::compat::unexpected{awj::compat::format("native backend 暂不支持输入格式: {}", extension_label)};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"选择输入解码器时内存不足。"};
+    return awj::compat::unexpected{"选择输入解码器时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"选择输入解码器时数据超过运行时限制。"};
+    return awj::compat::unexpected{"选择输入解码器时数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"选择输入解码器时文件系统访问失败。"};
+    return awj::compat::unexpected{"选择输入解码器时文件系统访问失败。"};
   }
 }
 
-std::expected<ImageDecodeResult, std::string> decode_image_for_path(
+awj::compat::expected<ImageDecodeResult, std::string> decode_image_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
@@ -194,7 +192,7 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
       *options.diagnostics = DecodeDiagnostics{.stage = "decode.gain-map-probe"};
     }
     auto enhanced = decode_jpeg_gain_map(path, options.stop_token, options.decode_threads, options.gain_map_mode);
-    if (!enhanced) return std::unexpected{enhanced.error()};
+    if (!enhanced) return awj::compat::unexpected{enhanced.error()};
     if (*enhanced) {
       if (options.diagnostics) {
         capture_decode_source(*options.diagnostics, (**enhanced).image);
@@ -206,7 +204,7 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     if (options.diagnostics) options.diagnostics->stage = "decode.select";
     auto selected = select_decoder_for_path(path, options);
     if (!selected) {
-      return std::unexpected{selected.error()};
+      return awj::compat::unexpected{selected.error()};
     }
 
     if (options.diagnostics) {
@@ -228,12 +226,12 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     }
 
     if (!options.allow_wic_fallback || selected->fallback) {
-      return std::unexpected{decoded.error()};
+      return awj::compat::unexpected{decoded.error()};
     }
 
     if (decoded.error().starts_with("Gain Map:") ||
         decoder_registry_detail::is_unsupported_multi_image_error(decoded.error())) {
-      return std::unexpected{decoded.error()};
+      return awj::compat::unexpected{decoded.error()};
     }
 
     auto primary_error = decoded.error();
@@ -261,12 +259,12 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     DecoderSelection fallback{};
     const auto decode_threads = std::max(1, options.decode_threads);
     if (!decoder_registry_detail::try_select_wic_fallback(path, fallback, decode_threads)) {
-      return std::unexpected{primary_error};
+      return awj::compat::unexpected{primary_error};
     }
 
     auto fallback_decoded = fallback.decoder->decode(path);
     if (!fallback_decoded) {
-      return std::unexpected{decoder_registry_detail::fallback_error(
+      return awj::compat::unexpected{decoder_registry_detail::fallback_error(
           "原生解码失败", primary_error, "WIC 兜底", fallback_decoded.error())};
     }
     fallback_decoded->used_fallback = true;
@@ -277,24 +275,24 @@ std::expected<ImageDecodeResult, std::string> decode_image_for_path(
     }
     return fallback_decoded;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"解码输入图片时内存不足。"};
+    return awj::compat::unexpected{"解码输入图片时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"解码输入图片时数据超过运行时限制。"};
+    return awj::compat::unexpected{"解码输入图片时数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"解码输入图片时文件系统访问失败。"};
+    return awj::compat::unexpected{"解码输入图片时文件系统访问失败。"};
   }
 }
 
-std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
+awj::compat::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
     auto enhanced = probe_jpeg_gain_map_dimensions(path, options.stop_token);
-    if (!enhanced) return std::unexpected{enhanced.error()};
+    if (!enhanced) return awj::compat::unexpected{enhanced.error()};
     if (*enhanced) return **enhanced;
     auto selected = select_decoder_for_path(path, options);
     if (!selected) {
-      return std::unexpected{selected.error()};
+      return awj::compat::unexpected{selected.error()};
     }
 
     auto dimensions = selected->decoder->probe_dimensions(path);
@@ -303,12 +301,12 @@ std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
     }
 
     if (!options.allow_wic_fallback || selected->fallback) {
-      return std::unexpected{dimensions.error()};
+      return awj::compat::unexpected{dimensions.error()};
     }
 
     if (dimensions.error().starts_with("Gain Map:") ||
         decoder_registry_detail::is_unsupported_multi_image_error(dimensions.error())) {
-      return std::unexpected{dimensions.error()};
+      return awj::compat::unexpected{dimensions.error()};
     }
 
     auto primary_error = dimensions.error();
@@ -330,21 +328,21 @@ std::expected<ImageDimensions, std::string> probe_image_dimensions_for_path(
     DecoderSelection fallback{};
     const auto decode_threads = std::max(1, options.decode_threads);
     if (!decoder_registry_detail::try_select_wic_fallback(path, fallback, decode_threads)) {
-      return std::unexpected{primary_error};
+      return awj::compat::unexpected{primary_error};
     }
 
     auto fallback_dimensions = fallback.decoder->probe_dimensions(path);
     if (!fallback_dimensions) {
-      return std::unexpected{decoder_registry_detail::fallback_error(
+      return awj::compat::unexpected{decoder_registry_detail::fallback_error(
           "原生尺寸探测失败", primary_error, "WIC 兜底", fallback_dimensions.error())};
     }
     return fallback_dimensions;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"探测输入图片尺寸时内存不足。"};
+    return awj::compat::unexpected{"探测输入图片尺寸时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"探测输入图片尺寸时数据超过运行时限制。"};
+    return awj::compat::unexpected{"探测输入图片尺寸时数据超过运行时限制。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"探测输入图片尺寸时文件系统访问失败。"};
+    return awj::compat::unexpected{"探测输入图片尺寸时文件系统访问失败。"};
   }
 }
 

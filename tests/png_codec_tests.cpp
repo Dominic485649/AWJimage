@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -6,13 +7,11 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <optional>
 #include <stdexcept>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -30,7 +29,7 @@ import awj.visual_metrics;
 
 namespace fs = std::filesystem;
 void check(bool value, const char* message) { if (!value) throw std::runtime_error(message); }
-template <class T> T require(std::expected<T, std::string> result) {
+template <class T> T require(awj::compat::expected<T, std::string> result) {
   if (!result) throw std::runtime_error(result.error());
   return std::move(*result);
 }
@@ -283,7 +282,7 @@ void check_bit_depth_policy() {
     for (const int invalid : {0, 1, 10, 12, 32}) {
       check(!encoder.encode(image, {.quality = 100, .bit_depth = invalid}), "PNG accepted an unsupported requested depth");
     }
-    std::stop_source cancel;
+    awj::compat::stop_source cancel;
     cancel.request_stop();
     for (const auto depth : requested)
       check(!encoder.encode(image, {.quality = 100, .bit_depth = depth}, cancel.get_token()), "PNG policy conversion ignored cancellation");
@@ -504,7 +503,7 @@ int main(int argc, char** argv) try {
     check(!encoder.encode(image, {.quality = 100}), "half float treated as unorm");
     image.sample_representation = awj::SampleRepresentation::unorm;
     check(!encoder.encode(image, {.quality = 0}) && !encoder.encode(image, {.quality = 101}), "invalid quality accepted");
-    std::stop_source cancel;
+    awj::compat::stop_source cancel;
     cancel.request_stop();
     check(!encoder.encode(image, {.quality = 50}, cancel.get_token()), "cancellation ignored");
   }

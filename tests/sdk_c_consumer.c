@@ -9,7 +9,7 @@ int main(void) {
   const uint8_t pixels[4] = {1, 2, 3, 255};
   const uint8_t* row = NULL;
   uint64_t bytes = 0;
-  if (awj_abi_version() != AWJ_ABI_VERSION || strcmp(awj_version(), "1.3.0")) return 1;
+  if (awj_abi_version() != AWJ_ABI_VERSION || strcmp(awj_version(), AWJ_EXPECTED_VERSION)) return 1;
   if (awj_context_create(NULL, &context) != AWJ_OK) return 2;
   awj_frame_desc_init(&desc);
   desc.width = desc.height = 1;

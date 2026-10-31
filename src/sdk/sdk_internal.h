@@ -13,13 +13,13 @@
 #include <mutex>
 #include <new>
 #include <span>
-#include <stop_token>
+#include "../compat/stop_compat.h"
 #include <string_view>
 #include <vector>
 
 struct awj_context {
   awj_context_options options{};
-  std::stop_source stop{};
+  awj::compat::stop_source stop{};
   std::atomic<uint64_t> admitted_bytes{};
   std::mutex interop_mutex{};
   std::shared_ptr<void> d3d_pool{};

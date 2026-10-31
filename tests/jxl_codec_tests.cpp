@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -6,14 +7,12 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
-#include <expected>
 #include <filesystem>
 #include <fstream>
 #include <limits>
 #include <memory>
 #include <optional>
 #include <span>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -85,21 +84,21 @@ std::optional<BoxView> find_box(std::span<const std::byte> bytes, std::array<cha
   return std::nullopt;
 }
 
-std::expected<std::vector<std::byte>, std::string> serialize_bundle(const JxlGainMapBundle& bundle) {
+awj::compat::expected<std::vector<std::byte>, std::string> serialize_bundle(const JxlGainMapBundle& bundle) {
   std::size_t size{}, written{};
   if (JxlGainMapGetBundleSize(&bundle, &size) != JXL_TRUE || size == 0)
-    return std::unexpected{"Cannot size test JHGM bundle."};
+    return awj::compat::unexpected{"Cannot size test JHGM bundle."};
   std::vector<std::byte> bytes(size);
   if (JxlGainMapWriteBundle(&bundle, reinterpret_cast<std::uint8_t*>(bytes.data()), bytes.size(), &written) != JXL_TRUE ||
-      written != size) return std::unexpected{"Cannot serialize test JHGM bundle."};
+      written != size) return awj::compat::unexpected{"Cannot serialize test JHGM bundle."};
   return bytes;
 }
 
-std::expected<std::vector<std::byte>, std::string> replace_gain_map_box(
+awj::compat::expected<std::vector<std::byte>, std::string> replace_gain_map_box(
     std::span<const std::byte> source, std::span<const std::byte> payload,
     std::array<char, 4> type = {'j', 'h', 'g', 'm'}) {
   const auto box = find_box(source, {'j', 'h', 'g', 'm'});
-  if (!box || payload.size() > UINT32_MAX - 8) return std::unexpected{"Missing or oversized test JHGM box."};
+  if (!box || payload.size() > UINT32_MAX - 8) return awj::compat::unexpected{"Missing or oversized test JHGM box."};
   std::vector<std::byte> result{source.begin(), source.begin() + static_cast<std::ptrdiff_t>(box->offset)};
   push_be_u32(result, static_cast<std::uint32_t>(payload.size() + 8));
   for (const char c : type) result.push_back(static_cast<std::byte>(c));
@@ -170,11 +169,11 @@ struct IntegerJxl {
 // This decoder is independent of AWJimage's decoder/normalizer. Request the
 // actual codestream's integer range so a matching encoder/decoder scaling bug
 // cannot make a 10/12-bit stream appear correct just by round-tripping it.
-std::expected<IntegerJxl, std::string> decode_integer_jxl(std::span<const std::byte> bytes) {
+awj::compat::expected<IntegerJxl, std::string> decode_integer_jxl(std::span<const std::byte> bytes) {
   std::unique_ptr<JxlDecoder, decltype(&JxlDecoderDestroy)> decoder{JxlDecoderCreate(nullptr), &JxlDecoderDestroy};
   if (!decoder || JxlDecoderSubscribeEvents(decoder.get(), JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
       JxlDecoderSetInput(decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()) != JXL_DEC_SUCCESS)
-    return std::unexpected{"Cannot initialize independent integer JXL decoder."};
+    return awj::compat::unexpected{"Cannot initialize independent integer JXL decoder."};
   JxlDecoderCloseInput(decoder.get());
   IntegerJxl result;
   const JxlPixelFormat format{.num_channels = 4, .data_type = JXL_TYPE_UINT16, .endianness = JXL_NATIVE_ENDIAN, .align = 0};
@@ -182,12 +181,12 @@ std::expected<IntegerJxl, std::string> decode_integer_jxl(std::span<const std::b
   for (;;) {
     const auto status = JxlDecoderProcessInput(decoder.get());
     if (status == JXL_DEC_ERROR || status == JXL_DEC_NEED_MORE_INPUT)
-      return std::unexpected{"Independent integer JXL decode failed or was truncated."};
+      return awj::compat::unexpected{"Independent integer JXL decode failed or was truncated."};
     if (status == JXL_DEC_BASIC_INFO) {
       if (JxlDecoderGetBasicInfo(decoder.get(), &result.info) != JXL_DEC_SUCCESS ||
           !result.info.xsize || !result.info.ysize || result.info.bits_per_sample < 8 || result.info.bits_per_sample > 16 ||
           result.info.exponent_bits_per_sample || result.info.alpha_exponent_bits)
-        return std::unexpected{"Independent JXL integer basic info is invalid."};
+        return awj::compat::unexpected{"Independent JXL integer basic info is invalid."};
     } else if (status == JXL_DEC_COLOR_ENCODING) {
       JxlColorEncoding color{};
       if (JxlDecoderGetColorAsEncodedProfile(decoder.get(), JXL_COLOR_PROFILE_TARGET_ORIGINAL, &color) == JXL_DEC_SUCCESS) {
@@ -196,28 +195,28 @@ std::expected<IntegerJxl, std::string> decode_integer_jxl(std::span<const std::b
         std::size_t size{};
         if (JxlDecoderGetICCProfileSize(decoder.get(), JXL_COLOR_PROFILE_TARGET_ORIGINAL, &size) != JXL_DEC_SUCCESS ||
             !size || size > 1024 * 1024)
-          return std::unexpected{"Cannot size independent original JXL ICC."};
+          return awj::compat::unexpected{"Cannot size independent original JXL ICC."};
         result.icc.resize(size);
         if (JxlDecoderGetColorAsICCProfile(decoder.get(), JXL_COLOR_PROFILE_TARGET_ORIGINAL,
             reinterpret_cast<std::uint8_t*>(result.icc.data()), result.icc.size()) != JXL_DEC_SUCCESS)
-          return std::unexpected{"Cannot read independent original JXL ICC."};
+          return awj::compat::unexpected{"Cannot read independent original JXL ICC."};
       }
     } else if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
       std::size_t size{};
       if (JxlDecoderImageOutBufferSize(decoder.get(), &format, &size) != JXL_DEC_SUCCESS || !size ||
           size > 1024 * 1024 || size % sizeof(std::uint16_t))
-        return std::unexpected{"Independent JXL integer output size is invalid."};
+        return awj::compat::unexpected{"Independent JXL integer output size is invalid."};
       result.rgba.resize(size / sizeof(std::uint16_t));
       if (JxlDecoderSetImageOutBuffer(decoder.get(), &format, result.rgba.data(), size) != JXL_DEC_SUCCESS)
-        return std::unexpected{"Cannot set independent JXL integer output."};
+        return awj::compat::unexpected{"Cannot set independent JXL integer output."};
       const JxlBitDepth depth{.type = JXL_BIT_DEPTH_FROM_CODESTREAM};
       if (JxlDecoderSetImageOutBitDepth(decoder.get(), &depth) != JXL_DEC_SUCCESS)
-        return std::unexpected{"Cannot request independent codestream-range JXL output."};
+        return awj::compat::unexpected{"Cannot request independent codestream-range JXL output."};
     } else if (status == JXL_DEC_FULL_IMAGE) {
       received_full_image = true;
     } else if (status == JXL_DEC_SUCCESS) {
       if (!received_full_image || result.rgba.size() != static_cast<std::uint64_t>(result.info.xsize) * result.info.ysize * 4)
-        return std::unexpected{"Independent JXL decoder did not produce a complete image."};
+        return awj::compat::unexpected{"Independent JXL decoder did not produce a complete image."};
       return result;
     }
   }
@@ -323,7 +322,7 @@ int encoding_policy_regressions() {
       settings.bit_depth = invalid;
       if (encoder.encode(image, settings)) return fail("JXL accepted unsupported output precision.");
     }
-    std::stop_source cancel;
+    awj::compat::stop_source cancel;
     cancel.request_stop();
     for (const auto depth : requested) {
       auto settings = rendering_settings();
@@ -406,20 +405,20 @@ bool close_rgb(const awj::ImageBuffer& a, const awj::ImageBuffer& b, double tole
   return true;
 }
 
-bool gain_map_failure(const std::expected<awj::ImageDecodeResult, std::string>& result) {
+bool gain_map_failure(const awj::compat::expected<awj::ImageDecodeResult, std::string>& result) {
   return !result && result.error().starts_with("Gain Map: ISO 21496-1");
 }
 
-std::expected<std::vector<std::byte>, std::string> compressed_gain_map_payload(std::span<const std::byte> payload) {
+awj::compat::expected<std::vector<std::byte>, std::string> compressed_gain_map_payload(std::span<const std::byte> payload) {
   const auto bound = BrotliEncoderMaxCompressedSize(payload.size());
-  if (bound == 0) return std::unexpected{"Cannot size compressed JHGM fixture."};
+  if (bound == 0) return awj::compat::unexpected{"Cannot size compressed JHGM fixture."};
   std::vector<std::byte> bytes(bound + 4);
   std::memcpy(bytes.data(), "jhgm", 4);
   auto size = bound;
   if (BrotliEncoderCompress(5, BROTLI_DEFAULT_WINDOW, BROTLI_MODE_GENERIC, payload.size(),
       reinterpret_cast<const std::uint8_t*>(payload.data()), &size,
       reinterpret_cast<std::uint8_t*>(bytes.data() + 4)) != BROTLI_TRUE)
-    return std::unexpected{"Cannot compress JHGM fixture."};
+    return awj::compat::unexpected{"Cannot compress JHGM fixture."};
   bytes.resize(size + 4);
   return bytes;
 }
@@ -434,7 +433,7 @@ int gain_map_regressions(const std::filesystem::path& test_root) {
   awj::JXLImageDecoder decoder;
   auto encoded = encoder.encode(pair.hdr, settings);
   if (!encoded) return fail(encoded.error());
-  std::stop_source cancelled_decode;
+  awj::compat::stop_source cancelled_decode;
   cancelled_decode.request_stop();
   const auto cancelled = decoder.decode_memory(encoded->encoded.bytes, "cancelled-jhgm",
       {.copy_metadata_payloads = false, .gain_map_mode = awj::GainMapDecodeMode::preserve_both,
