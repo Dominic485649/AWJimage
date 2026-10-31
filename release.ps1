@@ -273,6 +273,12 @@ if ($Generator -eq 'Ninja') {
     $CompilerDescription = $CompilerOutput[0]
     $ConfigureArgs += "-DCMAKE_C_COMPILER=$Clang"
     $ConfigureArgs += "-DCMAKE_CXX_COMPILER=$Clang"
+    # 同时固定初始化值与缓存值，避免旧缓存把 LLVM 预处理规则用于 Microsoft RC。
+    if (-not $env:WindowsSdkVerBinPath) { throw '缺少 Windows SDK 资源编译器目录。' }
+    $ResourceCompiler = Join-Path $env:WindowsSdkVerBinPath 'x64/rc.exe'
+    if (-not (Test-Path -LiteralPath $ResourceCompiler -PathType Leaf)) { throw 'Windows SDK 资源编译器不存在。' }
+    $ConfigureArgs += "-DCMAKE_RC_COMPILER=$ResourceCompiler"
+    $ConfigureArgs += "-DCMAKE_RC_COMPILER_INIT=$ResourceCompiler"
 } else {
     if ($CompilerDirectory) { throw '显式 Clang 编译器需搭配 Ninja 生成器。' }
     $ConfigureArgs += @('-A', 'x64')
