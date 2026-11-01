@@ -235,7 +235,8 @@ function Publish-AwjVersionStage {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$RepositoryRoot,
           [Parameter(Mandatory)][string]$Version,
-          [Parameter(Mandatory)][string]$Stage)
+          [Parameter(Mandatory)][string]$Stage,
+          [switch]$PreserveExisting)
     $stagePath = Assert-AwjBuildPath -RepositoryRoot $RepositoryRoot -Path $Stage
     $marker = Get-Content -LiteralPath (Join-Path $stagePath '.awj-owned-stage.json') -Raw | ConvertFrom-Json -AsHashtable
     Assert-AwjJsonFields $marker @('version', 'kind', 'project_root')
@@ -243,10 +244,28 @@ function Publish-AwjVersionStage {
         [IO.Path]::GetFullPath($marker.project_root) -ne [IO.Path]::GetFullPath($RepositoryRoot)) { throw '暂存目录不属于本项目的当前版本。' }
     $null = Test-AwjArtifactAcceptance -RepositoryRoot $RepositoryRoot -Directory $stagePath -Version $Version
     $destination = Resolve-AwjRepoPath -RepositoryRoot $RepositoryRoot -Path (Join-Path $RepositoryRoot "bin/$Version")
-    if (Test-Path -LiteralPath $destination) { throw "拒绝覆盖已存在的版本目录：$destination" }
+    $exists = Test-Path -LiteralPath $destination
+    if ($exists -and -not $PreserveExisting) { throw "拒绝覆盖已存在的版本目录：$destination" }
     [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
     if ([IO.Path]::GetPathRoot($stagePath) -ne [IO.Path]::GetPathRoot($destination)) { throw '投放暂存与目标必须同卷。' }
-    Move-Item -LiteralPath $stagePath -Destination $destination -ErrorAction Stop
+    if ($exists) {
+        if (-not (Test-Path -LiteralPath $destination -PathType Container)) { throw '既有版本位置不是目录。' }
+        $entries = @(Get-ChildItem -LiteralPath $stagePath -Force)
+        foreach ($entry in $entries) {
+            if (Test-Path -LiteralPath (Join-Path $destination $entry.Name)) {
+                throw "保留既有版本成员，拒绝覆盖：$($entry.Name)"
+            }
+        }
+        # 已有候选保持原路径；只投放全新正式成员，验收目录最后提交。
+        foreach ($entry in @($entries | Where-Object Name -CNE 'verification') + @($entries | Where-Object Name -CEQ 'verification')) {
+            $target = Join-Path $destination $entry.Name
+            if ($entry.PSIsContainer) { [IO.Directory]::Move($entry.FullName, $target) }
+            else { [IO.File]::Move($entry.FullName, $target) }
+        }
+        Remove-Item -LiteralPath $stagePath -Confirm:$false -ErrorAction Stop
+    } else {
+        [IO.Directory]::Move($stagePath, $destination)
+    }
     $null = Test-AwjArtifactAcceptance -RepositoryRoot $RepositoryRoot -Directory $destination -Version $Version
     return $destination
 }

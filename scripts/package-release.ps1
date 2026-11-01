@@ -19,6 +19,8 @@ param(
     [string]$LinuxEvidencePath = "",
     [Parameter(Mandatory)] [string]$VerificationReportPath,
     [string[]]$AdditionalAssetEvidencePaths = @(),
+    [switch]$HmosSdkPreview,
+    [switch]$PreserveVersionCandidates,
     [switch]$LocalCandidate,
     [switch]$SkipManifests
 )
@@ -76,6 +78,9 @@ function Assert-File([string]$Path, [string]$Label) {
 
 function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
     $withHmos = [version]$Version -ge [version]'1.3.1'
+    if ($HmosSdkPreview -and ($Version -cne '1.3.1' -or $LocalCandidate)) {
+        throw 'HMOS 预览范围仅明确授权用于 1.3.1 正式发行中的预览组件。'
+    }
     if (-not $EvidencePaths.Count) {
         if (-not $LocalCandidate -and [version]$Version -ge [version]'1.3.0') {
             throw '正式发布必须提供该版本要求的全部平台 SDK 与对应源码。'
@@ -86,24 +91,54 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
     $expected.Add('sdk:windows-x64', 'AWJ_SDK_Win_x64.zip')
     $expected.Add('sdk:linux-x64', 'AWJ_SDK_Linux_x64.tar.gz')
     $expected.Add('source:source', "AWJimage-$Version-source.zip")
-    if ($withHmos) { $expected.Add('sdk:hmos-arm64-api26', 'AWJ_SDK_HMOS_arm64_api26.tar.gz') }
+    if ($withHmos) {
+        $hmosRole = if ($HmosSdkPreview) { 'sdk-preview:hmos-arm64-api26' } else { 'sdk:hmos-arm64-api26' }
+        $expected.Add($hmosRole, 'AWJ_SDK_HMOS_arm64_api26.tar.gz')
+    }
     if ($EvidencePaths.Count -ne $expected.Count) { throw '正式附加资产必须恰好覆盖该版本要求的全部 SDK 与对应源码。' }
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($path in $EvidencePaths) {
         $receipt = Assert-File $path '附加资产验收记录'
         $proof = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json -AsHashtable
         Assert-AwjJsonFields $proof @('kind','mode','status','version','platform','git_head','source_fingerprint') @('source_dirty')
-        if (-not (Test-AwjJsonUnsignedInteger $proof.schema) -or $proof.schema -ne 1 -or
-            $proof.mode -cne 'formal' -or $proof.status -cne 'passed' -or $proof.source_dirty -ne $false -or
-            $proof.version -cne $Version -or $proof.git_head -cne $GitHead -or $proof.source_fingerprint -cne $SourceFingerprint) {
-            throw '附加资产必须通过验收并来自同一干净正式提交。'
-        }
         $role = $proof.kind + ':' + $proof.platform
         if (-not $expected.ContainsKey($role) -or -not $seen.Add($role)) { throw '附加资产角色未知或重复。' }
+        $isPreview = $role -ceq 'sdk-preview:hmos-arm64-api26'
+        $expectedMode = if ($isPreview) { 'preview' } else { 'formal' }
+        $expectedStatus = if ($isPreview) { 'cross-linked' } else { 'passed' }
+        if (-not (Test-AwjJsonUnsignedInteger $proof.schema) -or $proof.schema -ne 1 -or
+            $proof.mode -cne $expectedMode -or $proof.status -cne $expectedStatus -or $proof.source_dirty -ne $false -or
+            $proof.version -cne $Version -or $proof.git_head -cne $GitHead -or $proof.source_fingerprint -cne $SourceFingerprint) {
+            throw '附加资产必须满足已授权的验收范围并来自同一干净正式提交。'
+        }
         Assert-AwjJsonFields $proof.archive @('name','sha256')
         if ($proof.archive.name -cne $expected[$role] -or -not (Test-AwjJsonUnsignedInteger $proof.archive.size) -or
             $proof.archive.sha256 -notmatch '^[0-9a-f]{64}$') { throw '附加资产归档信息无效。' }
-        $checks = if ($proof.kind -ceq 'sdk') {
+        $checks = if ($isPreview) {
+            Assert-AwjJsonFields $proof @('profile','compiler_version','target_triple','validation_tier','target_execution','target_loader',
+                'native_sdk_version','libcxx_abi_namespace','runtime_linkage','cross_build_report_sha256',
+                'cross_link_consumer_report_sha256','preview_notice_sha256')
+            if ($proof.profile -cne 'hmos-arm64-api26-clang23' -or $proof.compiler_version -cnotmatch '^23\.[0-9]+\.[0-9]+$' -or
+                $proof.target_triple -cne 'aarch64-unknown-linux-ohos' -or $proof.validation_tier -cne 'cross-build-preview' -or
+                $proof.target_execution -cne 'not-run' -or $proof.target_loader -cne 'not-run' -or
+                $proof.native_sdk_version -cne '26.0.0.105' -or $proof.libcxx_abi_namespace -cne '__n1' -or $proof.runtime_linkage -cne 'native-static' -or
+                -not (Test-AwjJsonUnsignedInteger $proof.api) -or $proof.api -ne 26 -or
+                -not (Test-AwjJsonUnsignedInteger $proof.libcxx_version) -or $proof.libcxx_version -ne 15004 -or
+                -not (Test-AwjJsonUnsignedInteger $proof.libcxx_abi_version) -or $proof.libcxx_abi_version -ne 1) {
+                throw 'HMOS 预览范围、目标或未执行状态不匹配。'
+            }
+            foreach ($field in @('cross_build_report_sha256','cross_link_consumer_report_sha256','preview_notice_sha256')) {
+                if ($proof[$field] -cnotmatch '^[0-9a-f]{64}$') { throw 'HMOS 预览缺少实际构建、链接或包内预览说明摘要。' }
+            }
+            foreach ($field in @('test_report_sha256','consumer_report_sha256','target_execution_report_sha256')) {
+                if ($proof.ContainsKey($field)) { throw 'HMOS 预览不得夹带运行验收报告字段。' }
+            }
+            Assert-AwjJsonFields $proof.verification @('target_execution','target_loader')
+            if ($proof.verification.target_execution -cne 'not-run' -or $proof.verification.target_loader -cne 'not-run') {
+                throw 'HMOS 预览不得冒充真实目标执行通过。'
+            }
+            @('cross_build','test_programs_linked','installed_consumers_linked','compiler_identity','target_identity','native_inputs','exports','archive_roundtrip','preview_notice')
+        } elseif ($proof.kind -ceq 'sdk') {
             Assert-AwjJsonFields $proof @('test_report_sha256','consumer_report_sha256')
             if ($proof.test_report_sha256 -notmatch '^[0-9a-f]{64}$' -or $proof.consumer_report_sha256 -notmatch '^[0-9a-f]{64}$') {
                 throw 'SDK 缺少可追溯的实际测试摘要。'
@@ -146,6 +181,7 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
             throw '附加资产归档与验收记录不匹配。'
         }
         [pscustomobject]@{name=$proof.archive.name; path=$archive; sha256=$proof.archive.sha256; receipt=$receipt;
+            validation_tier=$(if ($isPreview) { 'cross-build-preview' } elseif ($proof.kind -ceq 'sdk') { 'target-verified' } else { 'source' });
             receipt_sha256=(Get-FileHash -LiteralPath $receipt -Algorithm SHA256).Hash.ToLowerInvariant()}
     }
 }
@@ -656,8 +692,10 @@ $Artifacts = foreach ($Relative in ($HashFiles + @('SHA256SUMS', '.awj-owned-sta
 [ordered]@{
     schema=1; version=$Version; status='passed'; mode=$(if ($LocalCandidate) { 'local-candidate' } else { 'formal' })
     source_fingerprint=$SourceFingerprint; accepted_at=[DateTimeOffset]::UtcNow.ToString('o'); artifacts=@($Artifacts)
+    release_scope=@{desktop='formal';hmos_sdk=$(if ($HmosSdkPreview) { 'cross-build-preview' } elseif ([version]$Version -ge [version]'1.3.1') { 'target-verified' } else { 'not-included' })}
+    additional_asset_scopes=@($AdditionalAssets | Select-Object name,validation_tier)
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Verification 'acceptance.json') -Encoding utf8
-$Destination = Publish-AwjVersionStage -RepositoryRoot $Repo -Version $Version -Stage $Stage
+$Destination = Publish-AwjVersionStage -RepositoryRoot $Repo -Version $Version -Stage $Stage -PreserveExisting:$PreserveVersionCandidates
 Assert-BinaryVersion (Join-Path $Destination 'Windows/AWJ.exe')
 Assert-BinaryVersion (Join-Path $Destination 'Windows/AWJ.com')
 $null = Test-AwjArtifactAcceptance -RepositoryRoot $Repo -Directory $Destination -Version $Version

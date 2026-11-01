@@ -85,6 +85,31 @@ $null=Test-AwjArtifactAcceptance -RepositoryRoot $root -Directory $again -Versio
 $collision=''
 try { Publish-AwjVersionStage -RepositoryRoot $root -Version '1.2.3' -Stage $again | Out-Null } catch { $collision=$_.Exception.Message }
 if ($collision -notlike '拒绝覆盖已存在的版本目录：*') { throw "未命中已存在目标保护：$collision" }
+# 版本根已有被引用的候选时，显式保留它们，只投放无冲突的新成员。
+$preserveStage=New-AwjReleaseStage -RepositoryRoot $root -Version '1.3.1'
+[void][IO.Directory]::CreateDirectory((Join-Path $preserveStage 'Windows'))
+[void][IO.Directory]::CreateDirectory((Join-Path $preserveStage 'verification'))
+$preserveAsset=Join-Path $preserveStage 'Windows/AWJ.com'
+[IO.File]::WriteAllText($preserveAsset,'new formal fixture',[Text.UTF8Encoding]::new($false))
+$preserveReceipt=@{schema=1;version='1.3.1';status='passed';source_fingerprint=(Get-AwjSourceFingerprint -RepositoryRoot $root);artifacts=@(@{path='Windows/AWJ.com';size=(Get-Item -LiteralPath $preserveAsset).Length;sha256=(Get-FileHash -LiteralPath $preserveAsset -Algorithm SHA256).Hash.ToLowerInvariant()})}
+$preserveReceipt | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath (Join-Path $preserveStage 'verification/acceptance.json') -Encoding utf8
+$existing=Join-Path $root 'bin/1.3.1/dev-msvc-v1'
+[void][IO.Directory]::CreateDirectory($existing)
+$sentinel=Join-Path $existing 'candidate.bin'
+[IO.File]::WriteAllText($sentinel,'referenced candidate fixture',[Text.UTF8Encoding]::new($false))
+$sentinelHash=(Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash
+$sentinelTime=(Get-Item -LiteralPath $sentinel).LastWriteTimeUtc
+Must-Reject { Publish-AwjVersionStage -RepositoryRoot $root -Version '1.3.1' -Stage $preserveStage } '缺少显式保留开关'
+$preserveDestination=Publish-AwjVersionStage -RepositoryRoot $root -Version '1.3.1' -Stage $preserveStage -PreserveExisting
+$null=Test-AwjArtifactAcceptance -RepositoryRoot $root -Directory $preserveDestination -Version '1.3.1'
+if ((Get-FileHash -LiteralPath $sentinel -Algorithm SHA256).Hash -cne $sentinelHash -or (Get-Item -LiteralPath $sentinel).LastWriteTimeUtc -ne $sentinelTime) { throw '候选内容或原位置被正式投放改变。' }
+$collisionStage=New-AwjReleaseStage -RepositoryRoot $root -Version '1.3.1'
+[void][IO.Directory]::CreateDirectory((Join-Path $collisionStage 'Windows'))
+[void][IO.Directory]::CreateDirectory((Join-Path $collisionStage 'verification'))
+Copy-Item -LiteralPath (Join-Path $preserveDestination 'Windows/AWJ.com') -Destination (Join-Path $collisionStage 'Windows/AWJ.com')
+Copy-Item -LiteralPath (Join-Path $preserveDestination 'verification/acceptance.json') -Destination (Join-Path $collisionStage 'verification/acceptance.json')
+Must-Reject { Publish-AwjVersionStage -RepositoryRoot $root -Version '1.3.1' -Stage $collisionStage -PreserveExisting } '显式保留仍拒绝任何同名正式成员'
+if (-not (Test-Path -LiteralPath (Join-Path $collisionStage '.awj-owned-stage.json'))) { throw '冲突拒绝前已移动暂存成员。' }
 $old=Join-Path $root 'bin/1.2.2'
 [void][IO.Directory]::CreateDirectory((Join-Path $old 'preset'))
 [IO.File]::WriteAllText((Join-Path $old 'AWJ.com'), 'old executable', [Text.UTF8Encoding]::new($false))

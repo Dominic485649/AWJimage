@@ -16,7 +16,7 @@
 | 真实 WGC、物理 GPU HDR、跨设备共享 | 未验证；WARP 不替代这些结果 |
 | FFmpeg | 可选桥接，按精确 libavutil 头版本构建；Windows DLL 与 Linux `.so` 分别验证，不混用证据；未验证实际 D3D11 解码会话 |
 | Linux x86_64，WSL Clang 23 | 1.3.1 使用独立原生 Clang23 构建；保留匿名共享内存、FFmpeg、帧流与只读页适配，执行记录随包保存 |
-| HMOS ARM64/API26，WSL Clang23 + Native26.0.0.105 | 完整 CPU C ABI SDK，目标头与原始静态 libc++15004/ABI1/__n1 配对；交叉构建与真实目标执行分别记录，正式放行要求后者通过 |
+| HMOS ARM64/API26，WSL Clang23 + Native26.0.0.105 | 1.3.1 以交叉构建预览交付完整 CPU C ABI SDK；目标头与原始静态 libc++15004/ABI1/__n1 配对，真机加载与执行待验证；正式目标验证入口保持独立 |
 
 1.3.0 已纳入固定的 1.2.6。开发主线采用 `main`，`master` 保留旧客户端更新入口；两处使用相同的签名清单与密钥环，1.3.0 客户端从 `main` 获取更新。正式包由同一干净源码提交构建，应用与 SDK 独立分发。
 
@@ -99,7 +99,9 @@ OHOS 私有兼容层使用固定 tl::expected 与 fmt，补齐实际使用的 ex
 
 HMOS 安装仅提供 awj.h、真正的 libawj_sdk.so、CMake package、示例和许可；保持 C ABI v1，CPU 编码覆盖 PNG/JPEGli/WebP/AVIF/JXL。D3D11、桌面 SHM、GPU 指标、FFmpeg 桥接及流 CLI 在本 profile 关闭。ArkTS Node-API、PixelMap/NativeBuffer 和 HAP 收集加载另行验证，不能由 `.so` 链接成功推断。
 
-正式 HMOS 包要求真实华为目标或匹配官方运行环境的消费者、完整 SDK 测试及加载证据，并绑定本次库、源码、系统 build 和原始日志。Linux 宿主测试、普通 Linux QEMU 和交叉链接都不能替代；缺少目标执行证据时保留本地候选，阻止正式发布。
+正式 HMOS 包要求真实华为目标或匹配官方运行环境的消费者、完整 SDK 测试及加载证据，并绑定本次库、源码、系统 build 和原始日志。Linux 宿主测试、普通 Linux QEMU 和交叉链接都不能替代；缺少目标执行证据时保留本地候选，阻止承诺正式目标支持的发布。
+
+**1.3.1 的 HMOS 组件经用户明确选择，以交叉构建预览交付**，Windows/Linux 产物保持正式范围。预览完成七个目标测试程序与三个安装消费者的交叉链接、原 Native 输入、ELF、导出与归档审计；真机加载、编码和 loader 验证待目标环境完成。包内 `PREVIEW.txt` 和 `SDK-BUILD.json` 记录 `cross-build-preview`、`target_execution=not-run` 与 `target_loader=not-run`，不提供伪造的 JUnit/目标运行通过记录。原正式 HMOS 入口继续保留真实执行门禁。
 
 ## 公共 C ABI 与生命周期
 

@@ -1,5 +1,19 @@
 # 更新日志
 
+## 1.3.1 - 2026-11-01
+
+### 鸿蒙 SDK 预览
+
+- 新增面向 HMOS ARM64/API26 的 CPU 图像编码 SDK 交叉构建预览，提供 PNG、JPEGli、WebP、AVIF、JPEG XL 内存编码。
+- 沿用统一 C ABI v1、SDR/HDR 与 Gain Map 呈现策略、只读帧借用和资源生命周期契约，配套公共 C 头、CMake 与 C99/C++11/C++17 示例。
+- 预览包记录实际交叉构建、目标程序与消费者链接、ELF/导出/原生运行库审计范围；真机加载和执行验证待匹配目标环境完成。
+
+### 构建与发行
+
+- Windows 应用与 SDK 统一使用 MSVC Release 优化构建并启用 LTO；Linux 应用与 SDK 使用 WSL Clang 23，HMOS 预览 SDK 使用同一工具链交叉构建。
+- 保留各平台既有优化、运行库和 CPU 基线，提供 Windows/Linux 正式应用与 SDK、HMOS 预览 SDK、对应源码和 SHA-256 校验文件。
+- 应用继续通过签名更新入口升级，SDK 由集成方按平台独立管理。
+
 ## 1.3.0 - 2026-10-31
 
 ### 内存管道与 C ABI SDK

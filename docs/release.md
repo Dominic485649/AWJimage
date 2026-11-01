@@ -50,6 +50,8 @@ Windows 应用与 SDK 均使用真正的 MSVC `cl.exe`，不以 clang-cl 或 MSV
 - 将 SDK 与源码的 `asset-evidence.json` 一起传入正式应用打包器的 `-AdditionalAssetEvidencePaths`。1.3.0 固定双平台 SDK 与源码三个角色；1.3.1 起固定 Windows/Linux/HMOS 三份 SDK 与源码四个角色，未知、重复、缺失及大小写变体均拒绝。统一生成七项资产、SHA256SUMS 与 acceptance.json，应用更新包的成员白名单不变。
 - HMOS 正式打包另提供 `TARGET_CMAKE_TOOLCHAIN_FILE`、`TARGET_NATIVE_SDK_DIRECTORY`、`TARGET_LINK_MAP`，在进程环境设置匹配的 `AWJ_OHOS_NATIVE_ROOT`、`AWJ_OHOS_RESOURCE_DIR`、`AWJ_OHOS_LLVM_ROOT`；仅从可信 CLI 路径调用 compiler/runner。`TARGET_RUNNER` 与 `TARGET_EXECUTION_EVIDENCE` 二选一，证据必须含真实目标 SDK 测试、三个安装消费者及 loader 原始记录，不接受宿主通过或单独的 passed 字段。
 - HMOS 使用无版本实际文件 `libawj_sdk.so`，仅 CPU C 头及完整五编码器；按能力检查，不强求桌面 SHM/stream。所有源、库、工具链、Native 静态运行库、link map 与目标报告均绑定摘要。缺少目标运行门禁时完成其他本地版本化交付，但不发布承诺三平台支持的正式版本。
+- **1.3.1 的明确范围例外（2026-11-01 用户批准）**：Windows/Linux 应用与 SDK 正式发布，HMOS SDK 作为交叉构建预览。预览使用独立的 `scripts/package-hmos-preview.cmake`，要求干净精确 tag、实际编译器、原始 Native 输入、最终库、七个目标程序、三个回解包消费者的交叉链接和包内 `PREVIEW.txt`。回执使用 `kind=sdk-preview`、`mode=preview`、`status=cross-linked`、`validation_tier=cross-build-preview`，目标执行与 loader 均为 `not-run`，不得携带 JUnit 或运行通过摘要。总打包器仅在 1.3.1 显式传 `-HmosSdkPreview` 时接收这一独立角色；未显式选择或其他版本继续执行原正式 HMOS 门禁。文案、SDK-BUILD 和下载说明统一标明预览，其他来源、优化、归档、签名和防回放门禁不变。
+- 版本目录已有候选且路径被其他任务引用时，可显式传 `-PreserveVersionCandidates`：只向版本根投放全新正式成员，任何同名目标均拒绝，保留既有候选原路径；不删除、迁移或覆盖候选。
 
 ### main 与旧版更新入口
 

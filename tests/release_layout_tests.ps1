@@ -13,6 +13,7 @@ $Version = '1.2.3'
 $GitHead = 'c' * 40
 $SourceFingerprint = 'a' * 64
 $LocalCandidate = $true
+$HmosSdkPreview = $false
 $Tokens = $null
 $Errors = $null
 $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Project 'scripts/package-release.ps1'), [ref]$Tokens, [ref]$Errors)
@@ -313,5 +314,44 @@ foreach ($Check in @('compiler_identity','target_identity','target_execution','t
     $ExtraProofs131[2].verification[$Check]='passed'
     Save-Proof $ExtraProofs131[2] $ExtraPaths131[2]
 }
+# HMOS 预览是独立角色；只有本次显式范围开关才接收，不能伪装运行通过。
+$Preview = ($ExtraProofs131[2] | ConvertTo-Json -Depth 12 | ConvertFrom-Json -AsHashtable)
+$Preview.kind='sdk-preview'; $Preview.mode='preview'; $Preview.status='cross-linked'
+$Preview.validation_tier='cross-build-preview'; $Preview.target_execution='not-run'; $Preview.target_loader='not-run'
+$Preview.runtime_linkage='native-static'; $Preview.libcxx_abi_version=1
+foreach ($Field in @('test_report_sha256','consumer_report_sha256','target_execution_report_sha256')) { $Preview.Remove($Field) }
+foreach ($Field in @('cross_build_report_sha256','cross_link_consumer_report_sha256','preview_notice_sha256')) { $Preview[$Field]='a' * 64 }
+$Preview.verification=@{cross_build='passed';test_programs_linked='passed';installed_consumers_linked='passed';compiler_identity='passed';target_identity='passed';native_inputs='passed';exports='passed';archive_roundtrip='passed';preview_notice='passed';target_execution='not-run';target_loader='not-run'}
+Save-Proof $Preview $ExtraPaths131[2]
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } '未显式选择却混入 HMOS 预览'
+$HmosSdkPreview=$true
+if (@(Assert-AdditionalReleaseAssets $ExtraPaths131).Count -ne 4) { throw '明确预览范围的四角色未通过。' }
+foreach ($Case in @(@{field='mode';value='formal'},@{field='status';value='passed'},@{field='validation_tier';value='target-verified'},@{field='target_execution';value='passed'},@{field='target_loader';value='passed'},@{field='profile';value='linux-x64-clang23'},@{field='libcxx_abi_namespace';value='__1'},@{field='preview_notice_sha256';value=@('a' * 64)})) {
+    $Saved=$Preview[$Case.field]; $Preview[$Case.field]=$Case.value
+    Save-Proof $Preview $ExtraPaths131[2]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } "预览范围伪装或错误身份：$($Case.field)"
+    $Preview[$Case.field]=$Saved
+}
+foreach ($Field in @('test_report_sha256','consumer_report_sha256','target_execution_report_sha256')) {
+    $Preview[$Field]='a' * 64; Save-Proof $Preview $ExtraPaths131[2]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } "预览夹带运行验收：$Field"
+    $Preview.Remove($Field)
+}
+foreach ($Check in @('target_execution','target_loader','preview_notice','installed_consumers_linked')) {
+    $Saved=$Preview.verification[$Check]; $Preview.verification[$Check]='passed-runtime'
+    Save-Proof $Preview $ExtraPaths131[2]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } "预览缺少明确验证状态：$Check"
+    $Preview.verification[$Check]=$Saved
+}
+Save-Proof $Preview $ExtraPaths131[2]
+$Version='1.3.2'
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } '预览开关越过本次版本授权'
+$Version='1.3.1'; $LocalCandidate=$true
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } '预览发行与本地候选模式混用'
+$LocalCandidate=$false
+Save-Proof $ExtraProofs131[2] $ExtraPaths131[2]
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } '选择预览范围却夹入正式目标运行角色'
+$HmosSdkPreview=$false
+if (@(Assert-AdditionalReleaseAssets $ExtraPaths131).Count -ne 4) { throw '预览验证破坏默认正式范围。' }
 if ((Get-Content -LiteralPath (Join-Path $Repo 'bin/x64/Release/sentinel') -Raw) -cne 'unchanged') { throw '保护目录被改变。' }
 [ordered]@{status='passed'; fixture_root=$Repo; cleanup='not-executed'; scope='evidence-and-layout-contract'; protected='unchanged'; sdk_roles_131=4} | ConvertTo-Json -Compress

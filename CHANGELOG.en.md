@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.1 - 2026-11-01
+
+### HarmonyOS SDK preview
+
+- Add an HMOS ARM64/API26 CPU image-encoding SDK cross-build preview for in-memory PNG, JPEGli, WebP, AVIF and JPEG XL encoding.
+- Retain C ABI v1, SDR/HDR and gain-map rendition policies, read-only frame borrowing and resource lifetime contracts, with public C headers, CMake files and C99/C++11/C++17 examples.
+- Record actual cross-build, target-program and consumer linking, ELF/export/native-runtime audits. On-device loading and execution remain to be validated in a matching target environment.
+
+### Builds and distribution
+
+- Use MSVC Release optimizations and LTO for the Windows application and SDK. Build the Linux application and SDK with WSL Clang 23, and cross-build the HMOS SDK preview with the same toolchain.
+- Retain platform optimization, runtime and CPU profiles. Provide formal Windows/Linux applications and SDKs, the HMOS SDK preview, corresponding source and SHA-256 checksums.
+- Applications continue to use the signed updater; integrators manage SDK upgrades separately by platform.
+
 ## 1.3.0 - 2026-10-31
 
 ### Memory pipeline and C ABI SDK
