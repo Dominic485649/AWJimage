@@ -20,10 +20,11 @@ function Initialize-AwjMsvcToolchain {
     }
     if (-not $CompilerDirectory) { $CompilerDirectory = Join-Path $env:VCToolsInstallDir 'bin/Hostx64/x64' }
     $directory = [IO.Path]::GetFullPath($CompilerDirectory)
-    $compiler = Join-Path $directory 'cl.exe'
-    $linker = Join-Path $directory 'link.exe'
-    $archive = Join-Path $directory 'lib.exe'
-    $resource = Join-Path $env:WindowsSdkVerBinPath 'x64/rc.exe'
+    # CMake 的 RC 初始化文件直接插入路径，统一正斜杠避免 \P 等被当作转义。
+    $compiler = (Join-Path $directory 'cl.exe').Replace('\','/')
+    $linker = (Join-Path $directory 'link.exe').Replace('\','/')
+    $archive = (Join-Path $directory 'lib.exe').Replace('\','/')
+    $resource = (Join-Path $env:WindowsSdkVerBinPath 'x64/rc.exe').Replace('\','/')
     foreach ($path in @($compiler,$linker,$archive,$resource)) {
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "MSVC/Windows SDK 工具不存在：$path" }
     }
