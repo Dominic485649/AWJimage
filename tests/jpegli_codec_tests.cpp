@@ -45,6 +45,12 @@ int fail(std::string_view message) {
   terminate_test_process(1);
 }
 
+// 显式隔离解码器生命周期；结果仍在解码器析构后检验，保留独立所有权检查。
+auto decode_jpegli_result(std::span<const std::byte> bytes, std::string_view source_name) {
+  awj::JpegliImageDecoder decoder;
+  return decoder.decode_memory(bytes, source_name);
+}
+
 awj::ImageBuffer make_test_image(bool metadata) {
   awj::ImagePlane plane{.stride = 12};
   plane.bytes = {
@@ -266,7 +272,7 @@ int verify_gain_map_sdr_icc(awj::JpegliImageEncoder& encoder) {
       settings.chroma_mode = awj::ChromaMode::yuv444;
       auto encoded = encoder.encode(input, settings);
       if (!encoded) return fail(encoded.error());
-      auto decoded = awj::JpegliImageDecoder{}.decode_memory(encoded->encoded.bytes, "gain-map-sdr-icc");
+      auto decoded = decode_jpegli_result(encoded->encoded.bytes, "gain-map-sdr-icc");
       if (!decoded) return fail(decoded.error());
       const auto& metadata = decoded->image.metadata;
       const auto icc = std::ranges::find_if(metadata, [](const auto& block) { return block.kind == awj::MetadataKind::icc; });
@@ -286,7 +292,7 @@ int verify_gain_map_sdr_icc(awj::JpegliImageEncoder& encoder) {
   auto settings = jpegli_settings(100, true);
   auto encoded = encoder.encode(borrowed, settings);
   if (!encoded) return fail(encoded.error());
-  auto decoded = awj::JpegliImageDecoder{}.decode_memory(encoded->encoded.bytes, "borrowed-essential-sdr-icc");
+  auto decoded = decode_jpegli_result(encoded->encoded.bytes, "borrowed-essential-sdr-icc");
   if (!decoded) return fail(decoded.error());
   const auto icc = std::ranges::find_if(decoded->image.metadata, [](const auto& block) { return block.kind == awj::MetadataKind::icc; });
   if (icc == decoded->image.metadata.end() || icc->bytes != generated_profile || encoded->diagnostics.applied_icc != "essential-sdr-rendition")
