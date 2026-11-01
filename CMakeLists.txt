@@ -15,6 +15,10 @@ project(AWJimage
     LANGUAGES CXX)
 
 include(CTest)
+if(WIN32 AND NOT CMAKE_CXX_COMPILER_ID STREQUAL "MSVC")
+    message(FATAL_ERROR "Windows 应用与 SDK 生产构建要求真正的 MSVC cl.exe")
+endif()
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows-release-profile.cmake")
 
 option(AWJ_BUILD_APPLICATION "构建桌面程序、CLI 和更新器" ON)
 option(AWJ_BUILD_SDK "构建仅公开 C ABI 的帧处理库" ON)
@@ -358,21 +362,8 @@ function(avif_enable_common_options target)
             /permissive-
             /EHsc
             $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/W4>
-            $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/sdl>
-            $<$<CONFIG:Release>:/O2>
-            $<$<CONFIG:Release>:/Oi>
-            $<$<CONFIG:Release>:/Ot>
-            $<$<CONFIG:Release>:/Gy>
-            $<$<CONFIG:Release>:/Gw>
-            $<$<CONFIG:Release>:/GF>
-            $<$<AND:$<CONFIG:Release>,$<BOOL:${AWJ_ENABLE_X64_V3}>>:/arch:AVX2>)
-        get_target_property(target_type ${target} TYPE)
-        if(NOT target_type STREQUAL "STATIC_LIBRARY")
-            target_link_options(${target} PRIVATE
-                $<$<CONFIG:Release>:/OPT:REF>
-                $<$<CONFIG:Release>:/OPT:ICF>
-                $<$<CONFIG:Release>:/INCREMENTAL:NO>)
-        endif()
+            $<$<BOOL:${AWJ_ENABLE_STRICT_MSVC_CHECKS}>:/sdl>)
+        awj_enable_msvc_release_options(${target} PUBLIC)
     else()
         target_compile_options(${target} PUBLIC
             $<$<CONFIG:Release>:-O3>
@@ -1967,3 +1958,8 @@ if(WIN32)
         set_tests_properties(cli_independence PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
     endif()
 endif()
+foreach(awj_windows_target IN ITEMS AWJ AWJ-com)
+    if(TARGET ${awj_windows_target})
+        awj_write_msvc_build_profile(${awj_windows_target})
+    endif()
+endforeach()

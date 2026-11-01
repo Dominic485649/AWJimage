@@ -32,6 +32,10 @@ $env:GIT_CONFIG_COUNT = "1"
 $env:GIT_CONFIG_KEY_0 = "http.version"
 $env:GIT_CONFIG_VALUE_0 = "HTTP/1.1"
 Import-Module (Join-Path $Repo 'scripts/release-safety.psm1') -Force
+Import-Module (Join-Path $Repo 'scripts/windows-msvc.psm1') -Force
+if (-not $EnableLto) { throw 'Windows 交付必须保留 Release IPO/LTO。' }
+$CompilerPath = if ($CompilerDirectory) { [IO.Path]::GetFullPath($CompilerDirectory, $Repo) } else { '' }
+$Msvc = Initialize-AwjMsvcToolchain -CompilerDirectory $CompilerPath
 $Profile = if ($VcpkgTriplet) { $VcpkgTriplet } elseif ($DynamicRuntime) { 'x64-windows' } else { 'x64-windows-static' }
 if ($Profile -notmatch '^[A-Za-z0-9-]+$') { throw 'vcpkg triplet 不能包含路径或特殊字符。' }
 if (-not $BuildDirectory) { $BuildDirectory = Join-Path $Repo "build/current/$Profile-release" }
@@ -261,41 +265,14 @@ $ConfigureArgs = @(
     "-B", $BuildDir,
     "-G", $Generator
 )
-$CompilerDescription = 'Visual Studio 18 2026 toolset'
+$CompilerDescription = $Msvc.compiler_banner
 if ($Generator -eq 'Ninja') {
-    if (-not $CompilerDirectory) { throw 'Ninja 正式构建须显式提供 Clang 23 CompilerDirectory。' }
-    $Clang = Join-Path ([IO.Path]::GetFullPath($CompilerDirectory, $Repo)) 'clang-cl.exe'
-    if (-not (Test-Path -LiteralPath $Clang -PathType Leaf)) { throw 'Clang 编译器不存在。' }
-    $CompilerOutput = @(& $Clang --version)
-    if ($LASTEXITCODE -ne 0 -or -not $CompilerOutput.Count -or $CompilerOutput[0] -notmatch 'clang version 23\.') {
-        throw '应用正式 Ninja 构建要求 Clang 23。'
-    }
-    $CompilerDescription = $CompilerOutput[0]
-    $ConfigureArgs += "-DCMAKE_C_COMPILER=$Clang"
-    $ConfigureArgs += "-DCMAKE_CXX_COMPILER=$Clang"
-    # 同时固定初始化值与缓存值，避免旧缓存把 LLVM 预处理规则用于 Microsoft RC。
-    if (-not $env:WindowsSdkVerBinPath) {
-        $VsWhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
-        if (-not (Test-Path -LiteralPath $VsWhere -PathType Leaf)) { throw '缺少 Windows C++ 工具链定位器。' }
-        $VisualStudio = (& $VsWhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
-        if ($LASTEXITCODE -ne 0 -or -not $VisualStudio) { throw '没有找到 Windows C++ 工具链。' }
-        $DevCommand = Join-Path $VisualStudio 'Common7/Tools/VsDevCmd.bat'
-        $env:PATH = (Split-Path $VsWhere -Parent) + ';' + $env:PATH
-        $DevEnvironment = & $env:ComSpec /d /c "call `"$DevCommand`" -no_logo -arch=amd64 -host_arch=amd64 >nul && set"
-        if ($LASTEXITCODE -ne 0) { throw '初始化 Windows C++ 构建环境失败。' }
-        # 只更新当前构建进程，不修改用户或系统环境。
-        foreach ($Entry in $DevEnvironment) {
-            $Separator = $Entry.IndexOf('=')
-            if ($Separator -gt 0) { [Environment]::SetEnvironmentVariable($Entry.Substring(0,$Separator), $Entry.Substring($Separator+1), 'Process') }
-        }
-    }
-    if (-not $env:WindowsSdkVerBinPath) { throw '开发环境未提供 Windows SDK 资源编译器目录。' }
-    $ResourceCompiler = Join-Path $env:WindowsSdkVerBinPath 'x64/rc.exe'
-    if (-not (Test-Path -LiteralPath $ResourceCompiler -PathType Leaf)) { throw 'Windows SDK 资源编译器不存在。' }
-    $ConfigureArgs += "-DCMAKE_RC_COMPILER=$ResourceCompiler"
-    $ConfigureArgs += "-DCMAKE_RC_COMPILER_INIT=$ResourceCompiler"
+    $ConfigureArgs += @('-DCMAKE_BUILD_TYPE=Release', '-DCMAKE_EXPORT_COMPILE_COMMANDS=ON',
+        "-DCMAKE_C_COMPILER=$($Msvc.compiler)", "-DCMAKE_CXX_COMPILER=$($Msvc.compiler)",
+        "-DCMAKE_LINKER=$($Msvc.linker)", "-DCMAKE_AR=$($Msvc.archive)",
+        "-DCMAKE_RC_COMPILER=$($Msvc.resource)", "-DCMAKE_RC_COMPILER_INIT=$($Msvc.resource)")
 } else {
-    if ($CompilerDirectory) { throw '显式 Clang 编译器需搭配 Ninja 生成器。' }
+    if ($CompilerDirectory) { throw '显式 MSVC 编译器目录需搭配 Ninja 生成器。' }
     $ConfigureArgs += @('-A', 'x64')
 }
 if ($VcpkgRoot) {
@@ -325,6 +302,7 @@ $ConfigureArgs += $FetchContentSourceOverrides
 
 cmake @ConfigureArgs
 if ($LASTEXITCODE -ne 0) { throw "CMake 配置失败，退出码 $LASTEXITCODE。" }
+$MsvcEvidence = Get-AwjMsvcBuildEvidence -BuildDirectory $BuildDir -Targets @('AWJ','AWJ-com') -Toolchain $Msvc -MinimumCpu AVX2
 $ConfiguredRuntime = @(Get-Content -LiteralPath (Join-Path $BuildDir 'CMakeCache.txt') | Where-Object { $_ -match '^AWJ_RUNTIME_OUTPUT_ROOT:PATH=' })
 if ($ConfiguredRuntime.Count -ne 1) { throw 'CMake 未记录显式 runtime 输出路径，拒绝构建。' }
 $ActualRuntimeRoot = Assert-AwjBuildPath -RepositoryRoot $Repo -Path $ConfiguredRuntime[0].Split('=', 2)[1]
@@ -339,6 +317,7 @@ if ((Get-AwjSourceFingerprint -RepositoryRoot $Repo) -cne $SourceFingerprint -or
     throw '源码在编译期间变化，不能为该产物写入通过证据。'
 }
 Complete-AwjBuildProvenance -State $BuildProvenance
+$MsvcEvidence = Get-AwjMsvcBuildEvidence -BuildDirectory $BuildDir -Targets @('AWJ','AWJ-com') -Toolchain $Msvc -MinimumCpu AVX2
 $ActualVersion = (& (Join-Path $OutputDir 'AWJ.com') --version | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $ActualVersion -cne "AWJimage $Version") { throw "构建二进制版本不匹配：$ActualVersion" }
 
@@ -470,7 +449,7 @@ $LockHash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData([Tex
     source_fingerprint_algorithm='sha256/git-normalized-source-v1'; source_fingerprint=$SourceFingerprint
     git_head=$GitHead; source_dirty=[bool]$GitDirty; dependency_lock_sha256=$LockHash
     profile=[ordered]@{build_type='Release'; minimum_cpu='AVX2'; ipo=[bool]$EnableLto; static_runtime=[bool]$UseStaticRuntime; triplet=$VcpkgTriplet}
-    runtime_output_root=$RuntimeOutputRoot; build_directory=$BuildDir; binaries=@($BinaryEvidence)
+    runtime_output_root=$RuntimeOutputRoot; build_directory=$BuildDir; binaries=@($BinaryEvidence); toolchain=$MsvcEvidence
     winit=[ordered]@{version=$CodecLock.winit.version; commit=$CodecLock.winit.commit; source_archive_sha256=$CodecLock.winit.sha256; backport_commits=@($CodecLock.winit.backport_commits)}
     verification=[ordered]@{compiled_source_verified=$true; binary_version=$true}
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $OutputDir 'build-evidence.json') -Encoding utf8

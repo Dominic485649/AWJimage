@@ -10,8 +10,8 @@
 
 | 目标 | 当前阶段 |
 | --- | --- |
-| Windows x64，clang-cl 21.1.8 + MSVC ABI/运行库 | 已建立独立原生 SDK 构建及实际编码测试；最终结果以开发包附带证据为准 |
-| Windows x64，Clang 23.1.4 | 基础 API 有先前验证；独立安装消费者另行记录，不把它当作完整 Clang 23 源码构建证明 |
+| Windows x64，MSVC cl.exe | 应用与完整五编码器 SDK 使用微软编译器及静态 MSVC runtime；Release 优化、IPO/LTO 与实际验收记录随包保存 |
+| Windows C ABI 调用方 | MSVC 和 clang-cl 可作为独立消费者；调用方编译器不等同于 SDK 的生产编译器 |
 | D3D11 | WARP 测试覆盖回读、严格模式、映射借用、池背压；共享 NT/keyed mutex 子项独立记录是否通过或跳过 |
 | 真实 WGC、物理 GPU HDR、跨设备共享 | 未验证；WARP 不替代这些结果 |
 | FFmpeg | 可选桥接，按精确 libavutil 头版本构建；Windows DLL 与 Linux `.so` 分别验证，不混用证据；未验证实际 D3D11 解码会话 |
@@ -43,10 +43,10 @@
 Windows 可运行 `scripts/build-sdk.ps1`；默认构建独立 SDK，不构建 GUI/Slint、更新器、libarchive/sodium。依赖、下载、安装缓存、临时文件和构建树都位于当前 worktree 的 `build/`，不复用 1.2.6 的可变构建树，不修改系统工具链。
 
 ```bash
-pwsh -NoProfile -File scripts/build-sdk.ps1 -BuildDirectory build/sdk-native-clang21 -CompilerDirectory build/sdk-tools/clang21-extracted/bin
+pwsh -NoProfile -File scripts/build-sdk.ps1 -BuildDirectory build/sdk-native-msvc
 ```
 
-实际使用时 `CompilerDirectory` 推荐绝对路径。最低编译器的下载/摘要验证见 `scripts/fetch-sdk-clang21.ps1`；不运行 LLVM 系统安装器。`-CoreOnly` 只构建帧、队列、协议和所选平台适配器，`awj_encode` 返回 UNSUPPORTED，不能将其称为完整编码 SDK。
+脚本通过 Visual Studio 定位工具初始化当前进程的 x64 MSVC 环境；可用 `CompilerDirectory` 显式指定可信 MSVC 工具目录，不接受 clang-cl 替代。应用与 SDK 保留 Release `/O2 /Ob2 /Oi /Ot /Gy /Gw /GF` 和 `/GL`、`/LTCG`、链接裁剪；应用最低 AVX2，独立 SDK 保留 x64 基线与编解码器运行时 SIMD 分派。生成器目标 profile、编译器/链接器摘要与本轮原始命令共同保留。`-CoreOnly` 只构建帧、队列、协议和所选平台适配器，`awj_encode` 返回 UNSUPPORTED，不能将其称为完整编码 SDK。
 
 可选配置：
 
@@ -62,7 +62,7 @@ Linux 1.3.1 应用与 SDK 使用本项目 WSL 原生文件系统中的 Clang23�
 只安装本 SDK 的组件，避免同时安装第三方依赖的内部包：
 
 ```bash
-cmake --install build/sdk-native-clang21 --prefix build/sdk-install --component AWJimageSDK
+cmake --install build/sdk-native-msvc --prefix build/sdk-install --component AWJimageSDK
 ```
 
 安装后的 `AWJimage::SDK` 只公开 C 头和动态库/导入库，不要求消费项目的 C++23、私有 modules 或第三方静态 target。当前验证/交付为动态库；没有验证或交付独立静态 SDK，不能把 DLL 的 `.lib` 导入库误称为静态库。

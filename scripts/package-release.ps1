@@ -26,6 +26,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Repo = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
 Import-Module (Join-Path $Repo 'scripts/release-safety.psm1') -Force
+Import-Module (Join-Path $Repo 'scripts/windows-msvc.psm1') -Force
 $GitHead = (git -C $Repo rev-parse HEAD).Trim()
 if ($LASTEXITCODE -ne 0 -or $GitHead -notmatch '^[0-9a-f]{40}$') { throw '无法读取打包源码 HEAD。' }
 $TrackedChanges = @(git -C $Repo status --porcelain=v1 --untracked-files=no)
@@ -111,7 +112,7 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
             if ($withHmos) {
                 Assert-AwjJsonFields $proof @('profile','compiler_version','target_triple')
                 $expectedProfile = switch -CaseSensitive ($proof.platform) {
-                    'windows-x64' { @('windows-x64-clang21', '^21\.[0-9]+\.[0-9]+$', 'x86_64-pc-windows-msvc') }
+                    'windows-x64' { @('windows-x64-msvc', '^19\.[0-9]+\.[0-9]+$', 'x86_64-pc-windows-msvc') }
                     'linux-x64' { @('linux-x64-clang23', '^23\.[0-9]+\.[0-9]+$', 'x86_64-pc-linux-gnu') }
                     'hmos-arm64-api26' { @('hmos-arm64-api26-clang23', '^23\.[0-9]+\.[0-9]+$', 'aarch64-unknown-linux-ohos') }
                     default { throw '未知 SDK 目标平台。' }
@@ -119,6 +120,11 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
                 if ($proof.profile -cne $expectedProfile[0] -or $proof.compiler_version -cnotmatch $expectedProfile[1] -or
                     $proof.target_triple -cne $expectedProfile[2]) { throw 'SDK 编译器或真实目标与 profile 不匹配。' }
                 $sdkChecks += @('compiler_identity','target_identity')
+                if ($proof.platform -ceq 'windows-x64') {
+                    Assert-AwjMsvcReleaseEvidence $proof.toolchain @('awj_sdk') x64
+                    if ($proof.toolchain.compiler_version -cne $proof.compiler_version) { throw 'Windows SDK MSVC 版本绑定不一致。' }
+                    $sdkChecks += 'msvc_release_optimization'
+                }
             }
             if ($proof.platform -ceq 'hmos-arm64-api26') {
                 Assert-AwjJsonFields $proof @('native_sdk_version','libcxx_abi_namespace','target_execution_report_sha256')
@@ -217,6 +223,9 @@ function Assert-BuildEvidence([string]$Path, [string]$Platform, [string]$Directo
     if ($Platform -ceq 'windows-x64') {
         if ($Proof.profile.minimum_cpu -cne 'AVX2' -or $Proof.profile.static_runtime -ne $true -or $Proof.verification.binary_version -ne $true) {
             throw 'Windows 必须保留 AVX2、静态运行库并通过实际版本检查。'
+        }
+        if ([version]$Version -ge [version]'1.3.1') {
+            Assert-AwjMsvcReleaseEvidence $Proof.toolchain @('AWJ','AWJ-com') AVX2
         }
     } elseif ($Proof.profile.minimum_cpu -cne 'x86-64-v3' -or $Proof.profile.cxx_runtime -cne 'libc++' -or
               $Proof.verification.native_execution -ne $true -or $Proof.verification.executable_mode -ne $true -or

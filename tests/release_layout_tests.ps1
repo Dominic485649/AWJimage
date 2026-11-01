@@ -2,6 +2,7 @@ $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 $Project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Import-Module (Join-Path $Project 'scripts/release-safety.psm1') -Force
+Import-Module (Join-Path $Project 'scripts/windows-msvc.psm1') -Force
 $Repo = Join-Path $Project "build/update-1.2.3-work/release-layout-tests-$([Guid]::NewGuid().ToString('N'))"
 foreach ($Name in @('cmake', 'build/windows', 'build/linux', 'bin/x64/Release')) {
     [void][IO.Directory]::CreateDirectory((Join-Path $Repo $Name))
@@ -28,6 +29,19 @@ function Must-Reject([scriptblock]$Action, [string]$Label) {
     if (-not $Rejected) { throw "应拒绝但接受了：$Label" }
 }
 function Save-Proof($Proof, [string]$Path) { $Proof | ConvertTo-Json -Depth 9 | Set-Content -LiteralPath $Path -Encoding utf8 }
+function New-MsvcFixtureEvidence([string[]]$Targets, [string]$Cpu) {
+    # 纯契约夹具，不代表编译、LTO 或真实目标执行。
+    @{
+        compiler_id='MSVC'; compiler_version='19.51.36260'; compiler_sha256=('a' * 64)
+        linker_version='14.51.36260.0'; linker_sha256=('b' * 64); flags_source='cmake-generated-target-profile'
+        targets=@(foreach ($Target in $Targets) {
+            $Flags=@('/O2','/Ob2','/Oi','/Ot','/Gy','/Gw','/GF','/GL','/MT')
+            if ($Cpu -ceq 'AVX2') { $Flags+='/arch:AVX2' }
+            @{name=$Target;configuration='Release';runtime='MultiThreaded';ipo=$true;minimum_cpu=$Cpu
+                profile_sha256=('c' * 64);compile_flags=$Flags;link_flags=@('/LTCG','/OPT:REF','/OPT:ICF','/INCREMENTAL:NO')}
+        })
+    }
+}
 $ModeGate=@($Ast.EndBlock.Statements | Where-Object { $_ -is [Management.Automation.Language.IfStatementAst] -and $_.Clauses[0].Item1.Extent.Text -ceq '$LocalCandidate' })
 if ($ModeGate.Count -ne 1) { throw '本地／正式模式必须具有唯一顶层边界。' }
 $LocalCandidate=$false; $SkipManifests=$true; $TrackedChanges=@(); $UntrackedSources=@()
@@ -212,7 +226,7 @@ Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths } 'SDK 归档在验收�
 # 1.3.1 四角色使用元数据夹具；不代表真实 SDK、消费者或设备已通过。
 $Version='1.3.1'; $ExtraPaths131=@(); $ExtraProofs131=@()
 foreach ($Spec in @(
-    @{kind='sdk';platform='windows-x64';name='AWJ_SDK_Win_x64.zip';profile='windows-x64-clang21';compiler='21.1.8';triple='x86_64-pc-windows-msvc'},
+    @{kind='sdk';platform='windows-x64';name='AWJ_SDK_Win_x64.zip';profile='windows-x64-msvc';compiler='19.51.36260';triple='x86_64-pc-windows-msvc'},
     @{kind='sdk';platform='linux-x64';name='AWJ_SDK_Linux_x64.tar.gz';profile='linux-x64-clang23';compiler='23.1.5';triple='x86_64-pc-linux-gnu'},
     @{kind='sdk';platform='hmos-arm64-api26';name='AWJ_SDK_HMOS_arm64_api26.tar.gz';profile='hmos-arm64-api26-clang23';compiler='23.1.5';triple='aarch64-unknown-linux-ohos'},
     @{kind='source';platform='source';name='AWJimage-1.3.1-source.zip'})) {
@@ -229,6 +243,10 @@ foreach ($Spec in @(
         test_report_sha256=('b' * 64);consumer_report_sha256=('d' * 64)}
     if ($Spec.kind -ceq 'sdk') {
         $Proof131.profile=$Spec.profile; $Proof131.compiler_version=$Spec.compiler; $Proof131.target_triple=$Spec.triple
+        if ($Spec.platform -ceq 'windows-x64') {
+            $Proof131.toolchain=New-MsvcFixtureEvidence @('awj_sdk') x64
+            $Checks.msvc_release_optimization='passed'
+        }
         if ($Spec.platform -ceq 'hmos-arm64-api26') {
             $Proof131.native_sdk_version='26.0.0.105'; $Proof131.api=26; $Proof131.libcxx_version=15004
             $Proof131.libcxx_abi_namespace='__n1'; $Proof131.target_execution_report_sha256='e' * 64
@@ -244,6 +262,8 @@ Must-Reject { Assert-AdditionalReleaseAssets @($ExtraPaths131[0],$ExtraPaths131[
 Must-Reject { Assert-AdditionalReleaseAssets @($ExtraPaths131[0],$ExtraPaths131[1],$ExtraPaths131[2],$ExtraPaths131[2]) } '1.3.1 重复 HMOS 并缺少源码'
 foreach ($Case in @(
     @{index=0;field='platform';value='Windows-x64'},
+    @{index=0;field='profile';value='windows-x64-clang21'},
+    @{index=0;field='compiler_version';value='21.1.8'},
     @{index=1;field='compiler_version';value='21.1.8'},
     @{index=2;field='compiler_version';value='21.1.8'},
     @{index=2;field='profile';value='linux-x64-clang23'},
@@ -261,6 +281,31 @@ foreach ($Case in @(
     $ExtraProofs131[$Case.index][$Case.field]=$Saved
     Save-Proof $ExtraProofs131[$Case.index] $ExtraPaths131[$Case.index]
 }
+$MsvcTarget=$ExtraProofs131[0].toolchain.targets[0]
+foreach ($Field in @('ipo','runtime')) {
+    $Saved=$MsvcTarget[$Field]
+    $MsvcTarget[$Field]=if ($Field -ceq 'ipo') { $false } else { 'MultiThreadedDLL' }
+    Save-Proof $ExtraProofs131[0] $ExtraPaths131[0]
+    Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } "Windows SDK 优化或运行库降档：$Field"
+    $MsvcTarget[$Field]=$Saved
+}
+$SavedFlags=$MsvcTarget.compile_flags
+$MsvcTarget.compile_flags=@($SavedFlags | Where-Object { $_ -cne '/GL' })
+Save-Proof $ExtraProofs131[0] $ExtraPaths131[0]
+Must-Reject { Assert-AdditionalReleaseAssets $ExtraPaths131 } 'Windows SDK 缺少 GL'
+$MsvcTarget.compile_flags=$SavedFlags
+Save-Proof $ExtraProofs131[0] $ExtraPaths131[0]
+$LocalCandidate=$true
+$Proof.version=$Version; $Proof.toolchain=New-MsvcFixtureEvidence @('AWJ','AWJ-com') AVX2
+Save-Proof $Proof $ProofPath
+$null=Assert-BuildEvidence $ProofPath 'windows-x64' $Windows @('AWJ.exe','AWJ.com')
+$Proof.toolchain.compiler_id='Clang'
+Save-Proof $Proof $ProofPath
+Must-Reject { Assert-BuildEvidence $ProofPath 'windows-x64' $Windows @('AWJ.exe','AWJ.com') } 'MSVC ABI 兼容不能代替生产 MSVC'
+$Proof.toolchain.compiler_id='MSVC'; $Proof.toolchain.targets[1].link_flags=@('/OPT:REF','/OPT:ICF','/INCREMENTAL:NO')
+Save-Proof $Proof $ProofPath
+Must-Reject { Assert-BuildEvidence $ProofPath 'windows-x64' $Windows @('AWJ.exe','AWJ.com') } 'COM 最终链接缺少 LTCG'
+$LocalCandidate=$false
 foreach ($Check in @('compiler_identity','target_identity','target_execution','target_loader')) {
     $ExtraProofs131[2].verification[$Check]='not-executed'
     Save-Proof $ExtraProofs131[2] $ExtraPaths131[2]
