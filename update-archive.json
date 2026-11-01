@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 20,
+  "sequence": 21,
   "key_id": "release-2026",
-  "issued_at": "2026-10-31T04:49:37Z",
-  "expires_at": "2027-01-29T04:49:37Z",
+  "issued_at": "2026-11-01T11:19:10Z",
+  "expires_at": "2027-01-30T11:19:10Z",
   "entries": [
     {
-      "version": "1.3.0",
+      "version": "1.3.1",
       "channel": "stable",
-      "published_at": "2026-10-31T04:49:37Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.0",
+      "published_at": "2026-11-01T11:19:10Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.1",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Win.7z",
-            "size": 13949119,
-            "sha256": "254e6bea9f4e13d13454c5595e5ae401a35bdeae88cb5e0be2ec2f39bf31c6ee"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Win.7z",
+            "size": 13338171,
+            "sha256": "5b4d2a16f7d6f7c74c84b23f88c088b77a9244671316a31dcd7826da8a74f865"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Win.7z",
-              "size": 26011136,
-              "sha256": "aa911f9e8e55b15cbb872e4ebf71cca572c6ed8d25f53ffc588f645569f3621b"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Win.7z",
+              "size": 24573440,
+              "sha256": "b14cc901523f6936900cd012985772977acf43c388e64a49d3544da852f422d7"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Win.7z",
-              "size": 25929728,
-              "sha256": "03dbdef353a6b1549e05cd5cd92a4441f89ad77baa17ea588e4ceafdbf28a7d1"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Win.7z",
+              "size": 20968960,
+              "sha256": "1f57061b5a567ef0e7b89d17fd235d6172930c727e7eaf5b4e45cab096899566"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Win.7z",
-              "size": 167502,
-              "sha256": "aa81a4472d18f3c481d7887af7aac6b81c15a370b3e35653d7cd0ad3d4c18c41"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Win.7z",
+              "size": 177573,
+              "sha256": "08527cdd387370cab7c3b94309fefc7e3a2aaf3f85e92e1b77387bb2cad01b3d"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Linux.7z",
-            "size": 18572609,
-            "sha256": "f40b7b403856f3e3a6e173e66242cc57f4299a998a4c0b5de7d961c9d6b7aa40"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Linux.7z",
+            "size": 18572147,
+            "sha256": "a207b01a33cd4d09badf2036391367976aee47dd6e8a9b5b0ca57c8b6ac4a2e6"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Linux.7z",
-              "size": 66887624,
-              "sha256": "293ef9492dba2e2665fa7d2b3e9b12c708afef893644571f49f52114c1c326d3"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Linux.7z",
+              "size": 66878024,
+              "sha256": "11025a0f00a1588fcbd23ad58c8b952af74b0d73e4f5f294b1947f727106cb57"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.0/AWJ_Linux.7z",
-              "size": 165867,
-              "sha256": "316573499465300b9c0766fdc86c2244aaa9876afa3effdcef7edd90d8832163"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.1/AWJ_Linux.7z",
+              "size": 175807,
+              "sha256": "047d1ab0ac4c7e7fa37eb689d6aa78b2f581f7992b14a68c99bbc554decfc163"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 内存管道与 C ABI SDK\n\n- 新增统一 C ABI 图像帧处理库，C/C++ 项目通过同一套 C 头接入，内部使用 C++23。\n- 接受调用方提交的 CPU 像素、引用计数 FFmpeg 软件帧、共享内存槽位，以及 Windows D3D11 资源。按所有权契约保活来源，支持只读借用、负 stride、裁切与明确的色彩元数据。\n- Windows/Linux 分别实现本机 SPSC 共享内存；Linux 使用匿名 memfd、fd 传递、进程共享锁与 pidfd，不以普通磁盘文件模拟零输入复制。\n- 内存编码及二进制 stdin/stdout 不生成输入快照或候选文件；显式最终文件 sink 才写输出。分别报告输入复制、转换和 GPU 搬运，不把普通管道、GPU 回读或编码器内部操作宣称为端到端零复制。\n\n### SDR/HDR 呈现策略\n\n- JXL/AVIF 仅为真实 SDR/HDR 两端保留 HDR 底图与反向 Gain Map；普通单层、零 HDR 提升与 HDR/HDR 配对输出所选单层，不因位深、显示提亮或来源标记凭空增加另一层。\n- JPG HDR 保留例外：优先复用原 SDR，缺少时自动高光滚降生成 SDR 底图，再用 ISO Gain Map 保存 HDR。SDR-only 输入即使指定 `--jpeg-hdr hdr` 也正常输出 SDR，不制造 HDR。\n- WebP 与 JPEG sdr 优先复用已有 SDR，否则自动高光滚降；PNG 保留所选 HDR/SDR 单层。文件和 C ABI 内存编码使用相同策略，不改变 ABI v1 或借用像素的只读契约。\n\n### 编码队列\n\n- Windows/Linux 均允许完成项再次导入，无需清空队列；未重新导入的完成项及结果保留，新图与重新导入项转为等待编码。\n- 以规范化路径自动去重，按最后一次有效导入的位置追加；例如 `[C,A,C,B]` 保留 `[A,C,B]`，而不是按首次出现或全批字典序排列。\n- 分离稳定任务身份、显示位置和本轮连续索引，隔离过期扫描与编码回调；导入处理中禁止抢先启动，编码或取消收尾期间仍不能导入。不改变全局预设和既有输出冲突策略。\n\n### 发行与兼容\n\n- 提供 Windows/Linux 独立动态 SDK 包，附 C 头、CMake、流工具、示例与 AGPL-3.0 及第三方许可；SDK 源码通过 Clang 21 构建验证。\n- 开发主线采用 main，master 保留旧客户端的签名更新入口；应用与 SDK 分别下载和升级。\n- 纳入固定的 1.2.6，沿用双呈现 Gain Map、独立静态主图、资源预算、DPI 与浮点 JXR HDR 修复。验证范围及平台条件见 SDK 文档与对应版本验收记录。",
-        "en": "### Memory pipeline and C ABI SDK\n\n- Add an image-frame processing library with a unified C ABI and shared C headers for C/C++ integration, implemented in C++23.\n- Accept caller-submitted CPU pixels, reference-counted FFmpeg software frames, shared-memory slots and Windows D3D11 resources. Retain sources under explicit ownership contracts, including read-only borrowing, negative strides, cropping and explicit color metadata.\n- Provide separate native SPSC shared-memory implementations for Windows and Linux. Linux uses anonymous memfd, descriptor passing, process-shared synchronization and pidfd, not ordinary disk files posing as zero-input-copy storage.\n- Memory encoding and binary stdin/stdout create no input snapshots or candidate files. Only an explicit final-file sink writes output. Report input copies, conversions and GPU transfers separately; ordinary pipes, GPU readback and encoder internals are not end-to-end zero-copy guarantees.\n\n### SDR/HDR rendition policy\n\n- Retain an HDR base and reverse gain map in JXL/AVIF only for a real SDR/HDR pair. Ordinary single-layer input, zero HDR headroom and HDR/HDR pairs produce the selected single rendition, without inventing an alternate from bit depth, display brightening or provenance flags.\n- Keep the HDR JPEG exception: prefer the existing SDR rendition, or automatically roll highlights off to create an SDR base, then preserve HDR with an ISO gain map. SDR-only input still produces ordinary SDR with `--jpeg-hdr hdr`, without inventing HDR.\n- WebP and JPEG sdr reuse existing SDR where available and otherwise roll HDR highlights down automatically. PNG retains the selected single HDR/SDR rendition. File and C ABI memory encoding share the policy without changing ABI v1 or read-only pixel borrowing.\n\n### Encoding queue\n\n- Reimport completed images on Windows and Linux without clearing the queue. Preserve completed entries and results that were not reimported; new and reimported entries become pending.\n- Deduplicate normalized paths by the last valid import position: `[C,A,C,B]` becomes `[A,C,B]`, not first-occurrence order or a globally sorted batch.\n- Separate stable task identity, display position and contiguous run indices. Isolate stale scan/encoding callbacks, prevent starting before accepted imports finish, and retain import locking during encoding/cancellation cleanup. Global presets and existing output-collision policies are unchanged.\n\n### Distribution and compatibility\n\n- Provide separate Windows/Linux dynamic SDK packages with C headers, CMake files, stream tools, examples, AGPL-3.0 and third-party licenses. SDK source has been built with Clang 21.\n- Use main as the development branch and retain master for older clients' signed update endpoints. Applications and SDKs are downloaded and upgraded separately.\n- Integrate the fixed 1.2.6, retaining paired gain maps, independent still images, resource budgets, DPI and floating-point JXR HDR fixes. Platform conditions and validation scope are documented in the SDK guide and version-specific acceptance records."
+        "zh-CN": "### 鸿蒙 SDK 预览\n\n- 新增面向 HMOS ARM64/API26 的 CPU 图像编码 SDK 交叉构建预览，提供 PNG、JPEGli、WebP、AVIF、JPEG XL 内存编码。\n- 沿用统一 C ABI v1、SDR/HDR 与 Gain Map 呈现策略、只读帧借用和资源生命周期契约，配套公共 C 头、CMake 与 C99/C++11/C++17 示例。\n- 预览包记录实际交叉构建、目标程序与消费者链接、ELF/导出/原生运行库审计范围；真机加载和执行验证待匹配目标环境完成。\n\n### 构建与发行\n\n- Windows 应用与 SDK 统一使用 MSVC Release 优化构建并启用 LTO；Linux 应用与 SDK 使用 WSL Clang 23，HMOS 预览 SDK 使用同一工具链交叉构建。\n- 保留各平台既有优化、运行库和 CPU 基线，提供 Windows/Linux 正式应用与 SDK、HMOS 预览 SDK、对应源码和 SHA-256 校验文件。\n- 应用继续通过签名更新入口升级，SDK 由集成方按平台独立管理。",
+        "en": "### HarmonyOS SDK preview\n\n- Add an HMOS ARM64/API26 CPU image-encoding SDK cross-build preview for in-memory PNG, JPEGli, WebP, AVIF and JPEG XL encoding.\n- Retain C ABI v1, SDR/HDR and gain-map rendition policies, read-only frame borrowing and resource lifetime contracts, with public C headers, CMake files and C99/C++11/C++17 examples.\n- Record actual cross-build, target-program and consumer linking, ELF/export/native-runtime audits. On-device loading and execution remain to be validated in a matching target environment.\n\n### Builds and distribution\n\n- Use MSVC Release optimizations and LTO for the Windows application and SDK. Build the Linux application and SDK with WSL Clang 23, and cross-build the HMOS SDK preview with the same toolchain.\n- Retain platform optimization, runtime and CPU profiles. Provide formal Windows/Linux applications and SDKs, the HMOS SDK preview, corresponding source and SHA-256 checksums.\n- Applications continue to use the signed updater; integrators manage SDK upgrades separately by platform."
       }
     }
   ]
