@@ -56,9 +56,13 @@ Windows 使用 `AWJ.com`；Linux 将下列命令中的程序名换为 `./AWJ`。
 
 `--threads auto` 按允许的逻辑 CPU 数预留桌面余量；`--threads N` 使用 N 的总编码线程预算（1–128），不扣除预留。文件并发与每图编码线程在该预算内分配，并受内存预算约束。`--cpu-affinity` 使用从 0 开始的逻辑 CPU 编号，只能缩小进程当前允许集合；Windows 编号位于当前处理器组。
 
+AVIF 静态图可通过 `--avif-progressive` 使用自动两层渐进，或在 CLI 配置 2～4 层的分辨率与质量；默认关闭，暂不增加 UI 控件。详见 [渐进式与分层参数](docs/avif-progressive.md)。
+
+内存计划按解码、准备、编码、指标与输出阶段估算，并在解码后按真实像素、透明度和采样精化。有限预算内可独占精化不确定输入，不改变自动预算或默认解除限制；CSV 保留初值、精化值和预约诊断。预约不是第三方编码器内存的硬上限。
+
 ## C ABI SDK
 
-提供 Windows / Linux 动态 SDK，C / C++ 项目通过同一套 C 头接入。支持 CPU 图像帧、共享内存、可选 FFmpeg 帧桥接和 Windows D3D11 纹理，直接返回内存编码结果；附 CMake package、`awj-stream` 和集成示例。SDK 源码已通过 Clang 21 构建，提供 C99 / C++11 消费示例。
+提供 Windows / Linux 动态 SDK，C / C++ 项目通过同一套 C 头接入。支持 CPU 图像帧、共享内存、可选 FFmpeg 帧桥接和 Windows D3D11 纹理，直接返回内存编码结果；附 CMake package、`awj-stream` 和集成示例。Windows SDK 使用 MSVC，Linux SDK 使用 Clang 23，提供 C99 / C++11 / C++17 消费示例。
 
 从同一 Release 下载 `AWJ_SDK_Win_x64.zip` 或 `AWJ_SDK_Linux_x64.tar.gz`。接入契约、复制诊断、色彩和平台要求见 [SDK 文档](docs/sdk.md)。
 

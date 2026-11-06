@@ -237,6 +237,8 @@ struct EncodeDiagnostics {
   bool jpegli_xyb{encoding_defaults::default_jpegli_xyb};
   SpeedMapping speed_mapping{};
   int encoder_threads{};
+  int avif_layer_count{1};
+  std::string avif_layer_trace{};
   std::uint64_t memory_budget_bytes{};
   bool used_decoder_fallback{};
   bool visual_quality_gpu_requested{};
@@ -303,11 +305,15 @@ struct NativeEncodeSettings {
   bool avif_tune_iq{encoding_defaults::default_avif_tune_iq};
   AvifAnimationTune avif_animation_tune{AvifAnimationTune::automatic};
   int avif_animation_keyframe{};
+  AvifLayerConfig avif_layers{};
   int jpegli_progressive_level{2};
   bool jpegli_optimize_huffman{true};
   bool jpegli_xyb{};
   bool jpegli_gain_map_samples{};
   ResourcePlan resources{};
+  // 同步编码期间借用调度预约；不进入预设、配置或公开 C ABI。
+  std::function<bool(std::uint64_t)> memory_reservation{};
+  std::uint64_t memory_base_reservation{};
   std::optional<GridPlan> avif_grid_plan{};
   std::span<const std::byte> jxl_rgb8_input{};
   std::span<const std::byte> jpegli_rgb8_input{};

@@ -116,6 +116,23 @@ struct ImageFile {
   bool output_path_resolved{};
 };
 
+struct MemoryPlanDiagnostics {
+  int version{2};
+  bool refined{};
+  bool exclusive_refinement{};
+  std::uint64_t initial_bytes{};
+  std::uint64_t reserved_peak_bytes{};
+  std::uint64_t mandatory_bytes{};
+  std::uint64_t conversion_bytes{};
+  std::uint64_t codec_workspace_bytes{};
+  std::uint64_t output_capacity_bytes{};
+  std::uint64_t layer_retained_bytes{};
+  std::uint64_t decode_bytes{}, prepare_bytes{}, encode_bytes{}, metric_bytes{}, output_bytes{};
+  int target_bit_depth{};
+  std::string target_chroma{};
+  bool target_alpha{};
+};
+
 struct EncodeResult {
   std::size_t index{};
   fs::path input_path{};
@@ -179,6 +196,8 @@ struct EncodeResult {
   std::string speed_parameter_kind{};
   int applied_speed{};
   int encoder_threads{};
+  int avif_layer_count{1};
+  std::string avif_layer_trace{};
   std::uint64_t memory_budget_bytes{};
   // Planning diagnostics, not allocator limits or measured process peaks.
   std::string memory_budget_mode{};
@@ -190,6 +209,7 @@ struct EncodeResult {
   std::uint32_t memory_target_width{};
   std::uint32_t memory_target_height{};
   bool memory_source_has_gain_map{};
+  MemoryPlanDiagnostics memory_plan{};
   double seconds{};
   double decode_seconds{-1.0};
   double prepare_seconds{-1.0};
@@ -2604,7 +2624,11 @@ awj::compat::expected<void, std::string> write_csv(
          "reused_sdr_rendition,tone_mapped,gain_map_generated,gain_map_width,gain_map_height,gain_map_bit_depth,"
          "base_decode_seconds,auxiliary_decode_seconds,gain_map_render_seconds,gain_map_compute_seconds,"
          "color_convert_seconds,gain_map_render_workers,gain_map_compute_workers,"
-         "heif_tile_parallelism,heif_codec_thread_budget,awj_version\n";
+         "heif_tile_parallelism,heif_codec_thread_budget,avif_layer_count,avif_layer_trace,"
+         "memory_model_version,memory_plan_refined,memory_exclusive_refinement,memory_initial_bytes,memory_reserved_peak_bytes,"
+         "memory_mandatory_bytes,memory_conversion_bytes,memory_codec_workspace_bytes,memory_output_capacity_bytes,"
+         "memory_layer_retained_bytes,memory_decode_phase_bytes,memory_prepare_phase_bytes,memory_encode_phase_bytes,"
+         "memory_metric_phase_bytes,memory_output_phase_bytes,memory_target_bit_depth,memory_target_chroma,memory_target_alpha,awj_version\n";
 
   for (const auto& result : results) {
     const double ratio = result.original_bytes == 0
@@ -2779,6 +2803,17 @@ awj::compat::expected<void, std::string> write_csv(
         << duration(result.color_convert_seconds) << ','
         << result.gain_map_render_workers << ',' << result.gain_map_compute_workers << ','
         << result.heif_tile_parallelism << ',' << result.heif_codec_thread_budget << ','
+        << result.avif_layer_count << ',' << core_detail::csv_escape(result.avif_layer_trace) << ','
+        << result.memory_plan.version << ',' << (result.memory_plan.refined ? "true" : "false") << ','
+        << (result.memory_plan.exclusive_refinement ? "true" : "false") << ','
+        << result.memory_plan.initial_bytes << ',' << result.memory_plan.reserved_peak_bytes << ','
+        << result.memory_plan.mandatory_bytes << ',' << result.memory_plan.conversion_bytes << ','
+        << result.memory_plan.codec_workspace_bytes << ',' << result.memory_plan.output_capacity_bytes << ','
+        << result.memory_plan.layer_retained_bytes << ',' << result.memory_plan.decode_bytes << ','
+        << result.memory_plan.prepare_bytes << ',' << result.memory_plan.encode_bytes << ','
+        << result.memory_plan.metric_bytes << ',' << result.memory_plan.output_bytes << ','
+        << result.memory_plan.target_bit_depth << ',' << core_detail::csv_escape(result.memory_plan.target_chroma) << ','
+        << (result.memory_plan.target_alpha ? "true" : "false") << ','
         << kAwjVersion << '\n';
   }
 

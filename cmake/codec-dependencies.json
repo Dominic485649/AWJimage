@@ -1,6 +1,6 @@
 {
-  "awj_version": "1.3.1",
-  "selected_at": "2026-10-29",
+  "awj_version": "1.3.2",
+  "selected_at": "2026-11-06",
   "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
   "vcpkg_baseline": "d4c0a46cb8f63e5c9fa007d13baf1cb3e43bf7e3",
   "libultrahdr": {
@@ -44,7 +44,16 @@
       "cmake/patch_libavif_parallel_grid.cmake",
       "cmake/patch_libavif_animation_budget.cmake",
       "cmake/patch_libavif_primary_item.cmake",
-      "cmake/patch_libavif_gain_map_threads.cmake"
+      "cmake/patch_libavif_gain_map_threads.cmake",
+      "cmake/patch_libavif_prescaled_layers.cmake",
+      "cmake/libavif-prescaled-768b3dfe.patch"
+    ],
+    "upstream_backports": [
+      {
+        "commit": "768b3dfe30da63265eb31dad6f79fc7662f65b42",
+        "scope": "AOM library: pre-scaled layered inputs; original library diff, alpha context rebased to stable 1.4.2",
+        "upstream_patch_sha256": "7847e8007da9dd23014b2aba6eef7b5072f9940660a54ca5b60be5ec0692428f"
+      }
     ]
   },
   "jpegli": {
@@ -140,13 +149,13 @@
     "tag": "lcms2.19.1"
   },
   "aom": {
-    "tag": "v3.15.2",
-    "url": "https://storage.googleapis.com/aom-releases/libaom-3.15.2.tar.gz",
-    "version": "3.15.2",
-    "sha256": "67bb54b245f33ed98600e08269e6139986e48114e14042474ddd8885801dfddc",
-    "commit": "af3dc9aadc793c1b00edc003e3fc19a44fdeb574",
+    "tag": "v3.15.3",
+    "url": "https://storage.googleapis.com/aom-releases/libaom-3.15.3.tar.gz",
+    "version": "3.15.3",
+    "sha256": "12c01dc731ed7b5a999e28120b45bf58a002ba3435a4ba2cfbc1e084a27c9c04",
+    "commit": "19d472d7b445d7013445ffbaff925a6fc3cda0eb",
     "source": "vcpkg-overlays/aom",
-    "sha512": "4ba185a642c9dd32d1ab708916a5aed1a65d3cd6d2599d632f33c83849e6702ca91528ad09a007eb39ac2723f0b10de9a7905ed26abfef42a164f13e21aacb7a"
+    "sha512": "c2b32bf25c009e9d360d48cca4891c5894ccf5f37c05889755ee9301dce9d40693ba72d2681a369902706d7106b7fc91269a66b761f7cb85061f2b51963a6113"
   },
   "giflib": {
     "tag": "6.1.3",
@@ -170,8 +179,8 @@
     "vcpkg-overlays/libjxl/fix-dependencies.patch": "f57a52305f168815b11aa6f1e284a525ffa3471c7a5b5c47d0d61684fbb579cf",
     "vcpkg-overlays/aom/aom-rename-static.diff": "94f8f7fc7a7b661d488733cf43fb90e94f2cc345ae2317f6d5a2d3b2fc5f57ad",
     "vcpkg-overlays/aom/aom-uninitialized-pointer.diff": "5a07138d20ac842bf1b491bdeaae17bf6fbae4c6c085e544361ef2d8cec6d2b0",
-    "vcpkg-overlays/aom/portfile.cmake": "c5c427b81404d04f65e634637fc799438a93791de75acfdc2cdf89c85e11c4af",
-    "vcpkg-overlays/aom/vcpkg.json": "1d4290d324b04a7ee1965593c6edc4350e25601adfa4c91e8eca491e4fef706a",
+    "vcpkg-overlays/aom/portfile.cmake": "d2f4fa04aa0abf80fb801bf099b1e2ef665dd0dbc6a348810de8e0b0072764cd",
+    "vcpkg-overlays/aom/vcpkg.json": "e07e3637400e9fea1c40193aa0ba3a13c741addf3b084bff5e43486ec649588f",
     "vcpkg-overlays/dav1d/portfile.cmake": "0dbcaeb1ed440a7089ab7261fb8ada8e1bf7f002d6bc4baa18cee2f20c13bced",
     "vcpkg-overlays/dav1d/usage": "9a9ed47aee5fdb08fcf21c1585e56c19fd5276f6416fbed9216128a9314bcae0",
     "vcpkg-overlays/dav1d/vcpkg.json": "c59def987dd9fba57f885019f884b9044041e4dee26bf328d241ecbe2b271b1e",
@@ -211,7 +220,9 @@
     "cmake/winit-source-manifest.json": "45a2bf83a4b39b866530ba76abb0386d0c17b045d183862c1e98d9f575e4aedb",
     "vcpkg-overlays/libjpeg-turbo/ohos-strings-header.patch": "39d410a40c529ffbd0d522c2dac2b771cc815774c3e54968d72483f040e049e1",
     "vcpkg-overlays/libpng/ohos-preprocessor-target.patch": "579f617536f0c58c4f81862408523edcaff693d9e7468c908ef380464750cda5",
-    "cmake/patch_libultrahdr_ohos.cmake": "5ffd500640bcaf28e46df87d644030b70d127e9a47f24c8e00f91deae35f6b39"
+    "cmake/patch_libultrahdr_ohos.cmake": "5ffd500640bcaf28e46df87d644030b70d127e9a47f24c8e00f91deae35f6b39",
+    "cmake/patch_libavif_prescaled_layers.cmake": "bfc32194d42fadddee293c7a56d1ed79a535e76a5714ecd788afed74890efddc",
+    "cmake/libavif-prescaled-768b3dfe.patch": "b139fd9ddc311af626181f19afe602fd802eebff4e5ebdff102436338ef3643e"
   },
   "local_build_hash_normalization": "UTF-8 text, CRLF normalized to LF; source archives retain byte-exact hashes",
   "libraw": {

@@ -56,9 +56,13 @@ Use `AWJ.com` on Windows; replace it with `./AWJ` on Linux.
 
 `--threads auto` reserves desktop capacity from the allowed logical CPUs. `--threads N` uses a total encoding thread budget of N (1–128) without that reservation; file concurrency and per-image encoder threads share this budget and remain subject to the memory budget. `--cpu-affinity` uses zero-based logical CPU IDs and can only narrow the currently allowed set. Windows IDs refer to the current processor group.
 
+Use `--avif-progressive` for automatic two-layer still AVIF, or configure 2–4 layers with per-layer dimensions and quality through the CLI. It remains off by default, without new UI controls. See [progressive AVIF and layer options](docs/avif-progressive.md).
+
+Memory planning separates decode, preparation, encoding, metrics and output peaks, then refines reservations using decoded pixels, alpha and sampling. Uncertain inputs may refine exclusively within a finite budget; automatic budget rules and default limits remain unchanged. CSV diagnostics preserve initial estimates, refinements and reservations. Reservations are not allocator hard limits.
+
 ## C ABI SDK
 
-Windows / Linux dynamic SDKs provide one set of C headers for C / C++ integration. Submit CPU frames, shared-memory frames, optional FFmpeg frames or Windows D3D11 textures and receive encoded results in memory. Packages include CMake files, `awj-stream` and integration examples. SDK source has been built with Clang 21, with C99 / C++11 consumer examples.
+Windows / Linux dynamic SDKs provide one set of C headers for C / C++ integration. Submit CPU frames, shared-memory frames, optional FFmpeg frames or Windows D3D11 textures and receive encoded results in memory. Packages include CMake files, `awj-stream` and integration examples. Windows SDK builds use MSVC and Linux SDK builds use Clang 23, with C99 / C++11 / C++17 consumer examples.
 
 Download `AWJ_SDK_Win_x64.zip` or `AWJ_SDK_Linux_x64.tar.gz` from the same Release. See the [SDK documentation](docs/sdk.md) for integration, copy diagnostics, color and platform requirements.
 

@@ -34,6 +34,7 @@ module;
 
 export module awj.config;
 
+export import awj.avif_layers;
 import awj.encoding_defaults;
 import awj.visual_quality;
 
@@ -294,6 +295,7 @@ struct AppConfig {
   JpegHdrMode jpeg_hdr{JpegHdrMode::automatic};
   AvifAnimationTune avif_animation_tune{AvifAnimationTune::automatic};
   int avif_animation_keyframe{};
+  AvifLayerConfig avif_layers{};
   bool jxl_jpeg_lossless{true};
   int max_jobs{default_max_jobs()};
   // CLI session only; apply before creating pipeline workers.
@@ -1006,6 +1008,8 @@ awj::compat::expected<void, std::string> validate_config(const AppConfig& cfg) {
   if (cfg.avif_animation_keyframe < 0 || static_cast<int>(cfg.avif_animation_tune) < 0 || static_cast<int>(cfg.avif_animation_tune) > 2)
     return awj::compat::unexpected{"动画参数无效。"};
   if (auto valid = validate_image_size_limit(cfg.image_size_limit); !valid) return valid;
+  if (auto valid = validate_avif_layers(cfg.avif_layers, cfg.output_format == OutputFormat::avif,
+                                       cfg.quality, cfg.visual_quality); !valid) return valid;
   // 路径存在性在 scan_images 中校验；这里专注于格式自身不能违反的编码约束。
   if (cfg.output_template.size() > config_detail::max_output_template_length) {
     return awj::compat::unexpected{
@@ -1184,6 +1188,15 @@ std::string help_text() {
   --jpeg-hdr <auto|sdr|hdr> JPEG HDR 策略；默认 auto：auto/hdr 对 HDR 复用原 SDR，缺少时自动高光滚降生成 8-bit SDR base + ISO Gain Map；SDR 输入始终单层；sdr 仅输出原 SDR 或自动滚降的 SDR；HDR Gain Map 不支持 visual-quality
   --avif-animation-tune <auto|ssim|psnr> 动画优化；默认 auto 使用编码器默认值；静态图保留 IQ
   --avif-animation-keyframe <N> 动画最大关键帧间隔；0 自动（默认），正整数指定最大帧间隔
+  --avif-progressive / --no-avif-progressive 自动两层渐进；首层半尺寸 q10，末层按请求质量；默认关闭
+  --avif-layers <2..4>       手动渐进总层数，与自动模式互斥；各层序号从 1 开始
+  --avif-layer-size <序号:宽x高> 设置该层像素尺寸，最后一层必须保持最终尺寸
+  --avif-layer-scale <序号:分子/分母> 按最终尺寸缩放，与同层 size 互斥
+  --avif-layer-quality <序号:1..100> 设置各层颜色质量，未填沿用普通质量
+  --avif-layer-alpha-quality <序号:1..100> 设置各层 alpha 质量，未填沿用普通质量
+                            预览层至少指定尺寸、比例或质量；不支持 Gain Map、动画或 Grid 组合
+                            示例：--avif-progressive
+                            三层：--avif-layers 3 --avif-layer-scale 1:1/4 --avif-layer-quality 1:10 --avif-layer-scale 2:1/2 --avif-layer-quality 2:35
   --jpeg-progressive-level <0|1|2> JPG 渐进级别；0 为顺序 JPEG，默认 2
   --jpeg-optimize-huffman / --no-jpeg-optimize-huffman JPG 优化哈夫曼表；渐进级别大于 0 时必须开启
   --jpeg-xyb               JPG 启用 XYB 模式（实验）
@@ -1338,6 +1351,28 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--version") {
       awj::compat::println("AWJimage {}", AWJ_BUILD_VERSION);
       return ParseResult{.should_exit = true, .exit_code = 0, .config = cfg};
+    }
+
+    if (lower == L"--avif-progressive" || lower == L"--no-avif-progressive") {
+      cfg.avif_layers.automatic = lower == L"--avif-progressive";
+      continue;
+    }
+    if (lower == L"--avif-layers") {
+      const auto value = require_value(i, args[i]);
+      if (!value) return awj::compat::unexpected{value.error()};
+      const auto count = config_detail::parse_int_range(*value, 2, max_avif_layers, "avif-layers");
+      if (!count) return awj::compat::unexpected{count.error()};
+      if (cfg.avif_layers.count) return awj::compat::unexpected{"渐进总层数不能重复指定。"};
+      cfg.avif_layers.count = *count;
+      continue;
+    }
+    if (lower == L"--avif-layer-size" || lower == L"--avif-layer-scale" ||
+        lower == L"--avif-layer-quality" || lower == L"--avif-layer-alpha-quality") {
+      const auto value = require_value(i, args[i]);
+      if (!value) return awj::compat::unexpected{value.error()};
+      if (auto set = set_avif_layer_option(cfg.avif_layers, lower, *value); !set)
+        return awj::compat::unexpected{set.error()};
+      continue;
     }
 
     if (lower == L"--jxl-jpeg-lossless" || lower == L"--no-jxl-jpeg-lossless") {

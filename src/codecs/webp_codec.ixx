@@ -1,5 +1,6 @@
 module;
 #include "../compat/stdlib_compat.h"
+#include "../core/hdr_cost.h"
 
 #include <algorithm>
 #include <array>
@@ -866,6 +867,10 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_webp_animation(
       const auto frame_bound = pixels * 5 + 4096;
       if (frame_bound > UINT64_MAX - retained_bound) return awj::compat::unexpected{"动画 WebP 累积数据溢出。"};
       retained_bound += frame_bound;
+      const auto required = std::max(settings.memory_base_reservation,
+          hdr_cost::add(hdr_cost::add(reader.memory_usage_bytes(), working), hdr_cost::multiply(retained_bound, 3)));
+      if (settings.memory_reservation && !settings.memory_reservation(required))
+        return awj::compat::unexpected{"动画 WebP 累积数据无法取得工作集预约。"};
       if (budget && (reader.memory_usage_bytes() > budget || working > budget - reader.memory_usage_bytes() ||
           retained_bound > (budget - reader.memory_usage_bytes() - working) / 3))
         return awj::compat::unexpected{"动画 WebP 累积编码工作区超过内存预算。"};
@@ -930,6 +935,10 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_webp_animation(
     if (assembled.data.size > encoding_defaults::effective_max_input_file_bytes() ||
         (budget && (reader.memory_usage_bytes() > budget || assembled.data.size > (budget - reader.memory_usage_bytes()) / 4)))
       return awj::compat::unexpected{"动画 WebP 输出超过运行时或内存范围。"};
+    const auto output_reservation = std::max(settings.memory_base_reservation,
+        hdr_cost::add(reader.memory_usage_bytes(), hdr_cost::multiply(assembled.data.size, 4)));
+    if (settings.memory_reservation && !settings.memory_reservation(output_reservation))
+      return awj::compat::unexpected{"动画 WebP 输出无法取得工作集预约。"};
     auto bytes = decoder_common::make_byte_buffer(assembled.data.size, "动画 WebP");
     if (!bytes) return awj::compat::unexpected{bytes.error()};
     std::memcpy(bytes->data(), assembled.data.bytes, assembled.data.size);

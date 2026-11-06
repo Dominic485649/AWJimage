@@ -24,6 +24,7 @@ import awj.codec;
 import awj.config;
 import awj.core;
 import awj.image;
+import awj.image_memory_plan;
 import awj.large_image_plan;
 import awj.native_backend;
 import awj.pipeline;
@@ -99,8 +100,8 @@ int main() {
     dimensions.decoded_storage_bytes = n * 3 / 2;
     auto defaults = awj::default_app_config();
     defaults.max_jobs = 1;
-    const auto baseline = awj::pipeline_detail::estimated_regular_memory(dimensions, defaults);
-    if (baseline.profile != "avif-native-sdr420" ||
+    const auto baseline = awj::estimated_regular_memory(dimensions, defaults);
+    if (baseline.profile != "v2-avif-planes" || baseline.target_chroma != awj::ChromaMode::yuv420 ||
         baseline.bytes >= awj::avif_encode_working_set_bytes_for_dimensions(dimensions))
       return fail("Confirmed ordinary SDR420 did not use its own memory profile");
     for (int mode = 0; mode < 10; ++mode) {
@@ -117,29 +118,31 @@ int main() {
         case 8: cfg.chroma_mode = awj::ChromaMode::yuv444; break;
         case 9: cfg.avif_color_representation = awj::AvifColorRepresentation::rgb_identity; break;
       }
-      const auto guarded = awj::pipeline_detail::estimated_regular_memory(dimensions, cfg);
-      if (guarded.profile == "avif-native-sdr420" || guarded.bytes < baseline.bytes)
+      const auto guarded = awj::estimated_regular_memory(dimensions, cfg);
+      if (guarded.bytes < baseline.bytes || (mode == 2 && !guarded.target_alpha) ||
+          (mode == 7 && guarded.target_bit_depth != 12) ||
+          ((mode == 8 || mode == 9) && guarded.target_chroma != awj::ChromaMode::yuv444))
         return fail("HDR, alpha or overridden output used an ordinary SDR memory profile");
     }
     auto unknown = dimensions;
     unknown.source_bit_depth = 0;
     unknown.source_dynamic_range = awj::ImageDynamicRangeHint::unknown;
     unknown.decoded_storage_bytes = 0;
-    const auto fallback = awj::pipeline_detail::estimated_regular_memory(unknown, defaults);
-    if (fallback.profile != "avif-general" || fallback.bytes < baseline.bytes)
+    const auto fallback = awj::estimated_regular_memory(unknown, defaults);
+    if (fallback.source_resident_bytes < n * 16 || !fallback.target_alpha || fallback.bytes < baseline.bytes)
       return fail("An old native420 flag or missing hints silently treated unknown input as SDR");
 
     auto rgb = dimensions;
     rgb.opaque_sdr8_yuv420 = false;
     rgb.decoded_storage_bytes = n * 4;
-    const auto ordinary = awj::pipeline_detail::estimated_regular_memory(rgb, defaults);
-    if (ordinary.profile != "avif-sdr8" || ordinary.bytes >=
+    const auto ordinary = awj::estimated_regular_memory(rgb, defaults);
+    if (ordinary.profile != "v2-avif-planes" || ordinary.bytes >=
         awj::avif_encode_working_set_bytes_for_dimensions(rgb))
       return fail("Known SDR packed input still paid the complete unknown/HDR AVIF cost");
     auto thumbnail_cfg = defaults;
     thumbnail_cfg.image_size_limit.mode = awj::ImageSizeLimitMode::manual;
     thumbnail_cfg.image_size_limit.max_long_edge = 512;
-    const auto thumbnail = awj::pipeline_detail::estimated_regular_memory(rgb, thumbnail_cfg);
+    const auto thumbnail = awj::estimated_regular_memory(rgb, thumbnail_cfg);
     if (thumbnail.target_width != 512 || thumbnail.target_height != 384 ||
         thumbnail.source_width != 2048 || thumbnail.source_height != 1536 ||
         thumbnail.source_resident_bytes != ordinary.source_resident_bytes ||
@@ -156,11 +159,11 @@ int main() {
     gain.decoded_storage_bytes = n * 8;
     gain.gain_map_width = 512;
     gain.gain_map_height = 384;
-    const auto dual = awj::pipeline_detail::estimated_regular_memory(gain, defaults);
+    const auto dual = awj::estimated_regular_memory(gain, defaults);
     auto missing_map_geometry = gain;
     missing_map_geometry.gain_map_width = missing_map_geometry.gain_map_height = 0;
-    const auto full_map = awj::pipeline_detail::estimated_regular_memory(missing_map_geometry, defaults);
-    if (dual.profile != "avif-dual-gain-map" || dual.source_resident_bytes < n * 24 ||
+    const auto full_map = awj::estimated_regular_memory(missing_map_geometry, defaults);
+    if (dual.profile != "v2-avif-gain-map" || dual.source_resident_bytes < n * 24 ||
         dual.prepare_bytes < dual.source_resident_bytes + n * 12 ||
         full_map.bytes < dual.bytes || full_map.decode_bytes <= dual.decode_bytes ||
         full_map.source_resident_bytes != dual.source_resident_bytes)
@@ -168,40 +171,40 @@ int main() {
 
     auto jpeg = defaults;
     jpeg.output_format = awj::OutputFormat::jpgli;
-    const auto sdr_jpeg = awj::pipeline_detail::estimated_regular_memory(rgb, jpeg);
-    const auto unknown_jpeg = awj::pipeline_detail::estimated_regular_memory(unknown, jpeg);
-    if (sdr_jpeg.profile != "jpegli-sdr" || sdr_jpeg.bytes >= unknown_jpeg.bytes)
+    const auto sdr_jpeg = awj::estimated_regular_memory(rgb, jpeg);
+    const auto unknown_jpeg = awj::estimated_regular_memory(unknown, jpeg);
+    if (sdr_jpeg.profile != "v2-jpeg-sdr" || sdr_jpeg.bytes >= unknown_jpeg.bytes)
       return fail("Ordinary SDR JPEGli still reserved the complete HDR pipeline");
     jpeg.jpeg_hdr = awj::JpegHdrMode::hdr;
-    const auto forced_sdr = awj::pipeline_detail::estimated_regular_memory(rgb, jpeg);
-    if (forced_sdr.profile != "jpegli-sdr" || forced_sdr.bytes != sdr_jpeg.bytes ||
-        awj::pipeline_detail::estimated_regular_memory(unknown, jpeg).profile != "jpegli-hdr-or-unknown" ||
-        awj::pipeline_detail::estimated_regular_memory(gain, jpeg).profile != "jpegli-hdr-gain-map")
+    const auto forced_sdr = awj::estimated_regular_memory(rgb, jpeg);
+    if (forced_sdr.profile != "v2-jpeg-sdr" || forced_sdr.bytes != sdr_jpeg.bytes ||
+        awj::estimated_regular_memory(unknown, jpeg).profile != "v2-jpeg-hdr" ||
+        awj::estimated_regular_memory(gain, jpeg).profile != "v2-jpeg-hdr")
       return fail("JPG hdr reserved HDR for confirmed SDR or under-reserved real/unknown HDR");
     auto converted_hdr = jpeg;
     converted_hdr.transfer_characteristics = 16;
-    if (awj::pipeline_detail::estimated_regular_memory(rgb, converted_hdr).profile != "jpegli-hdr-or-unknown")
+    if (awj::estimated_regular_memory(rgb, converted_hdr).profile != "v2-jpeg-hdr")
       return fail("Explicit SDR-to-PQ conversion lost its HDR JPEG working-set budget");
     jpeg.jpeg_hdr = awj::JpegHdrMode::sdr;
-    if (awj::pipeline_detail::estimated_regular_memory(gain, jpeg).profile != "jpegli-source-sdr-presentation")
+    if (awj::estimated_regular_memory(gain, jpeg).profile != "v2-jpeg-source-sdr-presentation")
       return fail("Forced SDR Gain Map output did not plan the saved source SDR presentation");
 
     auto png = defaults;
     png.output_format = awj::OutputFormat::png;
-    const auto rgba8 = awj::pipeline_detail::estimated_regular_memory(rgb, png);
+    const auto rgba8 = awj::estimated_regular_memory(rgb, png);
     auto high_depth = rgb;
     high_depth.source_bit_depth = 16;
     high_depth.source_has_alpha = true;
     high_depth.decoded_storage_bytes = n * 8;
-    const auto rgba16 = awj::pipeline_detail::estimated_regular_memory(high_depth, png);
+    const auto rgba16 = awj::estimated_regular_memory(high_depth, png);
     auto explicit_png16 = png;
     explicit_png16.bit_depth = 16;
-    const auto requested16 = awj::pipeline_detail::estimated_regular_memory(high_depth, explicit_png16);
-    if (rgba8.profile != "png-rgba8" || rgba8.bytes >= 128 * mib ||
-        rgba16.profile != "png-rgba8" || rgba16.bytes <= rgba8.bytes || rgba16.bytes < 73 * mib ||
-        requested16.profile != "png-rgba16" || requested16.encode_bytes <= rgba16.encode_bytes)
+    const auto requested16 = awj::estimated_regular_memory(high_depth, explicit_png16);
+    if (rgba8.profile != "v2-png-rgba8" || rgba8.bytes >= 128 * mib ||
+        rgba16.profile != "v2-png-rgba8" || rgba16.bytes <= rgba8.bytes || rgba16.bytes < 73 * mib ||
+        requested16.profile != "v2-png-rgba16" || requested16.encode_bytes <= rgba16.encode_bytes)
       return fail("PNG planning ignored SDR auto8, retained 16-bit source storage or explicit16 output");
-    const auto hdr_single = awj::pipeline_detail::estimated_regular_memory(gain, png);
+    const auto hdr_single = awj::estimated_regular_memory(gain, png);
     if (hdr_single.source_resident_bytes >= dual.source_resident_bytes ||
         hdr_single.source_resident_bytes < n * 16)
       return fail("HDR-only PNG retained an unused alternate endpoint or dropped its selected HDR storage");
@@ -212,52 +215,52 @@ int main() {
     webp.output_format = awj::OutputFormat::webp;
     auto jxl = defaults;
     jxl.output_format = awj::OutputFormat::jxl;
-    if (awj::pipeline_detail::estimated_regular_memory(alpha, webp).bytes < 115 * mib ||
-        awj::pipeline_detail::estimated_regular_memory(rgb, jxl).bytes < 188 * mib ||
-        awj::pipeline_detail::estimated_regular_memory(alpha, jxl).bytes < 261 * mib ||
-        awj::pipeline_detail::estimated_regular_memory(gain, jxl).profile != "jxl-dual-gain-map")
+    if (awj::estimated_regular_memory(alpha, webp).bytes < 115 * mib ||
+        awj::estimated_regular_memory(rgb, jxl).bytes < 188 * mib ||
+        awj::estimated_regular_memory(alpha, jxl).bytes < 261 * mib ||
+        awj::estimated_regular_memory(gain, jxl).profile != "v2-jxl-gain-map")
       return fail("WebP/JXL planning is below the recorded 3MP workload or lost dual presentation");
     auto threaded = jxl;
     threaded.max_jobs = 8;
-    if (awj::pipeline_detail::estimated_regular_memory(alpha, threaded).bytes <=
-        awj::pipeline_detail::estimated_regular_memory(alpha, jxl).bytes)
+    if (awj::estimated_regular_memory(alpha, threaded).bytes <=
+        awj::estimated_regular_memory(alpha, jxl).bytes)
       return fail("Codec thread headroom did not participate in memory admission");
     auto metrics = defaults;
     metrics.visual_quality = 90;
-    const auto measured_target = awj::pipeline_detail::estimated_regular_memory(rgb, metrics);
+    const auto measured_target = awj::estimated_regular_memory(rgb, metrics);
     if (!measured_target.metric_bytes || measured_target.encode_bytes <= ordinary.encode_bytes)
       return fail("Cached metric reference/best-candidate storage was omitted from candidate encoding");
     auto metric_thumbnail_cfg = metrics;
     metric_thumbnail_cfg.image_size_limit = thumbnail_cfg.image_size_limit;
-    const auto metric_thumbnail = awj::pipeline_detail::estimated_regular_memory(rgb, metric_thumbnail_cfg);
+    const auto metric_thumbnail = awj::estimated_regular_memory(rgb, metric_thumbnail_cfg);
     auto padded_source = rgb;
     padded_source.decoded_storage_bytes = n * 8;
-    const auto padded_thumbnail = awj::pipeline_detail::estimated_regular_memory(padded_source, metric_thumbnail_cfg);
+    const auto padded_thumbnail = awj::estimated_regular_memory(padded_source, metric_thumbnail_cfg);
     if (metric_thumbnail.metric_bytes >= measured_target.metric_bytes ||
         padded_thumbnail.decode_bytes <= metric_thumbnail.decode_bytes ||
         padded_thumbnail.encode_bytes != metric_thumbnail.encode_bytes)
       return fail("Physical metric resize retained already released source padding or source-sized metric workspaces");
     auto icc_dimensions = rgb;
     icc_dimensions.source_icc_bytes = 660;
-    const auto ordinary_icc_hint = awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults);
+    const auto ordinary_icc_hint = awj::estimated_regular_memory(icc_dimensions, defaults);
     if (ordinary_icc_hint.decode_bytes != ordinary.decode_bytes ||
         ordinary_icc_hint.prepare_bytes != ordinary.prepare_bytes)
       return fail("非 Gain Map 输入错误地支付了新增 ICC 校验暂存。");
     icc_dimensions.source_has_gain_map = true;
-    const auto icc_estimate = awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults);
+    const auto icc_estimate = awj::estimated_regular_memory(icc_dimensions, defaults);
     icc_dimensions.source_icc_bytes = 0;
-    const auto no_icc_estimate = awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults);
+    const auto no_icc_estimate = awj::estimated_regular_memory(icc_dimensions, defaults);
     if (icc_estimate.decode_bytes != no_icc_estimate.decode_bytes + 660 ||
         icc_estimate.prepare_bytes != no_icc_estimate.prepare_bytes + 660 ||
         icc_estimate.encode_bytes != no_icc_estimate.encode_bytes)
       return fail("Gain Map ICC 校验没有按实际单 profile 字节计入对应阶段。");
     icc_dimensions.source_icc_bytes = UINT64_MAX;
-    if (awj::pipeline_detail::estimated_regular_memory(icc_dimensions, defaults).bytes != UINT64_MAX)
+    if (awj::estimated_regular_memory(icc_dimensions, defaults).bytes != UINT64_MAX)
       return fail("ICC profile 字节计费溢出后错误准入。");
     auto overflow = awj::make_image_dimensions(UINT32_MAX, UINT32_MAX);
-    if (awj::pipeline_detail::estimated_regular_memory(overflow, defaults).bytes != UINT64_MAX ||
-        awj::pipeline_detail::estimated_regular_memory(rgb, png, UINT64_MAX).bytes != UINT64_MAX ||
-        awj::pipeline_detail::estimated_regular_memory({}, defaults).bytes != UINT64_MAX)
+    if (awj::estimated_regular_memory(overflow, defaults).bytes != UINT64_MAX ||
+        awj::estimated_regular_memory(rgb, png, UINT64_MAX).bytes != UINT64_MAX ||
+        awj::estimated_regular_memory({}, defaults).bytes != UINT64_MAX)
       return fail("Image working-set dimensions/input arithmetic overflowed or admitted empty geometry");
   }
   const auto root = std::filesystem::temp_directory_path() / "awjimage-pipeline-security-tests";
@@ -391,7 +394,7 @@ int main() {
   {
     auto cfg = awj::default_app_config();
     cfg.output_format = awj::OutputFormat::png;
-    const auto bytes = awj::pipeline_detail::estimated_regular_working_set_bytes(
+    const auto bytes = awj::estimated_regular_working_set_bytes(
         awj::make_image_dimensions(4096, 4096), cfg);
     const auto plan = awj::plan_resources({.automatic_thread_budget = 8, .file_count = 2,
         .memory_limit_bytes = 1024ull * 1024 * 1024, .estimated_bytes_per_file = bytes});
@@ -457,7 +460,7 @@ int main() {
         rejected_before_start = !result.ok && result.memory_budget_bytes == rejected_cfg.memory_limit_bytes &&
             result.memory_budget_mode == "manual" && result.memory_budget_source == "configuration" &&
             result.estimated_working_set_bytes > result.memory_budget_bytes &&
-            result.memory_estimate_profile.starts_with("avif-grid") &&
+            result.memory_estimate_profile.starts_with("v2-avif-grid") &&
             result.memory_source_width == 65537 && result.memory_source_height == 64 &&
             result.encoder_threads == 0 && result.decode_seconds == 0 && result.encode_seconds == 0;
       }
@@ -470,7 +473,7 @@ int main() {
       if (event.kind == awj::BatchEventKind::item_finished)
         successful_trace = event.result.ok && event.result.memory_budget_bytes == cfg.memory_limit_bytes &&
             event.result.memory_budget_mode == "manual" && event.result.memory_budget_source == "configuration" &&
-            event.result.memory_estimate_profile.starts_with("avif-grid") &&
+            event.result.memory_estimate_profile.starts_with("v2-avif-grid") &&
             event.result.estimated_working_set_bytes > 0;
     });
     if (!summary) return fail(summary.error());
@@ -754,7 +757,8 @@ int main() {
   if (invalid_batch_csv.find("empty.webp") == std::string::npos ||
       invalid_batch_csv.find("failed") == std::string::npos ||
       invalid_batch_csv.find("decode_stage,source_metadata_available,selected_rendition,rendition_origin") == std::string::npos ||
-      invalid_batch_csv.find("heif_tile_parallelism,heif_codec_thread_budget,awj_version\n") == std::string::npos) {
+      invalid_batch_csv.find("heif_tile_parallelism,heif_codec_thread_budget,avif_layer_count,avif_layer_trace,") == std::string::npos ||
+      invalid_batch_csv.find("memory_target_bit_depth,memory_target_chroma,memory_target_alpha,awj_version\n") == std::string::npos) {
     return fail("invalid AVIF batch input was not recorded with its diagnostic columns.");
   }
   if (!saw_invalid_decode || invalid_decode_result.ok || !invalid_decode_result.processed ||

@@ -9,6 +9,7 @@ module;
 #include <cmath>
 #include <cstring>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -51,6 +52,7 @@ import awj.large_image_plan;
 import awj.native_visual_search;
 import awj.png_codec;
 import awj.resource_planner;
+import awj.image_memory_plan;
 import awj.visual_quality;
 import awj.webp_codec;
 
@@ -862,7 +864,7 @@ bool requested_color_conversion_needed(const ImageBuffer& image, const AppConfig
 
 bool avif_lossless_passthrough_allowed(const AppConfig& cfg,
                                        const fs::path& path) {
-  return avif_lossless_requested(cfg) && avif_lossless_passthrough_source(path) &&
+  return !cfg.avif_layers.enabled() && avif_lossless_requested(cfg) && avif_lossless_passthrough_source(path) &&
          cfg.avif_encoder == AvifEncoderMode::automatic && cfg.chroma_mode == ChromaMode::auto_keep &&
          cfg.avif_color_representation != AvifColorRepresentation::rgb_identity &&
          !cfg.bit_depth && cfg.alpha_policy != AlphaModePolicy::off && !cfg.strip_metadata &&
@@ -1477,6 +1479,7 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
                               .avif_tune_iq = encoding_defaults::default_avif_tune_iq,
                               .avif_animation_tune = cfg.avif_animation_tune,
                               .avif_animation_keyframe = cfg.avif_animation_keyframe,
+                              .avif_layers = cfg.avif_layers,
                               .jpegli_progressive_level = cfg.jpegli_progressive_level,
                               .jpegli_optimize_huffman = cfg.jpegli_optimize_huffman,
                               .jpegli_xyb = cfg.jpegli_xyb,
@@ -1541,6 +1544,8 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.speed_parameter_kind = has_speed_mapping ? native.diagnostics.speed_mapping.codec_key : std::string{};
   result.applied_speed = has_speed_mapping ? native.diagnostics.speed_mapping.codec_value : -1;
   result.encoder_threads = native.diagnostics.encoder_threads;
+  result.avif_layer_count = native.diagnostics.avif_layer_count;
+  result.avif_layer_trace = native.diagnostics.avif_layer_trace;
   result.memory_budget_bytes = native.diagnostics.memory_budget_bytes;
   result.rendition = native.diagnostics.rendition;
   result.gain_map_compute_seconds = native.diagnostics.timing.gain_map_compute_seconds;
@@ -1735,8 +1740,9 @@ class NativeBackend final {
   };
 
  public:
-  NativeBackend(const AppConfig& cfg, FileLogger& logger, ResourcePlan resources)
-      : cfg_{cfg}, logger_{logger}, resources_{resources} {}
+  NativeBackend(const AppConfig& cfg, FileLogger& logger, ResourcePlan resources,
+                std::function<bool(std::uint64_t)> memory_reservation = {})
+      : cfg_{cfg}, logger_{logger}, resources_{resources}, reserve_memory_{std::move(memory_reservation)} {}
 
   EncodeResult encode(const ImageFile& image,
                       awj::compat::stop_token stop_token = {}) const {
@@ -1758,11 +1764,14 @@ class NativeBackend final {
     if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (auto selected = native_backend_detail::select_output_rendition(decoded, cfg_, stop_token); !selected)
       return awj::compat::unexpected{selected.error()};
-    if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_); !limited)
+    if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_, stop_token, resources_); !limited)
       return awj::compat::unexpected{limited.error()};
     const ImageFile source{};
     auto prepared = prepare_encoding(source, decoded, {});
     if (!prepared) return awj::compat::unexpected{prepared.error().message};
+    EncodeResult memory_result{};
+    if (!admit_encoding_memory(memory_result, decoded, prepared->settings, 0))
+      return awj::compat::unexpected{memory_result.message};
     // 路径形参在候选搜索中仅用作输出码流的格式提示，不是输入或候选文件。
     const auto format_hint = fs::path{std::wstring{L"memory"} + output_extension_for(cfg_)};
     return execute_encode(decoded, prepared->encoder.get(), prepared->settings, format_hint, stop_token);
@@ -2697,6 +2706,8 @@ class NativeBackend final {
           return animation_failed(opened.error());
         }
         if (*opened) {
+          if (cfg_.avif_layers.enabled() && (*opened)->info().durations.size() > 1)
+            return animation_failed("AVIF 渐进式仅支持静态图，不能与多帧动画组合。");
           if (cfg_.visual_quality && *cfg_.visual_quality < 100 && (*opened)->info().durations.size() > 1) {
             return animation_failed("动画输出暂不支持视觉质量搜索；请使用编码质量预设。动画不会降为单图。");
           }
@@ -2708,9 +2719,10 @@ class NativeBackend final {
           result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
           ImageDecodeResult first{.image = reader.frame(), .decoder_id = reader.info().decoder_id};
           auto prepared = prepare_encoding(image, first, {});
-          // Single-frame inputs use the normal encoder, including visual quality search.
-          if (reader.info().durations.size() > 1) first.image.planes.clear();
+          // 单帧使用普通编码；多帧也先按真实首帧计划取得预约，再释放借用副本。
           if (!prepared) return animation_failed(prepared.error().message);
+          if (!admit_encoding_memory(result, first, prepared->settings, image.bytes)) return result;
+          if (reader.info().durations.size() > 1) first.image.planes.clear();
           if (prepared->settings.avif_grid_plan || overrides.avif_grid_plan) {
             mark_failed(result, "动画 AVIF 不能使用静态 Grid；请通过尺寸限制缩小画布。"); return result;
           }
@@ -2776,6 +2788,7 @@ class NativeBackend final {
         return result;
       }
 
+      if (!admit_encoding_memory(result, decoded_input->decoded, prepared->settings, image.bytes)) return result;
       const auto encode_started = native_backend_detail::Clock::now();
       auto encoded = execute_encode(decoded_input->decoded, prepared->encoder.get(),
                                     prepared->settings, result.output_path, stop_token);
@@ -2817,9 +2830,43 @@ class NativeBackend final {
   }
 
  private:
+  bool admit_encoding_memory(EncodeResult& result, const ImageDecodeResult& decoded,
+                             NativeEncodeSettings& settings, std::uint64_t compressed) const {
+    const auto estimate = refined_regular_memory(decoded, settings, cfg_, compressed);
+    store_memory_estimate(result, estimate);
+    const auto limit = cfg_.unlock_memory_limit ? 0 : resources_.memory_limit_bytes /
+        static_cast<std::uint64_t>(reserve_memory_ ? 1 : std::max(1, resources_.file_parallelism));
+    if (estimate.bytes == UINT64_MAX || (limit && estimate.bytes > limit)) {
+      mark_failed(result, awj::compat::format("解码后精化预估工作集 {} 超过内存预算 {}，未启动编码。",
+          format_size(estimate.bytes), format_size(limit)));
+      return false;
+    }
+    if (reserve_memory_ && !reserve_memory_(estimate.bytes)) {
+      mark_failed(result, "解码后工作集预约不足，已释放当前图像；未持有像素阻塞等待其他任务。");
+      return false;
+    }
+    // 编码与候选搜索同步完成；result 和其预约 guard 均活到所有 codec 调用结束。
+    settings.memory_reservation = [reserve = reserve_memory_, limit, &result](std::uint64_t bytes) {
+      if (bytes == UINT64_MAX || (limit && bytes > limit) || (reserve && !reserve(bytes))) return false;
+      if (limit) result.memory_plan.reserved_peak_bytes = std::max(result.memory_plan.reserved_peak_bytes, bytes);
+      result.estimated_working_set_bytes = std::max(result.estimated_working_set_bytes, bytes);
+      return true;
+    };
+    result.memory_plan.reserved_peak_bytes = limit ? estimate.bytes : 0;
+    settings.memory_base_reservation = estimate.bytes;
+    if (reserve_memory_) settings.resources.file_parallelism = 1;
+    native_backend_detail::log_info_noexcept(logger_, [&] {
+      return awj::compat::format("内存计划 v2: prepared={} source={} conversion={} codec={} output-capacity={} layers={} depth={} chroma={} alpha={}",
+          estimate.bytes, estimate.source_resident_bytes, estimate.conversion_bytes,
+          estimate.codec_workspace_bytes, estimate.output_capacity_bytes, estimate.layer_retained_bytes,
+          estimate.target_bit_depth, chroma_mode_name(estimate.target_chroma), estimate.target_alpha);
+    });
+    return true;
+  }
   const AppConfig& cfg_;
   FileLogger& logger_;
   ResourcePlan resources_;
+  std::function<bool(std::uint64_t)> reserve_memory_;
 };
 
 }  // namespace awj

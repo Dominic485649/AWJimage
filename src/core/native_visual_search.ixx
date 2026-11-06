@@ -525,8 +525,11 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
 
   const int requested = std::clamp(*settings.visual_quality, 1, 100);
   const auto range = get_quality_search_range(requested);
+  // 自动渐进的首层固定 q10；搜索末层时也遵守上游的最低目标质量。
+  const int minimum_quality = settings.output_format == OutputFormat::avif && settings.avif_layers.automatic
+      ? 10 : ENCODER_QUALITY_MIN;
   const int search_q_min =
-      std::clamp(range.q_min, ENCODER_QUALITY_MIN, ENCODER_QUALITY_MAX - 1);
+      std::clamp(range.q_min, minimum_quality, ENCODER_QUALITY_MAX - 1);
   const int search_q_max =
       std::clamp(range.q_max, search_q_min, ENCODER_QUALITY_MAX - 1);
   VisualQualitySearchTrace search_trace{.requested_visual_quality = requested,
@@ -550,7 +553,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     }
     const auto encoded_bytes = encoded->encoded.bytes.size();
     encoded->final_quality = 100;
-    encoded->lossless = true;
     encoded->search_attempt_count = 1;
     encoded->diagnostics.timing = timing;
     encoded->diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;

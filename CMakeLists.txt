@@ -685,6 +685,12 @@ execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${libavif_SOURCE_DIR}"
 if(NOT AWJ_AVIF_GAIN_THREADS_PATCH_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to apply pinned libavif gain-map CPU/cancellation adapter")
 endif()
+execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${libavif_SOURCE_DIR}"
+    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_prescaled_layers.cmake"
+    COMMAND_ERROR_IS_FATAL ANY)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_prescaled_layers.cmake"
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/libavif-prescaled-768b3dfe.patch")
 
 # ISO 21496-1 JPEG, using the pinned libultrahdr numerical/container engine.
 # Write switches alone do not disable the upstream decoder's XMP fallback.
@@ -942,6 +948,7 @@ endif()
 target_sources(awj_shared PUBLIC
     FILE_SET awj_shared_modules TYPE CXX_MODULES FILES
         src/core/encoding_defaults.ixx
+        src/core/avif_layers.ixx
         src/core/large_image_plan.ixx
         src/app/config.ixx
         src/core/visual_quality.ixx
@@ -1156,6 +1163,7 @@ add_dependencies(awj_native_backend
 target_sources(awj_native_backend
     PUBLIC
         FILE_SET awj_native_backend_modules TYPE CXX_MODULES FILES
+            src/core/image_memory_plan.ixx
             src/backends/native_backend.ixx)
 
 if(AWJ_BUILD_APPLICATION)
@@ -1276,6 +1284,14 @@ if(BUILD_TESTING)
     add_executable(awj_resource_planner_tests tests/resource_planner_tests.cpp)
     avif_enable_common_options(awj_resource_planner_tests)
     target_link_libraries(awj_resource_planner_tests PRIVATE awj_base)
+    add_executable(awj_work_memory_admission_tests tests/work_memory_admission_tests.cpp)
+    avif_enable_common_options(awj_work_memory_admission_tests)
+    target_link_libraries(awj_work_memory_admission_tests PRIVATE awj_base)
+    add_test(NAME work_memory_admission_core COMMAND awj_work_memory_admission_tests)
+    add_executable(awj_image_memory_plan_tests tests/image_memory_plan_tests.cpp)
+    avif_enable_common_options(awj_image_memory_plan_tests)
+    target_link_libraries(awj_image_memory_plan_tests PRIVATE awj_native_backend)
+    add_test(NAME image_memory_plan_core COMMAND awj_image_memory_plan_tests)
 
     add_executable(awj_optional_graphics_tests tests/optional_graphics_tests.cpp)
     avif_enable_common_options(awj_optional_graphics_tests)
@@ -1306,6 +1322,15 @@ if(BUILD_TESTING)
     add_executable(awj_avif_aom_codec_tests tests/avif_aom_codec_tests.cpp)
     avif_enable_common_options(awj_avif_aom_codec_tests)
     target_link_libraries(awj_avif_aom_codec_tests PRIVATE awj_avif_base_codec)
+    add_executable(awj_avif_layers_tests tests/avif_layers_tests.cpp)
+    avif_enable_common_options(awj_avif_layers_tests)
+    target_link_libraries(awj_avif_layers_tests PRIVATE awj_avif_base_codec)
+    add_test(NAME avif_layers_core COMMAND awj_avif_layers_tests)
+    add_test(NAME avif_prescaled_patch_contract COMMAND "${CMAKE_COMMAND}"
+        "-DLIBAVIF_SOURCE_DIR=${libavif_SOURCE_DIR}"
+        "-DPROJECT_ROOT=${CMAKE_CURRENT_SOURCE_DIR}"
+        "-DTEST_ROOT=${CMAKE_CURRENT_BINARY_DIR}/patch-contracts"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/avif_prescaled_patch_tests.cmake")
 
     add_executable(awj_avif_hybrid_tests tests/avif_hybrid_tests.cpp)
     avif_enable_common_options(awj_avif_hybrid_tests)

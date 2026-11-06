@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.3.2 - Local candidate
+
+### Encoding and resizing
+
+- Add automatic two-layer progressive AVIF and CLI controls for 2–4 layers with per-layer dimensions, color quality and alpha quality.
+- Retain frame timing, loops and transparency in animated WebP; use Lanczos-3 for physical resampling.
+- Unify automatic, unrestricted, enlarge, shrink and fixed-size modes, with mutually exclusive fixed dimensions and scale inputs.
+
+### Memory and dependencies
+
+- Rewrite phase-based memory planning, refine from actual pixel planes and decoded alpha, and support exclusive refinement within finite budgets and nonblocking reservation adjustments.
+- Account for progressive-layer state and accumulated animation data, with model-version, phase and reservation diagnostics.
+- Update AOM to 3.15.3 and backport pre-scaled layer support to stable libavif.
+
 ## 1.3.1 - 2026-11-01
 
 ### HarmonyOS SDK preview

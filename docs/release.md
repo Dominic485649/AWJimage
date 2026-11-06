@@ -55,6 +55,6 @@ Windows 应用与 SDK 均使用真正的 MSVC `cl.exe`，不以 clang-cl 或 MSV
 
 ### main 与旧版更新入口
 
-开发主线为 `main`。保留 `master` 的 `update-archive.json`、`update-keyring.json` 及各自签名作为旧客户端兼容入口，两处分发相同有效字节和 sequence。GitHub 的 raw 文件 URL 不会因分支改名重定向，因此应在验证旧、新入口后切换默认主线，并持续维护兼容元数据。
+开发主线为 `main`，历史版本通过 tag 保留。已取消 `master` 兼容入口，不再维护双分支同步；后续更新元数据沿当前主线与既有签名发布流程管理。
 
 签名和轮换见 [更新安全](update-security.md)。候选不得写入正式清单，不静默轮换信任根；1.0.12 及更早版本需手动升级。

@@ -1,6 +1,7 @@
 module;
 #include "../compat/stdlib_compat.h"
 #include "avif_worker_failure.h"
+#include "../core/hdr_cost.h"
 
 #include <algorithm>
 #include <array>
@@ -1174,7 +1175,13 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
   if (auto valid = avif_aom_detail::validate_avif_color_settings(settings); !valid) {
     return awj::compat::unexpected{valid.error()};
   }
-  const bool lossless = avif_aom_detail::lossless_requested(settings);
+  if (auto valid = validate_avif_layers(settings.avif_layers, true, settings.quality, settings.visual_quality); !valid)
+    return awj::compat::unexpected{valid.error()};
+  const int default_quality = avif_aom_detail::lossless_requested(settings) ? 100 : settings.quality;
+  const int requested_final_quality = settings.avif_layers.count
+      ? settings.avif_layers.layers[*settings.avif_layers.count - 1].quality.value_or(default_quality)
+      : default_quality;
+  const bool lossless = requested_final_quality >= 100;
   const auto actual_mode = AvifEncoderMode::aom;
   auto applied_chroma = avif_aom_detail::applied_chroma_from_settings(
       source_image, settings.chroma_mode);
@@ -1235,6 +1242,13 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
     return awj::compat::unexpected{"AVIF encoder 只支持 8、10、12-bit 输出。"};
   }
 
+  if (settings.avif_layers.enabled() && (settings.avif_grid_plan || settings.gain_map_alternative))
+    return awj::compat::unexpected{"AVIF 渐进式不能与 Gain Map 或 Grid 组合，未丢弃原有内容。"};
+  auto layer_plan = plan_avif_layers(settings.avif_layers,
+      static_cast<std::uint32_t>(source_image.width), static_cast<std::uint32_t>(source_image.height),
+      default_quality, default_quality);
+  if (!layer_plan) return awj::compat::unexpected{layer_plan.error()};
+
   IsoGainMapPtr gain_map{nullptr, &avifGainMapDestroy};
   EncodeTimingDiagnostics gain_map_timing{};
   if (settings.gain_map_alternative) {
@@ -1274,7 +1288,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
     return awj::compat::unexpected{"无法创建 libavif encoder。"};
   }
   encoder->codecChoice = avif_aom_detail::codec_choice_for(actual_mode);
-  const int final_quality = lossless ? AVIF_QUALITY_LOSSLESS : std::clamp(settings.quality, 1, 100);
+  const int final_quality = layer_plan->back().quality;
   encoder->quality = final_quality;
   encoder->qualityAlpha = final_quality;
   encoder->qualityGainMap = final_quality;
@@ -1315,7 +1329,65 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
   double add_image_seconds = -1.0;
   double finish_seconds = -1.0;
   double output_copy_seconds = -1.0;
-  if (settings.avif_grid_plan) {
+  if (settings.avif_layers.enabled()) {
+    static_assert(max_avif_layers == AVIF_MAX_AV1_LAYER_COUNT);
+    encoder->extraLayerCount = static_cast<std::uint32_t>(layer_plan->size() - 1);
+    encoder->keyframeInterval = 0;
+    if (!settings.avif_layers.automatic) {
+      encoder->width = static_cast<std::uint32_t>(image.width);
+      encoder->height = static_cast<std::uint32_t>(image.height);
+    }
+    add_image_seconds = 0;
+    for (std::size_t i = 0; i < layer_plan->size(); ++i) {
+      if (auto stopped = avif_aom_detail::stop_if_requested(stop_token); !stopped)
+        return awj::compat::unexpected{stopped.error()};
+      const auto& layer = (*layer_plan)[i];
+      encoder->quality = layer.quality;
+      encoder->qualityAlpha = layer.alpha_quality;
+      const bool automatic_preview = settings.avif_layers.automatic && i == 0;
+      encoder->scalingMode = automatic_preview ? avifScalingMode{{1, 2}, {1, 2}}
+                                               : avifScalingMode{{1, 1}, {1, 1}};
+      // AddImage 同步消耗输入；每轮结束释放本层物化像素，跨层参考由 codec 自己持有。
+      std::optional<ImageBuffer> resized;
+      std::optional<ImageBuffer> converted_layer;
+      const ImageBuffer* samples = &image;
+      if (!settings.avif_layers.automatic &&
+          (layer.width != image.width || layer.height != image.height)) {
+        auto scaled = resize_native_pixels(source_image, layer.width, layer.height, stop_token);
+        if (!scaled) return awj::compat::unexpected{scaled.error()};
+        resized = std::move(*scaled);
+        auto converted = convert_image_pixels(*resized, conversion, stop_token, settings.resources);
+        if (!converted) return awj::compat::unexpected{converted.error()};
+        converted_layer = std::move(*converted);
+        samples = &*converted_layer;
+      }
+      avif_aom_detail::AvifImage avif_image{avifImageCreate(
+          static_cast<std::uint32_t>(samples->width), static_cast<std::uint32_t>(samples->height),
+          bit_depth, *pixel_format)};
+      if (!avif_image) return awj::compat::unexpected{"无法创建 AVIF 渐进层。"};
+      avif_aom_detail::apply_color_settings(*avif_image, settings, applied_chroma, lossless);
+      if (auto metadata = avif_aom_detail::apply_avif_metadata(*avif_image, image, settings); !metadata)
+        return awj::compat::unexpected{metadata.error()};
+      auto planes = yuv_plane_view(*samples);
+      if (!planes) return awj::compat::unexpected{planes.error()};
+      for (int c = 0; c < 3; ++c) {
+        avif_image->yuvPlanes[c] = planes->yuvPlanes[c];
+        avif_image->yuvRowBytes[c] = planes->yuvRowBytes[c];
+      }
+      avif_image->alphaPlane = planes->alphaPlane;
+      avif_image->alphaRowBytes = planes->alphaRowBytes;
+      avif_image->alphaPremultiplied = AVIF_FALSE;
+      const auto started = avif_aom_detail::Clock::now();
+      result = avifEncoderAddImage(encoder.get(), avif_image.get(), 1, AVIF_ADD_IMAGE_FLAG_NONE);
+      add_image_seconds += avif_aom_detail::elapsed_seconds(started);
+      if (result != AVIF_RESULT_OK) break;
+    }
+    if (result == AVIF_RESULT_OK) {
+      const auto started = avif_aom_detail::Clock::now();
+      result = avifEncoderFinish(encoder.get(), output.get());
+      finish_seconds = avif_aom_detail::elapsed_seconds(started);
+    }
+  } else if (settings.avif_grid_plan) {
     const auto& plan = *settings.avif_grid_plan;
     if (plan.cols == 0 || plan.rows == 0 || plan.tile_width == 0 || plan.tile_height == 0) {
       return awj::compat::unexpected{"AVIF grid 规划无效。"};
@@ -1508,6 +1580,13 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
   }
   diagnostics.speed_mapping = avif_aom_detail::libavif_speed_mapping(actual_mode, encoder_speed);
   diagnostics.encoder_threads = total_encoder_threads;
+  diagnostics.avif_layer_count = static_cast<int>(layer_plan->size());
+  for (std::size_t i = 0; i < layer_plan->size(); ++i) {
+    const auto& layer = (*layer_plan)[i];
+    if (i) diagnostics.avif_layer_trace += ";";
+    diagnostics.avif_layer_trace += awj::compat::format("{}:{}x{}:q{}:a{}", i + 1,
+        layer.width, layer.height, layer.quality, layer.alpha_quality);
+  }
   diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
   diagnostics.timing.avif_rgb_to_yuv_seconds = rgb_to_yuv_seconds;
   diagnostics.timing.avif_add_image_seconds = add_image_seconds;
@@ -1524,6 +1603,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
                             .diagnostics = std::move(diagnostics),
                             .final_quality = final_quality,
                             .lossless = lossless && !settings.gain_map_alternative &&
+                                (!conversion.preserve_alpha || layer_plan->back().alpha_quality >= 100) &&
                                 bit_depth >= rendition_reference_depth(source_image),
                             .search_attempt_count = 1};
 }
@@ -1532,6 +1612,8 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_avif_animation(
     AnimationReader& reader, const NativeEncodeSettings& settings, awj::compat::stop_token stop_token) {
   // Caller has advanced to the first full-canvas frame to prepare color/depth settings.
   const auto& info = reader.info();
+  if (settings.avif_layers.enabled())
+    return awj::compat::unexpected{"AVIF 渐进式不能与多帧动画组合。"};
   if (info.durations.empty() || settings.avif_grid_plan)
     return awj::compat::unexpected{"动画 AVIF 必须有帧，且不能使用静态 Grid。"};
   if (info.width > encoding_defaults::avif_single_image_max_dimension ||
@@ -1568,10 +1650,14 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_avif_animation(
   const auto budget = settings.resources.memory_limit_bytes;
   const auto raw_reserve = static_cast<std::uint64_t>(info.width) * info.height * 32;
   auto check_budget = [&](std::size_t frame_index) -> awj::compat::expected<void, std::string> {
-    if (!budget) return {};
     const auto retained = awjAvifEncoderRetainedBytes(encoder.get());
     const auto reader_bytes = reader.memory_usage_bytes();
     const auto overhead = static_cast<std::uint64_t>(frame_index + 1) * 4096;
+    const auto required = std::max(settings.memory_base_reservation,
+        hdr_cost::add(hdr_cost::add(reader_bytes, raw_reserve), hdr_cost::add(overhead, hdr_cost::multiply(retained, 3))));
+    if (settings.memory_reservation && !settings.memory_reservation(required))
+      return awj::compat::unexpected{"动画 AVIF 累积数据无法取得工作集预约。"};
+    if (!budget) return {};
     if (reader_bytes > budget || raw_reserve > budget - reader_bytes ||
         overhead > budget - reader_bytes - raw_reserve ||
         retained > (budget - reader_bytes - raw_reserve - overhead) / 3)

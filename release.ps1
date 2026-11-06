@@ -200,6 +200,7 @@ $PinnedFetchContentCommits = @{
 $PinnedFetchContentPatchedFiles = @{
     "libavif" = @(
         " M include/avif/avif.h",
+        " M src/codec_aom.c",
         " M src/gainmap.c",
         " M src/read.c",
         " M src/write.c",
