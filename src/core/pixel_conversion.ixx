@@ -5,7 +5,7 @@ module;
 #include <array>
 #include <bit>
 #include <cmath>
-#include "lanczos_resample.h"
+#include "spline36_resample.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -356,20 +356,20 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
         plan.canvas_width > UINT32_MAX || plan.canvas_height > UINT32_MAX ||
         plan.content_width > plan.canvas_width || plan.content_height > plan.canvas_height ||
         plan.offset_x > plan.canvas_width - plan.content_width || plan.offset_y > plan.canvas_height - plan.content_height)
-      return awj::compat::unexpected{"Lanczos 几何计划无效。"};
+      return awj::compat::unexpected{"Spline36 几何计划无效。"};
     const auto sample_bytes = source.bit_depth > 8 ? 2u : 1u;
     if (plan.canvas_width > SIZE_MAX / 4 / sample_bytes) return awj::compat::unexpected{"目标画布宽度溢出。"};
     const auto stride = plan.canvas_width * 4 * sample_bytes;
-    auto count = decoder_common::checked_image_bytes(stride, plan.canvas_height, "Lanczos");
+    auto count = decoder_common::checked_image_bytes(stride, plan.canvas_height, "Spline36");
     if (!count) return awj::compat::unexpected{count.error()};
     auto needed = static_cast<std::uint64_t>(*count);
     for (const auto& plane : source.planes) needed = hdr_cost::add(needed, plane.bytes.capacity());
     for (const auto& block : source.metadata) needed = hdr_cost::add(needed, hdr_cost::multiply(block.bytes.capacity(), 2));
     if (plan.resamples()) needed = hdr_cost::add(needed,
-        lanczos_detail::scratch_bytes(logical[0], logical[1], plan.content_width, plan.content_height));
+        spline36_detail::scratch_bytes(logical[0], logical[1], plan.content_width, plan.content_height));
     const auto budget = resources.memory_limit_bytes / static_cast<std::uint64_t>(std::max(1, resources.file_parallelism));
-    if (needed == UINT64_MAX || (budget && needed > budget)) return awj::compat::unexpected{"Lanczos 工作区超过内存预算。"};
-    auto bytes = decoder_common::make_byte_buffer(*count, "Lanczos");
+    if (needed == UINT64_MAX || (budget && needed > budget)) return awj::compat::unexpected{"Spline36 工作区超过内存预算。"};
+    auto bytes = decoder_common::make_byte_buffer(*count, "Spline36");
     if (!bytes) return awj::compat::unexpected{bytes.error()};
     const bool alpha = keep_alpha && (source.alpha_mode != AlphaMode::none || plan.pads());
     const bool floating = source.sample_representation == SampleRepresentation::ieee_half_float;
@@ -384,14 +384,14 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
     pixel_detail::Reader reader{source};
     if (is_yuv_format(source.pixel_format)) {
       const auto view = pixel_detail::description(source);
-      if (!avifGetYUVColorSpaceInfo(&view, &reader.color)) return awj::compat::unexpected{"Lanczos 源 YUV 色彩矩阵不受支持。"};
+      if (!avifGetYUVColorSpaceInfo(&view, &reader.color)) return awj::compat::unexpected{"Spline36 源 YUV 色彩矩阵不受支持。"};
     }
     const auto write = [&](std::size_t x, std::size_t y, std::array<double, 4> rgba) -> awj::compat::expected<void, std::string> {
       auto* row = bytes->data() + (y + plan.offset_y) * stride;
       for (std::size_t c = 0; c < 4; ++c) {
         auto value = c == 3 ? (alpha ? rgba[3] : 1.0) : rgba[c] * (keep_alpha ? 1.0 : rgba[3]);
         if (!std::isfinite(value) || (floating && std::abs(value) > 65504))
-          return awj::compat::unexpected{"Lanczos 输出像素无法表示。"};
+          return awj::compat::unexpected{"Spline36 输出像素无法表示。"};
         const auto sample = (x + plan.offset_x) * 4 + c;
         if (floating) {
           const auto encoded = geometry_binary16(static_cast<float>(value));
@@ -406,7 +406,7 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
       return {};
     };
     if (plan.resamples()) {
-      auto filtered = lanczos_detail::filter(logical[0], logical[1], plan.content_width, plan.content_height,
+      auto filtered = spline36_detail::filter(logical[0], logical[1], plan.content_width, plan.content_height,
           [&](std::size_t x, std::size_t y) { return reader(x, y); }, write, stop);
       if (!filtered) return awj::compat::unexpected{filtered.error()};
     } else if (!source.geometry && source.pixel_format == PixelFormat::rgba &&
@@ -432,8 +432,8 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
     if (output.source_info) { output.source_info->matrix_coefficients = 0; output.source_info->color_range = 1; }
     output.planes.push_back({.bytes = std::move(*bytes), .stride = stride});
     return output;
-  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"Lanczos 工作区内存不足。"}; }
-    catch (const std::length_error&) { return awj::compat::unexpected{"Lanczos 工作区超过限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"Spline36 工作区内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"Spline36 工作区超过限制。"}; }
 }
 
 awj::compat::expected<ImageBuffer, std::string> resize_native_pixels(

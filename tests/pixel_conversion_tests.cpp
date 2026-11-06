@@ -570,7 +570,7 @@ int main() {
       cropped->planes[0].bytes[4] != source.planes[0].bytes[28]) return fail("纯裁切没有保持源像素。");
   auto resized_crop = awj::resize_native_pixels(view, 2, 1);
   if (!resized_crop || resized_crop->width != 2 || resized_crop->height != 1 || resized_crop->geometry)
-    return fail("显式 Lanczos 裁切缩放失败。");
+    return fail("显式 Spline36 裁切缩放失败。");
   view.geometry->crop_width = 10;
   if (awj::convert_image_pixels(view, awj::PixelConversionRequest{})) return fail("Invalid geometry was accepted.");
   const std::array layouts{awj::PixelFormat::yuv444, awj::PixelFormat::yuv422,

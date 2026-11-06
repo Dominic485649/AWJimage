@@ -183,8 +183,8 @@ msgstr "Use dimensions or percentage"
 msgid "自动按格式限制边长"
 msgstr "Automatic format dimension limits"
 
-msgid "缩放统一使用 Lanczos。手动放大／缩小可组合宽、高、长边、短边和比例，允许超过或低于 100%。固定模式的尺寸与比例互斥：填尺寸时等比居中补边，只填比例时按比例缩放；不透明输出补黑边。"
-msgstr "All scaling uses Lanczos. Manual scaling combines width, height, long edge, short edge and percentage, above or below 100%. In fixed mode, dimensions and percentage are mutually exclusive: dimensions create a centered canvas; a percentage alone scales proportionally. Opaque output uses black padding."
+msgid "缩放统一使用 Spline36。手动放大／缩小可组合宽、高、长边、短边和比例，允许超过或低于 100%。固定模式的尺寸与比例互斥：填尺寸时等比居中补边，只填比例时按比例缩放；不透明输出补黑边。"
+msgstr "All scaling uses Spline36. Manual scaling combines width, height, long edge, short edge and percentage, above or below 100%. In fixed mode, dimensions and percentage are mutually exclusive: dimensions create a centered canvas; a percentage alone scales proportionally. Opaque output uses black padding."
 
 msgid "尺寸参数"
 msgstr "Size parameters"

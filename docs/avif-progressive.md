@@ -40,7 +40,11 @@ AWJ --input input.png --output output --avif-layers 2 --avif-layer-size 1:640x48
 
 渐进式目前用于普通静态 AVIF。Gain Map、多帧动画和现有 Grid 路径的组合明确报错，不会悄悄丢弃增益图或动画。请求渐进后不再进行原始 AVIF 码流直通。输入分层 AVIF 做普通转换时读取最终层，不能把各层当作动画帧。
 
-当前 CLI 已有完整控制，但尚未添加 UI 控件。是否在 Studio 展示，取决于样图及实际使用评估；默认编码行为不变。
+渐进式仅由 CLI 显式开启，默认关闭，Studio 不展示相关控件。普通单层 AVIF 仍为默认输出。
+
+渐进 AVIF 的兼容性与普通 AVIF 不同：本机 FFmpeg/ffprobe 对该多 extent 文件报 `iloc: extent_count > 1 is not implemented`，Photos 也未能打开样图。libavif 可逐层解码不代表这些应用可用；Photos 的内部拒绝原因未确定，不承诺普通 AVIF 查看器兼容渐进文件。
+
+1.3.3 起，手动指定层尺寸的物理预缩放与设置中的缩放统一使用 Spline36；自动模式仍由 AOM 内部缩放，不改变其两层策略。
 
 CSV 的 `avif_layer_count` 和 `avif_layer_trace` 记录实际采用的层计划。trace 中的尺寸为编码计划尺寸；解码器可能将首层上采样到最终画布，因此逐层解码的呈现尺寸不一定是底层编码尺寸。
 

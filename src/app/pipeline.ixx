@@ -2,7 +2,7 @@ module;
 #include "../compat/stdlib_compat.h"
 #include "../core/work_memory_admission.h"
 #include "../core/hdr_cost.h"
-#include "../core/lanczos_resample.h"
+#include "../core/spline36_resample.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX

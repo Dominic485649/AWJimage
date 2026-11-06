@@ -1,7 +1,7 @@
 module;
 #include "../compat/stdlib_compat.h"
 #include "hdr_cost.h"
-#include "lanczos_resample.h"
+#include "spline36_resample.h"
 #include <algorithm>
 #include <cstdint>
 #include <limits>
@@ -129,7 +129,7 @@ ImageMemoryEstimate estimated_regular_memory(ImageDimensions dimensions, const A
     e.decode_bytes = add(add(common, scratch), fixed);
   }
   const auto resized_source = !resolved && geometry->changes() ? multiply(t, dual ? 16 : known && dimensions.source_bit_depth <= 8 ? 4 : 8) : source;
-  const auto geometry_scratch = !resolved && geometry->resamples() ? lanczos_detail::scratch_bytes(
+  const auto geometry_scratch = !resolved && geometry->resamples() ? spline36_detail::scratch_bytes(
       dimensions.width, dimensions.height, geometry->content_width, geometry->content_height) : 0;
   e.prepare_bytes = add(common, fixed);
   if (!resolved && geometry->changes())
@@ -188,7 +188,7 @@ ImageMemoryEstimate estimated_regular_memory(ImageDimensions dimensions, const A
             const auto preview = add(multiply(multiply(w, h), dimensions.source_bit_depth > 8 ? 8 : 4),
                 pixel_detail::destination_pixel_bytes(w, h, conversion, possible_alpha ? AlphaMode::straight : AlphaMode::none));
             largest_preview = std::max(largest_preview, add(preview,
-                lanczos_detail::scratch_bytes(dimensions.width, dimensions.height, w, h)));
+                spline36_detail::scratch_bytes(dimensions.width, dimensions.height, w, h)));
           }
           e.layer_retained_bytes = add(e.layer_retained_bytes, largest_preview);
         }

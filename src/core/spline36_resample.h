@@ -8,12 +8,11 @@
 #include <cstdint>
 #include <expected>
 #include <limits>
-#include <numbers>
 #include <stop_token>
 #include <string>
 #include <vector>
 
-namespace awj::lanczos_detail {
+namespace awj::spline36_detail {
 
 struct Sample {
   std::size_t first{};
@@ -38,10 +37,17 @@ inline std::uint64_t scratch_bytes(std::size_t width, std::size_t height,
 
 inline double kernel(double x) noexcept {
   x = std::abs(x);
-  if (x < 1e-12) return 1;
-  if (x >= 3) return 0;
-  const auto angle = std::numbers::pi * x;
-  return std::sin(angle) * std::sin(angle / 3) / (angle * angle / 3);
+  // 半径 3 的分段三次 Spline36；缩小时由系数生成器扩大支撑。
+  if (x < 1) return ((13.0 / 11 * x - 453.0 / 209) * x - 3.0 / 209) * x + 1;
+  if (x < 2) {
+    x -= 1;
+    return ((-6.0 / 11 * x + 270.0 / 209) * x - 156.0 / 209) * x;
+  }
+  if (x < 3) {
+    x -= 2;
+    return ((1.0 / 11 * x - 45.0 / 209) * x + 26.0 / 209) * x;
+  }
+  return 0;
 }
 
 inline awj::compat::expected<std::vector<Sample>, std::string> make_axis(
@@ -64,7 +70,7 @@ inline awj::compat::expected<std::vector<Sample>, std::string> make_axis(
       sample.weights.push_back(value); sum += value;
     }
     if (!std::isfinite(sum) || std::abs(sum) < 1e-12)
-      return awj::compat::unexpected{"Lanczos 滤波系数无效。"};
+      return awj::compat::unexpected{"Spline36 滤波系数无效。"};
     for (auto& value : sample.weights) value /= sum;
     axis.push_back(std::move(sample));
   }
@@ -103,7 +109,7 @@ awj::compat::expected<void, std::string> filter(std::size_t width, std::size_t h
             if (h % 4096 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
             const auto rgba = read(xs.first + h, sy);
             for (const auto value : rgba) if (!std::isfinite(value))
-              return awj::compat::unexpected{"Lanczos 输入含非有限像素。"};
+              return awj::compat::unexpected{"Spline36 输入含非有限像素。"};
             const auto alpha = std::clamp(static_cast<double>(rgba[3]), 0.0, 1.0);
             for (std::size_t c = 0; c < 3; ++c) sum[c] += rgba[c] * alpha * xs.weights[h];
             sum[3] += alpha * xs.weights[h];
@@ -126,4 +132,4 @@ awj::compat::expected<void, std::string> filter(std::size_t width, std::size_t h
   return {};
 }
 
-}  // namespace awj::lanczos_detail
+}  // namespace awj::spline36_detail

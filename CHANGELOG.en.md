@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.3 - Local candidate
+
+### Unified Spline36 resizing
+
+- Use Spline36 for physical resizing in settings, including static images, animation frames and retained SDR/HDR renditions.
+- Preserve downsampling antialiasing, premultiplied-alpha filtering, high-bit-depth and FP16 values, fixed canvases, padding, memory admission and cancellation.
+- Use the same kernel for manually pre-scaled AVIF layers; automatic progressive encoding retains AOM scaling, stays off by default and is not exposed in the UI.
+- Include the animated WebP, unified size controls, memory planning and codec dependency updates from the 1.3.2 local candidate described below.
+
 ## 1.3.2 - Local candidate
 
 ### Encoding and resizing

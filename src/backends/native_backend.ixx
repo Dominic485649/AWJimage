@@ -752,7 +752,7 @@ class GeometryAnimationReader final : public AnimationReader {
         std::uint64_t frame_bytes{};
         for (const auto& plane : reader_->frame().planes) frame_bytes += plane.bytes.capacity();
         const auto other = reader_->memory_usage_bytes() > frame_bytes ? reader_->memory_usage_bytes() - frame_bytes : 0;
-        if (other >= budget) return awj::compat::unexpected{"动画阅读器与 Lanczos 工作区超过内存预算。"};
+        if (other >= budget) return awj::compat::unexpected{"动画阅读器与 Spline36 工作区超过内存预算。"};
         transform_resources.memory_limit_bytes = budget - other;
         transform_resources.file_parallelism = 1;
       }
