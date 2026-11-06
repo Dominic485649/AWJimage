@@ -162,35 +162,50 @@ msgstr "Image size limit"
 msgid "无限制"
 msgstr "Unlimited"
 
-msgid "手动"
-msgstr "Manual"
+msgid "手动放大"
+msgstr "Manual upscale"
 
-msgid "自动 = 保证还能正确解码"
-msgstr "Auto keeps the image decodable"
+msgid "手动缩小"
+msgstr "Manual downscale"
 
-msgid "按格式与解码能力限制边长，也可以切换成无限制。手动时取宽、高、长边、短边里最严格的一项。"
-msgstr "Edge length is capped by format and decoder capability; you can also switch to unlimited. Manual takes the strictest of width, height, long edge and short edge."
+msgid "固定长／宽"
+msgstr "Fixed dimensions"
 
-msgid "手动尺寸"
-msgstr "Manual size"
+msgid "取已填条件的最大倍率"
+msgstr "Use the largest specified scale factor"
 
-msgid "最大宽度"
-msgstr "Max width"
+msgid "取已填条件的最小倍率"
+msgstr "Use the smallest specified scale factor"
 
-msgid "最大宽"
-msgstr "Max width"
+msgid "尺寸与比例二选一"
+msgstr "Use dimensions or percentage"
 
-msgid "最大高度"
-msgstr "Max height"
+msgid "自动按格式限制边长"
+msgstr "Automatic format dimension limits"
 
-msgid "最大高"
-msgstr "Max height"
+msgid "缩放统一使用 Lanczos。手动放大／缩小可组合宽、高、长边、短边和比例，允许超过或低于 100%。固定模式的尺寸与比例互斥：填尺寸时等比居中补边，只填比例时按比例缩放；不透明输出补黑边。"
+msgstr "All scaling uses Lanczos. Manual scaling combines width, height, long edge, short edge and percentage, above or below 100%. In fixed mode, dimensions and percentage are mutually exclusive: dimensions create a centered canvas; a percentage alone scales proportionally. Opaque output uses black padding."
 
-msgid "最大长边"
-msgstr "Max long edge"
+msgid "尺寸参数"
+msgstr "Size parameters"
 
-msgid "最大短边"
-msgstr "Max short edge"
+msgid "宽度"
+msgstr "Width"
+
+msgid "高度"
+msgstr "Height"
+
+msgid "长边"
+msgstr "Long edge"
+
+msgid "短边"
+msgstr "Short edge"
+
+msgid "缩放比例"
+msgstr "Scale percent"
+
+msgid "比例"
+msgstr "Percent"
 
 msgid "格式高级选项"
 msgstr "Advanced format options"

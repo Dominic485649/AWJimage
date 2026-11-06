@@ -1,3 +1,4 @@
+#include "../compat/stdlib_compat.h"
 #include "shell_elevation.hpp"
 #include "menu_transaction_state.hpp"
 
@@ -59,7 +60,7 @@ struct Reply {
 static_assert(sizeof(Request) < 8192);
 
 [[noreturn]] void system_error(const char* operation) {
-  throw std::runtime_error(std::format("{} failed (Windows {}).", operation, GetLastError()));
+  throw std::runtime_error(awj::compat::format("{} failed (Windows {}).", operation, GetLastError()));
 }
 
 std::filesystem::path process_exe(HANDLE process) {
@@ -138,11 +139,12 @@ WireFormat encode(const FormatParams& p) {
     text = first == text.npos ? std::wstring_view{} :
         text.substr(first, text.find_last_not_of(L" \t\r\n") - first + 1);
     if (text.size() >= wire.text[i].size() ||
-        std::ranges::any_of(text, [i](wchar_t c) {
-          return (c < L'0' || c > L'9') && !(i == 0 && (c == L'.' || c == L'q' || c == L'Q'));
+        awj::compat::ranges::any_of(text, [i](wchar_t c) {
+          return (c < L'0' || c > L'9') && !(i == 0 && (c == L'.' || c == L'q' || c == L'Q')) &&
+              !(i == 7 && (c == L'.' || c == L'e' || c == L'E' || c == L'+' || c == L'-'));
         }))
       throw std::runtime_error("Menu numeric parameters are invalid.");
-    std::ranges::copy(text, wire.text[i].begin());
+    awj::compat::ranges::copy(text, wire.text[i].begin());
   }
   wire.number = {p.avif_encoder_index, p.avif_color_representation_index,
       p.chroma_index, p.alpha_policy_index, p.jpegli_progressive_index,
@@ -153,18 +155,19 @@ WireFormat encode(const FormatParams& p) {
 }
 
 FormatParams decode(const WireFormat& wire) {
-  constexpr std::array maxima{1, 2, 4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 2};
+  constexpr std::array maxima{1, 2, 4, 2, 2, 1, 1, 1, 1, 1, 1, 1, 4};
   static_assert(maxima.size() == WireFormat{}.number.size());
   for (std::size_t i = 0; i < maxima.size(); ++i)
     if (wire.number[i] < 0 || wire.number[i] > maxima[i])
       throw std::runtime_error("Menu helper rejected an invalid option.");
   std::array<std::wstring, 8> text;
   for (std::size_t i = 0; i < text.size(); ++i) {
-    const auto end = std::ranges::find(wire.text[i], L'\0');
+    const auto end = awj::compat::ranges::find(wire.text[i], L'\0');
     if (end == wire.text[i].end()) throw std::runtime_error("Unterminated menu parameter.");
     text[i].assign(wire.text[i].begin(), end);
-    if (std::ranges::any_of(text[i], [i](wchar_t c) {
-          return (c < L'0' || c > L'9') && !(i == 0 && (c == L'.' || c == L'q' || c == L'Q'));
+    if (awj::compat::ranges::any_of(text[i], [i](wchar_t c) {
+          return (c < L'0' || c > L'9') && !(i == 0 && (c == L'.' || c == L'q' || c == L'Q')) &&
+              !(i == 7 && (c == L'.' || c == L'e' || c == L'E' || c == L'+' || c == L'-'));
         }))
       throw std::runtime_error("Menu helper rejected nonnumeric text.");
   }
@@ -183,7 +186,7 @@ FormatParams decode(const WireFormat& wire) {
 void elevated_stage(MenuTransaction::Impl& session, const MenuParams& params, bool remove_menu) {
   const auto& nonce = session.id;
   const auto pid = GetCurrentProcessId();
-  const auto name = std::format(L"\\\\.\\pipe\\AWJimage.Menu.{}.{}", pid, nonce);
+  const auto name = awj::compat::format(L"\\\\.\\pipe\\AWJimage.Menu.{}.{}", pid, nonce);
   PSECURITY_DESCRIPTOR raw_security{};
   const auto sddl = pipe_security();
   if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(sddl.c_str(), SDDL_REVISION_1,
@@ -197,7 +200,7 @@ void elevated_stage(MenuTransaction::Impl& session, const MenuParams& params, bo
   if (pipe.value == INVALID_HANDLE_VALUE) system_error("Create menu pipe");
 
   const auto exe = process_exe(GetCurrentProcess());
-  const auto arguments = std::format(L"--shell-menu-helper {} {}", pid, nonce);
+  const auto arguments = awj::compat::format(L"--shell-menu-helper {} {}", pid, nonce);
   const auto directory = exe.parent_path().wstring();
   SHELLEXECUTEINFOW launch{};
   launch.cbSize = sizeof(launch);
@@ -251,7 +254,7 @@ MenuTransaction::~MenuTransaction() {
 std::wstring_view MenuTransaction::id() const noexcept { return impl_->id; }
 bool MenuTransaction::machine() const noexcept { return impl_->machine; }
 
-std::expected<void, std::string> MenuTransaction::commit() {
+awj::compat::expected<void, std::string> MenuTransaction::commit() {
   try {
     if (impl_->machine) {
       DWORD decision = 1;
@@ -266,7 +269,7 @@ std::expected<void, std::string> MenuTransaction::commit() {
       return recorded;
   } catch (const std::exception& error) {
     auto committed = menu_commit_recorded(impl_->id, impl_->machine);
-    if (!committed || !*committed) return std::unexpected{error.what()};
+    if (!committed || !*committed) return awj::compat::unexpected{error.what()};
   }
   impl_->committed = true;
   (void)finish_user_menu(impl_->id, true);
@@ -275,7 +278,7 @@ std::expected<void, std::string> MenuTransaction::commit() {
   return {};
 }
 
-std::expected<void, std::string> MenuTransaction::rollback() {
+awj::compat::expected<void, std::string> MenuTransaction::rollback() {
   std::string error;
   if (impl_->pipe) {
     try {
@@ -294,11 +297,11 @@ std::expected<void, std::string> MenuTransaction::rollback() {
     impl_->user_staged = false;
   }
   impl_->committed = true;
-  if (!error.empty()) return std::unexpected{error};
+  if (!error.empty()) return awj::compat::unexpected{error};
   return {};
 }
 
-std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change(
+awj::compat::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change(
     const std::filesystem::path& exe, const MenuParams& params,
     std::span<const PresetMenuSpec> names, bool compatibility, bool remove_menu,
     const std::function<void()>& elevation_requested) {
@@ -306,12 +309,12 @@ std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change
   struct ComGuard { HRESULT result; ~ComGuard() { if (SUCCEEDED(result)) CoUninitialize(); } } apartment{com};
   try {
     auto session = std::make_unique<MenuTransaction::Impl>();
-    if (!session->operation.held()) return std::unexpected{"另一进程正在修改右键菜单。"};
-    if (auto restored = recover(); !restored) return std::unexpected{restored.error()};
+    if (!session->operation.held()) return awj::compat::unexpected{"另一进程正在修改右键菜单。"};
+    if (auto restored = recover(); !restored) return awj::compat::unexpected{restored.error()};
     const auto previous = compatibility_installed();
-    if (!previous) return std::unexpected{previous.error()};
+    if (!previous) return awj::compat::unexpected{previous.error()};
     const auto machine = legacy_machine_commands();
-    if (!machine) return std::unexpected{machine.error()};
+    if (!machine) return awj::compat::unexpected{machine.error()};
     GUID guid{};
     if (FAILED(CoCreateGuid(&guid))) system_error("Create menu session");
     wchar_t id[40]{};
@@ -329,13 +332,13 @@ std::expected<std::shared_ptr<MenuTransaction>, std::string> prepare_menu_change
     if (auto staged = stage_user_menu(prepared->id, prepared->machine, exe, params, names,
                                       compatibility, remove_menu); !staged) {
       auto rollback = transaction->rollback();
-      return std::unexpected{staged.error() + (rollback ? "" : " " + rollback.error())};
+      return awj::compat::unexpected{staged.error() + (rollback ? "" : " " + rollback.error())};
     }
     return transaction;
   } catch (const std::exception& error) {
-    return std::unexpected{error.what()};
+    return awj::compat::unexpected{error.what()};
   } catch (...) {
-    return std::unexpected{"右键菜单事务失败，未提交修改。"};
+    return awj::compat::unexpected{"右键菜单事务失败，未提交修改。"};
   }
 }
 
@@ -351,7 +354,7 @@ int run_elevation_helper(int argc, wchar_t* argv[]) noexcept {
     const std::wstring nonce{argv[3]};
     GUID guid{};
     if (nonce.size() != 38 || FAILED(CLSIDFromString(nonce.c_str(), &guid))) return 2;
-    const auto name = std::format(L"\\\\.\\pipe\\AWJimage.Menu.{}.{}", pid, nonce);
+    const auto name = awj::compat::format(L"\\\\.\\pipe\\AWJimage.Menu.{}.{}", pid, nonce);
     Handle pipe{CreateFileW(name.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr,
                             OPEN_EXISTING, FILE_FLAG_OVERLAPPED | SECURITY_SQOS_PRESENT |
                             SECURITY_IDENTIFICATION, nullptr)};

@@ -259,7 +259,11 @@ awj::compat::expected<bool, std::string> has_non_opaque_alpha(const ImageBuffer&
       !plane.contains_rows(size[1], size[0] * channels * bytes))
     return awj::compat::unexpected{awj::compat::format("{} alpha buffer 尺寸无效。", context)};
   const auto opaque = image.sample_representation == SampleRepresentation::ieee_half_float ? 0x3c00u : (1u << image.bit_depth) - 1;
-  for (std::size_t y = 0; y < image.height; ++y) for (std::size_t x = 0; x < image.width; ++x) {
+  const auto logical = image.geometry
+      ? (image.geometry->rotation % 2 ? std::array{image.geometry->crop_height, image.geometry->crop_width}
+                                     : std::array{image.geometry->crop_width, image.geometry->crop_height})
+      : std::array{image.width, image.height};
+  for (std::size_t y = 0; y < logical[1]; ++y) for (std::size_t x = 0; x < logical[0]; ++x) {
     const auto point = image_sample_coordinates(image, x, y);
     const auto offset = point[1] * plane.stride + (point[0] * channels + (planar ? 0 : 3)) * bytes;
     std::uint16_t alpha{};

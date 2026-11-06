@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <slint.h>
 #include <slint-platform.h>
 #include <private/slint_tests_helpers.h>
@@ -163,7 +164,7 @@ int verify_font_rendering_snapshots(const std::filesystem::path& directory, floa
         return;
       }
       if (std::chrono::steady_clock::now() - changed_at < std::chrono::milliseconds{250}) return;
-      if (!write_snapshot_ppm(directory / std::format("queue-theme{}.ppm", theme), *snapshot)) {
+      if (!write_snapshot_ppm(directory / awj::compat::format("queue-theme{}.ppm", theme), *snapshot)) {
         finish("无法写入正式界面原始 GPU 帧");
         return;
       }
@@ -239,7 +240,7 @@ int verify_runtime_images() {
     const auto image = slint::Image::load_from_path(slint::SharedString{
         std::string_view{reinterpret_cast<const char*>(path.data()), path.size()}});
     if (!image.size().width || !image.size().height) {
-      return fail(std::format("required Slint runtime image decoder failed: {}", name));
+      return fail(awj::compat::format("required Slint runtime image decoder failed: {}", name));
     }
   }
   return 0;
@@ -315,7 +316,7 @@ int verify_memory_budget_unlock() {
     for (const bool english : {false, true}) {
       auto app = AwjStudio::create();
       if (!slint::select_bundled_translation(english ? "en" : ""))
-        return fail(std::format("内存解锁测试缺少界面翻译：{}", english ? "en" : "zh"));
+        return fail(awj::compat::format("内存解锁测试缺少界面翻译：{}", english ? "en" : "zh"));
       app->set_theme_index(theme); app->set_language_index(english ? 1 : 0);
       app->window().window_handle().set_const_scale_factor(scale);
       const slint::PhysicalSize window_size{{static_cast<std::uint32_t>(std::lround(1220 * scale)),
@@ -337,7 +338,7 @@ int verify_memory_budget_unlock() {
           std::printf("内存开关诊断 label=%s x=%.1f y=%.1f width=%.1f height=%.1f\n",
               label->data(), double(position.x), double(position.y), double(size.width), double(size.height));
         }
-        return fail(std::format("内存开关初态校验失败：scale={} theme={} language={} unlock-control={} input-control={} unlock-value={} input-value={}",
+        return fail(awj::compat::format("内存开关初态校验失败：scale={} theme={} language={} unlock-control={} input-control={} unlock-value={} input-value={}",
             scale, theme, english ? "en" : "zh", unlock.has_value(), input.has_value(),
             app->get_unlock_memory_limit(), app->get_unlock_max_input_file_bytes()));
       }
@@ -361,13 +362,102 @@ int verify_memory_budget_unlock() {
   return 0;
 }
 
+int verify_fixed_size_inputs() {
+  using Role = slint::language::AccessibleRole;
+  slint::testing::init();
+  for (const float scale : {1.0f, 1.5f}) for (const int theme : {1, 2})
+    for (const bool english : {false, true}) {
+      auto app = AwjStudio::create();
+      if (!slint::select_bundled_translation(english ? "en" : "")) return fail("尺寸互斥测试翻译缺失。");
+      app->set_theme_index(theme); app->set_language_index(english ? 1 : 0);
+      app->window().window_handle().set_const_scale_factor(scale);
+      app->set_selected_page(0); app->set_format_index(1); app->set_menu_format_index(1);
+      for (const int page : {0, 1}) for (const float width : {800.0f, 1800.0f}) {
+        app->set_parameter_preset_index(page);
+        const slint::PhysicalSize size{{static_cast<std::uint32_t>(std::lround(width * scale)),
+                                        static_cast<std::uint32_t>(std::lround(2000 * scale))}};
+        app->window().set_size(size); app->show();
+        if (app->window().size().width != size.width || std::fabs(app->window().scale_factor() - scale) > 0.001f)
+          return fail("尺寸互斥测试的实际窗口缩放不符。");
+        const auto dimensions = [&](const std::array<const char*, 4>& values) {
+          if (page) {
+            app->set_menu_max_width_text(values[0]); app->set_menu_max_height_text(values[1]);
+            app->set_menu_max_long_edge_text(values[2]); app->set_menu_max_short_edge_text(values[3]);
+          } else {
+            app->set_max_width_text(values[0]); app->set_max_height_text(values[1]);
+            app->set_max_long_edge_text(values[2]); app->set_max_short_edge_text(values[3]);
+          }
+        };
+        const auto percent = [&](const char* value) {
+          if (page) app->set_menu_scale_percent_text(value); else app->set_scale_percent_text(value);
+        };
+        const auto mode = [&](int value) {
+          if (page) app->set_menu_size_limit_index(value); else app->set_size_limit_index(value);
+        };
+        const auto check = [&](bool dimension_enabled, bool percent_enabled) {
+          slint::private_api::testing::mock_elapsed_time(1);
+          const std::array zh{"宽度", "高度", "长边", "短边", "缩放比例"};
+          const std::array en{"Width", "Height", "Long edge", "Short edge", "Scale percent"};
+          for (std::size_t i = 0; i < zh.size(); ++i) {
+            const auto field = find_one(app, english ? en[i] : zh[i], Role::TextInput);
+            const bool expected = i == 4 ? percent_enabled : dimension_enabled;
+            if (!field || field->accessible_enabled() != std::optional{expected})
+              return fail(awj::compat::format("尺寸互斥状态错误：scale={} theme={} language={} page={} width={} field={} expected={}",
+                  scale, theme, english ? "en" : "zh", page, width, en[i], expected));
+            if (field->size().width <= 0 || field->absolute_position().x < 0 ||
+                field->absolute_position().x + field->size().width > width + 1)
+              return fail("尺寸互斥输入框在宽窄布局中被裁切。");
+          }
+          return 0;
+        };
+        dimensions({"", "", "", ""}); percent(""); mode(4);
+        if (check(true, true)) return 1;
+        for (std::size_t i = 0; i < 4; ++i) {
+          std::array<const char*, 4> values{"", "", "", ""}; values[i] = "512";
+          dimensions(values);
+          if (check(true, false)) return 1;
+          dimensions({"", "", "", ""});
+          if (check(true, true)) return 1;
+        }
+        percent("200.5");
+        if (check(false, true)) return 1;
+        app->set_running(true);
+        if (check(false, false)) return 1;
+        app->set_running(false);
+        if (check(false, true)) return 1;
+        percent("");
+        if (check(true, true)) return 1;
+        for (const int manual : {2, 3}) {
+          mode(manual); dimensions({"512", "256", "512", "256"}); percent("200.5");
+          if (check(true, true)) return 1;
+        }
+        mode(4);
+        if (check(true, false) || !(page ? app->get_menu_scale_percent_text() : app->get_scale_percent_text()).empty())
+          return fail("从组合缩放切换固定尺寸时没有清除冲突比例。");
+        dimensions({"", "", "", ""}); mode(3); percent("25"); mode(4);
+        if (check(false, true) || (page ? app->get_menu_scale_percent_text() : app->get_scale_percent_text()) != "25")
+          return fail("切换固定模式丢弃了单独填写的比例。");
+        dimensions({"512", "", "", ""}); percent("100");
+        if (check(true, false)) return 1;
+        dimensions({"", "", "", ""});
+        if (check(false, true)) return 1;
+        percent("");
+        if (check(true, true)) return 1;
+        std::printf("fixed-size-inputs scale=%.2f theme=%d language=%s page=%d width=%.0f passed\n",
+            double(scale), theme, english ? "en" : "zh", page, double(width));
+      }
+      app->hide();
+    }
+  return 0;
+}
+
 int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
                                  float window_width, bool english) {
   app->window().set_size(slint::LogicalSize({window_width, 560.0f}));
   const auto collision = find_one(app, english ? "On conflict" : "重复处理",
                                   slint::language::AccessibleRole::Combobox);
   if (!collision || collision->absolute_position().x + collision->size().width > window_width - 10) {
-    return fail(std::format("collision dropdown overflows: window={} right={}", window_width, collision ? collision->absolute_position().x + collision->size().width : -1));
+    return fail(awj::compat::format("collision dropdown overflows: window={} right={}", window_width, collision ? collision->absolute_position().x + collision->size().width : -1));
   }
   const std::array<std::string_view, 6> zh{"参数", "日期", "时间", "随机", "哈希", "SHA"};
   const std::array<std::string_view, 6> en{"Params", "Date", "Time", "Rand", "Hash", "SHA"};
@@ -377,14 +467,14 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   for (const auto label : labels) {
     auto button = find_one(app, label, slint::language::AccessibleRole::Button);
     if (!button) {
-      return fail(std::format("template token button '{}' is missing", label));
+      return fail(awj::compat::format("template token button '{}' is missing", label));
     }
     buttons.push_back(*button);
   }
 
   const float expected_width = buttons.front().size().width;
   if (std::fabs(expected_width - (english ? 68.0f : 70.0f)) > 0.5f) {
-    return fail(std::format("template token button width changed: {:.1f}px",
+    return fail(awj::compat::format("template token button width changed: {:.1f}px",
                             expected_width));
   }
   for (const auto& button : buttons) {
@@ -407,7 +497,7 @@ int verify_template_token_layout(const slint::ComponentHandle<AwjStudio>& app,
   const float sha_right = x(5) + buttons[5].size().width;
   const float collision_right = collision->absolute_position().x + collision->size().width;
   if (window_width == 747.0f && std::fabs(sha_right - collision_right) > 1.0f)
-    return fail(std::format("SHA and collision dropdown are not aligned: {:.1f}px", sha_right - collision_right));
+    return fail(awj::compat::format("SHA and collision dropdown are not aligned: {:.1f}px", sha_right - collision_right));
   if (sha_right > window_width - 10.0f)
     return fail("SHA button overflows the queue header");
   const auto format = find_one(app, english ? "Queue output format" : "队列输出格式",
@@ -493,7 +583,7 @@ std::shared_ptr<slint::VectorModel<ComboOption>> font_options() {
   options.reserve(15);
   for (int index = 0; index < 15; ++index) {
     options.push_back(ComboOption{
-        .text = slint::SharedString{std::format(
+        .text = slint::SharedString{awj::compat::format(
             "Smoke Font {:02} With A Deliberately Long Family Name", index)},
         .enabled = true});
   }
@@ -612,7 +702,7 @@ int verify_chroma_popup(const slint::ComponentHandle<AwjStudio>& app,
       if (std::fabs(popup.size().height - (rows * 36.0f + 8.0f)) > 1.0f)
         return fail("filtered chroma model retained an unsupported or blank popup row");
     }
-    if (visible_popups != 1) return fail(std::format(
+    if (visible_popups != 1) return fail(awj::compat::format(
         "chroma popup row geometry is unavailable: format={} menu={} english={} representation={} rows={} visible={} matches={}",
         format, menu, english, representation, rows, visible_popups,
         slint::testing::ElementHandle::find_by_element_id(app, "SoftComboBox::popup-container").size()));
@@ -627,6 +717,40 @@ int verify_chroma_popup(const slint::ComponentHandle<AwjStudio>& app,
   }
   set_representation(0);
   set_chroma(0);
+  return 0;
+}
+
+int verify_size_matrix(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  for (const bool english : {false, true}) {
+    if (!slint::select_bundled_translation(english ? "en" : "")) return fail("尺寸参数翻译缺失。");
+    app->set_language_index(english ? 1 : 0);
+    for (const int page : {0, 1}) {
+      app->set_selected_page(0); app->set_parameter_preset_index(page);
+      app->set_format_index(1); app->set_menu_format_index(1);
+      for (const float width : {1000.0f, 1800.0f}) {
+        app->window().set_size(slint::LogicalSize({width, 2000.0f}));
+        for (int mode = 0; mode < 5; ++mode) {
+          if (page) { app->set_menu_scale_percent_text("200.5"); app->set_menu_size_limit_index(mode); }
+          else { app->set_scale_percent_text("200.5"); app->set_size_limit_index(mode); }
+          slint::private_api::testing::mock_elapsed_time(1);
+          const std::array zh{"宽度", "高度", "长边", "短边", "缩放比例"};
+          const std::array en{"Width", "Height", "Long edge", "Short edge", "Scale percent"};
+          for (std::size_t i = 0; i < zh.size(); ++i) {
+            const auto field = find_one(app, english ? en[i] : zh[i], Role::TextInput);
+            if (field.has_value() != (mode >= 2)) return fail("新尺寸模式字段显隐错误。");
+            if (field && (field->size().width <= 0 || field->absolute_position().x < 0 ||
+                field->absolute_position().x + field->size().width > width + 1)) return fail("尺寸参数在宽窄布局中被裁切。");
+          }
+          if (mode == 4 && (page ? app->get_menu_scale_percent_text() : app->get_scale_percent_text()) != "200.5")
+            return fail("固定模式丢弃了单独填写的比例。");
+        }
+      }
+    }
+  }
+  app->window().set_size(slint::LogicalSize({1220.0f, 2000.0f}));
+  app->set_size_limit_index(0); app->set_menu_size_limit_index(0);
+  app->set_scale_percent_text(""); app->set_menu_scale_percent_text("");
   return 0;
 }
 
@@ -647,13 +771,13 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
           const auto check = [&](std::string_view zh, std::string_view en, Role role, bool expected) {
             const auto control = find_one(app, language ? en : zh, role);
             if (control.has_value() != expected) {
-              return fail(std::format("parameter matrix: language={} theme={} page={} format={} control={} expected={}",
+              return fail(awj::compat::format("parameter matrix: language={} theme={} page={} format={} control={} expected={}",
                                       language, theme, page, format, en, expected));
             }
             if (control && (control->size().width <= 0 || control->size().height <= 0 ||
                             control->absolute_position().x + control->size().width > 1221 ||
                             control->absolute_position().y + control->size().height > 2001))
-              return fail(std::format("parameter control is clipped: {}", en));
+              return fail(awj::compat::format("parameter control is clipped: {}", en));
             return 0;
           };
           if (check("质量", "Quality", Role::TextInput, true) ||
@@ -715,6 +839,7 @@ int verify_parameter_matrix(const slint::ComponentHandle<AwjStudio>& app) {
       }
     }
   }
+  if (const int result = verify_size_matrix(app)) return result;
   slint::select_bundled_translation("");
   app->set_language_index(0);
   app->set_format_index(0);
@@ -727,7 +852,7 @@ int verify_font_hover_stability() {
   auto app = awj_font_hover_test::FontComboHover::create();
   std::vector<awj_font_hover_test::ComboOption> options;
   for (int i = 0; i < 25; ++i)
-    options.push_back({.text = slint::SharedString{std::format("Long Font {:02}", i)}, .enabled = true});
+    options.push_back({.text = slint::SharedString{awj::compat::format("Long Font {:02}", i)}, .enabled = true});
   app->set_options(std::make_shared<slint::VectorModel<awj_font_hover_test::ComboOption>>(std::move(options)));
   app->set_selected_index(8);
   app->show();
@@ -763,7 +888,7 @@ int verify_font_hover_stability() {
   // Flickable 的滚轮平滑滚动依赖动画时钟，读取结果前完成这一帧的动画。
   slint::private_api::testing::mock_elapsed_time(300);
   if (app->get_scroll_y() <= initial_scroll + 1.0f || app->get_selected_index() != 8)
-    return fail(std::format("font popup mouse wheel did not scroll independently of selection: before={} after={} selected={}",
+    return fail(awj::compat::format("font popup mouse wheel did not scroll independently of selection: before={} after={} selected={}",
         initial_scroll, float(app->get_scroll_y()), app->get_selected_index()));
   const auto key = [&](std::u8string_view value) {
     const slint::SharedString text{value};
@@ -958,7 +1083,7 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
     const auto after = widths();
     for (std::size_t j = 0; j < after.size(); ++j)
       if (std::fabs(after[j] - before[j] - (i == j ? deltas[i] : 0)) > 1)
-        return fail(std::format("拖动列 {} 改变了非目标列 {} 或没有生效", i, j));
+        return fail(awj::compat::format("拖动列 {} 改变了非目标列 {} 或没有生效", i, j));
     if (!aligned()) return fail("拖动后表头与数据行错位");
   }
   const auto filename_before_minimum = app->get_queue_filename_width();
@@ -978,7 +1103,7 @@ int verify_queue_column_resize(const slint::ComponentHandle<AwjStudio>& app) {
                      window_width, i, fixed_widths[i], actual_widths[i]);
       return fail("窗口缩放重新分配了队列列宽");
     }
-    if (!aligned()) return fail(std::format("窗口宽度 {} 时表头与正文不对齐", window_width));
+    if (!aligned()) return fail(awj::compat::format("窗口宽度 {} 时表头与正文不对齐", window_width));
   }
 
   const auto lists = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::queue-list");
@@ -1175,17 +1300,17 @@ int verify_queue_separator_snapshots(const std::filesystem::path& directory, flo
             y < 0 || y >= static_cast<int>(snapshot->height()) ||
             !pixel_matches(x, y, line) || !pixel_matches(x - 1, y, background) ||
             !pixel_matches(x + 1, y, background)) {
-          (void)write_snapshot_ppm(directory / std::format("failed-theme{}.ppm", theme), *snapshot);
-          finish(std::format("分隔线像素错误：theme={} separator={} x={} y={} width={:.4f}",
+          (void)write_snapshot_ppm(directory / awj::compat::format("failed-theme{}.ppm", theme), *snapshot);
+          finish(awj::compat::format("分隔线像素错误：theme={} separator={} x={} y={} width={:.4f}",
               theme, i, x, y, extent.width * scale));
           return;
         }
-        metrics << std::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+        metrics << awj::compat::format("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
             theme, i, scale, x, y, position.x, extent.width, line[0], line[1], line[2],
             background[0], background[1], background[2]);
         ++checked_separators;
       }
-      if (!write_snapshot_ppm(directory / std::format("theme{}.ppm", theme), *snapshot)) {
+      if (!write_snapshot_ppm(directory / awj::compat::format("theme{}.ppm", theme), *snapshot)) {
         finish("无法保存分隔线原生截图");
         return;
       }
@@ -1313,12 +1438,12 @@ int verify_menu_rendering_snapshots(const std::filesystem::path& directory, floa
       };
       const std::array<int, 3> panel = current.theme == 2 ? std::array{40, 40, 40} : std::array{255, 255, 255};
       const auto failed_frame = [&](std::string message) {
-        (void)write_snapshot_ppm(directory / std::format("failed-theme{}-column{}-checked{}.ppm",
+        (void)write_snapshot_ppm(directory / awj::compat::format("failed-theme{}-column{}-checked{}.ppm",
             current.theme, current.column, current.checked), *snapshot);
         finish(std::move(message));
       };
       if (!pixel_matches(3, 80, panel) || !pixel_matches(3, 160, panel) || !pixel_matches(3, 250, panel)) {
-        failed_frame(std::format("菜单背景像素未跟随主题：theme={} column={}", current.theme, current.column));
+        failed_frame(awj::compat::format("菜单背景像素未跟随主题：theme={} column={}", current.theme, current.column));
         return;
       }
       if (current.column >= 0) {
@@ -1326,15 +1451,15 @@ int verify_menu_rendering_snapshots(const std::filesystem::path& directory, floa
         const float center_y = 34 + 34 * static_cast<float>(current.column) + 16;
         // 取整行最右侧的内部像素，避开标签和勾选框；标准 FocusBorder 在这里会产生白/黑边。
         if (!pixel_matches(210.5f, center_y, focus) || !pixel_matches(209, center_y, focus)) {
-          failed_frame(std::format("列菜单仍有外框或焦点底色错误：theme={} column={} checked={}",
+          failed_frame(awj::compat::format("列菜单仍有外框或焦点底色错误：theme={} column={} checked={}",
               current.theme, current.column, current.checked));
           return;
         }
       }
       if (current.column == -1 || (current.column == 0 && current.checked) ||
           (current.column == 4 && !current.checked)) {
-        const auto name = current.column == -1 ? std::format("tasks-theme{}.ppm", current.theme)
-            : std::format("columns-theme{}-column{}.ppm", current.theme, current.column);
+        const auto name = current.column == -1 ? awj::compat::format("tasks-theme{}.ppm", current.theme)
+            : awj::compat::format("columns-theme{}-column{}.ppm", current.theme, current.column);
         if (!write_snapshot_ppm(directory / name, *snapshot)) { finish("无法保存菜单原生截图"); return; }
         ++captures;
       }
@@ -1535,7 +1660,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   const float bottom_gap = panels[0].absolute_position().y + panels[0].size().height -
                            editor_save->absolute_position().y - editor_save->size().height;
   if (bottom_gap < 10.0f || bottom_gap > 32.0f)
-    return fail(std::format("preset editor retained {:.1f}px below its buttons", bottom_gap));
+    return fail(awj::compat::format("preset editor retained {:.1f}px below its buttons", bottom_gap));
   app->set_preset_editor_open(false);
   int preset_saves = 0;
   app->on_open_preset_editor([&] { ++preset_saves; });
@@ -1662,7 +1787,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
            font_position.y + font_size.height / 2.0f}),
       0.0f, -36.0f);
   if (app->get_ui_font_index() != 1) {
-    return fail(std::format(
+    return fail(awj::compat::format(
         "focused font combobox did not handle the mouse wheel: scale={:.1f} "
         "index={} pos=({:.1f},{:.1f}) size=({:.1f},{:.1f})",
         scale_factor, app->get_ui_font_index(), font_position.x,
@@ -1801,7 +1926,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("queue viewport did not recover after closing details");
   std::vector<TaskRow> scrolling_rows(80, *task_rows()->row_data(0));
   for (std::size_t i = 0; i < scrolling_rows.size(); ++i)
-    scrolling_rows[i].filename = slint::SharedString{std::format("scroll-row-{:03}", i)};
+    scrolling_rows[i].filename = slint::SharedString{awj::compat::format("scroll-row-{:03}", i)};
   awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>(std::move(scrolling_rows)));
   app->set_selected_queue_index(0);
   slint::private_api::testing::mock_elapsed_time(250);
@@ -1861,7 +1986,7 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     return fail("queue list is missing its role, name, or item count");
   }
   if (queue_list->size().height < 34.0f) {
-    return fail(std::format(
+    return fail(awj::compat::format(
         "queue list has less than one visible row at minimum size: {:.1f}px",
         queue_list->size().height));
   }
@@ -2030,7 +2155,7 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
     if (active_popups() != 1) return fail("菜单互斥打开后弹窗数量错误");
     const auto id = columns ? "AwjStudio::queue-column-menu-surface" : "AwjStudio::queue-menu-surface";
     const auto surfaces = slint::testing::ElementHandle::find_by_element_id(app, id);
-    if (surfaces.size() != 1) return fail(std::format("未找到动画菜单表面 {}", id));
+    if (surfaces.size() != 1) return fail(awj::compat::format("未找到动画菜单表面 {}", id));
     const auto& surface = surfaces[0];
     const auto initial = surface.size();
     const auto initial_position = surface.absolute_position();
@@ -2045,7 +2170,7 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
     const float expected_height = columns ? 280.0f : 338.0f;
     if (!(middle.width > 1 && middle.width < expected_width - 0.1f &&
           middle.height > 1 && middle.height < expected_height - 0.1f))
-      return fail(std::format("菜单缺少展开动画中间帧：columns={} size=({}, {})",
+      return fail(awj::compat::format("菜单缺少展开动画中间帧：columns={} size=({}, {})",
                               columns, middle.width, middle.height));
     slint::private_api::testing::mock_elapsed_time(250);
     const auto final_size = surface.size();
@@ -2091,6 +2216,7 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
 
 int main(int argc, char** argv) {
   if (argc == 2 && std::string_view{argv[1]} == "--memory-budget-unlock") return verify_memory_budget_unlock();
+  if (argc == 2 && std::string_view{argv[1]} == "--fixed-size-inputs") return verify_fixed_size_inputs();
   if (const int result = verify_native_file_payload(); result != 0) return result;
   if (const int result = verify_shared_string_clearing(); result != 0) {
     return result;
@@ -2399,8 +2525,8 @@ int main(int argc, char** argv) {
             if (snapshot->width() != size.width || snapshot->height() != size.height ||
                 std::fabs(app->window().scale_factor() - scale) > 0.001f)
               return fail("snapshot did not use the requested pixel size and scale");
-            const auto name = std::format("lang{}-theme{}-page{}-format{}", language, theme, page, format) +
-                (scrolling ? std::format("-scroll{}.ppm", stage) : ".ppm");
+            const auto name = awj::compat::format("lang{}-theme{}-page{}-format{}", language, theme, page, format) +
+                (scrolling ? awj::compat::format("-scroll{}.ppm", stage) : ".ppm");
             if (!write_snapshot_ppm(directory / name, *snapshot))
               return fail("could not write the renderer snapshot");
             }

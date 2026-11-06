@@ -700,95 +700,63 @@ awj::compat::expected<void, std::string> select_output_rendition(
   return {};
 }
 
-awj::compat::expected<ImageBuffer, std::string> resize_rgba_image_nearest(
-    const ImageBuffer& image, std::size_t new_width, std::size_t new_height) {
-  if (is_yuv_format(image.pixel_format)) return resize_native_pixels(image, new_width, new_height);
-  if (image.pixel_format != PixelFormat::rgba || image.planes.empty() ||
-      (image.bit_depth != 8 && image.bit_depth != 16)) {
-    return awj::compat::unexpected{"图片尺寸限制当前只支持 8/16-bit RGBA buffer。"};
-  }
-  const auto bytes_per_sample = image.bit_depth > 8 ? std::size_t{2} : std::size_t{1};
-  const auto stride = decoder_common::checked_rgba_stride(new_width, "image size limit", bytes_per_sample);
-  if (!stride) {
-    return awj::compat::unexpected{stride.error()};
-  }
-  const auto bytes = decoder_common::checked_image_bytes(*stride, new_height, "image size limit");
-  if (!bytes) {
-    return awj::compat::unexpected{bytes.error()};
-  }
-  auto out = decoder_common::make_byte_buffer(*bytes, "image size limit");
-  if (!out) {
-    return awj::compat::unexpected{out.error()};
-  }
-  const auto& src = image.planes.front();
-  const auto pixel_bytes = 4 * bytes_per_sample;
-  for (std::size_t y = 0; y < new_height; ++y) {
-    const auto sy = std::min(image.height - 1, y * image.height / new_height);
-    const auto* src_row = src.read_bytes().data() + sy * src.stride;
-    auto* dst_row = out->data() + y * *stride;
-    for (std::size_t x = 0; x < new_width; ++x) {
-      const auto sx = std::min(image.width - 1, x * image.width / new_width);
-      awj::compat::ranges::copy_n(src_row + sx * pixel_bytes, pixel_bytes, dst_row + x * pixel_bytes);
-    }
-  }
-  auto resized = decoder_common::make_rgba_image(new_width, new_height, std::move(*out),
-                                                 image.alpha_mode, "image size limit",
-                                                 image.source_info, image.bit_depth,
-                                                 image.sample_representation);
-  if (!resized) {
-    return awj::compat::unexpected{resized.error()};
-  }
-  resized->metadata = image.metadata;
-  resized->significant_bits = image.significant_bits; // Nearest-neighbor copies samples unchanged.
-  return resized;
+bool geometry_keeps_alpha(const AppConfig& cfg) noexcept {
+  return cfg.output_format != OutputFormat::jpgli && cfg.alpha_policy != AlphaModePolicy::off;
 }
 
 awj::compat::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
-                                                       const AppConfig& cfg) {
-  const auto dims = limited_dimensions(decoded.image.width, decoded.image.height, cfg);
-  if (!dims) return {};
-  const auto resize = [&](ImageBuffer& image) -> awj::compat::expected<void, std::string> {
-    if (!cfg.visual_quality) {
-      if (!image.geometry) image.geometry = ImageGeometry{
-          .stored_width = image.width, .stored_height = image.height,
-          .crop_width = image.width, .crop_height = image.height};
-      image.width = dims->first; image.height = dims->second;
-      return {};
-    }
-    auto resized = resize_rgba_image_nearest(image, dims->first, dims->second);
-    if (!resized) return awj::compat::unexpected{resized.error()};
-    image = std::move(*resized);
+    const AppConfig& cfg, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
+  const auto transform = [&](ImageBuffer& image) -> awj::compat::expected<void, std::string> {
+    auto plan = plan_image_geometry(image.width, image.height, cfg);
+    if (!plan) return awj::compat::unexpected{plan.error()};
+    if (!plan->changes()) return {};
+    auto transformed = apply_image_geometry(image, *plan, geometry_keeps_alpha(cfg), stop, resources);
+    if (!transformed) return awj::compat::unexpected{transformed.error()};
+    image = std::move(*transformed);
     return {};
   };
-  if (auto resized = resize(decoded.image); !resized) return resized;
+  if (auto result = transform(decoded.image); !result) return result;
   if (decoded.gain_map_alternative) {
-    if (auto resized = resize(decoded.gain_map_alternative->image); !resized) return resized;
+    if (auto result = transform(decoded.gain_map_alternative->image); !result) return result;
   }
   return {};
 }
 
-class SizedAnimationReader final : public AnimationReader {
+class GeometryAnimationReader final : public AnimationReader {
  public:
-  SizedAnimationReader(std::unique_ptr<AnimationReader> reader, const AppConfig& cfg)
-      : reader_{std::move(reader)}, cfg_{cfg}, info_{reader_->info()} {
-    if (const auto dimensions = limited_dimensions(info_.width, info_.height, cfg_)) {
-      info_.width = dimensions->first;
-      info_.height = dimensions->second;
+  GeometryAnimationReader(std::unique_ptr<AnimationReader> reader, const AppConfig& cfg, ResourcePlan resources)
+      : reader_{std::move(reader)}, cfg_{cfg}, info_{reader_->info()}, resources_{resources} {
+    auto plan = plan_image_geometry(info_.width, info_.height, cfg_);
+    if (!plan) error_ = plan.error();
+    else {
+      plan_ = *plan;
+      info_.width = plan->canvas_width; info_.height = plan->canvas_height;
     }
   }
   const AnimationInfo& info() const noexcept override { return info_; }
-  const ImageBuffer& frame() const noexcept override { return resized_ ? *resized_ : reader_->frame(); }
+  const ImageBuffer& frame() const noexcept override { return transformed_ ? *transformed_ : reader_->frame(); }
   std::uint64_t memory_usage_bytes() const noexcept override {
-    return reader_->memory_usage_bytes() + (resized_ ? resized_->planes.front().bytes.capacity() : 0);
+    return reader_->memory_usage_bytes() + (transformed_ ? transformed_->planes.front().bytes.capacity() : 0);
   }
   awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop = {}) override {
-    resized_.reset();
+    if (!error_.empty()) return awj::compat::unexpected{error_};
+    transformed_.reset();
     auto next = reader_->next(stop);
     if (!next || !*next) return next;
-    if (reader_->frame().width != info_.width || reader_->frame().height != info_.height) {
-      auto resized = resize_rgba_image_nearest(reader_->frame(), info_.width, info_.height);
-      if (!resized) return awj::compat::unexpected{resized.error()};
-      resized_ = std::move(*resized);
+    if (plan_->changes()) {
+      auto transform_resources = resources_;
+      if (transform_resources.memory_limit_bytes) {
+        const auto budget = transform_resources.memory_limit_bytes / static_cast<std::uint64_t>(std::max(1, transform_resources.file_parallelism));
+        std::uint64_t frame_bytes{};
+        for (const auto& plane : reader_->frame().planes) frame_bytes += plane.bytes.capacity();
+        const auto other = reader_->memory_usage_bytes() > frame_bytes ? reader_->memory_usage_bytes() - frame_bytes : 0;
+        if (other >= budget) return awj::compat::unexpected{"动画阅读器与 Lanczos 工作区超过内存预算。"};
+        transform_resources.memory_limit_bytes = budget - other;
+        transform_resources.file_parallelism = 1;
+      }
+      auto result = apply_image_geometry(reader_->frame(), *plan_, geometry_keeps_alpha(cfg_), stop, transform_resources);
+      if (!result) return awj::compat::unexpected{result.error()};
+      transformed_ = std::move(*result);
     }
     return true;
   }
@@ -796,7 +764,10 @@ class SizedAnimationReader final : public AnimationReader {
   std::unique_ptr<AnimationReader> reader_;
   const AppConfig& cfg_;
   AnimationInfo info_;
-  std::optional<ImageBuffer> resized_;
+  ResourcePlan resources_;
+  std::optional<ImageGeometryPlan> plan_;
+  std::optional<ImageBuffer> transformed_;
+  std::string error_;
 };
 
 std::string chroma_name_from_pixel_format(PixelFormat pixel_format) {
@@ -2101,7 +2072,7 @@ class NativeBackend final {
     if (auto selected = native_backend_detail::select_output_rendition(*decoded, cfg_, stop_token); !selected) {
       return awj::compat::unexpected{selected.error()};
     }
-    if (auto limited = native_backend_detail::apply_image_size_limit(*decoded, cfg_); !limited) {
+    if (auto limited = native_backend_detail::apply_image_size_limit(*decoded, cfg_, stop_token, resources_); !limited) {
       return awj::compat::unexpected{limited.error()};
     }
     return DecodedInput{.decoded = std::move(*decoded),
@@ -2155,7 +2126,7 @@ class NativeBackend final {
       }
       const auto pixel_count = static_cast<std::uint64_t>(decoded.image.width) *
                                static_cast<std::uint64_t>(decoded.image.height);
-      if (prepared.settings.avif_grid_plan && cfg_.image_size_limit.mode == ImageSizeLimitMode::manual) {
+      if (prepared.settings.avif_grid_plan && manual_image_size_mode(cfg_.image_size_limit.mode)) {
         // A manual limit can resize after preflight; use the actual samples.
         if (decoded.image.width <= aom_large_image_limits.max_width &&
             decoded.image.height <= aom_large_image_limits.max_height &&
@@ -2711,14 +2682,15 @@ class NativeBackend final {
         }
       }
 
-      if (cfg_.output_format == OutputFormat::avif) {
+      if (cfg_.output_format == OutputFormat::avif || cfg_.output_format == OutputFormat::webp) {
         auto animation_failed = [&](std::string message) -> EncodeResult {
           if (!cancel_if_requested(result, stop_token)) mark_failed(result, std::move(message));
           return std::move(result);
         };
         const auto decode_started = native_backend_detail::Clock::now();
         auto opened = open_animation(image.path,
-            resources_.memory_limit_bytes / std::max(1, resources_.file_parallelism), stop_token);
+            resources_.memory_limit_bytes / std::max(1, resources_.file_parallelism), stop_token,
+            cfg_.output_format == OutputFormat::webp);
         if (!opened) {
           result.decode_stage = "animation.probe";
           result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
@@ -2726,9 +2698,9 @@ class NativeBackend final {
         }
         if (*opened) {
           if (cfg_.visual_quality && *cfg_.visual_quality < 100 && (*opened)->info().durations.size() > 1) {
-            return animation_failed("动画 AVIF 暂不支持视觉质量搜索；请使用编码质量预设。动画不会降为单图。");
+            return animation_failed("动画输出暂不支持视觉质量搜索；请使用编码质量预设。动画不会降为单图。");
           }
-          native_backend_detail::SizedAnimationReader reader{std::move(*opened), cfg_};
+          native_backend_detail::GeometryAnimationReader reader{std::move(*opened), cfg_, resources_};
           auto next = reader.next(stop_token);
           if (!next || !*next) {
             return animation_failed(next ? "动画不包含帧。" : next.error());
@@ -2750,7 +2722,9 @@ class NativeBackend final {
           const auto encode_started = native_backend_detail::Clock::now();
           auto encoded = reader.info().durations.size() == 1
               ? execute_encode(first, prepared->encoder.get(), prepared->settings, result.output_path, stop_token)
-              : encode_avif_animation(reader, prepared->settings, stop_token);
+              : cfg_.output_format == OutputFormat::webp
+                  ? encode_webp_animation(reader, prepared->settings, stop_token)
+                  : encode_avif_animation(reader, prepared->settings, stop_token);
           result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
           if (!encoded) return animation_failed(encoded.error());
           if (reader.info().durations.size() == 1 && prepared->settings.frame_progress)
@@ -2760,7 +2734,7 @@ class NativeBackend final {
           if (finished.ok && reader.info().zero_delay_adjusted) {
             finished.message = "OK；零时长帧已按 GIF 10ms / APNG、WebP 1ms 编码。";
           }
-          if (finished.ok && reader.info().durations.size() > 1 && prepared->settings.speed >= 7)
+          if (finished.ok && cfg_.output_format == OutputFormat::avif && reader.info().durations.size() > 1 && prepared->settings.speed >= 7)
             finished.message += "；速度 7–10 使用实时编码路径（10 对应 AOM CPU 9）";
           return finished;
         }

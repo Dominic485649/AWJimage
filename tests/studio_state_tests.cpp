@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include "../src/ui/studio_config.h"
 #include "../src/ui/studio_json.h"
 #include "../src/ui/studio_queue_format.h"
@@ -32,7 +33,7 @@ void queue_check(std::size_t count, bool legacy) {
   queue.reserve(count);
   for (std::size_t i = 0; i < count; ++i) {
     queue.push_back(QueueImageItem{.id = i + 1,
-      .path = fs::path{L"C:\\queue-fixture\\中文 input"} / std::format(L"image-{}.png", i),
+      .path = fs::path{L"C:\\queue-fixture\\中文 input"} / awj::compat::format(L"image-{}.png", i),
       .source_root = L"C:\\queue-fixture\\中文 input", .relative_dir = L"subfolder",
       .bytes = i + 42, .status = i % 2 ? QueueItemStatus::failed : QueueItemStatus::pending,
       .log_text = "UI-only diagnostic text which must not enter the worker snapshot"});
@@ -176,10 +177,12 @@ void config_check() {
   current.update_keyring_signature = "keyring signature";
   current.menu_preset_description = "menu preset regression description";
   current.menu_params[0].chroma_index = 4;
+  current.menu_params[0].size_limit_index = 2;
+  current.menu_params[0].scale_percent_text = "200.5";
   current.menu_params[3].chroma_index = 4; // Removed JPG 400 from an old UI cache.
   {
     std::ofstream old(path);
-    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output"})";
+    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","future_extension":"保留"})";
   }
   const auto legacy = awj::studio_json::parse_jsonc_config(read(path));
   check(legacy && awj::studio_json::config_string(*legacy, "queue_preset_file")
@@ -196,6 +199,10 @@ void config_check() {
         parsed->at("queue_preset_file").string == current.queue_preset_file &&
         parsed->at("menu_avif_chroma_index").integer == 4,
         "whitelist lost current config or v2 state");
+  check(parsed->at("menu_avif_size_limit_mode").string == "upscale" &&
+      parsed->at("menu_avif_scale_percent_text").string == "200.5" &&
+      !parsed->contains("menu_avif_size_limit_index") && parsed->at("future_extension").string == "保留",
+      "新尺寸模式没有稳定序列化或未知配置被删除");
   auto selected_preset = awj::default_user_preset();
   selected_preset.source_path = fs::path{u8"照片 测试.jsonc"};
   selected_preset.name = "display name is not a persisted identity";

@@ -1,4 +1,6 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cmath>
 #include <cstdint>
@@ -196,8 +198,8 @@ bool csv_sampling_matches(std::string_view text, std::span<const awj::EncodeResu
     return value;
   };
   const auto header = csv_record(line());
-  const auto requested = std::ranges::find(header, "requested_chroma");
-  const auto applied = std::ranges::find(header, "applied_chroma");
+  const auto requested = awj::compat::ranges::find(header, "requested_chroma");
+  const auto applied = awj::compat::ranges::find(header, "applied_chroma");
   if (requested == header.end() || applied == header.end()) return false;
   const auto requested_column = static_cast<std::size_t>(requested - header.begin());
   const auto applied_column = static_cast<std::size_t>(applied - header.begin());
@@ -252,7 +254,7 @@ int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem
   ComPtr<IWICBitmapEncoder> writer;
   ComPtr<IWICBitmapFrameEncode> frame;
   ComPtr<IPropertyBag2> options;
-  const auto input = root / std::format("synthetic-scrgb-float{}.jxr", source_depth);
+  const auto input = root / awj::compat::format("synthetic-scrgb-float{}.jxr", source_depth);
   if (FAILED(CoCreateInstance(CLSID_WICImagingFactory, nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&factory))) ||
       FAILED(factory->CreateStream(&stream)) || FAILED(stream->InitializeFromFilename(input.c_str(), GENERIC_WRITE)) ||
       FAILED(factory->CreateEncoder(GUID_ContainerFormatWmp, nullptr, &writer)) ||
@@ -280,7 +282,7 @@ int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem
     auto cfg = awj::default_app_config();
     cfg.output_format = awj::OutputFormat::png; cfg.quality = 100; cfg.bit_depth = 16;
     cfg.color_primaries = primaries; cfg.strip_metadata = true;
-    cfg.output_dir = output / std::format("explicit-float{}-{}", source_depth, primaries);
+    cfg.output_dir = output / awj::compat::format("explicit-float{}-{}", source_depth, primaries);
     awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
     auto result = backend.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)});
     if (!result.ok || result.applied_color_primaries != primaries || result.applied_transfer_characteristics != 16)
@@ -318,7 +320,7 @@ int explicit_fp16_color(const std::filesystem::path& root, const std::filesystem
   }
   auto unsupported = awj::default_app_config();
   unsupported.output_format = awj::OutputFormat::png; unsupported.transfer_characteristics = 8;
-  unsupported.output_dir = output / std::format("explicit-float{}-unsupported-linear", source_depth);
+  unsupported.output_dir = output / awj::compat::format("explicit-float{}-unsupported-linear", source_depth);
   awj::NativeBackend backend{unsupported, logger, {.encoder_threads_per_file = 1, .global_thread_budget = 1}};
   if (backend.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)}).ok)
     return fail("Explicit extended linear HDR output silently became PQ.");
@@ -362,7 +364,7 @@ int existing_sdr_targets(const std::filesystem::path& root, const std::filesyste
     auto cfg = awj::default_app_config();
     cfg.input_path = input; cfg.output_format = format; cfg.quality = 100; cfg.bit_depth = 8;
     cfg.strip_metadata = strip; cfg.max_jobs = 1;
-    cfg.output_dir = output / std::format("existing-sdr-{}-{}", static_cast<int>(format), strip);
+    cfg.output_dir = output / awj::compat::format("existing-sdr-{}-{}", static_cast<int>(format), strip);
     awj::NativeBackend backend{cfg, logger, awj::ResourcePlan{
         .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
     auto converted = backend.encode(awj::ImageFile{.index = 0, .path = input, .bytes = pair->encoded.bytes.size()});
@@ -377,7 +379,7 @@ int existing_sdr_targets(const std::filesystem::path& root, const std::filesyste
     auto cfg = awj::default_app_config();
     cfg.output_format = awj::OutputFormat::png; cfg.quality = 100; cfg.strip_metadata = strip;
     if (depth) cfg.bit_depth = depth;
-    cfg.output_dir = output / std::format("paired-hdr-png-{}-{}", strip, depth);
+    cfg.output_dir = output / awj::compat::format("paired-hdr-png-{}-{}", strip, depth);
     awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
     auto result = backend.encode(awj::ImageFile{.path = input, .bytes = pair->encoded.bytes.size()});
     if (!result.ok || result.rendition.selected != "hdr" || result.rendition.reused_sdr ||
@@ -423,7 +425,7 @@ int hdr_color_policy(const std::filesystem::path& root, const std::filesystem::p
       sdr.planes[0].bytes[i * 4 + 2] = std::byte{40}; sdr.planes[0].bytes[i * 4 + 3] = std::byte{255};
     }
     awj::GainMapAlternative alternate{.image = std::move(sdr), .main_hdr_headroom_log2 = 2, .alternate_hdr_headroom_log2 = 0};
-    std::expected<awj::NativeEncodeResult, std::string> encoded = std::unexpected{"fixture"};
+    awj::compat::expected<awj::NativeEncodeResult, std::string> encoded = awj::compat::unexpected{"fixture"};
     if (paired) {
       settings.output_format = awj::OutputFormat::avif;
       settings.gain_map_alternative = &alternate;
@@ -433,7 +435,7 @@ int hdr_color_policy(const std::filesystem::path& root, const std::filesystem::p
       encoded = awj::JXLImageEncoder{}.encode(source, settings);
     }
     if (!encoded) return fail(encoded.error());
-    const auto input = root / std::format("color-policy-{}-{}-{}.{}", primaries, transfer, paired, paired ? "avif" : "jxl");
+    const auto input = root / awj::compat::format("color-policy-{}-{}-{}.{}", primaries, transfer, paired, paired ? "avif" : "jxl");
     write_bytes(input, encoded->encoded.bytes);
     std::unique_ptr<awj::ImageDecoder> input_decoder;
     if (paired) input_decoder = awj::make_avif_image_decoder(1);
@@ -444,7 +446,7 @@ int hdr_color_policy(const std::filesystem::path& root, const std::filesystem::p
       auto cfg = awj::default_app_config();
       cfg.output_format = format; cfg.quality = 100; cfg.strip_metadata = strip;
       if (format == awj::OutputFormat::avif) { cfg.speed = 10; cfg.bit_depth = 12; cfg.chroma_mode = awj::ChromaMode::yuv444; }
-      cfg.output_dir = output / std::format("color-policy-{}-{}-{}-{}-{}", primaries, transfer, paired, static_cast<int>(format), strip);
+      cfg.output_dir = output / awj::compat::format("color-policy-{}-{}-{}-{}-{}", primaries, transfer, paired, static_cast<int>(format), strip);
       awj::NativeBackend backend{cfg, logger, {.encoder_threads_per_file = 2, .global_thread_budget = 2}};
       auto result = backend.encode(awj::ImageFile{.path = input, .bytes = encoded->encoded.bytes.size()});
       const bool map_expected = paired && format == awj::OutputFormat::avif;
@@ -552,6 +554,24 @@ int poster_pipeline(const std::filesystem::path& root, const std::filesystem::pa
       const auto ended = (*animated)->next();
       if (!ended || *ended) return fail("Pure APNG output frame count/termination changed.");
     }
+    cfg.output_format = awj::OutputFormat::webp;
+    cfg.output_dir = output / (poster ? "animated-webp-poster" : "animated-webp-apng");
+    awj::NativeBackend webp_backend{cfg, logger, {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto webp = webp_backend.encode(awj::ImageFile{.path = input, .bytes = bytes.size()});
+    if (!webp.ok) return fail(webp.message);
+    auto sequence = awj::open_animation(webp.output_path, 0);
+    if (!sequence || !*sequence || (*sequence)->info().durations.size() != 2 || (*sequence)->info().repetitions != 2)
+      return fail("APNG 的动画帧／循环没有进入 WebP 输出。");
+    for (unsigned index = 0; index < 2; ++index) {
+      const auto& delay = (*sequence)->info().durations[index];
+      if (std::uint64_t(delay.numerator) * 10 != std::uint64_t(delay.denominator) * (index + 1))
+        return fail("APNG→WebP 帧时长改变。");
+      auto next = (*sequence)->next();
+      if (!next || !*next) return fail("APNG→WebP 缺帧。");
+      const auto& pixels = (*sequence)->frame().planes[0].bytes;
+      if (pixels[index] != std::byte{255} || pixels[2] != std::byte{0})
+        return fail("APNG 的独立蓝色 poster 被错误加入 WebP 动画。");
+    }
   }
   return 0;
 }
@@ -612,7 +632,9 @@ int main() {
     {
       std::ofstream stream{gif, std::ios::binary};
       stream.write(reinterpret_cast<const char*>(header), sizeof(header));
-      for (int i = 0; i < 2; ++i) stream.write(reinterpret_cast<const char*>(frame), sizeof(frame));
+      stream.write(reinterpret_cast<const char*>(frame), sizeof(frame));
+      auto second = std::to_array(frame); second[20] = 0x4c;
+      stream.write(reinterpret_cast<const char*>(second.data()), second.size());
       stream.put('\x3b');
     }
     awj::AppConfig automatic;
@@ -633,6 +655,83 @@ int main() {
         avifDecoderSetIOMemory(decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()) != AVIF_RESULT_OK ||
         avifDecoderParse(decoder.get()) != AVIF_RESULT_OK || decoder->imageCount != 2)
       return fail("Automatic animation conversion produced a single-frame AVIF.");
+    automatic.output_format = awj::OutputFormat::webp; automatic.quality = 100;
+    automatic.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .max_width = 8, .max_height = 4};
+    awj::NativeBackend webp_animation{automatic, logger, awj::ResourcePlan{
+        .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
+        .memory_limit_bytes = 64 * 1024 * 1024}};
+    auto webp = webp_animation.encode(awj::ImageFile{.index = 0, .path = gif,
+        .bytes = std::filesystem::file_size(gif)});
+    if (!webp.ok || webp.integration_mode != "libwebp-sequence" || webp.output_path.extension() != ".webp")
+      return fail(webp.ok ? "WebP 选择没有保留动画。" : webp.message);
+    auto sequence = awj::open_animation(webp.output_path, 0);
+    if (!sequence || !*sequence || (*sequence)->info().durations.size() != 2 ||
+        (*sequence)->info().width != 8 || (*sequence)->info().height != 4 || (*sequence)->info().repetitions != 0)
+      return fail("动画 WebP 画布、帧或循环不一致。");
+    for (int i = 0; i < 2; ++i) {
+      auto next = (*sequence)->next();
+      if (!next || !*next || (*sequence)->info().durations[i].numerator != 100 ||
+          (*sequence)->info().durations[i].denominator != 1000)
+        return fail("动画 WebP 时间线没有保留。");
+      const auto& pixels = (*sequence)->frame().planes[0].bytes;
+      if (pixels[3] != std::byte{0} || pixels[2 * 4 + 3] != std::byte{255})
+        return fail("动画 WebP 没有居中透明补边。");
+    }
+    for (const auto& source_path : {converted.output_path, webp.output_path}) {
+      auto transcode = automatic; transcode.input_path = source_path;
+      transcode.output_dir = output / ("sequence-transcode" + source_path.extension().string());
+      transcode.image_size_limit.mode = awj::ImageSizeLimitMode::none;
+      awj::NativeBackend transcoder{transcode, logger, {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+      const auto result = transcoder.encode(awj::ImageFile{.path = source_path, .bytes = std::filesystem::file_size(source_path)});
+      if (!result.ok) return fail(result.message);
+      auto restored = awj::open_animation(result.output_path, 0);
+      if (!restored || !*restored || (*restored)->info().durations.size() != 2 || (*restored)->info().repetitions != 0)
+        return fail("AVIF／WebP→动画 WebP 没有保留完整时间线。");
+    }
+    auto scaled = automatic;
+    scaled.output_dir = output / "fixed-percent-animation";
+    scaled.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .scale_percent = 200};
+    awj::NativeBackend proportional{scaled, logger,
+        {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto doubled = proportional.encode(awj::ImageFile{.path = gif, .bytes = std::filesystem::file_size(gif)});
+    if (!doubled.ok) return fail(doubled.message);
+    auto doubled_reader = awj::open_animation(doubled.output_path, 0);
+    if (!doubled_reader || !*doubled_reader || (*doubled_reader)->info().width != 2 ||
+        (*doubled_reader)->info().height != 2 || (*doubled_reader)->info().durations.size() != 2)
+      return fail("固定模式只填比例没有缩放全部动画帧。");
+    for (int i = 0; i < 2; ++i) {
+      const auto next = (*doubled_reader)->next();
+      if (!next || !*next || (*doubled_reader)->frame().planes[0].bytes[3] != std::byte{255})
+        return fail("比例缩放错误地生成了透明补边。");
+    }
+  }
+  for (const auto format : {awj::OutputFormat::avif, awj::OutputFormat::png, awj::OutputFormat::webp,
+      awj::OutputFormat::jxl, awj::OutputFormat::jpgli}) {
+    auto fixed = cfg; fixed.output_format = format; fixed.speed = 10;
+    fixed.output_dir = output / awj::compat::format("letterbox-{}", static_cast<int>(format));
+    fixed.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .max_width = 32, .max_height = 16};
+    awj::NativeBackend padded{fixed, logger, {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    auto result = padded.encode(awj::ImageFile{.path = input, .bytes = std::filesystem::file_size(input)});
+    if (!result.ok) return fail(result.message);
+    std::unique_ptr<awj::ImageDecoder> reader;
+    switch (format) {
+      case awj::OutputFormat::avif: reader = awj::make_avif_image_decoder(1); break;
+      case awj::OutputFormat::png: reader = std::make_unique<awj::PngImageDecoder>(); break;
+      case awj::OutputFormat::webp: reader = std::make_unique<awj::WebPImageDecoder>(); break;
+      case awj::OutputFormat::jxl: reader = std::make_unique<awj::JXLImageDecoder>(); break;
+      case awj::OutputFormat::jpgli: reader = std::make_unique<awj::JpegliImageDecoder>(); break;
+    }
+    auto restored = reader->decode(result.output_path);
+    if (!restored || restored->image.width != 32 || restored->image.height != 16)
+      return fail("固定画布没有经过完整格式管线。");
+    const auto sample = [&](std::size_t c) {
+      if (restored->image.bit_depth == 8) return unsigned(std::to_integer<unsigned char>(restored->image.planes[0].bytes[c]));
+      std::uint16_t value{}; std::memcpy(&value, restored->image.planes[0].bytes.data() + c * 2, 2); return unsigned(value);
+    };
+    if (format == awj::OutputFormat::jpgli) {
+      if (sample(0) > 8 || sample(1) > 8 || sample(2) > 8) return fail("JPG 留边没有正确填充纯黑。");
+    } else if (restored->image.alpha_mode == awj::AlphaMode::none || sample(3) != 0)
+      return fail("支持 alpha 的格式没有保留透明留边。");
   }
   awj::NativeBackend backend{cfg, logger, awj::ResourcePlan{
                                                .file_parallelism = 1,
@@ -710,7 +809,7 @@ int main() {
     auto jpeg_cfg = awj::default_app_config();
     jpeg_cfg.output_format = awj::OutputFormat::jpgli;
     jpeg_cfg.jpeg_hdr = mode;
-    jpeg_cfg.output_dir = output / std::format("hdr-jpeg-{}", static_cast<int>(mode));
+    jpeg_cfg.output_dir = output / awj::compat::format("hdr-jpeg-{}", static_cast<int>(mode));
     jpeg_cfg.quality = 85;
     jpeg_cfg.max_jobs = 1;
     awj::NativeBackend jpeg_backend{jpeg_cfg, logger, awj::ResourcePlan{
@@ -729,7 +828,7 @@ int main() {
     if (enhanced) {
       auto branch_cfg = awj::default_app_config();
       branch_cfg.output_format = awj::OutputFormat::jxl;
-      branch_cfg.output_dir = output / std::format("jxl-iso-gain-map-{}", static_cast<int>(mode));
+      branch_cfg.output_dir = output / awj::compat::format("jxl-iso-gain-map-{}", static_cast<int>(mode));
       branch_cfg.quality = 100;
       branch_cfg.jxl_jpeg_lossless = true;
       awj::NativeBackend branch{branch_cfg, logger, awj::ResourcePlan{
@@ -1032,7 +1131,7 @@ int main() {
           decoded->image.source_info->bit_depth != 8 || result.user_chroma != "auto" ||
           result.source_chroma != source_chroma || result.requested_chroma != "auto" ||
           result.applied_chroma != awj::chroma_mode_name(expected))
-        return fail(decoded ? std::format(
+        return fail(decoded ? awj::compat::format(
             "JPEG sampling mismatch: source={} search={} expected={} decoded_format={} depth={} user={} source_chroma={} expected_source={} requested={} applied={}",
             source.filename().string(), search, awj::chroma_mode_name(expected),
             decoded->image.source_info ? static_cast<int>(decoded->image.source_info->pixel_format) : -1,
@@ -1043,7 +1142,7 @@ int main() {
     return 0;
   };
   for (const auto mode : {awj::ChromaMode::yuv420, awj::ChromaMode::yuv422, awj::ChromaMode::yuv444}) {
-    const auto seed = root / std::format("source-yuv-{}.jpg", awj::chroma_mode_name(mode));
+    const auto seed = root / awj::compat::format("source-yuv-{}.jpg", awj::chroma_mode_name(mode));
     auto bytes = source_jpeg_encoder.encode(make_alpha_test_image(), awj::NativeEncodeSettings{
         .output_format = awj::OutputFormat::jpgli, .quality = 95, .chroma_mode = mode,
         .strip_metadata = true});
@@ -1058,7 +1157,7 @@ int main() {
   }
   for (const auto source_format : {awj::PixelFormat::rgb, awj::PixelFormat::rgba,
                                   awj::PixelFormat::gray, awj::PixelFormat::unknown}) {
-    const auto seed = root / std::format("source-{}.tif", static_cast<int>(source_format));
+    const auto seed = root / awj::compat::format("source-{}.tif", static_cast<int>(source_format));
     if (!write_source_tiff(seed, source_format)) return fail("failed to create TIFF source provenance fixture.");
     if (const int result = exercise_auto(seed, source_format, awj::ChromaMode::yuv444)) return result;
   }
@@ -1364,7 +1463,7 @@ int main() {
       alpha_visual_result.applied_alpha != "kept" ||
       alpha_visual_result.applied_chroma != "444" ||
       alpha_visual_result.speed != 5) {
-    return fail(std::format(
+    return fail(awj::compat::format(
         "transparent AVIF visual-quality diagnostics invalid: ok={} q={} attempts={} alpha={} chroma={} speed={} message={}",
         alpha_visual_result.ok ? "true" : "false",
         alpha_visual_result.final_encoder_quality,
@@ -1392,8 +1491,8 @@ int main() {
     if (!range_source) {
       return false;
     }
-    const auto range_name = std::format("range-{}", color_range);
-    const auto range_input = root / std::format("{}.avif", range_name);
+    const auto range_name = awj::compat::format("range-{}", color_range);
+    const auto range_input = root / awj::compat::format("{}.avif", range_name);
     {
       std::ofstream stream{range_input, std::ios::binary};
       stream.write(reinterpret_cast<const char*>(range_source->encoded.bytes.data()),
@@ -1416,7 +1515,7 @@ int main() {
                        .path = range_input,
                        .bytes = std::filesystem::file_size(range_input)});
     auto range_decoded = avif_decoder->decode(
-        range_cfg.output_dir / std::format("{}.avif", range_name));
+        range_cfg.output_dir / awj::compat::format("{}.avif", range_name));
     return range_result.ok && range_result.source_color_range.value_or(-1) == color_range &&
            range_result.applied_color_range.value_or(-1) == color_range &&
            range_result.applied_chroma == "420" && range_decoded &&
@@ -1447,7 +1546,7 @@ int main() {
       avif_visual_result.final_encoder_quality != 100 ||
       avif_visual_result.command.find("aom") == std::string::npos ||
       avif_visual_result.requested_encoder_id != "aom") {
-    return fail(std::format(
+    return fail(awj::compat::format(
         "native backend AVIF visual_quality did not use shared lossless auto search path: attempts={} lossless={} final_q={} command={} requested_encoder={}",
         avif_visual_result.search_attempt_count,
         avif_visual_result.lossless ? "true" : "false",

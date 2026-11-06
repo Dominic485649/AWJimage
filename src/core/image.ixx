@@ -171,7 +171,9 @@ bool valid_image_geometry(const ImageBuffer& image) noexcept {
       g.stored_width && g.stored_height && g.stored_width <= UINT32_MAX && g.stored_height <= UINT32_MAX &&
       g.crop_width && g.crop_height && g.crop_x < g.stored_width && g.crop_y < g.stored_height &&
       g.crop_width <= g.stored_width - g.crop_x && g.crop_height <= g.stored_height - g.crop_y &&
-      g.rotation < 4 && g.mirror_axis >= -1 && g.mirror_axis <= 1;
+      g.rotation < 4 && g.mirror_axis >= -1 && g.mirror_axis <= 1 &&
+      image.width == (g.rotation % 2 ? g.crop_height : g.crop_width) &&
+      image.height == (g.rotation % 2 ? g.crop_width : g.crop_height);
 }
 
 std::array<std::size_t, 2> image_sample_coordinates(const ImageBuffer& image, std::size_t x, std::size_t y) noexcept {
@@ -179,7 +181,6 @@ std::array<std::size_t, 2> image_sample_coordinates(const ImageBuffer& image, st
   const auto& g = *image.geometry;
   const auto width = g.rotation % 2 ? g.crop_height : g.crop_width;
   const auto height = g.rotation % 2 ? g.crop_width : g.crop_height;
-  x = x * width / image.width; y = y * height / image.height;
   if (g.mirror_axis == 0) y = height - 1 - y;
   if (g.mirror_axis == 1) x = width - 1 - x;
   switch (g.rotation) {

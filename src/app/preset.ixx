@@ -445,7 +445,10 @@ awj::compat::expected<void, std::string> load_size_limit(const Json& object,
     if (mode == "auto") target.mode = ImageSizeLimitMode::automatic;
     else if (mode == "none") target.mode = ImageSizeLimitMode::none;
     else if (mode == "manual") target.mode = ImageSizeLimitMode::manual;
-    else return awj::compat::unexpected{"预设字段 size_limit.mode 只支持 auto/none/manual。"};
+    else if (mode == "upscale") target.mode = ImageSizeLimitMode::upscale;
+    else if (mode == "downscale") target.mode = ImageSizeLimitMode::downscale;
+    else if (mode == "fixed") target.mode = ImageSizeLimitMode::fixed;
+    else return awj::compat::unexpected{"预设字段 size_limit.mode 不支持该尺寸模式。"};
   }
   const auto one = [&](std::string_view key, std::optional<int>& member) {
     return load_optional_int(value, key, 1, 1'000'000, member);
@@ -454,8 +457,23 @@ awj::compat::expected<void, std::string> load_size_limit(const Json& object,
   if (auto r = one("max_height", target.max_height); !r) return r;
   if (auto r = one("max_long_edge", target.max_long_edge); !r) return r;
   if (auto r = one("max_short_edge", target.max_short_edge); !r) return r;
-  if (auto r = load_optional_int(value, "scale_percent", 1, 100, target.scale_percent); !r) return r;
-  return {};
+  if (value.contains("scale_percent")) {
+    const Json* number = &value.at("scale_percent");
+    if (number->is_array() && number->size() == 1) number = &number->front();
+    if (number->is_null()) target.scale_percent.reset();
+    else {
+      if (!number->is_number()) return awj::compat::unexpected{"预设字段 scale_percent 必须是正有限数或 null。"};
+      const auto parsed = number->get<double>();
+      if (!(parsed > 0) || parsed > std::numeric_limits<double>::max())
+        return awj::compat::unexpected{"预设字段 scale_percent 必须为正有限数。"};
+      target.scale_percent = parsed;
+    }
+  }
+  if (target.mode == ImageSizeLimitMode::manual) {
+    target.mode = ImageSizeLimitMode::downscale;
+    if (!target.scale_percent) target.scale_percent = 100;
+  }
+  return validate_image_size_limit(target);
 }
 
 awj::compat::expected<void, std::string> load_format(const Json& object,
@@ -505,15 +523,23 @@ Json optional_int_json(const std::optional<int>& value) {
 }
 
 Json size_limit_json(const ImageSizeLimit& limit) {
-  std::string mode{"auto"};
-  if (limit.mode == ImageSizeLimitMode::none) mode = "none";
-  if (limit.mode == ImageSizeLimitMode::manual) mode = "manual";
-  return Json{{"mode", mode},
+  const auto mode = limit.mode == ImageSizeLimitMode::manual ? ImageSizeLimitMode::downscale : limit.mode;
+  const auto percent = limit.mode == ImageSizeLimitMode::manual && !limit.scale_percent
+      ? std::optional<double>{100} : limit.scale_percent;
+  return Json{{"mode", image_size_mode_name(mode)},
               {"max_width", optional_int_json(limit.max_width)},
               {"max_height", optional_int_json(limit.max_height)},
               {"max_long_edge", optional_int_json(limit.max_long_edge)},
               {"max_short_edge", optional_int_json(limit.max_short_edge)},
-              {"scale_percent", optional_int_json(limit.scale_percent)}};
+              {"scale_percent", percent ? Json(*percent) : Json(nullptr)}};
+}
+
+void overlay_known_keys(Json& destination, const Json& source) {
+  if (!destination.is_object()) destination = Json::object();
+  for (const auto& [key, value] : source.items()) {
+    if (value.is_object()) overlay_known_keys(destination[key], value);
+    else destination[key] = value;
+  }
 }
 
 Json format_json(const PresetFormat& value) {
@@ -1033,16 +1059,21 @@ awj::compat::expected<std::filesystem::path, std::string> save_user_preset(
         (*document)["shell_menu"].get<bool>()) ++injected_count;
   }
   if (injected_count > 10) return awj::compat::unexpected{"最多同时注入 10 个预设，请先取消其他预设的注入。"};
-  preset_detail::Json formats = preset_detail::Json::object();
-  for (std::size_t i = 0; i < preset.formats.size(); ++i) {
-    formats[std::string{preset_detail::format_keys[i]}] =
-        preset_detail::format_json(preset.formats[i]);
+  auto document = preset_detail::Json::object();
+  if (overwrite) {
+    auto original = preset_detail::read_document(path);
+    if (!original || !original->is_object()) return awj::compat::unexpected{"无法保留原预设的扩展字段，未覆盖。"};
+    document = std::move(*original);
   }
-  const preset_detail::Json document{{"schema", user_preset_schema},
-                                     {"name", preset.name},
-                                     {"description", preset.description},
-                                     {"shell_menu", preset.shell_menu},
-                                     {"formats", std::move(formats)}};
+  document["schema"] = user_preset_schema;
+  document["name"] = preset.name;
+  document["description"] = preset.description;
+  document["shell_menu"] = preset.shell_menu;
+  if (!document.contains("formats") || !document["formats"].is_object()) document["formats"] = preset_detail::Json::object();
+  for (std::size_t i = 0; i < preset.formats.size(); ++i) {
+    auto& format = document["formats"][std::string{preset_detail::format_keys[i]}];
+    preset_detail::overlay_known_keys(format, preset_detail::format_json(preset.formats[i]));
+  }
   const auto content = document.dump(2) + "\n";
   if (auto saved = preset_detail::change_file(path, content, synchronize); !saved) {
     return awj::compat::unexpected{saved.error()};

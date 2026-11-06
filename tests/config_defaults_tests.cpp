@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -396,11 +397,73 @@ int main() {
     return fail("scale percent unexpectedly affected automatic size mode.");
   }
 
+  auto new_size = awj::default_app_config();
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::upscale,
+      .max_width = 500, .max_height = 500, .scale_percent = 200};
+  auto geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->canvas_width != 2000 || geometry->canvas_height != 1000)
+    return fail("最大倍率模式没有取所有条件的最大值。");
+  new_size.image_size_limit.mode = awj::ImageSizeLimitMode::downscale;
+  geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->canvas_width != 500 || geometry->canvas_height != 250)
+    return fail("最小倍率模式没有取所有条件的最小值。");
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::downscale, .scale_percent = 200};
+  geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->canvas_width != 2000) return fail("缩小模式错误地限制了 200%。");
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::upscale, .scale_percent = 12.5};
+  geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->canvas_width != 125 || geometry->canvas_height != 63)
+    return fail("放大模式没有接受正小数缩小倍率。");
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .max_width = 512, .max_height = 512};
+  geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->content_width != 512 || geometry->content_height != 256 || geometry->offset_y != 128)
+    return fail("固定画布没有等比居中。");
+  new_size.image_size_limit.max_long_edge = 1024;
+  if (awj::plan_image_geometry(1000, 500, new_size)) return fail("接受了矛盾的固定画布。");
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .max_width = 100, .max_long_edge = 300};
+  geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->canvas_width != 100 || geometry->canvas_height != 300)
+    return fail("固定边约束没有搜索可行的画布方向。");
+  new_size.image_size_limit.scale_percent = 100;
+  if (awj::plan_image_geometry(1000, 500, new_size)) return fail("固定模式接受了冲突的百分比。");
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .max_long_edge = 512, .max_short_edge = 256};
+  geometry = awj::plan_image_geometry(500, 1000, new_size);
+  if (!geometry || geometry->canvas_width != 256 || geometry->canvas_height != 512)
+    return fail("固定长短边没有遵循源显示方向。");
+
+  new_size.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .scale_percent = 200.5};
+  geometry = awj::plan_image_geometry(1000, 500, new_size);
+  if (!geometry || geometry->canvas_width != 2005 || geometry->canvas_height != 1003 || geometry->pads())
+    return fail("固定模式只填比例没有按最近像素等比缩放。");
+  new_size.image_size_limit.scale_percent = 50;
+  geometry = awj::plan_image_geometry(13, 7, new_size);
+  if (!geometry || geometry->canvas_width != 7 || geometry->canvas_height != 4 || geometry->pads())
+    return fail("固定模式的小数像素缩放取整错误。");
+  for (const auto limit : {
+      awj::ImageSizeLimit{.mode = awj::ImageSizeLimitMode::fixed, .max_width = 512, .scale_percent = 100},
+      awj::ImageSizeLimit{.mode = awj::ImageSizeLimitMode::fixed, .max_height = 512, .scale_percent = 100},
+      awj::ImageSizeLimit{.mode = awj::ImageSizeLimitMode::fixed, .max_long_edge = 512, .scale_percent = 100},
+      awj::ImageSizeLimit{.mode = awj::ImageSizeLimitMode::fixed, .max_short_edge = 512, .scale_percent = 100}}) {
+    if (awj::validate_image_size_limit(limit)) return fail("固定模式接受了尺寸与比例混填。");
+  }
+  if (awj::validate_image_size_limit({.mode = awj::ImageSizeLimitMode::fixed}))
+    return fail("固定模式接受了全部留空。");
+  parsed = awj::parse_arguments({L"--image-size-limit", L"fixed", L"--scale-percent", L"200.5"});
+  if (!parsed || parsed->config.image_size_limit.mode != awj::ImageSizeLimitMode::fixed ||
+      parsed->config.image_size_limit.scale_percent != 200.5)
+    return fail("CLI 固定模式只填比例没有保留。");
+  if (awj::parse_arguments({L"--image-size-limit", L"fixed", L"--width", L"512", L"--scale-percent", L"100"}))
+    return fail("CLI 固定画布没有拒绝尺寸与比例混填。");
+  if (awj::parse_arguments({L"--image-size-limit", L"upscale", L"--width", L"512", L"--max-width", L"1024"}))
+    return fail("CLI 矛盾重复尺寸没有拒绝。");
+  parsed = awj::parse_arguments({L"--image-size-limit", L"downscale", L"--scale-percent", L"200.5"});
+  if (!parsed || parsed->config.image_size_limit.scale_percent != 200.5)
+    return fail("CLI 没有接受大于 100 的小数比例。");
   parsed = awj::parse_arguments({L"--image-size-limit", L"manual", L"--scale-percent", L"80"});
   if (!parsed || parsed->config.image_size_limit.scale_percent.value_or(0) != 80) {
     return fail("CLI scale percent did not parse.");
   }
-  for (const auto* invalid_scale : {L"0", L"-1", L"101", L"abc"}) {
+  for (const auto* invalid_scale : {L"0", L"-1", L"inf", L"nan", L"abc"}) {
     parsed = awj::parse_arguments({L"--scale-percent", invalid_scale});
     if (parsed) return fail("invalid CLI scale percent was accepted.");
   }
@@ -645,13 +708,13 @@ int main() {
   }
 
   const auto help = awj::help_text();
-  if (help.find(std::format("AVIF q{}",
+  if (help.find(awj::compat::format("AVIF q{}",
                             awj::encoding_defaults::default_avif_quality)) ==
           std::string::npos ||
-      help.find(std::format("WebP q{}",
+      help.find(awj::compat::format("WebP q{}",
                             awj::encoding_defaults::default_webp_quality)) ==
           std::string::npos ||
-      help.find(std::format("JPG q{}",
+      help.find(awj::compat::format("JPG q{}",
                             awj::encoding_defaults::default_jpegli_quality)) ==
           std::string::npos ||
       help.find("<png|avif|webp|jxl|jpg>") == std::string::npos ||

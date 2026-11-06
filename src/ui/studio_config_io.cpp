@@ -1,3 +1,4 @@
+#include "../compat/stdlib_compat.h"
 #include "studio_config_io.h"
 
 #include <algorithm>
@@ -88,48 +89,48 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
 
 
 template <class Setter>
-std::expected<void, std::string> apply_config_int(
+awj::compat::expected<void, std::string> apply_config_int(
     AwjStudio& app,
     const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::string_view key, int minimum, int maximum, Setter setter) {
   auto value = awj::studio_json::config_int(values, key, minimum, maximum);
   if (!value) {
-    return value.error().empty() ? std::expected<void, std::string>{}
-                                 : std::unexpected{value.error()};
+    return value.error().empty() ? awj::compat::expected<void, std::string>{}
+                                 : awj::compat::unexpected{value.error()};
   }
   (app.*setter)(*value);
   return {};
 }
 
 template <class Setter>
-std::expected<void, std::string> apply_config_bool(
+awj::compat::expected<void, std::string> apply_config_bool(
     AwjStudio& app,
     const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::string_view key, Setter setter) {
   auto value = awj::studio_json::config_bool(values, key);
   if (!value) {
-    return value.error().empty() ? std::expected<void, std::string>{}
-                                 : std::unexpected{value.error()};
+    return value.error().empty() ? awj::compat::expected<void, std::string>{}
+                                 : awj::compat::unexpected{value.error()};
   }
   (app.*setter)(*value);
   return {};
 }
 
 template <class Setter>
-std::expected<void, std::string> apply_config_string(
+awj::compat::expected<void, std::string> apply_config_string(
     AwjStudio& app,
     const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::string_view key, Setter setter) {
   auto value = awj::studio_json::config_string(values, key);
   if (!value) {
-    return value.error().empty() ? std::expected<void, std::string>{}
-                                 : std::unexpected{value.error()};
+    return value.error().empty() ? awj::compat::expected<void, std::string>{}
+                                 : awj::compat::unexpected{value.error()};
   }
   (app.*setter)(to_shared(*value));
   return {};
 }
 
-std::expected<void, std::string> apply_config_window_size(
+awj::compat::expected<void, std::string> apply_config_window_size(
     AwjStudio& app,
     const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values) {
   const bool has_width = awj::studio_json::config_has_key(values, "window_width");
@@ -138,19 +139,19 @@ std::expected<void, std::string> apply_config_window_size(
     return {};
   }
   if (has_width != has_height) {
-    return std::unexpected{"window_width 与 window_height 必须同时设置。"};
+    return awj::compat::unexpected{"window_width 与 window_height 必须同时设置。"};
   }
   auto width = awj::studio_json::config_int(values, "window_width",
                           1,
                           awj::studio_defaults::max_window_width);
   if (!width) {
-    return std::unexpected{width.error()};
+    return awj::compat::unexpected{width.error()};
   }
   auto height = awj::studio_json::config_int(values, "window_height",
                            awj::studio_defaults::min_window_height,
                            awj::studio_defaults::max_window_height);
   if (!height) {
-    return std::unexpected{height.error()};
+    return awj::compat::unexpected{height.error()};
   }
   app.window().set_size(slint::LogicalSize{
       {static_cast<float>(std::max(*width, awj::studio_defaults::min_window_width)),
@@ -159,35 +160,35 @@ std::expected<void, std::string> apply_config_window_size(
 }
 
 
-std::expected<void, std::string> apply_menu_config_values(
+awj::compat::expected<void, std::string> apply_menu_config_values(
     const std::unordered_map<std::string, awj::studio_json::JsonConfigValue>& values,
     std::array<MenuFormatParams, 5>& params) {
   const auto apply_int = [&](std::string_view key, int minimum, int maximum,
-                             int& target) -> std::expected<void, std::string> {
+                             int& target) -> awj::compat::expected<void, std::string> {
     auto value = awj::studio_json::config_int(values, key, minimum, maximum);
     if (!value) {
-      return value.error().empty() ? std::expected<void, std::string>{}
-                                   : std::unexpected{value.error()};
+      return value.error().empty() ? awj::compat::expected<void, std::string>{}
+                                   : awj::compat::unexpected{value.error()};
     }
     target = *value;
     return {};
   };
   const auto apply_bool = [&](std::string_view key,
-                              bool& target) -> std::expected<void, std::string> {
+                              bool& target) -> awj::compat::expected<void, std::string> {
     auto value = awj::studio_json::config_bool(values, key);
     if (!value) {
-      return value.error().empty() ? std::expected<void, std::string>{}
-                                   : std::unexpected{value.error()};
+      return value.error().empty() ? awj::compat::expected<void, std::string>{}
+                                   : awj::compat::unexpected{value.error()};
     }
     target = *value;
     return {};
   };
   const auto apply_string = [&](std::string_view key, std::string& target)
-      -> std::expected<void, std::string> {
+      -> awj::compat::expected<void, std::string> {
     auto value = awj::studio_json::config_string(values, key);
     if (!value) {
-      return value.error().empty() ? std::expected<void, std::string>{}
-                                   : std::unexpected{value.error()};
+      return value.error().empty() ? awj::compat::expected<void, std::string>{}
+                                   : awj::compat::unexpected{value.error()};
     }
     target = std::move(*value);
     return {};
@@ -196,8 +197,8 @@ std::expected<void, std::string> apply_menu_config_values(
   for (std::size_t i = 0; i < params.size(); ++i) {
     const auto prefix = menu_config_prefixes[i];
     auto& param = params[i];
-    const auto one = [&](auto result) -> std::expected<void, std::string> {
-      if (!result) return std::unexpected{result.error()};
+    const auto one = [&](auto result) -> awj::compat::expected<void, std::string> {
+      if (!result) return awj::compat::unexpected{result.error()};
       return {};
     };
     // menu_*_preset_index 在 1.0.0 随右键预设下拉一并移除；旧配置里的残留键会被忽略。
@@ -209,7 +210,7 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_string(menu_config_key(prefix, "memory_limit_text"), param.memory_limit_text)); !r) return r;
     if (auto r = one(apply_int(menu_config_key(prefix, "avif_encoder_index"), 0, 3, param.avif_encoder_index)); !r) return r;
     if (param.avif_encoder_index == 1 || param.avif_encoder_index == 3) {
-      return std::unexpected{std::format("{} 对应的编码器已移除，请将该字段修正为 0（auto）或 2（AOM）。",
+      return awj::compat::unexpected{awj::compat::format("{} 对应的编码器已移除，请将该字段修正为 0（auto）或 2（AOM）。",
           menu_config_key(prefix, "avif_encoder_index"))};
     }
     if (param.avif_encoder_index == 2) param.avif_encoder_index = 1;
@@ -226,17 +227,31 @@ std::expected<void, std::string> apply_menu_config_values(
     if (auto r = one(apply_bool(menu_config_key(prefix, "allow_wic_fallback"), param.allow_wic_fallback)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "close_on_finish"), param.close_on_finish)); !r) return r;
     if (auto r = one(apply_bool(menu_config_key(prefix, "install_avif_png_command"), param.install_avif_png_command)); !r) return r;
-    if (auto r = one(apply_int(menu_config_key(prefix, "size_limit_index"), 0, 2, param.size_limit_index)); !r) return r;
+    const bool legacy_size = !awj::studio_json::config_has_key(values, menu_config_key(prefix, "size_limit_mode"));
+    if (legacy_size) {
+      if (auto r = one(apply_int(menu_config_key(prefix, "size_limit_index"), 0, 2, param.size_limit_index)); !r) return r;
+    } else {
+      std::string mode;
+      if (auto r = one(apply_string(menu_config_key(prefix, "size_limit_mode"), mode)); !r) return r;
+      constexpr std::array names{"auto", "none", "upscale", "downscale", "fixed"};
+      const auto found = awj::compat::ranges::find(names, mode);
+      if (found == names.end()) return awj::compat::unexpected{"配置中的尺寸模式无效。"};
+      param.size_limit_index = static_cast<int>(found - names.begin());
+    }
     if (auto r = one(apply_string(menu_config_key(prefix, "max_width_text"), param.max_width_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_height_text"), param.max_height_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_long_edge_text"), param.max_long_edge_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "max_short_edge_text"), param.max_short_edge_text)); !r) return r;
     if (auto r = one(apply_string(menu_config_key(prefix, "scale_percent_text"), param.scale_percent_text)); !r) return r;
+    if (legacy_size && param.size_limit_index == 2) {
+      param.size_limit_index = 3;
+      if (param.scale_percent_text.empty()) param.scale_percent_text = "100";
+    }
   }
   return {};
 }
 
-std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiState& state) {
+awj::compat::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiState& state) {
   const auto path = studio_config_path();
   if (path.empty()) {
     return {};
@@ -247,18 +262,18 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   }
   std::ifstream input{path, std::ios::binary};
   if (!input) {
-    return std::unexpected{"无法读取 Studio 配置文件。"};
+    return awj::compat::unexpected{"无法读取 Studio 配置文件。"};
   }
   std::string source{std::istreambuf_iterator<char>{input},
                      std::istreambuf_iterator<char>{}};
   auto values = awj::studio_json::parse_jsonc_config(source);
   if (!values) {
-    return std::unexpected{values.error()};
+    return awj::compat::unexpected{values.error()};
   }
 
-  const auto apply = [&](auto result) -> std::expected<void, std::string> {
+  const auto apply = [&](auto result) -> awj::compat::expected<void, std::string> {
     if (!result) {
-      return std::unexpected{result.error()};
+      return awj::compat::unexpected{result.error()};
     }
     return {};
   };
@@ -310,7 +325,7 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
           *values, "menu_preset_description"); description) {
     state.menu_preset_description = std::move(*description);
   } else if (!description.error().empty()) {
-    return std::unexpected{description.error()};
+    return awj::compat::unexpected{description.error()};
   }
   app.set_parameter_preset_description(
       state.parameter_preset_index == 1
@@ -325,41 +340,41 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   {
     const auto load_int64 =
         [&](std::string_view key, std::int64_t minimum, std::int64_t maximum,
-            std::int64_t& target) -> std::expected<void, std::string> {
+            std::int64_t& target) -> awj::compat::expected<void, std::string> {
       auto parsed = awj::studio_json::config_int64(*values, key, minimum, maximum);
       if (parsed) {
         target = *parsed;
         return {};
       }
-      return parsed.error().empty() ? std::expected<void, std::string>{}
-                                    : std::unexpected{parsed.error()};
+      return parsed.error().empty() ? awj::compat::expected<void, std::string>{}
+                                    : awj::compat::unexpected{parsed.error()};
     };
     const auto load_bool = [&](std::string_view key,
-                               bool& target) -> std::expected<void, std::string> {
+                               bool& target) -> awj::compat::expected<void, std::string> {
       auto parsed = awj::studio_json::config_bool(*values, key);
       if (parsed) {
         target = *parsed;
         return {};
       }
-      return parsed.error().empty() ? std::expected<void, std::string>{}
-                                    : std::unexpected{parsed.error()};
+      return parsed.error().empty() ? awj::compat::expected<void, std::string>{}
+                                    : awj::compat::unexpected{parsed.error()};
     };
     const auto load_string =
         [&](std::string_view key,
-            std::string& target) -> std::expected<void, std::string> {
+            std::string& target) -> awj::compat::expected<void, std::string> {
       auto parsed = awj::studio_json::config_string(*values, key);
       if (parsed) {
         target = *parsed;
         return {};
       }
-      return parsed.error().empty() ? std::expected<void, std::string>{}
-                                    : std::unexpected{parsed.error()};
+      return parsed.error().empty() ? awj::compat::expected<void, std::string>{}
+                                    : awj::compat::unexpected{parsed.error()};
     };
 
     constexpr std::int64_t max_unix_seconds = 4102444800;  // 2100-01-01Z
     if (auto r = load_string("update_channel", state.update_channel); !r) return r;
     if (state.update_channel != "stable" && state.update_channel != "prerelease") {
-      return std::unexpected{"配置 update_channel 只能是 stable 或 prerelease。"};
+      return awj::compat::unexpected{"配置 update_channel 只能是 stable 或 prerelease。"};
     }
     if (auto r = load_bool("show_update_changelog", state.show_update_changelog); !r) return r;
     if (auto r = load_bool("only_show_changelog_after_update",
@@ -397,13 +412,13 @@ std::expected<void, std::string> apply_studio_config_file(AwjStudio& app, UiStat
   return {};
 }
 
-std::expected<void, std::string> persist_studio_config_if_changed(
+awj::compat::expected<void, std::string> persist_studio_config_if_changed(
     AwjStudio& app, UiState& state) {
   if (!state.config_defaults || state.menu_operation_active) {
     return {};
   }
   shell_context_menu::MenuOperationLock operation;
-  if (!operation.held()) return std::unexpected{"另一进程正在修改右键菜单配置。"};
+  if (!operation.held()) return awj::compat::unexpected{"另一进程正在修改右键菜单配置。"};
   auto current = capture_studio_config(app, &state);
   // Machine parameters are applied only by an explicit save/repair action.
   if (current.shell_menu_compatibility && state.last_config_snapshot)
@@ -414,7 +429,7 @@ std::expected<void, std::string> persist_studio_config_if_changed(
   }
   if (auto saved = write_studio_config_file(current, *state.config_defaults);
       !saved) {
-    return std::unexpected{saved.error()};
+    return awj::compat::unexpected{saved.error()};
   }
   if (!state.last_config_snapshot || current.menu_params != state.last_config_snapshot->menu_params) {
     auto valid = validate_menu_params(current.menu_params);
@@ -422,7 +437,7 @@ std::expected<void, std::string> persist_studio_config_if_changed(
     if (!synchronized) {
       if (state.last_config_snapshot) {
         auto restored = write_studio_config_file(*state.last_config_snapshot, *state.config_defaults);
-        if (!restored) return std::unexpected{synchronized.error() + " 配置恢复失败：" + restored.error()};
+        if (!restored) return awj::compat::unexpected{synchronized.error() + " 配置恢复失败：" + restored.error()};
       }
       return synchronized;
     }

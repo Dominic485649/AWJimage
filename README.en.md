@@ -10,14 +10,14 @@ AWJimage is a batch image converter for Windows and Linux, with a desktop interf
 |---|---|
 | Input | AVIF, HEIC/HEIF, JPEG, PNG, WebP, JXL, BMP, GIF, TIFF and camera RAW; JXR on Windows |
 | Output | AVIF, PNG, WebP, JXL, JPG |
-| Animation | GIF, APNG, WebP and AVIF retain frame timing, loops and transparency when converted to AVIF |
+| Animation | GIF, APNG, WebP and AVIF retain animation timing, loops and transparency when converted to AVIF or WebP; single frames use still encoding |
 | HDR | Single-layer SDR/HDR stays single-layer; real paired renditions retain gain maps; HDR JPEG can generate an SDR base, while SDR-only output automatically rolls off highlights |
 
 Defaults: AVIF, quality 70, speed 5. JPG uses 8-bit YCbCr and follows source sampling in auto mode, like AVIF: known 4:2:0, 4:2:2 and 4:4:4 are preserved; RGB, RGBA and unknown sources use 4:4:4. Grayscale JPG sources use three-component 4:4:4 in auto mode; explicit 4:0:0 is unsupported. HDR JPG stores an SDR base image and an ISO 21496-1 gain map. Only ISO gain-map metadata is accepted; legacy Adobe, Google and Apple gain-map protocols are no longer supported. Lossless behavior at quality 100 depends on the format. JPEG can be losslessly repackaged as JXL. See [Gain Map and animation details](docs/gain-map-animation.md).
 
 Wide gamut, high bit depth and display brightening do not add an HDR layer to SDR input. JXL/AVIF retain an HDR base and a map reconstructing SDR only for an existing SDR/HDR pair; ordinary single-layer input stays single-layer. JPEG is the exception: when HDR has no existing SDR rendition, highlight roll-off generates an SDR base and a gain map preserves HDR. WebP automatically rolls HDR down to SDR, preferring an existing SDR rendition; PNG preserves the selected single HDR/SDR rendition. Even `--jpeg-hdr hdr` keeps SDR-only input as ordinary SDR instead of relabeling it HDR.
 
-Formats share one target-pixel conversion stage. Compatible YUV layouts are reused directly; matrix, depth, sampling and geometry changes are combined to reduce full-image intermediate buffers. HDR luminance analysis, gain-map reconstruction and animation compositing follow each format's requirements.
+Formats share one target-pixel conversion stage, with Lanczos-3 for geometric resampling. Size modes include automatic, unlimited, maximum-factor scaling, minimum-factor scaling and a fixed canvas. Scaling combines optional width, height, long-edge, short-edge and percentage values; positive fractional percentages and values above 100% are supported. Fixed mode accepts dimensions or a percentage: entering dimensions disables percentage input and places the full aspect-preserved image in a centered canvas with transparent or black padding; entering only a percentage disables the four dimension inputs and scales proportionally. HDR luminance analysis, gain-map reconstruction and animation compositing follow each format's requirements.
 
 ## Download and requirements
 

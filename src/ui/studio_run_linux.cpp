@@ -1,3 +1,4 @@
+#include "../compat/stdlib_compat.h"
 // Linux Studio 的完整实现：LinuxUiState、平台工具、更新流程与 run_studio_ui。
 // 从 main.cpp 拆出。仅在非 Windows 构建时编译。
 
@@ -139,8 +140,8 @@ struct LinuxQueueItem {
 };
 
 struct LinuxUiState {
-  std::jthread worker{};
-  std::jthread update_worker{};
+  awj::compat::scoped_worker worker{};
+  awj::compat::scoped_worker update_worker{};
   std::shared_ptr<slint::VectorModel<TaskRow>> task_rows{};
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_image_rows{};
   std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>> update_history_rows{};
@@ -213,7 +214,7 @@ nlohmann::ordered_json linux_menu_params_json(const LinuxMenuParams& params,
           {"jxl_jpeg_lossless", params.jxl_jpeg_lossless},
           {"strip_metadata", params.strip_metadata},
           {"install_avif_png_command", params.install_avif_png_command},
-          {"size_limit_index", params.size_limit_index},
+          {"size_limit_mode", awj::image_size_mode_name(awj::image_size_mode_from_index(params.size_limit_index))},
           {"max_width_text", params.max_width_text},
           {"max_height_text", params.max_height_text},
           {"max_long_edge_text", params.max_long_edge_text},
@@ -265,17 +266,29 @@ void load_linux_menu_params(const nlohmann::ordered_json& document,
     boolean("jxl_jpeg_lossless", params.jxl_jpeg_lossless);
     boolean("strip_metadata", params.strip_metadata);
     boolean("install_avif_png_command", params.install_avif_png_command);
-    integer("size_limit_index", 0, 2, params.size_limit_index);
+    const bool legacy_size = !value.contains("size_limit_mode");
+    if (legacy_size) integer("size_limit_index", 0, 2, params.size_limit_index);
+    else {
+      std::string mode; text("size_limit_mode", mode);
+      constexpr std::array names{"auto", "none", "upscale", "downscale", "fixed"};
+      const auto found_mode = awj::compat::ranges::find(names, mode);
+      if (found_mode == names.end()) throw std::runtime_error("配置中的尺寸模式无效。");
+      params.size_limit_index = static_cast<int>(found_mode - names.begin());
+    }
     text("max_width_text", params.max_width_text);
     text("max_height_text", params.max_height_text);
     text("max_long_edge_text", params.max_long_edge_text);
     text("max_short_edge_text", params.max_short_edge_text);
     text("scale_percent_text", params.scale_percent_text);
+    if (legacy_size && params.size_limit_index == 2) {
+      params.size_limit_index = 3;
+      if (params.scale_percent_text.empty()) params.scale_percent_text = "100";
+    }
   }
 }
 
 std::string trim_copy(std::string value) {
-  const auto first = std::ranges::find_if_not(value, [](unsigned char ch) {
+  const auto first = awj::compat::ranges::find_if_not(value, [](unsigned char ch) {
     return std::isspace(ch) != 0;
   });
   const auto last = std::find_if_not(value.rbegin(), value.rend(), [](unsigned char ch) {
@@ -289,7 +302,7 @@ std::wstring trim_copy(std::wstring value) {
   const auto is_space = [](wchar_t ch) {
     return ch == L' ' || ch == L'\t' || ch == L'\r' || ch == L'\n';
   };
-  const auto first = std::ranges::find_if_not(value, is_space);
+  const auto first = awj::compat::ranges::find_if_not(value, is_space);
   const auto last = std::find_if_not(value.rbegin(), value.rend(), is_space).base();
   if (first >= last) return {};
   return std::wstring(first, last);
@@ -298,7 +311,7 @@ std::wstring trim_copy(std::wstring value) {
 std::wstring memory_arg_from_ui(std::wstring value) {
   value = trim_copy(std::move(value));
   if (value.empty()) return value;
-  const bool has_unit = std::ranges::any_of(value, [](wchar_t ch) {
+  const bool has_unit = awj::compat::ranges::any_of(value, [](wchar_t ch) {
     return (ch >= L'a' && ch <= L'z') || (ch >= L'A' && ch <= L'Z');
   });
   return has_unit ? value : value + L"GiB";
@@ -339,7 +352,7 @@ void load_system_font_options(AwjStudio& app) {
     }
   }
   std::vector<std::string> sorted(families.begin(), families.end());
-  std::ranges::sort(sorted);
+  awj::compat::ranges::sort(sorted);
   std::vector<ComboOption> options;
   options.reserve(sorted.size() + 1);
   options.push_back(ComboOption{.text = to_shared("系统默认字体"), .enabled = true});
@@ -348,7 +361,7 @@ void load_system_font_options(AwjStudio& app) {
   }
   app.set_ui_font_options(std::make_shared<slint::VectorModel<ComboOption>>(std::move(options)));
   const auto selected = shared_to_string(app.get_ui_font_family());
-  const auto found = std::ranges::find(sorted, selected);
+  const auto found = awj::compat::ranges::find(sorted, selected);
   if (found == sorted.end()) {
     app.set_ui_font_index(0);
     app.set_ui_font_family({});
@@ -357,7 +370,7 @@ void load_system_font_options(AwjStudio& app) {
   }
 }
 
-std::expected<fs::path, std::string> choose_path(bool directory) {
+awj::compat::expected<fs::path, std::string> choose_path(bool directory) {
   const std::array<std::vector<std::string>, 3> commands{{
       directory ? std::vector<std::string>{"zenity", "--file-selection", "--directory"}
                 : std::vector<std::string>{"zenity", "--file-selection"},
@@ -371,20 +384,20 @@ std::expected<fs::path, std::string> choose_path(bool directory) {
       if (!selected->empty()) return fs::path{*selected};
     }
   }
-  return std::unexpected{"未选择路径，或未找到可用的 Linux 文件选择器（zenity/yad/kdialog）。"};
+  return awj::compat::unexpected{"未选择路径，或未找到可用的 Linux 文件选择器（zenity/yad/kdialog）。"};
 }
 
-std::expected<void, std::string> open_path(fs::path path) {
-  if (path.empty()) return std::unexpected{"没有可打开的路径。"};
+awj::compat::expected<void, std::string> open_path(fs::path path) {
+  if (path.empty()) return awj::compat::unexpected{"没有可打开的路径。"};
   std::error_code ec;
   if (fs::is_regular_file(path, ec) && !ec) path = path.parent_path();
   if (!fs::exists(path, ec) || ec) path = path.parent_path();
-  if (path.empty()) return std::unexpected{"路径不存在，无法打开。"};
+  if (path.empty()) return awj::compat::unexpected{"路径不存在，无法打开。"};
   const auto& native = path.native();
   if (awj::ui_process::launch({"gio", "open", native}) ||
       awj::ui_process::launch({"xdg-open", native}) ||
       awj::ui_process::launch({"thunar", native})) return {};
-  return std::unexpected{"未找到可用的目录打开工具（gio/xdg-open/thunar）。"};
+  return awj::compat::unexpected{"未找到可用的目录打开工具（gio/xdg-open/thunar）。"};
 }
 
 slint::SharedString to_shared(std::string_view text) {
@@ -471,7 +484,7 @@ std::string linux_update_check_time(std::int64_t unix_seconds) {
   if (unix_seconds <= 0) return {};
   const auto point = std::chrono::system_clock::time_point{
       std::chrono::seconds{unix_seconds}};
-  return std::format("{:%Y-%m-%d %H:%M:%S} UTC",
+  return awj::compat::format("{:%Y-%m-%d %H:%M:%S} UTC",
                      std::chrono::floor<std::chrono::seconds>(point));
 }
 
@@ -546,7 +559,7 @@ void sync_linux_update_history(
         .release_url = entry.release_url,
         .changelog_zh_cn = entry.changelog.zh_cn,
         .changelog_en = entry.changelog.en};
-    const auto existing = std::ranges::find_if(
+    const auto existing = awj::compat::ranges::find_if(
         merged_history, [&](const auto& item) { return item.version == version; });
     if (existing == merged_history.end()) {
       merged_history.push_back(signed_entry);
@@ -554,7 +567,7 @@ void sync_linux_update_history(
       *existing = signed_entry;
     }
   }
-  std::ranges::sort(merged_history, [](const auto& lhs, const auto& rhs) {
+  awj::compat::ranges::sort(merged_history, [](const auto& lhs, const auto& rhs) {
     const auto left = awj::update::parse_version(lhs.version);
     const auto right = awj::update::parse_version(rhs.version);
     return left && right ? *left > *right : lhs.version > rhs.version;
@@ -611,16 +624,16 @@ void restore_cached_linux_update_history(LinuxUiState& state) {
       awj::update::archive_manifest_v2_for_history(*manifest));
 }
 
-std::expected<void, std::string> atomic_write_linux_file(
+awj::compat::expected<void, std::string> atomic_write_linux_file(
     const fs::path& path, std::string_view bytes) {
   const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
   auto temporary = path;
-  temporary += std::format(".tmp-{}-{}", static_cast<long long>(::getpid()),
+  temporary += awj::compat::format(".tmp-{}-{}", static_cast<long long>(::getpid()),
                            stamp);
   const int descriptor = ::open(temporary.c_str(),
                                 O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0644);
   if (descriptor < 0) {
-    return std::unexpected{std::format("无法创建配置临时文件：{}",
+    return awj::compat::unexpected{awj::compat::format("无法创建配置临时文件：{}",
                                        std::strerror(errno))};
   }
   bool ok = true;
@@ -632,7 +645,7 @@ std::expected<void, std::string> atomic_write_linux_file(
     if (count < 0) {
       if (errno == EINTR) continue;
       ok = false;
-      error = std::format("写入配置失败：{}", std::strerror(errno));
+      error = awj::compat::format("写入配置失败：{}", std::strerror(errno));
       break;
     }
     if (count == 0) {
@@ -644,34 +657,34 @@ std::expected<void, std::string> atomic_write_linux_file(
   }
   if (ok && ::fsync(descriptor) != 0) {
     ok = false;
-    error = std::format("刷新配置失败：{}", std::strerror(errno));
+    error = awj::compat::format("刷新配置失败：{}", std::strerror(errno));
   }
   if (::close(descriptor) != 0 && ok) {
     ok = false;
-    error = std::format("关闭配置失败：{}", std::strerror(errno));
+    error = awj::compat::format("关闭配置失败：{}", std::strerror(errno));
   }
   if (!ok) {
     std::error_code ignored;
     fs::remove(temporary, ignored);
-    return std::unexpected{std::move(error)};
+    return awj::compat::unexpected{std::move(error)};
   }
   if (::rename(temporary.c_str(), path.c_str()) != 0) {
-    const auto message = std::format("原子替换配置失败：{}", std::strerror(errno));
+    const auto message = awj::compat::format("原子替换配置失败：{}", std::strerror(errno));
     std::error_code ignored;
     fs::remove(temporary, ignored);
-    return std::unexpected{message};
+    return awj::compat::unexpected{message};
   }
   const int directory = ::open(path.parent_path().c_str(),
                                O_RDONLY | O_DIRECTORY | O_CLOEXEC);
   if (directory < 0) {
-    return std::unexpected{std::format("无法打开配置目录进行刷新：{}",
+    return awj::compat::unexpected{awj::compat::format("无法打开配置目录进行刷新：{}",
                                        std::strerror(errno))};
   }
   const int sync_result = ::fsync(directory);
   const auto sync_error = errno;
   ::close(directory);
   if (sync_result != 0) {
-    return std::unexpected{std::format("刷新配置目录失败：{}",
+    return awj::compat::unexpected{awj::compat::format("刷新配置目录失败：{}",
                                        std::strerror(sync_error))};
   }
   return {};
@@ -710,7 +723,7 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   auto executable = awj::executable_path();
   if (!executable) {
     state.config_readable = false;
-    state.update_status_zh = std::format("无法定位 AWJ.jsonc：{}", executable.error());
+    state.update_status_zh = awj::compat::format("无法定位 AWJ.jsonc：{}", executable.error());
     state.update_status_en = "AWJ.jsonc could not be located.";
     return;
   }
@@ -729,7 +742,7 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
     }
   } catch (const std::exception& error) {
     state.config_readable = false;
-    state.update_status_zh = std::format("AWJ.jsonc 无法安全读取：{}", error.what());
+    state.update_status_zh = awj::compat::format("AWJ.jsonc 无法安全读取：{}", error.what());
     state.update_status_en = "AWJ.jsonc could not be read safely.";
     return;
   }
@@ -816,13 +829,12 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
     app.set_parameter_preset_description(to_shared(state.menu_preset_description));
 }
 
-std::expected<void, std::string> persist_linux_update_config(
+awj::compat::expected<void, std::string> persist_linux_update_config(
     const AwjStudio& app, LinuxUiState& state) {
   if (!state.config_readable || state.config_path.empty()) {
-    return std::unexpected{"AWJ.jsonc 当前不可安全写入。"};
+    return awj::compat::unexpected{"AWJ.jsonc 当前不可安全写入。"};
   }
-  // 根配置是白名单写入：仅保留队列预设的文件身份，清理其余普通队列、路径、
-  // 窗口状态以及曾经持久化的参数页数据。
+  // 更新已知字段，保留扩展键；明确退役的队列与窗口状态不再写回。
   nlohmann::ordered_json document = nlohmann::ordered_json::object();
   document["theme_index"] = app.get_theme_index();
   document["language_index"] = app.get_language_index();
@@ -858,8 +870,19 @@ std::expected<void, std::string> persist_linux_update_config(
   document["update_keyring_signature"] = state.update_keyring_signature;
   document["menu_params"] = nlohmann::ordered_json::array();
   for (std::size_t i = 0; i < state.menu_params.size(); ++i) {
-    document["menu_params"].push_back(linux_menu_params_json(
-        state.menu_params[i], static_cast<int>(i)));
+    auto entry = nlohmann::ordered_json::object();
+    if (state.config_document.contains("menu_params") && state.config_document["menu_params"].is_array() &&
+        i < state.config_document["menu_params"].size() && state.config_document["menu_params"][i].is_object())
+      entry = state.config_document["menu_params"][i];
+    entry.erase("size_limit_index");
+    entry.update(linux_menu_params_json(state.menu_params[i], static_cast<int>(i)));
+    document["menu_params"].push_back(std::move(entry));
+  }
+  constexpr std::array retired{"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature",
+      "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name",
+      "queue_format_index", "format_index", "quality_text", "input_path", "output_dir", "window_width", "window_height"};
+  for (const auto& [key, value] : state.config_document.items()) {
+    if (!document.contains(key) && awj::compat::ranges::find(retired, key) == retired.end()) document[key] = value;
   }
   auto bytes = document.dump(2);
   bytes.push_back('\n');
@@ -876,13 +899,13 @@ awj::update::ChannelPreference linux_update_preference(
              : awj::update::ChannelPreference::stable_only;
 }
 
-std::expected<void, std::string> open_linux_url(std::string url) {
+awj::compat::expected<void, std::string> open_linux_url(std::string url) {
   if (!awj::update::parse_allowed_https_url(url)) {
-    return std::unexpected{"拒绝打开不受信任的更新 URL。"};
+    return awj::compat::unexpected{"拒绝打开不受信任的更新 URL。"};
   }
   if (awj::ui_process::launch({"xdg-open", url}) ||
       awj::ui_process::launch({"gio", "open", url})) return {};
-  return std::unexpected{"未找到可用的 URL 打开工具（xdg-open/gio）。"};
+  return awj::compat::unexpected{"未找到可用的 URL 打开工具（xdg-open/gio）。"};
 }
 
 void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
@@ -901,8 +924,8 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
                                  : static_cast<std::uint64_t>(
                                        state->last_verified_manifest_v2_sequence);
   const auto preference = linux_update_preference(*state);
-  state->update_worker = std::jthread(
-      [weak, state, last_sequence, preference](std::stop_token token) {
+  state->update_worker = awj::compat::scoped_worker(
+      [weak, state, last_sequence, preference](awj::compat::stop_token token) {
         auto fetched = awj::update::fetch_verified_archive_manifest_v2(
             last_sequence, token);
         static_cast<void>(slint::invoke_from_event_loop(
@@ -913,7 +936,7 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
               (*app)->set_update_checking(false);
               if (!fetched) {
                 state->update_status_zh =
-                    std::format("检查失败：{}", fetched.error());
+                    awj::compat::format("检查失败：{}", fetched.error());
                 state->update_status_en = "Update check failed.";
                 sync_linux_update_ui(**app, *state);
                 return;
@@ -986,7 +1009,7 @@ void start_linux_update_check(slint::ComponentWeakHandle<AwjStudio> weak,
               if (auto saved = persist_linux_update_config(**app, *state); !saved) {
                 restore_linux_update_state(*state, before);
                 state->update_status_zh =
-                    std::format("检查失败：无法持久化状态：{}", saved.error());
+                    awj::compat::format("检查失败：无法持久化状态：{}", saved.error());
                 state->update_status_en =
                     "Update check failed: state could not be saved.";
               } else {
@@ -1072,13 +1095,13 @@ LinuxMenuParams default_linux_menu_params(int format_index) {
       default: return awj::OutputFormat::avif;
     }
   }();
-  params.quality_text = std::format("{}", awj::default_quality_for(format));
+  params.quality_text = awj::compat::format("{}", awj::default_quality_for(format));
   if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
       format == awj::OutputFormat::jxl) {
-    params.speed_text = std::format("{}", awj::default_speed_for(format));
+    params.speed_text = awj::compat::format("{}", awj::default_speed_for(format));
   }
   if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
-    params.bit_depth_text = std::format("{}", awj::encoding_defaults::default_webp_bit_depth);
+    params.bit_depth_text = awj::compat::format("{}", awj::encoding_defaults::default_webp_bit_depth);
   }
   params.jpegli_progressive_index = awj::encoding_defaults::default_jpegli_progressive_level;
   params.jpegli_optimize_huffman = awj::encoding_defaults::default_jpegli_optimize_huffman;
@@ -1089,7 +1112,7 @@ LinuxMenuParams default_linux_menu_params(int format_index) {
 
 
 std::string stage_seconds_text(double seconds) {
-  return seconds < 0.0 ? std::string{"-"} : std::format("{:.3f}s", seconds);
+  return seconds < 0.0 ? std::string{"-"} : awj::compat::format("{:.3f}s", seconds);
 }
 
 std::string stage_timings_text(double decode_seconds, double prepare_seconds,
@@ -1098,7 +1121,7 @@ std::string stage_timings_text(double decode_seconds, double prepare_seconds,
       encode_seconds < 0.0 && write_seconds < 0.0) {
     return {};
   }
-  return std::format("decode {} · prepare {} · encode {} · write {}",
+  return awj::compat::format("decode {} · prepare {} · encode {} · write {}",
                      stage_seconds_text(decode_seconds),
                      stage_seconds_text(prepare_seconds),
                      stage_seconds_text(encode_seconds),
@@ -1113,11 +1136,11 @@ std::string linux_result_status_text(const awj::EncodeResult& result) {
     return "已取消";
   }
   return result.message.empty() ? "失败"
-                                : std::format("失败 · {}", result.message);
+                                : awj::compat::format("失败 · {}", result.message);
 }
 
 TaskRow task_row_from_result(const awj::EncodeResult& result) {
-  return TaskRow{.order = to_shared(std::format("{}", result.index + 1)),
+  return TaskRow{.order = to_shared(awj::compat::format("{}", result.index + 1)),
                  .filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
                  .folder = to_shared(awj::path_to_utf8(result.input_path.parent_path())),
                  .size = to_shared(awj::format_size(result.original_bytes)),
@@ -1135,7 +1158,7 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
                  .output_path = to_shared(awj::path_to_utf8(result.output_path)),
                  .encoder = to_shared(result.encoder_id),
                  .threads = result.encoder_threads > 0
-                                ? to_shared(std::format("{}", result.encoder_threads))
+                                ? to_shared(awj::compat::format("{}", result.encoder_threads))
                                 : slint::SharedString{},
                  .stage_timings = to_shared(stage_timings_text(
                      result.decode_seconds, result.prepare_seconds,
@@ -1239,7 +1262,7 @@ void apply_linux_frame_progress(AwjStudio& app, LinuxUiState& state,
   if (found == state.queue_id_indices.end() || found->second >= state.queue_files.size()) return;
   auto& row = state.queue_files[found->second].row;
   if (row.state != 1) return;
-  const auto text = to_shared(std::format("编码帧 {}/{}", completed, total));
+  const auto text = to_shared(awj::compat::format("编码帧 {}/{}", completed, total));
   row.status = text;
   awj::ui::replace_queue_row(app, rows, found->second, row);
   app.set_status_text(text);
@@ -1263,7 +1286,7 @@ void set_linux_task_row_result(
     LinuxUiState& state, const awj::EncodeResult& result) {
   if (const auto index = linux_task_row_index_for_path(rows, state, result.input_path, result.index)) {
     auto row = task_row_from_result(result);
-    row.order = to_shared(std::format("{}", *index + 1));
+    row.order = to_shared(awj::compat::format("{}", *index + 1));
     state.queue_files[*index].row = row;
     awj::ui::replace_queue_row(app, rows, *index, row);
   }
@@ -1282,14 +1305,14 @@ void mark_linux_large_image_queued(AwjStudio& app, LinuxUiState& state,
 
 void add_large_image_task_row(const std::shared_ptr<slint::VectorModel<TaskRow>>& rows,
                               const awj::BatchLargeImageItem& item) noexcept {
-  push_task_row(rows, TaskRow{.order = to_shared(std::format("{}", item.file.index + 1)),
+  push_task_row(rows, TaskRow{.order = to_shared(awj::compat::format("{}", item.file.index + 1)),
                               .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
                               .folder = to_shared(awj::path_to_utf8(item.file.path.parent_path())),
                               .size = to_shared(awj::format_size(item.file.bytes)),
                               .output_size = to_shared("-"),
                               .status = to_shared("大图模式"),
                               .output = {},
-                              .log = to_shared(std::format("{}；{}", awj::large_image_reason_name(item.decision.reason), item.decision.reason_text)),
+                              .log = to_shared(awj::compat::format("{}；{}", awj::large_image_reason_name(item.decision.reason), item.decision.reason_text)),
                               .warning = false,
                               .locked = true});
 }
@@ -1314,8 +1337,8 @@ LargeImageRow make_linux_large_image_row(const awj::BatchLargeImageItem& item,
   const auto grid = linux_large_image_grid_available(item) ? "grid 可用" : "grid 不可用";
   return LargeImageRow{
       .filename = to_shared(awj::path_to_utf8(item.file.path.filename())),
-      .dimensions = to_shared(std::format("{} x {}", item.dimensions.width, item.dimensions.height)),
-      .reason = to_shared(std::format("{} · {}", awj::large_image_reason_name(item.decision.reason),
+      .dimensions = to_shared(awj::compat::format("{} x {}", item.dimensions.width, item.dimensions.height)),
+      .reason = to_shared(awj::compat::format("{} · {}", awj::large_image_reason_name(item.decision.reason),
                                       item.decision.reason_text)),
       .actions = to_shared(grid),
       .status = to_shared(status),
@@ -1345,7 +1368,7 @@ void push_linux_large_image(LinuxUiState& state, awj::BatchLargeImageItem item) 
   }
 }
 // Slint displays UTF-8; keep the original POSIX bytes until the user edits the field.
-std::expected<fs::path, std::string> selected_linux_path(
+awj::compat::expected<fs::path, std::string> selected_linux_path(
     const slint::SharedString& text, const fs::path& selected,
     std::string_view label) {
   if (!selected.empty() && text == to_shared(awj::path_to_utf8(selected))) return selected;
@@ -1376,7 +1399,7 @@ bool linux_queue_contains_path(const LinuxUiState& state, const fs::path& path) 
 TaskRow pending_linux_queue_row(const awj::ImageFile& file, std::size_t index,
                                 bool locked = false) {
   return TaskRow{
-      .order = to_shared(std::format("{}", index + 1)),
+      .order = to_shared(awj::compat::format("{}", index + 1)),
       .filename = to_shared(awj::path_to_utf8(file.path.filename())),
       .folder = to_shared(awj::path_to_utf8(file.path.parent_path())),
       .size = to_shared(awj::format_size(file.bytes)),
@@ -1399,7 +1422,7 @@ void refresh_linux_pending_queue(AwjStudio& app, LinuxUiState& state) {
   ids.reserve(state.queue_files.size());
   for (std::size_t index = 0; index < state.queue_files.size(); ++index) {
     auto row = state.queue_files[index].row;
-    row.order = to_shared(std::format("{}", index + 1));
+    row.order = to_shared(awj::compat::format("{}", index + 1));
     rows.push_back(std::move(row));
     ids.emplace(state.queue_files[index].id, index);
   }
@@ -1410,10 +1433,10 @@ void refresh_linux_pending_queue(AwjStudio& app, LinuxUiState& state) {
   refresh_linux_queue_counts(app, state.task_rows);
 }
 
-std::expected<bool, std::string> add_linux_queue_from_paths(
+awj::compat::expected<bool, std::string> add_linux_queue_from_paths(
     AwjStudio& app, LinuxUiState& state, std::span<const fs::path> paths,
     bool update_input_path) {
-  if (app.get_running()) return std::unexpected{"当前任务仍在运行或收尾，无法导入。"};
+  if (app.get_running()) return awj::compat::unexpected{"当前任务仍在运行或收尾，无法导入。"};
   try {
     std::vector<awj::ui_import::Root> roots;
     roots.reserve(paths.size());
@@ -1446,7 +1469,7 @@ std::expected<bool, std::string> add_linux_queue_from_paths(
       if (entry.incoming != awj::ui_queue::no_index) {
         const auto& file = scanned.files[entry.incoming];
         if (entry.previous == awj::ui_queue::no_index) {
-          if (next_id == UINT64_MAX) return std::unexpected{"队列身份编号已用尽。"};
+          if (next_id == UINT64_MAX) return awj::compat::unexpected{"队列身份编号已用尽。"};
           item.id = next_id++;
         }
         std::error_code ec;
@@ -1488,21 +1511,21 @@ std::expected<bool, std::string> add_linux_queue_from_paths(
     app.set_status_text(to_shared(awj::ui_import::summary_text(scanned, plan.added, plan.requeued)));
     return true;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"准备导入队列时内存不足。"};
+    return awj::compat::unexpected{"准备导入队列时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"准备导入队列时数量超过运行时限制。"};
+    return awj::compat::unexpected{"准备导入队列时数量超过运行时限制。"};
   } catch (const fs::filesystem_error&) {
-    return std::unexpected{"准备导入队列时文件系统访问失败。"};
+    return awj::compat::unexpected{"准备导入队列时文件系统访问失败。"};
   }
 }
 
-std::expected<bool, std::string> add_linux_queue_from_path(
+awj::compat::expected<bool, std::string> add_linux_queue_from_path(
     AwjStudio& app, LinuxUiState& state, const fs::path& path, bool update_input_path) {
   const std::array paths{path};
   return add_linux_queue_from_paths(app, state, paths, update_input_path);
 }
 
-std::expected<std::vector<awj::ImageFile>, std::string>
+awj::compat::expected<std::vector<awj::ImageFile>, std::string>
 build_linux_queue_files(const awj::AppConfig& cfg,
                         const std::vector<LinuxQueueItem>& queue,
                         const std::vector<fs::path>* only_paths = nullptr) {
@@ -1534,13 +1557,13 @@ build_linux_queue_files(const awj::AppConfig& cfg,
       std::wstring hash;
       if (needs_hash) {
         if (auto result = awj::file_hash_token(item.path, hash); !result) {
-          return std::unexpected{result.error()};
+          return awj::compat::unexpected{result.error()};
         }
       }
       std::wstring sha256;
       if (needs_sha256) {
         if (auto result = awj::file_sha256_token(item.path, sha256); !result) {
-          return std::unexpected{result.error()};
+          return awj::compat::unexpected{result.error()};
         }
       }
       files.push_back(awj::make_image_file(files.size(), item.path,
@@ -1548,26 +1571,26 @@ build_linux_queue_files(const awj::AppConfig& cfg,
                                            std::move(hash), std::move(sha256)));
     }
     if (files.empty()) {
-      return std::unexpected{"队列为空，或没有可重试的项目。"};
+      return awj::compat::unexpected{"队列为空，或没有可重试的项目。"};
     }
     if (auto result = awj::apply_source_extension_disambiguation(cfg, files);
         !result) {
-      return std::unexpected{result.error()};
+      return awj::compat::unexpected{result.error()};
     }
     if (auto result = awj::resolve_batch_output_paths(cfg, files); !result) {
-      return std::unexpected{result.error()};
+      return awj::compat::unexpected{result.error()};
     }
     return files;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"构建队列运行快照时内存不足。"};
+    return awj::compat::unexpected{"构建队列运行快照时内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"构建队列运行快照时数据超过运行时限制。"};
+    return awj::compat::unexpected{"构建队列运行快照时数据超过运行时限制。"};
   } catch (const fs::filesystem_error&) {
-    return std::unexpected{"构建队列运行快照时文件系统访问失败。"};
+    return awj::compat::unexpected{"构建队列运行快照时文件系统访问失败。"};
   }
 }
 
-std::expected<std::uint64_t, std::string> prepare_linux_queue_run(
+awj::compat::expected<std::uint64_t, std::string> prepare_linux_queue_run(
     AwjStudio& app, LinuxUiState& state, const std::vector<awj::ImageFile>& files) {
   try {
     std::unordered_map<std::string, std::size_t> indices;
@@ -1580,7 +1603,7 @@ std::expected<std::uint64_t, std::string> prepare_linux_queue_run(
     ids.reserve(files.size());
     for (const auto& file : files) {
       const auto found = indices.find(linux_queue_path_key(file.path));
-      if (found == indices.end()) return std::unexpected{"本轮任务不在当前队列中。"};
+      if (found == indices.end()) return awj::compat::unexpected{"本轮任务不在当前队列中。"};
       const auto index = found->second;
       prepared.emplace_back(index, pending_linux_queue_row(file, index, true));
       ids.push_back(state.queue_files[index].id);
@@ -1591,7 +1614,7 @@ std::expected<std::uint64_t, std::string> prepare_linux_queue_run(
     refresh_linux_pending_queue(app, state);
     return generation;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"准备本轮队列状态时内存不足。"};
+    return awj::compat::unexpected{"准备本轮队列状态时内存不足。"};
   }
 }
 
@@ -1620,19 +1643,19 @@ bool finish_linux_queue_run(AwjStudio& app, LinuxUiState& state,
   return true;
 }
 
-std::expected<fs::path, std::string> create_linux_queue_manifest(
+awj::compat::expected<fs::path, std::string> create_linux_queue_manifest(
     std::uint64_t run_id, const std::vector<awj::ImageFile>& files) {
   try {
     std::error_code ec;
     const auto temp_dir = fs::temp_directory_path(ec);
     if (ec) {
-      return std::unexpected{std::format("无法获取 Studio worker 临时目录：{}",
+      return awj::compat::unexpected{awj::compat::format("无法获取 Studio worker 临时目录：{}",
                                          ec.message())};
     }
     std::random_device random_device;
     std::mt19937_64 rng{random_device()};
     for (int attempt = 0; attempt < 16; ++attempt) {
-      const auto path = temp_dir / std::format(
+      const auto path = temp_dir / awj::compat::format(
           "AWJStudioQueue-{}-{}-{:016x}.awjq", static_cast<long long>(getpid()),
           run_id, rng());
       if (fs::exists(path, ec)) {
@@ -1644,14 +1667,14 @@ std::expected<fs::path, std::string> create_linux_queue_manifest(
         return path;
       } else {
         fs::remove(path, ec);
-        return std::unexpected{written.error()};
+        return awj::compat::unexpected{written.error()};
       }
     }
-    return std::unexpected{"无法创建唯一的 Studio 队列 manifest。"};
+    return awj::compat::unexpected{"无法创建唯一的 Studio 队列 manifest。"};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"创建 Studio 队列 manifest 时内存不足。"};
+    return awj::compat::unexpected{"创建 Studio 队列 manifest 时内存不足。"};
   } catch (const fs::filesystem_error&) {
-    return std::unexpected{"创建 Studio 队列 manifest 时文件系统访问失败。"};
+    return awj::compat::unexpected{"创建 Studio 队列 manifest 时文件系统访问失败。"};
   }
 }
 
@@ -1813,7 +1836,9 @@ std::wstring alpha_arg(int index) {
 std::wstring size_limit_arg(int index) {
   switch (index) {
     case 1: return L"none";
-    case 2: return L"manual";
+    case 2: return L"upscale";
+    case 3: return L"downscale";
+    case 4: return L"fixed";
     default: return L"auto";
   }
 }
@@ -1867,13 +1892,13 @@ int linux_avif_color_representation_index(
 LinuxParameterParams default_linux_parameter_params(int index) {
   const auto format = linux_output_format_from_index(index);
   LinuxParameterParams params{};
-  params.quality_text = std::format("{}", awj::default_quality_for(format));
+  params.quality_text = awj::compat::format("{}", awj::default_quality_for(format));
   if (format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
       format == awj::OutputFormat::jxl) {
-    params.speed_text = std::format("{}", awj::default_speed_for(format));
+    params.speed_text = awj::compat::format("{}", awj::default_speed_for(format));
   }
   if (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli) {
-    params.bit_depth_text = std::format("{}", awj::encoding_defaults::default_webp_bit_depth);
+    params.bit_depth_text = awj::compat::format("{}", awj::encoding_defaults::default_webp_bit_depth);
   }
   params.jpegli_progressive_index =
       awj::encoding_defaults::default_jpegli_progressive_level;
@@ -1937,10 +1962,10 @@ void apply_linux_parameter_params(AwjStudio& app,
   app.set_max_short_edge_text(to_shared(params.max_short_edge_text));
   app.set_scale_percent_text(to_shared(params.scale_percent_text));
   app.set_quality_follows_format(
-      params.quality_text == std::format("{}", awj::default_quality_for(format)));
+      params.quality_text == awj::compat::format("{}", awj::default_quality_for(format)));
   app.set_bit_depth_follows_format(
       (format == awj::OutputFormat::webp || format == awj::OutputFormat::jpgli)
-          ? params.bit_depth_text == std::format(
+          ? params.bit_depth_text == awj::compat::format(
                 "{}", awj::encoding_defaults::default_webp_bit_depth)
           : params.bit_depth_text.empty());
 }
@@ -1968,7 +1993,7 @@ void store_current_linux_parameter_params(AwjStudio& app, LinuxUiState& state) {
   }
   if ((format == awj::OutputFormat::avif || format == awj::OutputFormat::webp ||
        format == awj::OutputFormat::jxl) && trim_copy(params.speed_text).empty()) {
-    params.speed_text = std::format("{}", awj::default_speed_for(format));
+    params.speed_text = awj::compat::format("{}", awj::default_speed_for(format));
   }
   active_linux_parameter_params(state)[static_cast<std::size_t>(index)] =
       std::move(params);
@@ -2000,7 +2025,7 @@ void push_option(std::vector<std::wstring>& args, std::wstring option,
   }
 }
 
-std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
+awj::compat::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
     const AwjStudio* app, int format_index, const LinuxParameterParams& params) {
   std::vector<std::wstring> args;
   push_option(args, L"--format", format_arg(format_index));
@@ -2022,7 +2047,7 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
   push_option(args, L"--bit-depth", awj::wide_from_utf8(params.bit_depth_text));
   push_option(args, L"--speed", awj::wide_from_utf8(params.speed_text));
   push_option(args, L"--image-size-limit", size_limit_arg(params.size_limit_index));
-  if (params.size_limit_index == 2) {
+  if (params.size_limit_index >= 2 && params.size_limit_index <= 4) {
     push_option(args, L"--max-width", awj::wide_from_utf8(params.max_width_text));
     push_option(args, L"--max-height", awj::wide_from_utf8(params.max_height_text));
     push_option(args, L"--max-long-edge", awj::wide_from_utf8(params.max_long_edge_text));
@@ -2073,7 +2098,7 @@ std::expected<awj::AppConfig, std::string> linux_config_from_parameter_params(
 
   auto parsed = awj::parse_arguments(args);
   if (!parsed) {
-    return std::unexpected{parsed.error()};
+    return awj::compat::unexpected{parsed.error()};
   }
   return parsed->config;
 }
@@ -2112,16 +2137,16 @@ LinuxParameterParams linux_parameter_params_from_config(const awj::AppConfig& co
     }
   }();
   auto params = default_linux_parameter_params(index);
-  params.quality_text = std::format("{}", config.quality);
+  params.quality_text = awj::compat::format("{}", config.quality);
   params.visual_quality_text = config.visual_quality
-                                   ? std::format("{}", *config.visual_quality)
+                                   ? awj::compat::format("{}", *config.visual_quality)
                                    : std::string{};
-  params.bit_depth_text = config.bit_depth ? std::format("{}", *config.bit_depth)
+  params.bit_depth_text = config.bit_depth ? awj::compat::format("{}", *config.bit_depth)
                                             : std::string{};
   if (config.output_format == awj::OutputFormat::avif ||
       config.output_format == awj::OutputFormat::webp ||
       config.output_format == awj::OutputFormat::jxl) {
-    params.speed_text = std::format(
+    params.speed_text = awj::compat::format(
         "{}", config.speed.value_or(awj::default_speed_for(config.output_format)));
   }
   params.avif_encoder_index = linux_avif_encoder_index(config.avif_encoder);
@@ -2135,19 +2160,15 @@ LinuxParameterParams linux_parameter_params_from_config(const awj::AppConfig& co
   params.jxl_jpeg_lossless = config.jxl_jpeg_lossless;
   params.threads_text = config.max_jobs == awj::default_max_jobs()
                             ? std::string{}
-                            : std::format("{}", config.max_jobs);
+                            : awj::compat::format("{}", config.max_jobs);
   if (config.memory_limit_bytes != 0) {
-    params.memory_limit_text = std::format(
+    params.memory_limit_text = awj::compat::format(
         "{}", (config.memory_limit_bytes + awj::studio_defaults::bytes_per_gib - 1) /
                   awj::studio_defaults::bytes_per_gib);
   }
-  switch (config.image_size_limit.mode) {
-    case awj::ImageSizeLimitMode::none: params.size_limit_index = 1; break;
-    case awj::ImageSizeLimitMode::manual: params.size_limit_index = 2; break;
-    default: params.size_limit_index = 0; break;
-  }
-  const auto optional_text = [](const std::optional<int>& value) {
-    return value ? std::format("{}", *value) : std::string{};
+  params.size_limit_index = awj::image_size_mode_index(config.image_size_limit.mode);
+  const auto optional_text = [](const auto& value) {
+    return value ? awj::compat::format("{}", *value) : std::string{};
   };
   params.max_width_text = optional_text(config.image_size_limit.max_width);
   params.max_height_text = optional_text(config.image_size_limit.max_height);
@@ -2229,7 +2250,7 @@ void reload_linux_user_preset_options(AwjStudio& app, LinuxUiState& state) {
                           .description));
   if (!state.user_preset_errors.empty()) {
     app.set_status_text(to_shared(
-        std::format("发现无效用户预设：{}", state.user_preset_errors.front())));
+        awj::compat::format("发现无效用户预设：{}", state.user_preset_errors.front())));
   }
 }
 
@@ -2270,7 +2291,7 @@ void select_linux_queue_preset(AwjStudio& app, LinuxUiState& state, int index) {
                           .description));
 }
 
-std::expected<awj::AppConfig, std::string> config_from_ui(
+awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
     AwjStudio& app, LinuxUiState& state) {
   store_current_linux_parameter_params(app, state);
   const auto queue_choice =
@@ -2284,7 +2305,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
     const int user_index = preset_index - 1;
     if (user_index < 0 || static_cast<std::size_t>(user_index) >=
                               state.user_presets.size()) {
-      return std::unexpected{"选中的用户预设已不存在，请重新选择。"};
+      return awj::compat::unexpected{"选中的用户预设已不存在，请重新选择。"};
     }
     params = linux_parameter_params_from_config(awj::config_from_user_preset(
         state.user_presets[static_cast<std::size_t>(user_index)],
@@ -2294,8 +2315,8 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   if (config) {
     const auto input = selected_linux_path(app.get_input_path(), state.selected_input_path, "输入路径");
     const auto output = selected_linux_path(app.get_output_dir(), state.selected_output_dir, "输出目录");
-    if (!input) return std::unexpected{input.error()};
-    if (!output) return std::unexpected{output.error()};
+    if (!input) return awj::compat::unexpected{input.error()};
+    if (!output) return awj::compat::unexpected{output.error()};
     config->input_path = *input;
     config->output_dir = *output;
     config->append_png_suffix = queue_choice.append_png_suffix;
@@ -2303,7 +2324,7 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   return config;
 }
 
-std::expected<awj::UserPreset, std::string> linux_user_preset_from_parameters(
+awj::compat::expected<awj::UserPreset, std::string> linux_user_preset_from_parameters(
     std::string name, std::string description,
     const std::array<LinuxParameterParams, 5>& params) {
   auto preset = awj::default_user_preset();
@@ -2313,7 +2334,7 @@ std::expected<awj::UserPreset, std::string> linux_user_preset_from_parameters(
     auto config = linux_config_from_parameter_params(
         nullptr, index, params[static_cast<std::size_t>(index)]);
     if (!config) {
-      return std::unexpected{std::format("{} 预设参数错误：{}",
+      return awj::compat::unexpected{awj::compat::format("{} 预设参数错误：{}",
                                          awj::output_format_name(
                                              linux_output_format_from_index(index)),
                                          config.error())};
@@ -2419,7 +2440,7 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
   append_linux_shell_arg(command, params.strip_metadata ? "--strip" : "--keep-metadata");
   append_linux_shell_option(command, "--image-size-limit",
                             awj::utf8_from_wide(size_limit_arg(params.size_limit_index)));
-  if (params.size_limit_index == 2) {
+  if (params.size_limit_index >= 2 && params.size_limit_index <= 4) {
     if (!trim_copy(params.max_width_text).empty()) append_linux_shell_option(command, "--max-width", trim_copy(params.max_width_text));
     if (!trim_copy(params.max_height_text).empty()) append_linux_shell_option(command, "--max-height", trim_copy(params.max_height_text));
     if (!trim_copy(params.max_long_edge_text).empty()) append_linux_shell_option(command, "--max-long-edge", trim_copy(params.max_long_edge_text));
@@ -2459,7 +2480,7 @@ std::string awj_cli_command(const fs::path& exe, int format_index,
   return command;
 }
 
-std::expected<void, std::string> validate_linux_menu_params(
+awj::compat::expected<void, std::string> validate_linux_menu_params(
     const std::array<LinuxMenuParams, 5>& menu_params) {
   constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   for (int format_index = 0; format_index < 5; ++format_index) {
@@ -2480,7 +2501,7 @@ std::expected<void, std::string> validate_linux_menu_params(
     }
     push_flag(args, params.strip_metadata, L"--strip", L"--keep-metadata");
     push_option(args, L"--image-size-limit", size_limit_arg(params.size_limit_index));
-    if (params.size_limit_index == 2) {
+    if (params.size_limit_index >= 2 && params.size_limit_index <= 4) {
       push_option(args, L"--max-width", awj::wide_from_utf8(trim_copy(params.max_width_text)));
       push_option(args, L"--max-height", awj::wide_from_utf8(trim_copy(params.max_height_text)));
       push_option(args, L"--max-long-edge", awj::wide_from_utf8(trim_copy(params.max_long_edge_text)));
@@ -2510,12 +2531,12 @@ std::expected<void, std::string> validate_linux_menu_params(
     }
     auto parsed = awj::parse_arguments(args);
     if (!parsed) {
-      return std::unexpected{std::format("{} 菜单参数错误：{}",
+      return awj::compat::unexpected{awj::compat::format("{} 菜单参数错误：{}",
                                          labels[static_cast<std::size_t>(format_index)],
                                          parsed.error())};
     }
     if (auto valid = awj::validate_execution_config(parsed->config); !valid) {
-      return std::unexpected{std::format("{} 菜单参数错误：{}",
+      return awj::compat::unexpected{awj::compat::format("{} 菜单参数错误：{}",
                                          labels[static_cast<std::size_t>(format_index)],
                                          valid.error())};
     }
@@ -2536,49 +2557,49 @@ std::string nautilus_awj_script(const fs::path& exe, int format_index,
   return script;
 }
 
-std::expected<void, std::string> write_nautilus_scripts(
+awj::compat::expected<void, std::string> write_nautilus_scripts(
     const fs::path& exe, const std::array<LinuxMenuParams, 5>& menu_params) {
   const char* home = std::getenv("HOME");
-  if (home == nullptr || std::string_view{home}.empty()) return std::unexpected{"无法定位 HOME，不能写入 Nautilus 脚本。"};
+  if (home == nullptr || std::string_view{home}.empty()) return awj::compat::unexpected{"无法定位 HOME，不能写入 Nautilus 脚本。"};
   const auto scripts_dir = fs::path{home} / ".local" / "share" / "nautilus" / "scripts";
   std::error_code ec;
   fs::create_directories(scripts_dir, ec);
-  if (ec) return std::unexpected{std::format("创建 Nautilus 脚本目录失败: {}", ec.message())};
+  if (ec) return awj::compat::unexpected{awj::compat::format("创建 Nautilus 脚本目录失败: {}", ec.message())};
   constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   for (int i = 0; i < static_cast<int>(labels.size()); ++i) {
-    const auto script_path = scripts_dir / std::format("AWJ 转换为 {}", labels[static_cast<std::size_t>(i)]);
+    const auto script_path = scripts_dir / awj::compat::format("AWJ 转换为 {}", labels[static_cast<std::size_t>(i)]);
     std::ofstream out{script_path, std::ios::binary | std::ios::trunc};
-    if (!out) return std::unexpected{std::format("写入 Nautilus {} 脚本失败。", labels[static_cast<std::size_t>(i)])};
+    if (!out) return awj::compat::unexpected{awj::compat::format("写入 Nautilus {} 脚本失败。", labels[static_cast<std::size_t>(i)])};
     out << nautilus_awj_script(exe, i, menu_params[static_cast<std::size_t>(i)]);
     out.close();
     fs::permissions(script_path, fs::perms::owner_exec | fs::perms::group_exec | fs::perms::others_exec,
                     fs::perm_options::add, ec);
-    if (ec) return std::unexpected{std::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
+    if (ec) return awj::compat::unexpected{awj::compat::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
   }
   if (menu_params.front().install_avif_png_command) {
     const auto script_path = scripts_dir / "AWJ 转换为 AVIF.png";
     std::ofstream out{script_path, std::ios::binary | std::ios::trunc};
-    if (!out) return std::unexpected{"写入 Nautilus AVIF.png 脚本失败。"};
+    if (!out) return awj::compat::unexpected{"写入 Nautilus AVIF.png 脚本失败。"};
     out << nautilus_awj_script(exe, 0, menu_params.front(), true);
     out.close();
     fs::permissions(script_path,
                     fs::perms::owner_exec | fs::perms::group_exec |
                         fs::perms::others_exec,
                     fs::perm_options::add, ec);
-    if (ec) return std::unexpected{std::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
+    if (ec) return awj::compat::unexpected{awj::compat::format("设置 Nautilus 脚本权限失败: {}", ec.message())};
   } else {
     fs::remove(scripts_dir / "AWJ 转换为 AVIF.png", ec);
   }
   return {};
 }
 
-std::expected<void, std::string> remove_nautilus_script() {
+awj::compat::expected<void, std::string> remove_nautilus_script() {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) return {};
   std::error_code ec;
   constexpr std::array<std::string_view, 5> labels{"AVIF", "WebP", "JXL", "JPG", "PNG"};
   const auto scripts_dir = fs::path{home} / ".local" / "share" / "nautilus" / "scripts";
-  for (const auto label : labels) fs::remove(scripts_dir / std::format("AWJ 转换为 {}", label), ec);
+  for (const auto label : labels) fs::remove(scripts_dir / awj::compat::format("AWJ 转换为 {}", label), ec);
   fs::remove(scripts_dir / "AWJ 转换为 AVIF.png", ec);
   return {};
 }
@@ -2589,7 +2610,7 @@ std::string thunar_action_xml(const fs::path& exe, int format_index,
                                         : awj::utf8_from_wide(format_arg(format_index));
   auto command = awj_cli_command(exe, format_index, params, append_png_suffix);
   command += " %F";
-  return std::format(
+  return awj::compat::format(
       "  <action>\n"
       "    <icon>image-x-generic</icon>\n"
       "    <name>{}</name>\n"
@@ -2602,23 +2623,23 @@ std::string thunar_action_xml(const fs::path& exe, int format_index,
       "    <image-files/>\n"
       "    <directories/>\n"
       "  </action>\n",
-      xml_escape(std::format("AWJ 转换为 {}", format)),
+      xml_escape(awj::compat::format("AWJ 转换为 {}", format)),
       xml_escape(append_png_suffix ? "avif-png" : format),
       xml_escape(command));
 }
 
-std::expected<void, std::string> write_thunar_actions(
+awj::compat::expected<void, std::string> write_thunar_actions(
     const std::array<LinuxMenuParams, 5>& menu_params) {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) {
-    return std::unexpected{"无法定位 HOME，不能写入 Thunar 右键菜单。"};
+    return awj::compat::unexpected{"无法定位 HOME，不能写入 Thunar 右键菜单。"};
   }
   auto exe = awj::executable_path();
-  if (!exe) return std::unexpected{exe.error()};
+  if (!exe) return awj::compat::unexpected{exe.error()};
   const auto config_dir = fs::path{home} / ".config" / "Thunar";
   std::error_code ec;
   fs::create_directories(config_dir, ec);
-  if (ec) return std::unexpected{std::format("创建 Thunar 配置目录失败: {}", ec.message())};
+  if (ec) return awj::compat::unexpected{awj::compat::format("创建 Thunar 配置目录失败: {}", ec.message())};
   const auto uca = config_dir / "uca.xml";
   std::string xml;
   if (std::ifstream in{uca}; in) {
@@ -2637,12 +2658,12 @@ std::expected<void, std::string> write_thunar_actions(
   }
   xml.insert(xml.rfind("</actions>"), actions);
   std::ofstream out{uca, std::ios::binary | std::ios::trunc};
-  if (!out) return std::unexpected{"写入 Thunar 右键菜单失败。"};
+  if (!out) return awj::compat::unexpected{"写入 Thunar 右键菜单失败。"};
   out << xml;
   return {};
 }
 
-std::expected<void, std::string> remove_thunar_actions() {
+awj::compat::expected<void, std::string> remove_thunar_actions() {
   const char* home = std::getenv("HOME");
   if (home == nullptr || std::string_view{home}.empty()) return {};
   const auto uca = fs::path{home} / ".config" / "Thunar" / "uca.xml";
@@ -2651,27 +2672,27 @@ std::expected<void, std::string> remove_thunar_actions() {
   std::string xml{std::istreambuf_iterator<char>{in}, std::istreambuf_iterator<char>{}};
   xml = remove_awj_thunar_actions(std::move(xml));
   std::ofstream out{uca, std::ios::binary | std::ios::trunc};
-  if (!out) return std::unexpected{"写入 Thunar 右键菜单失败。"};
+  if (!out) return awj::compat::unexpected{"写入 Thunar 右键菜单失败。"};
   out << xml;
   return {};
 }
-std::expected<void, std::string> write_linux_file_manager_actions(
+awj::compat::expected<void, std::string> write_linux_file_manager_actions(
     const std::array<LinuxMenuParams, 5>& menu_params) {
   auto exe = awj::executable_path();
-  if (!exe) return std::unexpected{exe.error()};
+  if (!exe) return awj::compat::unexpected{exe.error()};
   auto nautilus = write_nautilus_scripts(*exe, menu_params);
   auto thunar = write_thunar_actions(menu_params);
   if (!nautilus && !thunar) {
-    return std::unexpected{std::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
+    return awj::compat::unexpected{awj::compat::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
   }
   return {};
 }
 
-std::expected<void, std::string> remove_linux_file_manager_actions() {
+awj::compat::expected<void, std::string> remove_linux_file_manager_actions() {
   auto nautilus = remove_nautilus_script();
   auto thunar = remove_thunar_actions();
   if (!nautilus && !thunar) {
-    return std::unexpected{std::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
+    return awj::compat::unexpected{awj::compat::format("Nautilus: {}; Thunar: {}", nautilus.error(), thunar.error())};
   }
   return {};
 }
@@ -2734,7 +2755,7 @@ bool linux_menu_installed() {
   return xml.find("<unique-id>awjimage-") != std::string::npos;
 }
 
-std::expected<void, std::string> save_linux_menu_settings(
+awj::compat::expected<void, std::string> save_linux_menu_settings(
     AwjStudio& app, LinuxUiState& state) {
   store_linux_menu_params(app, state);
   if (auto valid = validate_linux_menu_params(state.menu_params); !valid)
@@ -2746,28 +2767,28 @@ std::expected<void, std::string> save_linux_menu_settings(
     std::error_code ec;
     if (fs::exists(state.config_path, ec) && !ec) {
       std::ifstream input{state.config_path, std::ios::binary};
-      if (!input) return std::unexpected{"无法备份菜单配置。"};
+      if (!input) return awj::compat::unexpected{"无法备份菜单配置。"};
       previous_file.emplace(std::istreambuf_iterator<char>{input},
                             std::istreambuf_iterator<char>{});
-      if (input.bad()) return std::unexpected{"读取菜单配置备份失败。"};
+      if (input.bad()) return awj::compat::unexpected{"读取菜单配置备份失败。"};
     } else if (ec) {
-      return std::unexpected{"无法检查菜单配置文件。"};
+      return awj::compat::unexpected{"无法检查菜单配置文件。"};
     }
   }
   if (auto saved = persist_linux_update_config(app, state); !saved)
     return saved;
   if (!installed) return {};
   if (auto synced = write_linux_file_manager_actions(state.menu_params); !synced) {
-    std::expected<void, std::string> restored{};
+    awj::compat::expected<void, std::string> restored{};
     if (previous_file) {
       restored = atomic_write_linux_file(state.config_path, *previous_file);
     } else {
       std::error_code ec;
       fs::remove(state.config_path, ec);
-      if (ec) restored = std::unexpected{ec.message()};
+      if (ec) restored = awj::compat::unexpected{ec.message()};
     }
     if (restored) state.config_document = previous_document;
-    return std::unexpected{synced.error() +
+    return awj::compat::unexpected{synced.error() +
                            (restored ? "" : " 配置恢复失败：" + restored.error())};
   }
   return {};
@@ -2789,7 +2810,7 @@ void set_format_quality(AwjStudio& app, int index) {
         return awj::default_quality_for(awj::OutputFormat::avif);
     }
   }();
-  app.set_quality_text(to_shared(std::format("{}", quality)));
+  app.set_quality_text(to_shared(awj::compat::format("{}", quality)));
 }
 
 void initialize_ui(AwjStudio& app) {
@@ -2802,13 +2823,13 @@ void initialize_ui(AwjStudio& app) {
   app.set_timestamp_ui_visible(false);
   app.set_visual_quality_fallback(true);
   app.set_visual_quality_gpu_help_text(to_shared("默认启用 Vulkan 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"));
-  app.set_avif_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
-  app.set_webp_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::webp))));
-  app.set_jxl_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::jxl))));
-  app.set_jpegli_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::jpgli))));
-  app.set_png_quality_default(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::png))));
-  app.set_webp_bit_depth_default(to_shared(std::format("{}", awj::encoding_defaults::default_webp_bit_depth)));
-  app.set_quality_text(to_shared(std::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
+  app.set_avif_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
+  app.set_webp_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::webp))));
+  app.set_jxl_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::jxl))));
+  app.set_jpegli_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::jpgli))));
+  app.set_png_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::png))));
+  app.set_webp_bit_depth_default(to_shared(awj::compat::format("{}", awj::encoding_defaults::default_webp_bit_depth)));
+  app.set_quality_text(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
   app.set_template_text(to_shared(std::string{awj::encoding_defaults::default_output_template_text}));
   app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
   app.set_unlock_memory_limit(false);
@@ -2953,7 +2974,7 @@ int awj::studio::run_studio_ui() {
         if (auto saved = persist_linux_update_config(**app, *state); !saved) {
           restore_linux_update_state(*state, before);
           state->update_status_zh =
-              std::format("更新渠道保存失败：{}", saved.error());
+              awj::compat::format("更新渠道保存失败：{}", saved.error());
           state->update_status_en = "The update channel could not be saved.";
           sync_linux_update_ui(**app, *state);
           return;
@@ -2979,7 +3000,7 @@ int awj::studio::run_studio_ui() {
           restore_linux_update_state(*state, before);
           state->changelog_opened_manually = previous_manual;
           state->update_status_zh =
-              std::format("更新日志设置保存失败：{}", saved.error());
+              awj::compat::format("更新日志设置保存失败：{}", saved.error());
           state->update_status_en =
               "The changelog setting could not be saved.";
         }
@@ -2994,7 +3015,7 @@ int awj::studio::run_studio_ui() {
             if (auto saved = persist_linux_update_config(**app, *state); !saved) {
               restore_linux_update_state(*state, before);
               state->update_status_zh =
-                  std::format("更新日志设置保存失败：{}", saved.error());
+                  awj::compat::format("更新日志设置保存失败：{}", saved.error());
               state->update_status_en =
                   "The changelog setting could not be saved.";
             }
@@ -3047,9 +3068,9 @@ int awj::studio::run_studio_ui() {
         state->update_status_en = "Verifying and downloading the update...";
         (*app)->set_update_checking(true);
         sync_linux_update_ui(**app, *state);
-        state->update_worker = std::jthread(
+        state->update_worker = awj::compat::scoped_worker(
             [weak, state, requested_version, release_url, preference,
-             sequence](std::stop_token token) {
+             sequence](awj::compat::stop_token token) {
               auto staged = awj::update::stage_and_launch_linux_update(
                   requested_version, preference, sequence, token);
               static_cast<void>(slint::invoke_from_event_loop(
@@ -3060,7 +3081,7 @@ int awj::studio::run_studio_ui() {
                     (*app)->set_update_checking(false);
                     if (!staged) {
                       state->update_status_zh =
-                          std::format("更新失败：{}", staged.error());
+                          awj::compat::format("更新失败：{}", staged.error());
                       state->update_status_en = "The update could not be installed.";
                       sync_linux_update_ui(**app, *state);
                       if (staged.error().starts_with("INSTALL_DIR_NOT_WRITABLE:")) {
@@ -3098,7 +3119,7 @@ int awj::studio::run_studio_ui() {
           select_linux_queue_preset(**app, *state,
               awj::studio::queue_preset_index_for_file(state->user_presets, previous_file));
           (*app)->set_status_text(to_shared(
-              std::format("队列预设保存失败，已恢复原选择：{}", saved.error())));
+              awj::compat::format("队列预设保存失败，已恢复原选择：{}", saved.error())));
         }
       }
     });
@@ -3166,7 +3187,7 @@ int awj::studio::run_studio_ui() {
       if (state->queue_preset_file != previous_queue_file) {
         if (auto saved = persist_linux_update_config(**app, *state); !saved) {
           // 删除已完成，不能因配置写失败恢复一个已不存在的预设。
-          (*app)->set_status_text(to_shared(std::format(
+          (*app)->set_status_text(to_shared(awj::compat::format(
               "用户预设已删除，但队列选择保存失败：{}", saved.error())));
           return;
         }
@@ -3232,7 +3253,7 @@ int awj::studio::run_studio_ui() {
           (*app)->set_preset_editor_error({});
           if (state->queue_preset_file != previous_queue_file) {
             if (auto persisted = persist_linux_update_config(**app, *state); !persisted) {
-              (*app)->set_status_text(to_shared(std::format(
+              (*app)->set_status_text(to_shared(awj::compat::format(
                   "用户预设已保存，但队列选择保存失败：{}", persisted.error())));
               return;
             }
@@ -3476,20 +3497,20 @@ int awj::studio::run_studio_ui() {
       auto cfg = config_from_ui(**app, *state);
       if (!cfg) {
         (*app)->set_status_text(
-            to_shared(std::format("配置错误：{}", cfg.error())));
+            to_shared(awj::compat::format("配置错误：{}", cfg.error())));
         return;
       }
       auto retry_paths = state->failed_paths;
       auto files = build_linux_queue_files(*cfg, state->queue_files, &retry_paths);
       if (!files) {
         (*app)->set_status_text(
-            to_shared(std::format("重试准备失败：{}", files.error())));
+            to_shared(awj::compat::format("重试准备失败：{}", files.error())));
         return;
       }
       auto manifest = create_linux_queue_manifest(state->next_queue_run_id++, *files);
       if (!manifest) {
         (*app)->set_status_text(
-            to_shared(std::format("重试准备失败：{}", manifest.error())));
+            to_shared(awj::compat::format("重试准备失败：{}", manifest.error())));
         return;
       }
       cfg->studio_queue_manifest = *manifest;
@@ -3504,12 +3525,12 @@ int awj::studio::run_studio_ui() {
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared(
-          std::format("正在重试 {} 个失败项…", retry_paths.size())));
+          awj::compat::format("正在重试 {} 个失败项…", retry_paths.size())));
       auto rows = state->task_rows;
-      state->worker = std::jthread(
+      state->worker = awj::compat::scoped_worker(
           [weak, state, rows, generation, cfg = std::move(*cfg),
            retry_paths = std::move(retry_paths), manifest_path = *manifest](
-              std::stop_token token) mutable {
+              awj::compat::stop_token token) mutable {
             auto progress = [weak, state, rows, generation](
                                 const awj::BatchProgress& event) {
               slint::invoke_from_event_loop([weak, state, rows, generation, event] {
@@ -3551,11 +3572,11 @@ int awj::studio::run_studio_ui() {
                         summary ? std::string_view{} : std::string_view{summary.error()})) return;
                     if (!summary) {
                       (*app)->set_progress(0.0f);
-                      (*app)->set_status_text(to_shared(std::format("重试失败：{}", summary.error())));
+                      (*app)->set_status_text(to_shared(awj::compat::format("重试失败：{}", summary.error())));
                       return;
                     }
                     (*app)->set_progress(1.0f);
-                    (*app)->set_status_text(to_shared(std::format(
+                    (*app)->set_status_text(to_shared(awj::compat::format(
                         "重试完成：成功 {}，失败 {}，取消 {}。",
                         summary->ok_count, summary->failed_count, summary->canceled_count)));
                   }
@@ -3593,12 +3614,12 @@ int awj::studio::run_studio_ui() {
       const auto item = state->large_image_items[static_cast<std::size_t>(index)];
       const bool available = action == "grid" && linux_large_image_grid_available(item);
       if (!available) {
-        (*app)->set_status_text(to_shared(std::format("{} 不可用", action)));
+        (*app)->set_status_text(to_shared(awj::compat::format("{} 不可用", action)));
         return;
       }
       auto cfg = config_from_ui(**app, *state);
       if (!cfg) {
-        (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
+        (*app)->set_status_text(to_shared(awj::compat::format("配置错误：{}", cfg.error())));
         return;
       }
       (*cfg).input_path = item.file.path;
@@ -3614,12 +3635,12 @@ int awj::studio::run_studio_ui() {
         state->run_queue_ids.clear();
         generation = ++state->run_generation;
       }
-      set_linux_large_image_status(*state, index, std::format("已选择 {} · 正在编码…", action));
+      set_linux_large_image_status(*state, index, awj::compat::format("已选择 {} · 正在编码…", action));
       (*app)->set_running(true);
       (*app)->set_progress(0.0f);
-      (*app)->set_status_text(to_shared(std::format("大图处理：{}", action)));
+      (*app)->set_status_text(to_shared(awj::compat::format("大图处理：{}", action)));
       const auto rows = state->task_rows;
-      state->worker = std::jthread([weak, state, rows, generation, cfg = std::move(*cfg), index, action](std::stop_token token) mutable {
+      state->worker = awj::compat::scoped_worker([weak, state, rows, generation, cfg = std::move(*cfg), index, action](awj::compat::stop_token token) mutable {
         auto progress = [weak, state, rows, generation](const awj::BatchProgress& event) {
           slint::invoke_from_event_loop([weak, state, rows, generation, event] {
                 if (state->run_generation != generation) return;
@@ -3647,13 +3668,13 @@ int awj::studio::run_studio_ui() {
                 summary ? std::string_view{} : std::string_view{summary.error()})) return;
             if (!summary) {
               set_linux_large_image_status(*state, index, "失败");
-              (*app)->set_status_text(to_shared(std::format("大图失败：{}", summary.error())));
+              (*app)->set_status_text(to_shared(awj::compat::format("大图失败：{}", summary.error())));
               return;
             }
             const bool ok = summary->ok_count > 0 && summary->failed_count == 0;
-            set_linux_large_image_status(*state, index, ok ? std::format("{} 完成", action) : std::format("{} 失败", action));
+            set_linux_large_image_status(*state, index, ok ? awj::compat::format("{} 完成", action) : awj::compat::format("{} 失败", action));
             (*app)->set_progress(1.0f);
-            (*app)->set_status_text(to_shared(std::format("大图完成：成功 {}，失败 {}，取消 {}。",
+            (*app)->set_status_text(to_shared(awj::compat::format("大图完成：成功 {}，失败 {}，取消 {}。",
                                                          summary->ok_count, summary->failed_count, summary->canceled_count)));
           }
         });
@@ -3672,7 +3693,7 @@ int awj::studio::run_studio_ui() {
       }
       auto cfg = config_from_ui(**app, *state);
       if (!cfg) {
-        (*app)->set_status_text(to_shared(std::format("配置错误：{}", cfg.error())));
+        (*app)->set_status_text(to_shared(awj::compat::format("配置错误：{}", cfg.error())));
         return;
       }
       if (state->queue_files.empty()) {
@@ -3682,13 +3703,13 @@ int awj::studio::run_studio_ui() {
       auto files = build_linux_queue_files(*cfg, state->queue_files);
       if (!files) {
         (*app)->set_status_text(
-            to_shared(std::format("队列准备失败：{}", files.error())));
+            to_shared(awj::compat::format("队列准备失败：{}", files.error())));
         return;
       }
       auto manifest = create_linux_queue_manifest(state->next_queue_run_id++, *files);
       if (!manifest) {
         (*app)->set_status_text(
-            to_shared(std::format("队列准备失败：{}", manifest.error())));
+            to_shared(awj::compat::format("队列准备失败：{}", manifest.error())));
         return;
       }
       cfg->studio_queue_manifest = *manifest;
@@ -3704,8 +3725,8 @@ int awj::studio::run_studio_ui() {
       (*app)->set_progress(0.0f);
       (*app)->set_status_text(to_shared("正在转换…"));
       auto rows = state->task_rows;
-      state->worker = std::jthread([weak, state, rows, generation, cfg = std::move(*cfg),
-                                    manifest_path = *manifest](std::stop_token token) mutable {
+      state->worker = awj::compat::scoped_worker([weak, state, rows, generation, cfg = std::move(*cfg),
+                                    manifest_path = *manifest](awj::compat::stop_token token) mutable {
         auto progress = [weak, state, rows, generation](const awj::BatchProgress& event) {
           slint::invoke_from_event_loop([weak, state, rows, generation, event] {
                 if (state->run_generation != generation) return;
@@ -3747,11 +3768,11 @@ int awj::studio::run_studio_ui() {
                 summary ? std::string_view{} : std::string_view{summary.error()})) return;
             if (!summary) {
               (*app)->set_progress(0.0f);
-              (*app)->set_status_text(to_shared(std::format("转换失败：{}", summary.error())));
+              (*app)->set_status_text(to_shared(awj::compat::format("转换失败：{}", summary.error())));
               return;
             }
             (*app)->set_progress(1.0f);
-            (*app)->set_status_text(to_shared(std::format("完成：成功 {}，失败 {}，取消 {}。",
+            (*app)->set_status_text(to_shared(awj::compat::format("完成：成功 {}，失败 {}，取消 {}。",
                                                          summary->ok_count,
                                                          summary->failed_count,
                                                          summary->canceled_count)));
@@ -3788,10 +3809,10 @@ int awj::studio::run_studio_ui() {
     if (state->update_worker.joinable()) state->update_worker.join();
     return 0;
   } catch (const std::exception& ex) {
-    std::println(stderr, "[FAIL] 启动 Slint UI 失败: {}", ex.what());
+    awj::compat::println(stderr, "[FAIL] 启动 Slint UI 失败: {}", ex.what());
     return 1;
   } catch (...) {
-    std::println(stderr, "[FAIL] 启动 Slint UI 失败。");
+    awj::compat::println(stderr, "[FAIL] 启动 Slint UI 失败。");
     return 1;
   }
 }

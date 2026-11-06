@@ -58,9 +58,9 @@ AWJ 仅接受 **ISO 21496-1 Gain Map**，保留固定版本 libultrahdr 作为 J
 
 Gain Map 默认缩小倍率 4，小尺寸降低倍率；质量跟随 quality。HDR Gain Map JPEG 暂不支持 visual-quality，q100 不声明 JPEG 无损。headroom 依据 canonical 实际 RGB 分量峰值，不用 MaxCLL 或 CIE Y 代替；capacity_min=1，最小正 headroom 为 1/1024 stop，生成和 ISO 重读均验证 metadata。超过引擎范围仍明确报告，不能夹掉高光后冒称完整 HDR。
 
-## GIF / APNG / WebP / AVIF → 动画 AVIF
+## GIF / APNG / WebP / AVIF → 动画 AVIF 或 WebP
 
-动画 AVIF 维持既有合同，与静态图的双呈现策略独立。GIF/APNG/WebP/AVIF 序列输出 AVIF 时自动保留动画；其他格式只处理首帧并提示。历史 `--preserve-animation` 仍接受但无需传入，首页不显示动画开关。
+GIF/APNG/WebP/AVIF 序列输出 AVIF 或 WebP 时自动保留动画；PNG/JPG/JXL 仍只处理首帧并提示。单帧输入使用相应静态编码器，损坏动画不会回退成成功的首帧文件。历史 `--preserve-animation` 仍接受但无需传入，首页不显示动画开关。WebP 输出优先使用 APNG 动画时间线，不把独立 PNG poster 混入动画；AVIF 保留原有独立 poster 的静态优先规则。
 
 - 使用所选 AVIF 预设：默认 AOM、质量 70、速度 5、自动位深（8-bit GIF/APNG 通常 10-bit，16-bit APNG 限制 12-bit），RGB/RGBA auto 444，灰度 APNG auto 400。透明 alpha 保留，除非明确移除。
 - 多帧不支持 visual-quality 1..99，明确失败；100 保持既有无损量化语义。单帧输出静态 AVIF。
@@ -74,7 +74,17 @@ Gain Map 默认缩小倍率 4，小尺寸降低倍率；质量跟随 quality。H
 - libaom 预算为保守估计，不是第三方 allocator 硬上界。帧间可取消，同步 codec 调用结束后再响应取消；播放兼容性与编码正确性分别验收。
 - CLI 高级参数 `--avif-animation-tune auto|ssim|psnr`、`--avif-animation-keyframe N` 保留；Studio、预设、右键不保存。速度 7–10 用实时编码，10 对应 CPU 9。
 
-## 依赖与定向验证
+### 动画 WebP 与统一几何处理
+
+- 动画 WebP 使用已锁定的 libwebp / WebPAnimEncoder，不引入 FFmpeg、WebM 或 VP9。普通质量／速度沿用静态 WebP 映射，alpha 保留；WebP 仍为 SDR 8-bit，HDR 通过既有 tone/gamut mapping 转换，q100 仅表示目标像素的无损编码。
+- 帧时长按累计时间量化为毫秒，显式提交最后一帧结束时间；不能表示的亚毫秒帧、过长帧、时间戳或循环次数明确失败，不静默丢帧或变速。多帧不支持 `visual-quality 1..99`。
+- 不设置 Telegram 的尺寸、时长、帧率或 256 KB 业务限制；动画 WebP 本身不等同于 Telegram 视频贴图。格式与内存安全上限继续保留，libwebp 累积压缩数据的内存准入采用保守估计，不宣称硬限制第三方分配器。
+- 真实几何缩放统一使用 CPU Lanczos-3：横纵分离、缩小抗混叠、透明色预乘后过滤、安全反预乘，保留高位深及 FP16 工作值。旧最近邻与整数坐标隐式缩放已移除；旋转、镜像和纯裁切不做无谓重采样。
+- `--image-size-limit upscale|downscale` 分别对所有已填条件算出的倍率取最大／最小；`--width`、`--height`、`--long-edge`、`--short-edge` 和 `--scale-percent` 可组合。两种模式都允许放大或缩小，比例为正有限数，不以 100% 封顶。全空不缩放。
+- `--image-size-limit fixed` 在固定尺寸与比例之间二选一。四个尺寸可组合，内容等比完整放入画布并居中，支持且保留 alpha 时补透明，否则补纯黑；奇数余量两侧相差最多一像素。只填 `--scale-percent` 时按比例缩放，目标尺寸取最近整数像素且至少为一像素，不另加画布。GUI 填写尺寸后禁用比例框，只填比例后禁用四个尺寸框，清空后恢复；CLI／预设同时填写两类值或填写矛盾尺寸时仍明确失败。
+- 原 `manual` / `--max-*` 保留兼容；旧预设和 UI 索引 2 迁移为“手动缩小”，缺省比例按 100% 保留旧版只缩不放的效果。新配置使用稳定模式名称，不重新解释旧索引。
+
+## 依赖与验证入口
 
 依赖身份仍由 `cmake/codec-dependencies.json` 固定，源码压缩包按原始字节校验，补丁/overlay 文本按 UTF-8、CRLF→LF 归一化；本次策略不更换依赖。不绕过来源 HEAD、补丁 hash 或配置门禁。
 

@@ -75,6 +75,12 @@ export component ParameterForm inherits VerticalLayout {
     in property <bool> menu-mode: false;
     property <bool> menu-actions-visible: root.menu-mode || root.shell-menu-injection-supported;
     property <bool> menu-options-visible: root.menu-mode || (root.shell-menu-injection-supported && root.parameter-preset-index > 1);
+    property <bool> has-size-dimensions: !root.max-width-text.is-empty || !root.max-height-text.is-empty
+        || !root.max-long-edge-text.is-empty || !root.max-short-edge-text.is-empty;
+    // 旧配置若同时残留两类值，仍允许清空尺寸，避免所有输入都被锁死。
+    property <bool> dimension-inputs-enabled: !root.running && (root.size-limit-index != 4
+        || root.scale-percent-text.is-empty || root.has-size-dimensions);
+    property <bool> percent-input-enabled: !root.running && (root.size-limit-index != 4 || !root.has-size-dimensions);
     property <length> install-button-width: install-label.preferred-width + 24px;
     property <length> remove-button-width: remove-label.preferred-width + 24px;
     property <length> warning-width: root.context-menu-warning.is-empty ? 0px : 160px;
@@ -90,6 +96,10 @@ export component ParameterForm inherits VerticalLayout {
         : root.format-index == 3
             ? [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }]
             : [{ text: @tr("自动"), enabled: true }, { text: "444", enabled: true }, { text: "422", enabled: true }, { text: "420", enabled: true }, { text: "400", enabled: true }];
+    changed size-limit-index => {
+        if root.size-limit-index == 4 && root.has-size-dimensions { root.scale-percent-text = ""; }
+    }
+
     changed avif-color-representation-index => {
         if root.forced-avif-identity && (root.chroma-index < 0 || root.chroma-index > 1) {
             root.chroma-index = 0;
@@ -288,45 +298,47 @@ export component ParameterForm inherits VerticalLayout {
         spacing: 10px;
         cross-axis-alignment: center;
         Text { text: @tr("尺寸限制"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        SoftComboBox { accessible-name: @tr("图片尺寸限制"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: @tr("无限制"), enabled: true }, { text: @tr("手动"), enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
+        SoftComboBox { accessible-name: @tr("图片尺寸限制"); viewport-height: root.window-height; close-generation: root.combo-close-generation; popup-requested => { root.combo-popup-requested(); } popup-finished => { root.combo-popup-finished(); } model: [{ text: @tr("自动"), enabled: true }, { text: @tr("无限制"), enabled: true }, { text: @tr("手动放大"), enabled: true }, { text: @tr("手动缩小"), enabled: true }, { text: @tr("固定长／宽"), enabled: true }]; current-index <=> root.size-limit-index; enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; normal-background: root.combo-bg; hover-background: root.combo-bg-hover; disabled-background: root.combo-bg-disabled; selected-background: root.combo-selected-bg; normal-border: root.combo-border; hover-border: root.combo-border-hover; normal-text: root.text-body; disabled-text: root.text-soft; muted-text: root.text-muted; selected-text: root.text-body; }
         ParamHint {
             horizontal-stretch: 1;
-            lead: @tr("自动 = 保证还能正确解码");
+            lead: root.size-limit-index == 2 ? @tr("取已填条件的最大倍率")
+                : root.size-limit-index == 3 ? @tr("取已填条件的最小倍率")
+                : root.size-limit-index == 4 ? @tr("尺寸与比例二选一") : @tr("自动按格式限制边长");
             lead-color: root.hint-cyan;
-            detail: @tr("按格式与解码能力限制边长，也可以切换成无限制。手动时取宽、高、长边、短边里最严格的一项。");
+            detail: @tr("缩放统一使用 Lanczos。手动放大／缩小可组合宽、高、长边、短边和比例，允许超过或低于 100%。固定模式的尺寸与比例互斥：填尺寸时等比居中补边，只填比例时按比例缩放；不透明输出补黑边。");
             detail-color: root.text-muted;
         }
     }
 
-    if root.size-limit-index == 2 && root.available-width >= 690px: HorizontalLayout {
+    if root.size-limit-index >= 2 && root.available-width >= 690px: HorizontalLayout {
         height: 48px;
         spacing: 10px;
         cross-axis-alignment: center;
-        Text { text: @tr("手动尺寸"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-        LineEdit { accessible-label: @tr("最大宽度"); text <=> root.max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-        LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-        LineEdit { accessible-label: @tr("最大长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-        LineEdit { accessible-label: @tr("最大短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+        Text { text: @tr("尺寸参数"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+        LineEdit { accessible-label: @tr("宽度"); text <=> root.max-width-text; placeholder-text: @tr("宽度"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("高度"); text <=> root.max-height-text; placeholder-text: @tr("高度"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("长边"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
+        LineEdit { accessible-label: @tr("短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("短边"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
         HorizontalLayout {
             width: 100px;
             height: root.parameter-control-height;
             spacing: 4px;
-            LineEdit { accessible-label: @tr("缩小至"); text <=> root.scale-percent-text; placeholder-text: @tr("缩小至"); input-type: number; enabled: !root.running; horizontal-stretch: 1; height: root.parameter-control-height; }
+            LineEdit { accessible-label: @tr("缩放比例"); text <=> root.scale-percent-text; placeholder-text: @tr("比例"); input-type: text; enabled: root.percent-input-enabled; opacity: self.enabled ? 1.0 : 0.56; horizontal-stretch: 1; height: root.parameter-control-height; }
             Text { text: "%"; width: 14px; color: root.text-body; font-size: 14px; vertical-alignment: center; horizontal-alignment: center; }
         }
         Rectangle { horizontal-stretch: 1; background: transparent; }
     }
 
-    if root.size-limit-index == 2 && root.available-width < 690px: VerticalLayout {
+    if root.size-limit-index >= 2 && root.available-width < 690px: VerticalLayout {
         min-height: 96px;
         spacing: 8px;
         HorizontalLayout {
             height: 44px;
             spacing: 10px;
             cross-axis-alignment: center;
-            Text { text: @tr("手动尺寸"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
-            LineEdit { accessible-label: @tr("最大宽度"); text <=> root.max-width-text; placeholder-text: @tr("最大宽"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-            LineEdit { accessible-label: @tr("最大高度"); text <=> root.max-height-text; placeholder-text: @tr("最大高"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+            Text { text: @tr("尺寸参数"); width: 88px; wrap: word-wrap; color: root.text-body; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+            LineEdit { accessible-label: @tr("宽度"); text <=> root.max-width-text; placeholder-text: @tr("宽度"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
+            LineEdit { accessible-label: @tr("高度"); text <=> root.max-height-text; placeholder-text: @tr("高度"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
             Rectangle { horizontal-stretch: 1; background: transparent; }
         }
         HorizontalLayout {
@@ -334,13 +346,13 @@ export component ParameterForm inherits VerticalLayout {
             spacing: 10px;
             cross-axis-alignment: center;
             Rectangle { width: 88px; background: transparent; }
-            LineEdit { accessible-label: @tr("最大长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("最大长边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
-            LineEdit { accessible-label: @tr("最大短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("最大短边"); input-type: number; enabled: !root.running; width: 100px; height: root.parameter-control-height; }
+            LineEdit { accessible-label: @tr("长边"); text <=> root.max-long-edge-text; placeholder-text: @tr("长边"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
+            LineEdit { accessible-label: @tr("短边"); text <=> root.max-short-edge-text; placeholder-text: @tr("短边"); input-type: number; enabled: root.dimension-inputs-enabled; opacity: self.enabled ? 1.0 : 0.56; width: 100px; height: root.parameter-control-height; }
             HorizontalLayout {
                 width: 100px;
                 height: root.parameter-control-height;
                 spacing: 4px;
-                LineEdit { accessible-label: @tr("缩小至"); text <=> root.scale-percent-text; placeholder-text: @tr("缩小至"); input-type: number; enabled: !root.running; horizontal-stretch: 1; height: root.parameter-control-height; }
+                LineEdit { accessible-label: @tr("缩放比例"); text <=> root.scale-percent-text; placeholder-text: @tr("比例"); input-type: text; enabled: root.percent-input-enabled; opacity: self.enabled ? 1.0 : 0.56; horizontal-stretch: 1; height: root.parameter-control-height; }
                 Text { text: "%"; width: 14px; color: root.text-body; font-size: 14px; vertical-alignment: center; horizontal-alignment: center; }
             }
             Rectangle { horizontal-stretch: 1; background: transparent; }

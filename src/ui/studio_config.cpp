@@ -1,3 +1,4 @@
+#include "../compat/stdlib_compat.h"
 #include "studio_config.h"
 
 #include "studio_json.h"
@@ -7,6 +8,8 @@
 #include <cstdint>
 #include <expected>
 #include <format>
+#include <fstream>
+#include <set>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -19,7 +22,7 @@ import awj.studio_defaults;
 namespace awj::studio {
 
 std::string menu_config_key(std::string_view prefix, std::string_view name) {
-  return std::format("menu_{}_{}", prefix, name);
+  return awj::compat::format("menu_{}_{}", prefix, name);
 }
 
 std::filesystem::path studio_config_path() {
@@ -52,7 +55,8 @@ std::string json_escape(std::string_view value) {
         out += "\\t";
         break;
       default:
-        out.push_back(ch);
+        if (static_cast<unsigned char>(ch) < 0x20) out += awj::compat::format("\\u{:04x}", static_cast<unsigned char>(ch));
+        else out.push_back(ch);
         break;
     }
   }
@@ -61,7 +65,7 @@ std::string json_escape(std::string_view value) {
 
 void append_json_config_line(std::vector<std::string>& lines,
                              std::string_view key, std::string value) {
-  lines.push_back(std::format("  \"{}\": {}", key, value));
+  lines.push_back(awj::compat::format("  \"{}\": {}", json_escape(key), value));
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +82,7 @@ void append_json_config_line(std::vector<std::string>& lines,
 //
 // 这里是 main.cpp 的 Windows 半区；Linux Studio 有自己的同名实现，见文件后半段。
 // ---------------------------------------------------------------------------
-std::expected<void, std::string> write_file_atomically(
+awj::compat::expected<void, std::string> write_file_atomically(
     const std::filesystem::path& path, std::string_view content) {
   std::error_code ec;
   auto temp_path = path;
@@ -92,7 +96,7 @@ std::expected<void, std::string> write_file_atomically(
         temp_path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_ALWAYS,
         FILE_ATTRIBUTE_NORMAL, nullptr));
     if (!file) {
-      return std::unexpected{"无法创建配置临时文件。"};
+      return awj::compat::unexpected{"无法创建配置临时文件。"};
     }
 
 
@@ -106,7 +110,7 @@ std::expected<void, std::string> write_file_atomically(
           written == 0) {
         file.reset();
         std::filesystem::remove(temp_path, ec);
-        return std::unexpected{"写入配置临时文件失败。"};
+        return awj::compat::unexpected{"写入配置临时文件失败。"};
       }
       written_total += written;
     }
@@ -114,7 +118,7 @@ std::expected<void, std::string> write_file_atomically(
     if (FlushFileBuffers(file.get()) == FALSE) {
       file.reset();
       std::filesystem::remove(temp_path, ec);
-      return std::unexpected{"刷新配置临时文件到磁盘失败。"};
+      return awj::compat::unexpected{"刷新配置临时文件到磁盘失败。"};
     }
   }
 
@@ -122,41 +126,46 @@ std::expected<void, std::string> write_file_atomically(
   if (MoveFileExW(temp_path.c_str(), path.c_str(),
                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH) == FALSE) {
     std::filesystem::remove(temp_path, ec);
-    return std::unexpected{"替换程序同目录配置文件失败。"};
+    return awj::compat::unexpected{"替换程序同目录配置文件失败。"};
   }
   return {};
 }
 
-std::expected<void, std::string> write_studio_config_file(
+awj::compat::expected<void, std::string> write_studio_config_file(
     const StudioConfigSnapshot& current,
     const StudioConfigSnapshot& defaults) try {
   const auto path = studio_config_path();
   if (path.empty()) {
-    return std::unexpected{"无法定位程序同目录配置文件路径。"};
+    return awj::compat::unexpected{"无法定位程序同目录配置文件路径。"};
   }
   std::vector<std::string> lines;
+  std::set<std::string, std::less<>> known;
   const auto add_int = [&](std::string_view key, int value, int fallback) {
+    known.emplace(key);
     if (value != fallback) {
-      append_json_config_line(lines, key, std::format("{}", value));
+      append_json_config_line(lines, key, awj::compat::format("{}", value));
     }
   };
   const auto add_bool = [&](std::string_view key, bool value, bool fallback) {
+    known.emplace(key);
     if (value != fallback) {
       append_json_config_line(lines, key, value ? "true" : "false");
     }
   };
   const auto add_string = [&](std::string_view key, const std::string& value,
                               const std::string& fallback) {
+    known.emplace(key);
     if (value != fallback) {
       append_json_config_line(lines, key,
-                              std::format("\"{}\"", json_escape(value)));
+                              awj::compat::format("\"{}\"", json_escape(value)));
     }
   };
   // Unix 时间戳和 manifest 序号都会超出 int，必须单独走 64 位。
   const auto add_int64 = [&](std::string_view key, std::int64_t value,
                              std::int64_t fallback) {
+    known.emplace(key);
     if (value != fallback) {
-      append_json_config_line(lines, key, std::format("{}", value));
+      append_json_config_line(lines, key, awj::compat::format("{}", value));
     }
   };
 
@@ -248,13 +257,42 @@ std::expected<void, std::string> write_studio_config_file(
     add_bool(menu_config_key(prefix, "allow_wic_fallback"), value.allow_wic_fallback, fallback.allow_wic_fallback);
     add_bool(menu_config_key(prefix, "close_on_finish"), value.close_on_finish, fallback.close_on_finish);
     add_bool(menu_config_key(prefix, "install_avif_png_command"), value.install_avif_png_command, fallback.install_avif_png_command);
-    add_int(menu_config_key(prefix, "size_limit_index"), value.size_limit_index, fallback.size_limit_index);
+    known.emplace(menu_config_key(prefix, "size_limit_index"));
+    known.emplace(menu_config_key(prefix, "avif_animation_tune_index"));
+    known.emplace(menu_config_key(prefix, "avif_animation_keyframe"));
+    add_string(menu_config_key(prefix, "size_limit_mode"),
+        std::string{awj::image_size_mode_name(awj::image_size_mode_from_index(value.size_limit_index))},
+        std::string{awj::image_size_mode_name(awj::image_size_mode_from_index(fallback.size_limit_index))});
     add_string(menu_config_key(prefix, "max_width_text"), value.max_width_text, fallback.max_width_text);
     add_string(menu_config_key(prefix, "max_height_text"), value.max_height_text, fallback.max_height_text);
     add_string(menu_config_key(prefix, "max_long_edge_text"), value.max_long_edge_text, fallback.max_long_edge_text);
     add_string(menu_config_key(prefix, "max_short_edge_text"), value.max_short_edge_text, fallback.max_short_edge_text);
     add_string(menu_config_key(prefix, "scale_percent_text"), value.scale_percent_text, fallback.scale_percent_text);
   }
+
+  for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature",
+      "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name",
+      "queue_format_index", "format_index", "quality_text", "input_path", "output_dir"}) known.emplace(key);
+  std::error_code read_error;
+  if (std::filesystem::exists(path, read_error)) {
+    const auto size = std::filesystem::file_size(path, read_error);
+    if (read_error || size > 4 * 1024 * 1024) return awj::compat::unexpected{"原 Studio 配置不可读或过大，未覆盖。"};
+    std::ifstream input{path, std::ios::binary};
+    std::string original(static_cast<std::size_t>(size), '\0');
+    input.read(original.data(), static_cast<std::streamsize>(original.size()));
+    if (!input) return awj::compat::unexpected{"无法读取原 Studio 配置，未覆盖。"};
+    auto parsed = awj::studio_json::parse_jsonc_config(original);
+    if (!parsed) return awj::compat::unexpected{"原 Studio 配置无法解析，未覆盖：" + parsed.error()};
+    std::vector<std::string> unknown;
+    for (const auto& [key, value] : *parsed) if (!known.contains(key)) unknown.push_back(key);
+    awj::compat::ranges::sort(unknown);
+    for (const auto& key : unknown) {
+      const auto& value = parsed->at(key);
+      using Kind = awj::studio_json::JsonConfigValue::Kind;
+      append_json_config_line(lines, key, value.kind == Kind::string ? awj::compat::format("\"{}\"", json_escape(value.string))
+          : value.kind == Kind::boolean ? (value.boolean ? "true" : "false") : awj::compat::format("{}", value.integer));
+    }
+  } else if (read_error) return awj::compat::unexpected{"无法检查原 Studio 配置，未覆盖。"};
 
   // 先在内存里拼出完整内容，再原子落盘。直接 truncate 写目标文件的话，进程在
   // 写到一半时被杀（或断电）会留下一个被截断的 AWJ.jsonc —— 下次启动解析失败，
@@ -275,11 +313,11 @@ std::expected<void, std::string> write_studio_config_file(
 
   return write_file_atomically(path, content);
 } catch (const std::bad_alloc&) {
-  return std::unexpected{"写入 Studio 配置时内存不足。"};
+  return awj::compat::unexpected{"写入 Studio 配置时内存不足。"};
 } catch (const std::length_error&) {
-  return std::unexpected{"写入 Studio 配置时数据超过运行时限制。"};
+  return awj::compat::unexpected{"写入 Studio 配置时数据超过运行时限制。"};
 } catch (const std::filesystem::filesystem_error&) {
-  return std::unexpected{"写入 Studio 配置时发生文件系统错误。"};
+  return awj::compat::unexpected{"写入 Studio 配置时发生文件系统错误。"};
 }
 
 }  // namespace awj::studio

@@ -366,7 +366,7 @@ class ApngReader final : public AnimationReader {
     return size;
   }
 
-  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop) {
+  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop, bool prefer_animation = false) {
     png_detail::PngAnimationLayout layout;
     auto append_data = [&](std::span<const std::byte> data) {
       auto& parts = specs.back().data;
@@ -410,7 +410,7 @@ class ApngReader final : public AnimationReader {
       return {};
     }, stop);
     if (!scanned) return awj::compat::unexpected{scanned.error()};
-    if (!layout.uses_animation_reader())
+    if (!(prefer_animation ? layout.actl : layout.uses_animation_reader()))
       return awj::compat::unexpected{"PNG 含独立默认静态图像或不含动画，应使用 PNG 静态 decoder。"};
     auto stride = decoder_common::checked_rgba_stride(details.width, "APNG", ihdr[8] == std::byte{16} ? 2 : 1);
     if (!stride) return awj::compat::unexpected{stride.error()};
@@ -548,12 +548,12 @@ struct WebpReader final : AnimationReader {
 } // namespace animation_detail
 
 awj::compat::expected<bool, std::string> input_uses_animation_reader(
-    const fs::path& path, awj::compat::stop_token stop = {}) {
+    const fs::path& path, awj::compat::stop_token stop = {}, bool prefer_animation = false) {
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   const auto extension = decoder_common::lower_extension(path);
   if (extension == L".gif") return true;
   if (extension == L".png" || extension == L".apng")
-    return png_detail::file_contains_animation_control_chunk(path, stop);
+    return png_detail::file_contains_animation_control_chunk(path, stop, prefer_animation);
   if (extension == L".avif" || extension == L".avifs") return avif_has_sequence(path);
   if (extension == L".webp") {
     std::ifstream file(path, std::ios::binary);
@@ -569,9 +569,9 @@ awj::compat::expected<bool, std::string> input_uses_animation_reader(
 
 // budget == 0 disables only working-set admission, not input/buffer safety limits.
 awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_animation(
-    const fs::path& path, std::uint64_t budget, awj::compat::stop_token stop = {}) {
+    const fs::path& path, std::uint64_t budget, awj::compat::stop_token stop = {}, bool prefer_animation = false) {
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-  auto animated = input_uses_animation_reader(path, stop);
+  auto animated = input_uses_animation_reader(path, stop, prefer_animation);
   if (!animated) return awj::compat::unexpected{animated.error()};
   if (!*animated) return std::unique_ptr<AnimationReader>{};
   const auto extension = decoder_common::lower_extension(path);
@@ -603,7 +603,7 @@ awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_animat
   }
   auto reader = std::make_unique<animation_detail::ApngReader>();
   reader->bytes = std::move(*bytes); reader->budget = budget;
-  auto opened = reader->open(stop);
+  auto opened = reader->open(stop, prefer_animation);
   if (!opened) return awj::compat::unexpected{opened.error()};
   return std::unique_ptr<AnimationReader>{std::move(reader)};
 }

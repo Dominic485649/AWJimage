@@ -13,6 +13,7 @@ module;
 #include <scn/scan.h>
 
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <cctype>
 #include <cmath>
@@ -82,7 +83,43 @@ enum class AvifAnimationTune { automatic, ssim, psnr };
 constexpr std::wstring_view avif_animation_tune_name(AvifAnimationTune tune) noexcept {
   return tune == AvifAnimationTune::ssim ? L"ssim" : tune == AvifAnimationTune::psnr ? L"psnr" : L"auto";
 }
-enum class ImageSizeLimitMode { automatic, none, manual };
+enum class ImageSizeLimitMode { automatic, none, manual, upscale, downscale, fixed };
+
+constexpr bool manual_image_size_mode(ImageSizeLimitMode mode) noexcept {
+  return mode != ImageSizeLimitMode::automatic && mode != ImageSizeLimitMode::none;
+}
+
+constexpr int image_size_mode_index(ImageSizeLimitMode mode) noexcept {
+  switch (mode) {
+    case ImageSizeLimitMode::none: return 1;
+    case ImageSizeLimitMode::upscale: return 2;
+    case ImageSizeLimitMode::manual:
+    case ImageSizeLimitMode::downscale: return 3;
+    case ImageSizeLimitMode::fixed: return 4;
+    default: return 0;
+  }
+}
+
+constexpr ImageSizeLimitMode image_size_mode_from_index(int index) noexcept {
+  switch (index) {
+    case 1: return ImageSizeLimitMode::none;
+    case 2: return ImageSizeLimitMode::upscale;
+    case 3: return ImageSizeLimitMode::downscale;
+    case 4: return ImageSizeLimitMode::fixed;
+    default: return ImageSizeLimitMode::automatic;
+  }
+}
+
+constexpr std::string_view image_size_mode_name(ImageSizeLimitMode mode) noexcept {
+  switch (mode) {
+    case ImageSizeLimitMode::none: return "none";
+    case ImageSizeLimitMode::manual: return "manual";
+    case ImageSizeLimitMode::upscale: return "upscale";
+    case ImageSizeLimitMode::downscale: return "downscale";
+    case ImageSizeLimitMode::fixed: return "fixed";
+    default: return "auto";
+  }
+}
 
 struct ImageSizeLimit {
   ImageSizeLimitMode mode{ImageSizeLimitMode::automatic};
@@ -90,7 +127,22 @@ struct ImageSizeLimit {
   std::optional<int> max_height{};
   std::optional<int> max_long_edge{};
   std::optional<int> max_short_edge{};
-  std::optional<int> scale_percent{};
+  std::optional<double> scale_percent{};
+};
+
+struct ImageGeometryPlan {
+  std::size_t source_width{}, source_height{};
+  std::size_t content_width{}, content_height{};
+  std::size_t canvas_width{}, canvas_height{};
+  std::size_t offset_x{}, offset_y{};
+
+  bool resamples() const noexcept {
+    return content_width != source_width || content_height != source_height;
+  }
+  bool pads() const noexcept {
+    return content_width != canvas_width || content_height != canvas_height;
+  }
+  bool changes() const noexcept { return resamples() || pads(); }
 };
 
 constexpr int automatic_thread_budget(unsigned hardware) noexcept {
@@ -281,50 +333,120 @@ struct AppConfig {
   std::function<void(std::size_t, std::size_t, std::size_t)> frame_progress{};
 };
 
+awj::compat::expected<void, std::string> validate_image_size_limit(const ImageSizeLimit& limit) {
+  if (!manual_image_size_mode(limit.mode)) return {};
+  for (const auto value : {limit.max_width, limit.max_height, limit.max_long_edge, limit.max_short_edge}) {
+    if (value && (*value < 1 || *value > 1000000))
+      return awj::compat::unexpected{"尺寸必须为 1～1000000 的整数。"};
+  }
+  if (limit.scale_percent && (!std::isfinite(*limit.scale_percent) || *limit.scale_percent <= 0))
+    return awj::compat::unexpected{"scale-percent 必须为正有限数，可以超过 100%。"};
+  if (limit.mode == ImageSizeLimitMode::fixed) {
+    const bool has_dimensions = limit.max_width || limit.max_height || limit.max_long_edge || limit.max_short_edge;
+    if (limit.scale_percent && has_dimensions) return awj::compat::unexpected{"固定模式的尺寸与缩放比例不能同时填写。"};
+    if (!has_dimensions && !limit.scale_percent)
+      return awj::compat::unexpected{"固定模式至少需要填写一个尺寸或缩放比例。"};
+    if (limit.max_long_edge && limit.max_short_edge && *limit.max_long_edge < *limit.max_short_edge)
+      return awj::compat::unexpected{"固定长边不能小于固定短边。"};
+    if (limit.max_width && limit.max_height &&
+        ((limit.max_long_edge && std::max(*limit.max_width, *limit.max_height) != *limit.max_long_edge) ||
+         (limit.max_short_edge && std::min(*limit.max_width, *limit.max_height) != *limit.max_short_edge)))
+      return awj::compat::unexpected{"固定宽高与固定长边／短边互相矛盾。"};
+  }
+  return {};
+}
+
+awj::compat::expected<ImageGeometryPlan, std::string> plan_image_geometry(
+    std::size_t width, std::size_t height, const AppConfig& cfg) {
+  if (!width || !height || width > UINT32_MAX || height > UINT32_MAX)
+    return awj::compat::unexpected{"源图片显示尺寸无效。"};
+  const auto& limit = cfg.image_size_limit;
+  if (auto valid = validate_image_size_limit(limit); !valid) return awj::compat::unexpected{valid.error()};
+  ImageGeometryPlan plan{.source_width = width, .source_height = height,
+      .content_width = width, .content_height = height, .canvas_width = width, .canvas_height = height};
+  const auto dimension = [](long double value, int rounding) -> awj::compat::expected<std::size_t, std::string> {
+    if (!std::isfinite(value) || value > UINT32_MAX)
+      return awj::compat::unexpected{"目标尺寸超过格式与整数范围。"};
+    const auto nearest = std::round(value);
+    if (std::abs(value - nearest) <= std::numeric_limits<long double>::epsilon() * std::max(1.0L, value) * 8)
+      value = nearest;
+    value = rounding > 0 ? std::ceil(value) : rounding < 0 ? std::floor(value) : std::round(value);
+    return static_cast<std::size_t>(std::max(1.0L, value));
+  };
+  if (limit.mode == ImageSizeLimitMode::fixed && !limit.scale_percent) {
+    double best_coverage = -1;
+    bool best_source_direction = false;
+    for (const bool wide : {true, false}) {
+      std::optional<std::size_t> cw, ch;
+      bool consistent = true;
+      const auto bind = [&](std::optional<std::size_t>& axis, std::optional<int> value) {
+        if (!value) return;
+        if (axis && *axis != static_cast<std::size_t>(*value)) consistent = false;
+        axis = static_cast<std::size_t>(*value);
+      };
+      bind(cw, limit.max_width); bind(ch, limit.max_height);
+      bind(wide ? cw : ch, limit.max_long_edge);
+      bind(wide ? ch : cw, limit.max_short_edge);
+      if (!consistent) continue;
+      if (!cw) {
+        auto value = dimension(static_cast<long double>(*ch) * width / height, 0);
+        if (!value) continue;
+        cw = wide ? std::max(*ch, *value) : std::min(*ch, *value);
+      }
+      if (!ch) {
+        auto value = dimension(static_cast<long double>(*cw) * height / width, 0);
+        if (!value) continue;
+        ch = wide ? std::min(*cw, *value) : std::max(*cw, *value);
+      }
+      if ((wide && *cw < *ch) || (!wide && *ch < *cw)) continue;
+      const auto scale = std::min(static_cast<long double>(*cw) / width, static_cast<long double>(*ch) / height);
+      auto iw = dimension(width * scale, 0), ih = dimension(height * scale, 0);
+      if (!iw || !ih) continue;
+      *iw = std::min(*iw, *cw); *ih = std::min(*ih, *ch);
+      const auto coverage = static_cast<double>(*iw) * static_cast<double>(*ih) /
+          (static_cast<double>(*cw) * static_cast<double>(*ch));
+      const bool source_direction = wide == (width >= height);
+      if (coverage < best_coverage || (coverage == best_coverage && !source_direction && best_source_direction)) continue;
+      best_coverage = coverage; best_source_direction = source_direction;
+      plan.content_width = *iw; plan.content_height = *ih;
+      plan.canvas_width = *cw; plan.canvas_height = *ch;
+    }
+    if (best_coverage < 0) return awj::compat::unexpected{"固定宽、高、长边、短边无法同时满足，请检查冲突尺寸。"};
+    plan.offset_x = (plan.canvas_width - plan.content_width) / 2;
+    plan.offset_y = (plan.canvas_height - plan.content_height) / 2;
+    return plan;
+  }
+  std::optional<long double> scale;
+  const bool maximum = limit.mode == ImageSizeLimitMode::upscale;
+  const auto candidate = [&](long double value) {
+    scale = !scale ? value : maximum ? std::max(*scale, value) : std::min(*scale, value);
+  };
+  if (limit.mode == ImageSizeLimitMode::automatic) {
+    candidate(1);
+    if (cfg.output_format == OutputFormat::webp) candidate(16383.0L / std::max(width, height));
+    if (cfg.output_format == OutputFormat::jpgli) candidate(65535.0L / std::max(width, height));
+  } else if (limit.mode != ImageSizeLimitMode::none) {
+    if (limit.mode == ImageSizeLimitMode::manual) candidate(1);
+    if (limit.scale_percent) candidate(static_cast<long double>(*limit.scale_percent) / 100);
+    if (limit.max_width) candidate(static_cast<long double>(*limit.max_width) / width);
+    if (limit.max_height) candidate(static_cast<long double>(*limit.max_height) / height);
+    if (limit.max_long_edge) candidate(static_cast<long double>(*limit.max_long_edge) / std::max(width, height));
+    if (limit.max_short_edge) candidate(static_cast<long double>(*limit.max_short_edge) / std::min(width, height));
+  }
+  const int rounding = limit.mode == ImageSizeLimitMode::fixed ? 0 : maximum ? 1 : -1;
+  auto w = dimension(width * scale.value_or(1), rounding);
+  auto h = dimension(height * scale.value_or(1), rounding);
+  if (!w || !h) return awj::compat::unexpected{!w ? w.error() : h.error()};
+  plan.content_width = plan.canvas_width = *w;
+  plan.content_height = plan.canvas_height = *h;
+  return plan;
+}
+
 std::optional<std::pair<std::size_t, std::size_t>> limited_dimensions(
     std::size_t width, std::size_t height, const AppConfig& cfg) {
-  if (width == 0 || height == 0 ||
-      cfg.image_size_limit.mode == ImageSizeLimitMode::none) {
-    return std::nullopt;
-  }
-  double scale = 1.0;
-  const auto apply_edge = [&](std::optional<int> limit, std::size_t value) {
-    if (limit && value > static_cast<std::size_t>(*limit)) {
-      scale = std::min(scale, static_cast<double>(*limit) / static_cast<double>(value));
-    }
-  };
-  if (cfg.image_size_limit.mode == ImageSizeLimitMode::automatic) {
-    switch (cfg.output_format) {
-      case OutputFormat::avif:
-        // AOM/Grid preserves dimensions; only explicit manual limits resize AVIF.
-        break;
-      case OutputFormat::webp:
-        apply_edge(16383, std::max(width, height));
-        break;
-      case OutputFormat::jpgli:
-        apply_edge(65535, std::max(width, height));
-        break;
-      case OutputFormat::png:
-      case OutputFormat::jxl:
-      default:
-        break;
-    }
-  } else {
-    scale = cfg.image_size_limit.scale_percent.value_or(100) / 100.0;
-    apply_edge(cfg.image_size_limit.max_width, width);
-    apply_edge(cfg.image_size_limit.max_height, height);
-    apply_edge(cfg.image_size_limit.max_long_edge, std::max(width, height));
-    apply_edge(cfg.image_size_limit.max_short_edge, std::min(width, height));
-  }
-  if (scale >= 1.0) {
-    return std::nullopt;
-  }
-  const auto target_width = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(width * scale)));
-  const auto target_height = std::max<std::size_t>(1, static_cast<std::size_t>(std::floor(height * scale)));
-  if (target_width == width && target_height == height) {
-    return std::nullopt;
-  }
-  return std::pair{target_width, target_height};
+  const auto plan = plan_image_geometry(width, height, cfg);
+  if (!plan || !plan->changes()) return std::nullopt;
+  return std::pair{plan->canvas_width, plan->canvas_height};
 }
 
 AppConfig default_app_config() { return AppConfig{}; }
@@ -813,9 +935,10 @@ std::optional<ImageSizeLimitMode> parse_image_size_limit_mode(std::wstring_view 
   if (lower == L"none" || lower == L"unlimited" || lower == L"off" || lower == L"无限制") {
     return ImageSizeLimitMode::none;
   }
-  if (lower == L"manual" || lower == L"custom" || lower == L"手动") {
-    return ImageSizeLimitMode::manual;
-  }
+  if (lower == L"manual" || lower == L"custom" || lower == L"手动") return ImageSizeLimitMode::manual;
+  if (lower == L"upscale") return ImageSizeLimitMode::upscale;
+  if (lower == L"downscale") return ImageSizeLimitMode::downscale;
+  if (lower == L"fixed") return ImageSizeLimitMode::fixed;
   return std::nullopt;
 }
 
@@ -874,13 +997,15 @@ awj::compat::expected<std::uint64_t, std::string> parse_memory_limit(
   return config_detail::parse_memory_limit(text);
 }
 
+awj::compat::expected<double, std::string> parse_scale_percent(std::wstring_view text) {
+  return config_detail::parse_double_range(text, std::numeric_limits<double>::denorm_min(),
+      std::numeric_limits<double>::max(), "scale-percent");
+}
+
 awj::compat::expected<void, std::string> validate_config(const AppConfig& cfg) {
   if (cfg.avif_animation_keyframe < 0 || static_cast<int>(cfg.avif_animation_tune) < 0 || static_cast<int>(cfg.avif_animation_tune) > 2)
     return awj::compat::unexpected{"动画参数无效。"};
-  if (cfg.image_size_limit.scale_percent &&
-      (*cfg.image_size_limit.scale_percent < 1 || *cfg.image_size_limit.scale_percent > 100)) {
-    return awj::compat::unexpected{"scale-percent 必须为 1～100 的整数。"};
-  }
+  if (auto valid = validate_image_size_limit(cfg.image_size_limit); !valid) return valid;
   // 路径存在性在 scan_images 中校验；这里专注于格式自身不能违反的编码约束。
   if (cfg.output_template.size() > config_detail::max_output_template_length) {
     return awj::compat::unexpected{
@@ -1079,7 +1204,8 @@ std::string help_text() {
   --unlock-memory-limit / --no-unlock-memory-limit 会话内解除/恢复工作集预算；解除优先于手动和 auto，不清除手动值，不写入配置
   --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/缓冲区保护，不改变工作集预算（默认关闭，不写入配置）
   --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持默认 20 GiB 输入/缓冲区保护
-  --image-size-limit <auto|none|manual> 图片边长限制；manual 可配合 --max-width/--max-height/--max-long-edge/--max-short-edge
+  --image-size-limit <auto|none|upscale|downscale|fixed> 自动／无限制／取最大倍率／取最小倍率／固定尺寸或比例；兼容 manual
+  --width/--height/--long-edge/--short-edge <像素> 可组合填写；固定模式等比居中并补透明或黑边，其他手动模式按倍率取最大／最小
   -m, --template <模板>       输出命名，最多 512 个字符，默认 @OUTPUT_TEMPLATE@
   --speed <0-10>             统一速度参数；支持 AVIF/WebP/JXL；JPG/PNG 不支持
   --allow-wic-fallback       Windows: 允许 native 解码器失败后使用 WIC 兜底；Linux: 接受但忽略
@@ -1099,7 +1225,7 @@ std::string help_text() {
   --suffix-number            输出名按 name(1)、name(2) 避免重名
   --suffix-time              输出名追加时间后缀
   --suffix-random            输出名追加随机后缀
-  --scale-percent <1-100>     手动尺寸缩小至百分比，留空等同 100%
+  --scale-percent <正数>      缩放至百分比，支持小数和超过 100%；固定模式中与四项尺寸互斥
   --jxl-jpeg-lossless         允许在显式8-bit且其他参数兼容时可逆转封装 JPEG；自动16-bit仍走像素编码
   --no-jxl-jpeg-lossless      禁用 JPEG 到 JXL 的可逆转封装优化
   --version                  显示编译版本
@@ -1182,6 +1308,13 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
   std::vector<std::filesystem::path> shell_inputs;
   std::vector<std::wstring> positional_args;
   std::vector<std::string> warnings;
+  std::array<std::optional<double>, 5> explicit_size_fields;
+  std::optional<ImageSizeLimitMode> explicit_size_mode;
+  const auto accept_size_field = [&](std::size_t slot, double value) {
+    if (explicit_size_fields[slot] && *explicit_size_fields[slot] != value) return false;
+    explicit_size_fields[slot] = value;
+    return true;
+  };
 
   auto require_value = [&](std::size_t& index, std::wstring_view option)
       -> awj::compat::expected<std::wstring, std::string> {
@@ -1215,8 +1348,9 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--scale-percent") {
       const auto value = require_value(i, args[i]);
       if (!value) return awj::compat::unexpected{value.error()};
-      const auto parsed = config_detail::parse_int_range(*value, 1, 100, "scale-percent");
+      const auto parsed = parse_scale_percent(*value);
       if (!parsed) return awj::compat::unexpected{parsed.error()};
+      if (!accept_size_field(0, *parsed)) return awj::compat::unexpected{"重复的缩放比例互相矛盾。"};
       cfg.image_size_limit.scale_percent = *parsed;
       continue;
     }
@@ -1518,7 +1652,7 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     }
     if (lower == L"--preserve-animation") {
       // Accepted for compatibility with early 1.2.0 development commands.
-      // GIF/APNG animation is now preserved automatically for AVIF output.
+      // AVIF/WebP 输出会自动保留受支持的动画。
       continue;
     }
     if (lower == L"--no-append-png-suffix") {
@@ -1698,13 +1832,15 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       }
       const auto mode = config_detail::parse_image_size_limit_mode(*value);
       if (!mode) {
-        return awj::compat::unexpected{"image-size-limit 只支持 auto、none 或 manual。"};
+        return awj::compat::unexpected{"image-size-limit 支持 auto、none、upscale、downscale、fixed（兼容 manual）。"};
       }
+      if (explicit_size_mode && *explicit_size_mode != *mode) return awj::compat::unexpected{"重复的尺寸模式互相矛盾。"};
+      explicit_size_mode = *mode;
       cfg.image_size_limit.mode = *mode;
       continue;
     }
 
-    if (lower == L"--max-width" || lower == L"--image-max-width") {
+    if (lower == L"--width" || lower == L"--max-width" || lower == L"--image-max-width") {
       const auto value = require_value(i, args[i]);
       if (!value) {
         return awj::compat::unexpected{value.error()};
@@ -1713,11 +1849,12 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!parsed) {
         return awj::compat::unexpected{parsed.error()};
       }
+      if (!accept_size_field(1, *parsed)) return awj::compat::unexpected{"重复的宽度参数互相矛盾。"};
       cfg.image_size_limit.max_width = *parsed;
       continue;
     }
 
-    if (lower == L"--max-height" || lower == L"--image-max-height") {
+    if (lower == L"--height" || lower == L"--max-height" || lower == L"--image-max-height") {
       const auto value = require_value(i, args[i]);
       if (!value) {
         return awj::compat::unexpected{value.error()};
@@ -1726,11 +1863,12 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!parsed) {
         return awj::compat::unexpected{parsed.error()};
       }
+      if (!accept_size_field(2, *parsed)) return awj::compat::unexpected{"重复的高度参数互相矛盾。"};
       cfg.image_size_limit.max_height = *parsed;
       continue;
     }
 
-    if (lower == L"--max-long-edge" || lower == L"--image-max-long-edge") {
+    if (lower == L"--long-edge" || lower == L"--max-long-edge" || lower == L"--image-max-long-edge") {
       const auto value = require_value(i, args[i]);
       if (!value) {
         return awj::compat::unexpected{value.error()};
@@ -1739,11 +1877,12 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!parsed) {
         return awj::compat::unexpected{parsed.error()};
       }
+      if (!accept_size_field(3, *parsed)) return awj::compat::unexpected{"重复的长边参数互相矛盾。"};
       cfg.image_size_limit.max_long_edge = *parsed;
       continue;
     }
 
-    if (lower == L"--max-short-edge" || lower == L"--image-max-short-edge") {
+    if (lower == L"--short-edge" || lower == L"--max-short-edge" || lower == L"--image-max-short-edge") {
       const auto value = require_value(i, args[i]);
       if (!value) {
         return awj::compat::unexpected{value.error()};
@@ -1752,6 +1891,7 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!parsed) {
         return awj::compat::unexpected{parsed.error()};
       }
+      if (!accept_size_field(4, *parsed)) return awj::compat::unexpected{"重复的短边参数互相矛盾。"};
       cfg.image_size_limit.max_short_edge = *parsed;
       continue;
     }

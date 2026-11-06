@@ -3,7 +3,9 @@ module;
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include "lanczos_resample.h"
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -22,6 +24,7 @@ module;
 
 export module awj.pixel_conversion;
 
+import awj.config;
 import awj.decoder_common;
 import awj.encoding_defaults;
 import awj.hdr_tonemap;
@@ -209,6 +212,7 @@ struct Reader {
       }
       if (image.alpha_mode != AlphaMode::none) rgba[3] = sample(image, 3, x, y) / maximum;
     }
+    if (image.alpha_mode == AlphaMode::none) rgba[3] = 1;
     if (image.alpha_mode == AlphaMode::premultiplied) {
       // Do not hide a non-finite source component behind transparent alpha.
       for (const auto value : rgba) if (!std::isfinite(value)) return rgba;
@@ -319,46 +323,125 @@ awj::compat::expected<void, std::string> validate_image_pixels(const ImageBuffer
   return pixel_detail::validate(image);
 }
 
-awj::compat::expected<ImageBuffer, std::string> resize_native_pixels(
-    const ImageBuffer& source, std::size_t width, std::size_t height, awj::compat::stop_token stop = {}) {
-  if (auto valid = pixel_detail::validate(source); !valid) return awj::compat::unexpected{valid.error()};
-  if (!width || !height || width > UINT32_MAX || height > UINT32_MAX) return awj::compat::unexpected{"调整尺寸无效。"};
-  if (source.geometry && is_yuv_format(source.pixel_format))
-    return awj::compat::unexpected{"YUV 几何变换应在目标像素转换中处理。"};
+std::array<std::size_t, 2> image_logical_dimensions(const ImageBuffer& image) noexcept {
+  if (!image.geometry) return {image.width, image.height};
+  const auto& g = *image.geometry;
+  return g.rotation % 2 ? std::array{g.crop_height, g.crop_width} : std::array{g.crop_width, g.crop_height};
+}
+
+std::uint16_t geometry_binary16(float value) noexcept {
+  const auto bits = std::bit_cast<std::uint32_t>(value);
+  const auto sign = static_cast<std::uint16_t>((bits >> 16) & 0x8000);
+  const int exponent = static_cast<int>((bits >> 23) & 255) - 127 + 15;
+  auto mantissa = bits & 0x7fffff;
+  if (exponent <= 0) {
+    if (exponent < -10) return sign;
+    mantissa |= 0x800000;
+    const auto shift = static_cast<unsigned>(14 - exponent);
+    const auto rounded = (mantissa + ((1u << (shift - 1)) - 1) + ((mantissa >> shift) & 1)) >> shift;
+    return static_cast<std::uint16_t>(sign | rounded);
+  }
+  const auto rounded = (mantissa + 0xfff + ((mantissa >> 13) & 1)) >> 13;
+  return static_cast<std::uint16_t>(sign | ((static_cast<unsigned>(exponent) << 10) + rounded));
+}
+
+awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const ImageBuffer& source,
+    const ImageGeometryPlan& plan, bool keep_alpha, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
   try {
-    ImageBuffer output{.width = width, .height = height, .pixel_format = source.pixel_format,
-        .alpha_mode = source.alpha_mode, .bit_depth = source.bit_depth,
-        .sample_representation = source.sample_representation, .source_info = source.source_info,
-        .significant_bits = source.significant_bits, .metadata = source.metadata};
-    output.planes.resize(source.planes.size());
-    for (std::size_t c = 0; c < output.planes.size(); ++c) {
-      if (source.planes[c].read_bytes().empty()) continue;
-      const auto input_size = pixel_detail::plane_size(source, c);
-      const auto output_size = pixel_detail::plane_size(output, c);
-      const auto sample_bytes = (source.bit_depth > 8 ? 2u : 1u) *
-          (is_yuv_format(source.pixel_format) ? 1u : source.pixel_format == PixelFormat::rgb ? 3u : 4u);
-      if (output_size[0] > SIZE_MAX / sample_bytes) return awj::compat::unexpected{"调整尺寸宽度溢出。"};
-      const auto stride = output_size[0] * sample_bytes;
-      auto count = decoder_common::checked_image_bytes(stride, output_size[1], "native resize");
-      if (!count) return awj::compat::unexpected{count.error()};
-      auto bytes = decoder_common::make_byte_buffer(*count, "native resize");
-      if (!bytes) return awj::compat::unexpected{bytes.error()};
-      for (std::size_t y = 0; y < output_size[1]; ++y) {
-        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-        const auto sy = std::min(input_size[1] - 1, y * input_size[1] / output_size[1]);
-        for (std::size_t x = 0; x < output_size[0]; ++x) {
-          const auto sx = std::min(input_size[0] - 1, x * input_size[0] / output_size[0]);
-          const auto point = source.geometry ? image_sample_coordinates(source,
-              x * source.width / width, y * source.height / height) : std::array{sx, sy};
-          std::memcpy(bytes->data() + y * stride + x * sample_bytes,
-              source.planes[c].read_bytes().data() + point[1] * source.planes[c].stride + point[0] * sample_bytes, sample_bytes);
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (auto valid = pixel_detail::validate(source); !valid) return awj::compat::unexpected{valid.error()};
+    const auto logical = image_logical_dimensions(source);
+    if (logical[0] != plan.source_width || logical[1] != plan.source_height ||
+        !plan.content_width || !plan.content_height || !plan.canvas_width || !plan.canvas_height ||
+        plan.canvas_width > UINT32_MAX || plan.canvas_height > UINT32_MAX ||
+        plan.content_width > plan.canvas_width || plan.content_height > plan.canvas_height ||
+        plan.offset_x > plan.canvas_width - plan.content_width || plan.offset_y > plan.canvas_height - plan.content_height)
+      return awj::compat::unexpected{"Lanczos 几何计划无效。"};
+    const auto sample_bytes = source.bit_depth > 8 ? 2u : 1u;
+    if (plan.canvas_width > SIZE_MAX / 4 / sample_bytes) return awj::compat::unexpected{"目标画布宽度溢出。"};
+    const auto stride = plan.canvas_width * 4 * sample_bytes;
+    auto count = decoder_common::checked_image_bytes(stride, plan.canvas_height, "Lanczos");
+    if (!count) return awj::compat::unexpected{count.error()};
+    auto needed = static_cast<std::uint64_t>(*count);
+    for (const auto& plane : source.planes) needed = hdr_cost::add(needed, plane.bytes.capacity());
+    for (const auto& block : source.metadata) needed = hdr_cost::add(needed, hdr_cost::multiply(block.bytes.capacity(), 2));
+    if (plan.resamples()) needed = hdr_cost::add(needed,
+        lanczos_detail::scratch_bytes(logical[0], logical[1], plan.content_width, plan.content_height));
+    const auto budget = resources.memory_limit_bytes / static_cast<std::uint64_t>(std::max(1, resources.file_parallelism));
+    if (needed == UINT64_MAX || (budget && needed > budget)) return awj::compat::unexpected{"Lanczos 工作区超过内存预算。"};
+    auto bytes = decoder_common::make_byte_buffer(*count, "Lanczos");
+    if (!bytes) return awj::compat::unexpected{bytes.error()};
+    const bool alpha = keep_alpha && (source.alpha_mode != AlphaMode::none || plan.pads());
+    const bool floating = source.sample_representation == SampleRepresentation::ieee_half_float;
+    const auto opaque = floating ? std::uint16_t{0x3c00} : static_cast<std::uint16_t>((1u << source.bit_depth) - 1);
+    if (!alpha) for (std::size_t y = 0; y < plan.canvas_height; ++y) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+      for (std::size_t x = 0; x < plan.canvas_width; ++x) {
+        auto* a = bytes->data() + y * stride + (x * 4 + 3) * sample_bytes;
+        if (sample_bytes == 1) *a = std::byte{255}; else std::memcpy(a, &opaque, 2);
+      }
+    }
+    pixel_detail::Reader reader{source};
+    if (is_yuv_format(source.pixel_format)) {
+      const auto view = pixel_detail::description(source);
+      if (!avifGetYUVColorSpaceInfo(&view, &reader.color)) return awj::compat::unexpected{"Lanczos 源 YUV 色彩矩阵不受支持。"};
+    }
+    const auto write = [&](std::size_t x, std::size_t y, std::array<double, 4> rgba) -> awj::compat::expected<void, std::string> {
+      auto* row = bytes->data() + (y + plan.offset_y) * stride;
+      for (std::size_t c = 0; c < 4; ++c) {
+        auto value = c == 3 ? (alpha ? rgba[3] : 1.0) : rgba[c] * (keep_alpha ? 1.0 : rgba[3]);
+        if (!std::isfinite(value) || (floating && std::abs(value) > 65504))
+          return awj::compat::unexpected{"Lanczos 输出像素无法表示。"};
+        const auto sample = (x + plan.offset_x) * 4 + c;
+        if (floating) {
+          const auto encoded = geometry_binary16(static_cast<float>(value));
+          std::memcpy(row + sample * 2, &encoded, 2);
+        } else {
+          value = std::clamp(value, 0.0, 1.0);
+          const auto encoded = static_cast<std::uint16_t>(std::floor(value * opaque + 0.5));
+          if (sample_bytes == 1) row[sample] = std::byte{static_cast<unsigned char>(encoded)};
+          else std::memcpy(row + sample * 2, &encoded, 2);
         }
       }
-      output.planes[c] = ImagePlane{.bytes = std::move(*bytes), .stride = stride};
+      return {};
+    };
+    if (plan.resamples()) {
+      auto filtered = lanczos_detail::filter(logical[0], logical[1], plan.content_width, plan.content_height,
+          [&](std::size_t x, std::size_t y) { return reader(x, y); }, write, stop);
+      if (!filtered) return awj::compat::unexpected{filtered.error()};
+    } else if (!source.geometry && source.pixel_format == PixelFormat::rgba &&
+        source.alpha_mode != AlphaMode::premultiplied && (keep_alpha || source.alpha_mode == AlphaMode::none) &&
+        !(alpha && source.alpha_mode == AlphaMode::none)) {
+      for (std::size_t y = 0; y < logical[1]; ++y) {
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+        std::memcpy(bytes->data() + (y + plan.offset_y) * stride + plan.offset_x * 4 * sample_bytes,
+            source.planes[0].read_bytes().data() + y * source.planes[0].stride, logical[0] * 4 * sample_bytes);
+      }
+    } else for (std::size_t y = 0; y < logical[1]; ++y) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+      for (std::size_t x = 0; x < logical[0]; ++x) {
+        const auto rgba = reader(x, y);
+        if (auto result = write(x, y, {rgba[0], rgba[1], rgba[2], rgba[3]}); !result)
+          return awj::compat::unexpected{result.error()};
+      }
     }
+    ImageBuffer output{.width = plan.canvas_width, .height = plan.canvas_height, .pixel_format = PixelFormat::rgba,
+        .alpha_mode = alpha ? AlphaMode::straight : AlphaMode::none, .bit_depth = source.bit_depth,
+        .sample_representation = source.sample_representation, .source_info = source.source_info,
+        .significant_bits = plan.resamples() ? std::nullopt : source.significant_bits, .metadata = source.metadata};
+    if (output.source_info) { output.source_info->matrix_coefficients = 0; output.source_info->color_range = 1; }
+    output.planes.push_back({.bytes = std::move(*bytes), .stride = stride});
     return output;
-  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"调整尺寸内存不足。"}; }
-    catch (const std::length_error&) { return awj::compat::unexpected{"调整尺寸超过限制。"}; }
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"Lanczos 工作区内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"Lanczos 工作区超过限制。"}; }
+}
+
+awj::compat::expected<ImageBuffer, std::string> resize_native_pixels(
+    const ImageBuffer& source, std::size_t width, std::size_t height, awj::compat::stop_token stop = {}) {
+  const auto logical = image_logical_dimensions(source);
+  const ImageGeometryPlan plan{.source_width = logical[0], .source_height = logical[1],
+      .content_width = width, .content_height = height, .canvas_width = width, .canvas_height = height};
+  return apply_image_geometry(source, plan, true, stop);
 }
 
 awj::compat::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& image) {

@@ -1,3 +1,4 @@
+#include "../compat/stdlib_compat.h"
 #include "studio_shell_cli.h"
 
 #ifndef NOMINMAX
@@ -95,7 +96,7 @@ void push_cli_option(std::vector<std::wstring>& args, std::wstring option,
 }
 
 std::wstring bytes_argument(std::uint64_t bytes) {
-  return bytes == 0 ? std::wstring{L"auto"} : std::format(L"{}b", bytes);
+  return bytes == 0 ? std::wstring{L"auto"} : awj::compat::format(L"{}b", bytes);
 }
 
 std::vector<std::wstring> cli_arguments_from_config(
@@ -121,22 +122,13 @@ std::vector<std::wstring> cli_arguments_from_config(
   push_cli_option(args, L"--memory-limit", bytes_argument(cfg.memory_limit_bytes));
   args.push_back(cfg.unlock_memory_limit ? L"--unlock-memory-limit"
                                          : L"--no-unlock-memory-limit");
-  switch (cfg.image_size_limit.mode) {
-    case awj::ImageSizeLimitMode::none:
-      push_cli_option(args, L"--image-size-limit", std::wstring{L"none"});
-      break;
-    case awj::ImageSizeLimitMode::manual:
-      push_cli_option(args, L"--image-size-limit", std::wstring{L"manual"});
+  push_cli_option(args, L"--image-size-limit", awj::wide_from_utf8(std::string{awj::image_size_mode_name(cfg.image_size_limit.mode)}));
+  if (awj::manual_image_size_mode(cfg.image_size_limit.mode)) {
       if (cfg.image_size_limit.max_width) push_cli_option(args, L"--max-width", std::to_wstring(*cfg.image_size_limit.max_width));
       if (cfg.image_size_limit.max_height) push_cli_option(args, L"--max-height", std::to_wstring(*cfg.image_size_limit.max_height));
       if (cfg.image_size_limit.max_long_edge) push_cli_option(args, L"--max-long-edge", std::to_wstring(*cfg.image_size_limit.max_long_edge));
       if (cfg.image_size_limit.max_short_edge) push_cli_option(args, L"--max-short-edge", std::to_wstring(*cfg.image_size_limit.max_short_edge));
       if (cfg.image_size_limit.scale_percent) push_cli_option(args, L"--scale-percent", std::to_wstring(*cfg.image_size_limit.scale_percent));
-      break;
-    case awj::ImageSizeLimitMode::automatic:
-    default:
-      push_cli_option(args, L"--image-size-limit", std::wstring{L"auto"});
-      break;
   }
   push_cli_option(args, L"--timeout-encode",
                   std::to_wstring(cfg.encode_timeout_minutes));
@@ -276,14 +268,14 @@ std::wstring command_line_from_args(std::span<const std::wstring> args) {
   return command;
 }
 
-std::expected<std::filesystem::path, std::string> awj_exe_path_for_shell_menu() {
+awj::compat::expected<std::filesystem::path, std::string> awj_exe_path_for_shell_menu() {
   auto executable = awj::executable_path();
   if (!executable) {
-    return std::unexpected{executable.error()};
+    return awj::compat::unexpected{executable.error()};
   }
   auto path = *executable;
   auto extension = path.extension().wstring();
-  std::ranges::transform(extension, extension.begin(),
+  awj::compat::ranges::transform(extension, extension.begin(),
                          [](wchar_t ch) { return static_cast<wchar_t>(std::towlower(ch)); });
   if (extension == L".com") {
     auto exe = path;
@@ -347,19 +339,19 @@ awj::shell_context_menu::MenuParams shell_menu_params(
 }
 
 std::wstring shell_batch_name(awj::OutputFormat format, bool append_png_suffix) {
-  return std::format(L"AWJimage.ShellBatch.{}{}",
+  return awj::compat::format(L"AWJimage.ShellBatch.{}{}",
                      cli_output_format_arg(format),
                      append_png_suffix ? L".png-suffix" : L"");
 }
 
-std::expected<bool, std::string> collect_shell_launch_inputs(
+awj::compat::expected<bool, std::string> collect_shell_launch_inputs(
     awj::OutputFormat format, bool append_png_suffix,
     std::vector<std::filesystem::path>& inputs) {
   const auto suffix = shell_batch_name(format, append_png_suffix);
   const auto mutex_name = L"Local\\" + suffix;
   UniqueWin32Handle mutex{CreateMutexW(nullptr, TRUE, mutex_name.c_str())};
   if (!mutex) {
-    return std::unexpected{std::format("创建右键队列锁失败，错误码 {}。",
+    return awj::compat::unexpected{awj::compat::format("创建右键队列锁失败，错误码 {}。",
                                        GetLastError())};
   }
   const bool leader = GetLastError() != ERROR_ALREADY_EXISTS;
@@ -369,7 +361,7 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   if (!send_mutex) {
     const DWORD error = GetLastError();
     if (leader) ReleaseMutex(mutex.get());
-    return std::unexpected{std::format("创建右键队列发送锁失败，错误码 {}。",
+    return awj::compat::unexpected{awj::compat::format("创建右键队列发送锁失败，错误码 {}。",
                                        error)};
   }
   const auto slot_name = L"\\\\.\\mailslot\\" + suffix;
@@ -422,7 +414,7 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   const DWORD create_gate = WaitForSingleObject(send_mutex.get(), INFINITE);
   if (create_gate != WAIT_OBJECT_0 && create_gate != WAIT_ABANDONED) {
     ReleaseMutex(mutex.get());
-    return std::unexpected{"无法锁定右键队列发送通道。"};
+    return awj::compat::unexpected{"无法锁定右键队列发送通道。"};
   }
   UniqueWin32Handle slot{
       adopt_win32_handle(CreateMailslotW(slot_name.c_str(), 65520, 0, nullptr))};
@@ -430,7 +422,7 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
     const DWORD error = GetLastError();
     ReleaseMutex(send_mutex.get());
     ReleaseMutex(mutex.get());
-    return std::unexpected{std::format("创建右键队列通道失败，错误码 {}。",
+    return awj::compat::unexpected{awj::compat::format("创建右键队列通道失败，错误码 {}。",
                                        error)};
   }
   ReleaseMutex(send_mutex.get());
@@ -480,7 +472,7 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   const DWORD close_gate = WaitForSingleObject(send_mutex.get(), INFINITE);
   if (close_gate != WAIT_OBJECT_0 && close_gate != WAIT_ABANDONED) {
     ReleaseMutex(mutex.get());
-    return std::unexpected{"无法关闭右键队列发送通道。"};
+    return awj::compat::unexpected{"无法关闭右键队列发送通道。"};
   }
   (void)drain_messages();
   slot.reset();
@@ -489,38 +481,38 @@ std::expected<bool, std::string> collect_shell_launch_inputs(
   return true;
 }
 
-std::expected<std::vector<awj::shell_context_menu::PresetMenuSpec>, std::string>
+awj::compat::expected<std::vector<awj::shell_context_menu::PresetMenuSpec>, std::string>
 injected_preset_menu_specs() {
   auto catalog = awj::list_user_presets();
-  if (!catalog) return std::unexpected{catalog.error()};
+  if (!catalog) return awj::compat::unexpected{catalog.error()};
   std::vector<awj::shell_context_menu::PresetMenuSpec> specs;
   for (const auto& preset : catalog->presets) {
     if (!preset.shell_menu) continue;
     specs.push_back({awj::wide_from_utf8(preset.name),
                      preset.formats[0].menu_install_avif_png_command});
   }
-  if (specs.size() > 10) return std::unexpected{"已注入预设超过 10 个，请修正预设配置。"};
+  if (specs.size() > 10) return awj::compat::unexpected{"已注入预设超过 10 个，请修正预设配置。"};
   return specs;
 }
 
-std::expected<void, std::string> synchronize_shell_context_menu(
+awj::compat::expected<void, std::string> synchronize_shell_context_menu(
     const std::array<MenuFormatParams, 5>& menu_params, bool force_install) {
   auto awj_exe = awj_exe_path_for_shell_menu();
-  if (!awj_exe) return std::unexpected{awj_exe.error()};
+  if (!awj_exe) return awj::compat::unexpected{awj_exe.error()};
   auto names = injected_preset_menu_specs();
-  if (!names) return std::unexpected{names.error()};
+  if (!names) return awj::compat::unexpected{names.error()};
   auto compatibility = awj::shell_context_menu::compatibility_installed();
-  if (!compatibility) return std::unexpected{compatibility.error()};
+  if (!compatibility) return awj::compat::unexpected{compatibility.error()};
   if (!force_install) {
     auto installed = awj::shell_context_menu::is_installed(true);
-    if (!installed) return std::unexpected{installed.error()};
+    if (!installed) return awj::compat::unexpected{installed.error()};
     force_install = *installed;
   }
   return awj::shell_context_menu::reconcile(*awj_exe, shell_menu_params(menu_params), *names,
                                            force_install, *compatibility);
 }
 
-std::expected<void, std::string> remove_shell_context_menu() {
+awj::compat::expected<void, std::string> remove_shell_context_menu() {
   return awj::shell_context_menu::remove();
 }
 
@@ -545,17 +537,17 @@ std::optional<std::string> shell_context_menu_warning(
   return *checked;
 }
 
-std::expected<std::shared_ptr<StudioChildProcess>, std::string>
+awj::compat::expected<std::shared_ptr<StudioChildProcess>, std::string>
 start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
                         std::span<const std::wstring> query_args) {
   auto exe_path = awj::executable_path();
   if (!exe_path) {
-    return std::unexpected{exe_path.error()};
+    return awj::compat::unexpected{exe_path.error()};
   }
   exe_path->replace_extension(L".com");
   std::error_code ec;
   if (!std::filesystem::is_regular_file(*exe_path, ec) || ec) {
-    return std::unexpected{std::format("找不到 Studio 编码 worker: {}。",
+    return awj::compat::unexpected{awj::compat::format("找不到 Studio 编码 worker: {}。",
                                        awj::display_path_for_user(*exe_path))};
   }
   const auto exe_dir = exe_path->parent_path();
@@ -563,11 +555,11 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
   auto child = std::make_shared<StudioChildProcess>();
   child->queue_manifest_path = cfg.studio_queue_manifest;
   child->temp_directories.push_back(awj::output_dir_for(cfg));
-  const auto event_name = std::format(L"Local\\AWJStudioCancel-{}-{}",
+  const auto event_name = awj::compat::format(L"Local\\AWJStudioCancel-{}-{}",
                                       GetCurrentProcessId(), run_id);
   child->cancel_event.reset(CreateEventW(nullptr, TRUE, FALSE, event_name.c_str()));
   if (child->cancel_event == nullptr) {
-    return std::unexpected{std::format("创建编码取消事件失败: {}",
+    return awj::compat::unexpected{awj::compat::format("创建编码取消事件失败: {}",
                                        awj::win32_error_message(GetLastError()))};
   }
 
@@ -579,13 +571,13 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
   args.insert(args.begin(), exe_path->native());
   auto command_line = command_line_from_args(args);
   if (command_line.size() >= 32767) {
-    return std::unexpected{"编码 worker 命令行超过 Windows 长度限制。"};
+    return awj::compat::unexpected{"编码 worker 命令行超过 Windows 长度限制。"};
   }
   child->command_line = command_line;
 
   UniqueWin32Handle job{CreateJobObjectW(nullptr, nullptr)};
   if (job == nullptr) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "创建编码 worker Job Object 失败: {}",
         awj::win32_error_message(GetLastError()))};
   }
@@ -593,7 +585,7 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
   limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
   if (!SetInformationJobObject(job.get(), JobObjectExtendedLimitInformation,
                                &limits, sizeof(limits))) {
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "配置编码 worker Job Object 失败: {}",
         awj::win32_error_message(GetLastError()))};
   }
@@ -604,7 +596,7 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
                                     .lpSecurityDescriptor = nullptr,
                                     .bInheritHandle = TRUE};
   if (!CreatePipe(&pipe_read, &pipe_write, &pipe_security, 0)) {
-    return std::unexpected{std::format("创建编码 worker 输出管道失败: {}",
+    return awj::compat::unexpected{awj::compat::format("创建编码 worker 输出管道失败: {}",
                                        awj::win32_error_message(GetLastError()))};
   }
   UniqueWin32Handle output_read{pipe_read};
@@ -626,7 +618,7 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
       nullptr, cwd.c_str(),
       &startup, &process);
   if (!created) {
-    return std::unexpected{std::format("启动编码 worker 失败: {}",
+    return awj::compat::unexpected{awj::compat::format("启动编码 worker 失败: {}",
                                        awj::win32_error_message(GetLastError()))};
   }
   child->process.reset(process.hProcess);
@@ -639,7 +631,7 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
     TerminateProcess(child->process.get(),
                      awj::studio_defaults::worker_force_stop_exit_code);
     WaitForSingleObject(child->process.get(), INFINITE);
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "将编码 worker 加入 Job Object 失败: {}",
         awj::win32_error_message(error))};
   }
@@ -649,19 +641,19 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
     TerminateJobObject(child->job.get(),
                        awj::studio_defaults::worker_force_stop_exit_code);
     WaitForSingleObject(child->process.get(), INFINITE);
-    return std::unexpected{std::format(
+    return awj::compat::unexpected{awj::compat::format(
         "恢复编码 worker 执行失败: {}",
         awj::win32_error_message(error))};
   }
   return child;
 }
 
-std::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
+awj::compat::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
     const std::filesystem::path& path, bool allow_wic_fallback) {
   const std::array<std::wstring, 3> args{
       L"--studio-probe-image", path.native(), allow_wic_fallback ? L"wic" : L"native"};
   auto started = start_studio_cli_worker(awj::AppConfig{}, GetTickCount64(), args);
-  if (!started) return std::unexpected{started.error()};
+  if (!started) return awj::compat::unexpected{started.error()};
   const auto child = *started;
   std::string output;
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{60};
@@ -674,7 +666,7 @@ std::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
       output.append(buffer.data(), count);
       if (output.size() > 65536) {
         child->terminate();
-        return std::unexpected{"图片尺寸探测输出超过限制。"};
+        return awj::compat::unexpected{"图片尺寸探测输出超过限制。"};
       }
     }
     if (WaitForSingleObject(child->process.get(), 20) == WAIT_OBJECT_0) {
@@ -685,12 +677,12 @@ std::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
       DWORD count{};
       while (ReadFile(child->output_read.get(), buffer.data(), buffer.size(), &count, nullptr) && count) {
         output.append(buffer.data(), count);
-        if (output.size() > 65536) return std::unexpected{"图片尺寸探测输出超过限制。"};
+        if (output.size() > 65536) return awj::compat::unexpected{"图片尺寸探测输出超过限制。"};
       }
-      if (code != 0) return std::unexpected{output.empty() ? "CLI 图片尺寸探测失败。" : output};
+      if (code != 0) return awj::compat::unexpected{output.empty() ? "CLI 图片尺寸探测失败。" : output};
       awj::ImageDimensions dimensions{};
       const auto split = output.find(' ');
-      if (split == std::string::npos) return std::unexpected{"CLI 图片尺寸响应无效。"};
+      if (split == std::string::npos) return awj::compat::unexpected{"CLI 图片尺寸响应无效。"};
       const auto width = std::from_chars(output.data(), output.data() + split, dimensions.width);
       const auto end = output.find_first_of("\r\n", split + 1);
       const auto limit = output.data() + (end == std::string::npos ? output.size() : end);
@@ -698,13 +690,13 @@ std::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
       if (width.ec != std::errc{} || width.ptr != output.data() + split ||
           height.ec != std::errc{} || height.ptr != limit || !dimensions.width || !dimensions.height ||
           dimensions.width > std::numeric_limits<std::uint64_t>::max() / dimensions.height)
-        return std::unexpected{"CLI 图片尺寸响应无效。"};
+        return awj::compat::unexpected{"CLI 图片尺寸响应无效。"};
       dimensions.pixel_count = static_cast<std::uint64_t>(dimensions.width) * dimensions.height;
       return dimensions;
     }
     if (std::chrono::steady_clock::now() >= deadline) {
       child->terminate();
-      return std::unexpected{"CLI 图片尺寸探测超时。"};
+      return awj::compat::unexpected{"CLI 图片尺寸探测超时。"};
     }
   }
 }
@@ -726,9 +718,9 @@ void cleanup_forced_worker_temp_files(
       return;
     }
     const auto output_prefix =
-        std::format(L".awj-output-{}-", child->process_id);
+        awj::compat::format(L".awj-output-{}-", child->process_id);
     const auto summary_prefix =
-        std::format(L"summary.csv.tmp-{}-", child->process_id);
+        awj::compat::format(L"summary.csv.tmp-{}-", child->process_id);
     for (const auto& directory : child->temp_directories) {
       std::error_code ec;
       std::filesystem::directory_iterator it{

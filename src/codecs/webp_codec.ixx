@@ -4,6 +4,8 @@ module;
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <climits>
+#include <cstring>
 #include <lcms2.h>
 #include <avif/internal.h>
 #include <libplacebo/colorspace.h>
@@ -29,6 +31,7 @@ module;
 
 export module awj.webp_codec;
 
+import awj.animation;
 import awj.codec;
 import awj.config;
 import awj.core;
@@ -386,14 +389,11 @@ awj::compat::expected<std::vector<std::byte>, std::string> mux_metadata(
   WebPData image_data{.bytes = reinterpret_cast<const std::uint8_t*>(encoded.data()),
                       .size = encoded.size()};
   WebPDataGuard assembled{};
-  WebPMux* mux = WebPMuxNew();
+  WebPMux* mux = WebPMuxCreate(&image_data, 1);
   if (mux == nullptr) {
     return awj::compat::unexpected{"无法创建 WebP mux。"};
   }
   const auto mux_guard = std::unique_ptr<WebPMux, decltype(&WebPMuxDelete)>{mux, &WebPMuxDelete};
-  if (WebPMuxSetImage(mux, &image_data, 1) != WEBP_MUX_OK) {
-    return awj::compat::unexpected{"WebP mux 设置图像失败。"};
-  }
   if (essential_icc) {
     if (essential_icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes)
       return awj::compat::unexpected{"WebP essential ICC 超过元数据上限。"};
@@ -817,5 +817,149 @@ class WebPImageEncoder final : public ImageEncoder {
     }
   }
 };
+
+awj::compat::expected<NativeEncodeResult, std::string> encode_webp_animation(
+    AnimationReader& reader, const NativeEncodeSettings& settings, awj::compat::stop_token stop_token = {}) {
+  try {
+    const auto& info = reader.info();
+    if (info.durations.empty() || !info.width || !info.height ||
+        info.width > WEBP_MAX_DIMENSION || info.height > WEBP_MAX_DIMENSION)
+      return awj::compat::unexpected{"动画 WebP 画布或帧数无效。"};
+    if (settings.visual_quality && *settings.visual_quality < 100 && info.durations.size() > 1)
+      return awj::compat::unexpected{"动画 WebP 暂不支持视觉质量搜索，请使用编码质量。"};
+    if (info.repetitions < -1 || info.repetitions >= 65535)
+      return awj::compat::unexpected{"动画循环次数超过 WebP 容器限制。"};
+    WebPAnimEncoderOptions options{};
+    if (!WebPAnimEncoderOptionsInit(&options)) return awj::compat::unexpected{"初始化动画 WebP 失败。"};
+    options.anim_params.loop_count = info.repetitions < 0 ? 0 : info.repetitions + 1;
+    options.anim_params.bgcolor = 0;
+    options.allow_mixed = 0;
+    std::unique_ptr<WebPAnimEncoder, decltype(&WebPAnimEncoderDelete)> encoder{
+        WebPAnimEncoderNew(static_cast<int>(info.width), static_cast<int>(info.height), &options), WebPAnimEncoderDelete};
+    if (!encoder) return awj::compat::unexpected{"创建动画 WebP encoder 失败。"};
+    const bool lossless = settings.visual_quality ? *settings.visual_quality == 100 : settings.quality >= 100;
+    const auto speed = map_webp_speed_to_method(settings.speed);
+    WebPConfig config{};
+    if (!WebPConfigInit(&config)) return awj::compat::unexpected{"初始化动画 WebP config 失败。"};
+    config.lossless = lossless ? 1 : 0;
+    config.quality = static_cast<float>(std::clamp(settings.quality, 1, 100));
+    config.method = speed.codec_value; config.alpha_quality = 100;
+    config.thread_level = settings.resources.encoder_threads_per_file > 1 ? 1 : 0;
+    if (!WebPValidateConfig(&config)) return awj::compat::unexpected{"动画 WebP 编码参数无效。"};
+    auto applied = settings;
+    applied.source_has_alpha_channel = true; applied.encoder_supports_alpha = true;
+    applied.applied_alpha = settings.alpha_policy == AlphaModePolicy::off ? "dropped" : "kept";
+    const bool keep_alpha = applied.applied_alpha == "kept";
+    const auto budget = settings.resources.memory_limit_bytes /
+        static_cast<std::uint64_t>(std::max(1, settings.resources.file_parallelism));
+    const auto pixels = static_cast<std::uint64_t>(info.width) * info.height;
+    const auto working = pixels * 48;
+    std::uint64_t retained_bound{};
+    ImageBuffer metadata_image;
+    long double seconds{}, compensation{};
+    int timestamp{};
+    for (std::size_t index = 0; index < info.durations.size(); ++index) {
+      if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+      const auto& source = reader.frame();
+      if (source.width != info.width || source.height != info.height)
+        return awj::compat::unexpected{"动画 WebP 帧画布不一致。"};
+      const auto frame_bound = pixels * 5 + 4096;
+      if (frame_bound > UINT64_MAX - retained_bound) return awj::compat::unexpected{"动画 WebP 累积数据溢出。"};
+      retained_bound += frame_bound;
+      if (budget && (reader.memory_usage_bytes() > budget || working > budget - reader.memory_usage_bytes() ||
+          retained_bound > (budget - reader.memory_usage_bytes() - working) / 3))
+        return awj::compat::unexpected{"动画 WebP 累积编码工作区超过内存预算。"};
+      const PixelConversionRequest request{.format = PixelFormat::rgba, .bit_depth = 8,
+          .preserve_alpha = keep_alpha, .tone_map_to_sdr = settings.tone_map_to_sdr_pixels};
+      std::optional<ImageBuffer> converted;
+      if (!pixels_match(source, request)) {
+        auto result = convert_image_pixels(source, request, stop_token, settings.resources);
+        if (!result) return awj::compat::unexpected{result.error()};
+        converted = std::move(*result);
+      }
+      const auto& frame = converted ? *converted : source;
+      if (index == 0) {
+        metadata_image.source_info = frame.source_info;
+        metadata_image.metadata = frame.metadata;
+      } else if (frame.source_info && metadata_image.source_info &&
+          (frame.source_info->color_primaries != metadata_image.source_info->color_primaries ||
+           frame.source_info->transfer_characteristics != metadata_image.source_info->transfer_characteristics))
+        return awj::compat::unexpected{"动画 WebP 帧色彩描述不一致。"};
+      auto plane = webp_detail::rgba_plane(frame);
+      if (!plane) return awj::compat::unexpected{plane.error()};
+      if ((*plane)->stride > static_cast<std::size_t>(INT_MAX)) return awj::compat::unexpected{"动画 WebP stride 超限。"};
+      webp_detail::WebPPictureGuard picture;
+      if (!picture.initialized) return awj::compat::unexpected{"初始化动画 WebP picture 失败。"};
+      picture.picture.use_argb = 1;
+      picture.picture.width = static_cast<int>(info.width); picture.picture.height = static_cast<int>(info.height);
+      const auto* rgba = reinterpret_cast<const std::uint8_t*>((*plane)->bytes.data());
+      const auto imported = keep_alpha && frame.alpha_mode != AlphaMode::none
+          ? WebPPictureImportRGBA(&picture.picture, rgba, static_cast<int>((*plane)->stride))
+          : WebPPictureImportRGBX(&picture.picture, rgba, static_cast<int>((*plane)->stride));
+      if (!imported) return awj::compat::unexpected{"导入动画 WebP 帧失败。"};
+      picture.picture.user_data = &stop_token;
+      picture.picture.progress_hook = [](int, const WebPPicture* value) -> int {
+        return !static_cast<const awj::compat::stop_token*>(value->user_data)->stop_requested();
+      };
+      if (!WebPAnimEncoderAdd(encoder.get(), &picture.picture, timestamp, &config))
+        return awj::compat::unexpected{awj::compat::format("动画 WebP 添加帧失败：{}", WebPAnimEncoderGetError(encoder.get()))};
+      const auto duration = info.durations[index];
+      if (!duration.numerator || !duration.denominator) return awj::compat::unexpected{"动画 WebP 帧时长无效。"};
+      const auto increment = static_cast<long double>(duration.numerator) / duration.denominator - compensation;
+      const auto next_seconds = seconds + increment;
+      compensation = (next_seconds - seconds) - increment; seconds = next_seconds;
+      const auto total_ms = std::floor(seconds * 1000 + 0.5L);
+      if (!std::isfinite(total_ms) || total_ms > INT_MAX || total_ms <= timestamp || total_ms - timestamp > 0xffffff)
+        return awj::compat::unexpected{"源动画时长无法在 WebP 毫秒时基／帧时长范围内表示。"};
+      timestamp = static_cast<int>(total_ms);
+      if (settings.frame_progress) settings.frame_progress(index + 1, info.durations.size());
+      if (index + 1 < info.durations.size()) {
+        converted.reset();
+        auto next = reader.next(stop_token);
+        if (!next || !*next) return awj::compat::unexpected{next ? "动画帧数据提前结束。" : next.error()};
+      }
+    }
+    if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (!WebPAnimEncoderAdd(encoder.get(), nullptr, timestamp, nullptr))
+      return awj::compat::unexpected{"动画 WebP 结束时间无效。"};
+    webp_detail::WebPDataGuard assembled;
+    if (!WebPAnimEncoderAssemble(encoder.get(), &assembled.data) || !assembled.data.size)
+      return awj::compat::unexpected{"动画 WebP 封装失败。"};
+    encoder.reset();
+    if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (assembled.data.size > encoding_defaults::effective_max_input_file_bytes() ||
+        (budget && (reader.memory_usage_bytes() > budget || assembled.data.size > (budget - reader.memory_usage_bytes()) / 4)))
+      return awj::compat::unexpected{"动画 WebP 输出超过运行时或内存范围。"};
+    auto bytes = decoder_common::make_byte_buffer(assembled.data.size, "动画 WebP");
+    if (!bytes) return awj::compat::unexpected{bytes.error()};
+    std::memcpy(bytes->data(), assembled.data.bytes, assembled.data.size);
+    const MetadataBlock* essential = settings.applied_icc == "kept"
+        ? webp_detail::first_metadata(metadata_image, MetadataKind::icc) : nullptr;
+    std::optional<MetadataBlock> generated;
+    if (!essential && metadata_image.source_info) {
+      const auto& source = *metadata_image.source_info;
+      if (source.color_primaries && source.transfer_characteristics &&
+          (source.color_primaries != 1 || source.transfer_characteristics != 13)) {
+        auto icc = webp_detail::sdr_cicp_icc(source, stop_token);
+        if (!icc) return awj::compat::unexpected{icc.error()};
+        generated = MetadataBlock{MetadataKind::icc, std::move(*icc)}; essential = &*generated;
+      }
+    }
+    if (essential || (!settings.strip_metadata && webp_detail::has_metadata_to_mux(metadata_image, settings))) {
+      auto muxed = webp_detail::mux_metadata(*bytes, metadata_image, settings, stop_token, essential);
+      if (!muxed) return awj::compat::unexpected{muxed.error()};
+      bytes = std::move(muxed);
+    }
+    auto diagnostics = diagnostics_from_settings(applied);
+    diagnostics.encoder_id = "libwebp"; diagnostics.integration_mode = "libwebp-sequence";
+    diagnostics.applied_bit_depth = 8; diagnostics.speed_mapping = speed;
+    diagnostics.encoder_threads = settings.resources.encoder_threads_per_file;
+    diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
+    return NativeEncodeResult{.encoded = {.bytes = std::move(*bytes), .codec_name = "libwebp-sequence"},
+        .diagnostics = std::move(diagnostics), .final_quality = settings.quality,
+        .lossless = lossless, .search_attempt_count = 1};
+  } catch (const std::bad_alloc&) { return awj::compat::unexpected{"动画 WebP 内存不足。"}; }
+    catch (const std::length_error&) { return awj::compat::unexpected{"动画 WebP 数据超过运行时范围。"}; }
+}
 
 }  // namespace awj

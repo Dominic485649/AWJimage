@@ -10,14 +10,14 @@ AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形�
 |---|---|
 | 输入 | AVIF、HEIC/HEIF、JPEG、PNG、WebP、JXL、BMP、GIF、TIFF、相机 RAW；Windows 另支持 JXR |
 | 输出 | AVIF、PNG、WebP、JXL、JPG |
-| 动画 | GIF、APNG、WebP、AVIF 转 AVIF 时保留帧时序、循环和透明度 |
+| 动画 | GIF、APNG、WebP、AVIF 转 AVIF 或 WebP 时保留动画时序、循环和透明度；单帧使用静态编码 |
 | HDR | 单层 SDR/HDR 保持单层；真实双呈现可保留 Gain Map；JPG HDR 可自动生成 SDR 底图，SDR-only 输出自动高光滚降 |
 
 默认输出 AVIF，质量 70、速度 5。JPG 默认输出 8-bit YCbCr，auto 与 AVIF 一样跟随源采样：保留已知 4:2:0 / 4:2:2 / 4:4:4，RGB、RGBA 和未知源使用 4:4:4；JPG 灰度源在 auto 下使用三分量 4:4:4，不支持显式 4:0:0。HDR JPG 使用 SDR 主图与 ISO 21496-1 Gain Map，仅接受 ISO 增益图协议，不再兼容旧 Adobe／Google／Apple 增益图。质量 100 的无损行为取决于格式；JPEG 支持无损转封装为 JXL。[Gain Map 与动画说明](docs/gain-map-animation.md)。
 
 SDR 输入不因宽色域、高位深或显示提亮而增加 HDR 层。JXL/AVIF 仅为原有 SDR/HDR 双呈现保留 HDR 底图与重建 SDR 的 Gain Map；普通单层仍为单层。JPG 是例外：HDR 没有现成 SDR 时自动高光滚降生成 SDR 底图，再用 Gain Map 保留 HDR。WebP 自动滚降至 SDR，有原 SDR 时优先复用；PNG 保留所选 HDR/SDR 单层。`--jpeg-hdr hdr` 遇到 SDR 输入也保持普通 SDR，不重标为 HDR。
 
-各格式使用统一的目标像素转换阶段。兼容的 YUV 布局直接复用，色彩矩阵、位深、采样及几何调整合并处理，减少整图中间缓冲。HDR 亮度分析、Gain Map 重建和动画合成按格式要求执行。
+各格式使用统一的目标像素转换阶段，真实尺寸重采样统一使用 Lanczos-3。尺寸可选自动、无限制、手动放大、手动缩小和固定长／宽；放大／缩小分别取已填宽、高、长边、短边和比例算出的最大／最小倍率，比例可为正小数或超过 100%。固定模式在尺寸与比例之间二选一：填写尺寸后比例框禁用，等比居中放入指定画布，支持 alpha 时补透明边，否则补黑边；只填比例时禁用四个尺寸框并按比例等比缩放。HDR 亮度分析、Gain Map 重建和动画合成按格式要求执行。
 
 ## 下载与系统要求
 

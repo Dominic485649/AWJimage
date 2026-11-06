@@ -217,7 +217,7 @@ int check_hdr_geometry() {
       view.geometry = awj::ImageGeometry{.stored_width = 3, .stored_height = 2,
           .crop_x = crop ? 1u : 0u, .crop_y = 0, .crop_width = crop ? 2u : 3u,
           .crop_height = 2, .rotation = rotation, .mirror_axis = mirror};
-      view.width = crop ? 1 : rotation % 2 ? 2 : view.geometry->crop_width;
+      view.width = rotation % 2 ? 2 : view.geometry->crop_width;
       view.height = rotation % 2 ? view.geometry->crop_width : 2;
       auto reference = reference_straight_geometry(view);
       auto hdr_view = awj::hdr::materialize_scrgb_as_hdr10(awj::ImageBuffer{view});
@@ -562,9 +562,15 @@ int main() {
   view.geometry = awj::ImageGeometry{.stored_width = 5, .stored_height = 3,
       .crop_x = 1, .crop_y = 1, .crop_width = 3, .crop_height = 2};
   view.width = 2; view.height = 1;
+  if (awj::convert_image_pixels(view, awj::PixelConversionRequest{}))
+    return fail("旧的隐式最近邻缩放表示未被拒绝。");
+  view.width = 3; view.height = 2;
   auto cropped = awj::convert_image_pixels(view, awj::PixelConversionRequest{});
   if (!cropped || cropped->planes[0].bytes[0] != source.planes[0].bytes[24] ||
-      cropped->planes[0].bytes[4] != source.planes[0].bytes[28]) return fail("Fused crop/resize used incorrect samples.");
+      cropped->planes[0].bytes[4] != source.planes[0].bytes[28]) return fail("纯裁切没有保持源像素。");
+  auto resized_crop = awj::resize_native_pixels(view, 2, 1);
+  if (!resized_crop || resized_crop->width != 2 || resized_crop->height != 1 || resized_crop->geometry)
+    return fail("显式 Lanczos 裁切缩放失败。");
   view.geometry->crop_width = 10;
   if (awj::convert_image_pixels(view, awj::PixelConversionRequest{})) return fail("Invalid geometry was accepted.");
   const std::array layouts{awj::PixelFormat::yuv444, awj::PixelFormat::yuv422,

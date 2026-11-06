@@ -1,3 +1,4 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <cstdio>
 #include <iterator>
@@ -18,11 +19,11 @@ import awj.config;
 
 namespace fs = std::filesystem;
 void check(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
-template <class T> T require(std::expected<T, std::string> value) {
+template <class T> T require(awj::compat::expected<T, std::string> value) {
   if (!value) throw std::runtime_error(value.error());
   return std::move(*value);
 }
-void require(std::expected<void, std::string> value) {
+void require(awj::compat::expected<void, std::string> value) {
   if (!value) throw std::runtime_error(value.error());
 }
 
@@ -87,6 +88,7 @@ int main() try {
   preset.formats[0].chroma_mode = awj::ChromaMode::yuv400;
   preset.formats[0].image_size_limit.mode = awj::ImageSizeLimitMode::manual;
   preset.formats[0].image_size_limit.scale_percent = 80;
+  preset.formats[1].image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .scale_percent = 200.5};
   preset.formats[0].menu_strip_metadata = true;
   preset.formats[0].menu_allow_wic_fallback = false;
   preset.formats[0].menu_close_on_finish = false;
@@ -140,6 +142,15 @@ int main() try {
       shell.config.memory_limit_bytes == 1536ull * 1024 * 1024 && !shell.config.unlock_memory_limit, "Linux shell lost the preset memory budget");
 #endif
   const auto reread = require(awj::load_user_preset_file(original_path));
+  check(reread.formats[1].image_size_limit.mode == awj::ImageSizeLimitMode::fixed &&
+      reread.formats[1].image_size_limit.scale_percent == 200.5 &&
+      !reread.formats[1].image_size_limit.max_width && !reread.formats[1].image_size_limit.max_height,
+      "固定模式单独比例没有经过预设保存与加载");
+  const auto ratio_cli = require(awj::parse_arguments_with_user_preset(
+      {L"--preset", L"重命名 测试", L"--format", L"webp"}));
+  check(ratio_cli.config.image_size_limit.mode == awj::ImageSizeLimitMode::fixed &&
+      ratio_cli.config.image_size_limit.scale_percent == 200.5,
+      "固定模式比例预设没有传入 CLI");
   check(reread.formats[0].chroma_mode == awj::ChromaMode::yuv400 &&
       shell.config.chroma_mode == awj::ChromaMode::yuv400 &&
       reread.formats[0].memory_limit_bytes == preset.formats[0].memory_limit_bytes &&
@@ -191,8 +202,8 @@ int main() try {
   check(selected_path(require(awj::list_user_presets()).presets) == original_path,
         "valid catalog restoration lost the stable preset identity");
   int sync_calls = 0;
-  const auto sync_failure = [&]() -> std::expected<void, std::string> {
-    if (++sync_calls == 1) return std::unexpected{"injected synchronization failure"};
+  const auto sync_failure = [&]() -> awj::compat::expected<void, std::string> {
+    if (++sync_calls == 1) return awj::compat::unexpected{"injected synchronization failure"};
     return {};
   };
   auto renamed = preset;
@@ -266,10 +277,10 @@ int main() try {
   require(awj::save_user_preset(migrated, true));
   const auto normalized = read(legacy_path);
   const auto document = nlohmann::json::parse(normalized, nullptr, true, true);
-  check(!document.contains("unknown") && document["formats"]["avif"]["speed"] == 6 &&
+  check(document["unknown"]["future"] == true && document["formats"]["avif"]["speed"] == 6 &&
         document["formats"]["avif"]["bit_depth"] == 10 &&
         document["formats"]["avif"]["visual_quality"].is_null(),
-        "legacy save did not normalize optional values or remove extra fields");
+        "旧预设迁移没有归一可选字段或保留未知字段");
   require(awj::save_user_preset(require(awj::load_user_preset_file(legacy_path)), true));
   check(read(legacy_path) == normalized, "preset migration is not idempotent");
   require(awj::delete_user_preset(migrated));

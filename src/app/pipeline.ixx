@@ -1,6 +1,8 @@
 module;
+#include "../compat/stdlib_compat.h"
 #include "../core/work_memory_admission.h"
 #include "../core/hdr_cost.h"
+#include "../core/lanczos_resample.h"
 
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -165,7 +167,7 @@ std::string large_image_actions_text(const LargeImageDecision& decision) {
 }
 
 std::string large_image_report_message(const BatchLargeImageItem& item) {
-  return std::format("超大图自动处理：{}x{}，原因 {}；可用处理方式：{}；{}",
+  return awj::compat::format("超大图自动处理：{}x{}，原因 {}；可用处理方式：{}；{}",
                      item.dimensions.width, item.dimensions.height,
                      large_image_reason_name(item.decision.reason),
                      large_image_actions_text(item.decision),
@@ -174,7 +176,7 @@ std::string large_image_report_message(const BatchLargeImageItem& item) {
 
 std::string large_image_action_text(const BatchLargeImageItem& item) {
   const auto actions = large_image_actions_text(item.decision);
-  return std::format(
+  return awj::compat::format(
       "[LARGE] {:04} {} ({}x{}, {}) -> 自动大图：{}；{}", item.file.index + 1,
       path_to_utf8(item.file.path.filename()), item.dimensions.width,
       item.dimensions.height, large_image_reason_name(item.decision.reason),
@@ -183,7 +185,7 @@ std::string large_image_action_text(const BatchLargeImageItem& item) {
 
 std::string large_image_log_text(const BatchLargeImageItem& item) {
   const auto actions = large_image_actions_text(item.decision);
-  return std::format("[LARGE] {:04} ({}x{}, {}) -> 自动大图：{}；{}",
+  return awj::compat::format("[LARGE] {:04} ({}x{}, {}) -> 自动大图：{}；{}",
                      item.file.index + 1, item.dimensions.width,
                      item.dimensions.height,
                      large_image_reason_name(item.decision.reason), actions,
@@ -244,6 +246,11 @@ ImageMemoryEstimate estimated_regular_memory(
     return estimate;
   }
 
+  const auto geometry = plan_image_geometry(dimensions.width, dimensions.height, cfg);
+  if (!geometry) {
+    estimate.bytes = UINT64_MAX; estimate.profile = "geometry-invalid"; return estimate;
+  }
+  const bool physical_resize = geometry->changes();
   const auto display_pixels = multiply(dimensions.width, dimensions.height);
   // 裁切后的显示尺寸可能远小于完整解码画布；像素存储画像仍包含完整 coded canvas。
   const auto storage_pixel_bytes = dimensions.source_bit_depth > 8 ? 8u : 4u;
@@ -258,14 +265,17 @@ ImageMemoryEstimate estimated_regular_memory(
   const bool sdr = dimensions.source_dynamic_range == ImageDynamicRangeHint::sdr &&
                    !dimensions.source_has_gain_map;
   const bool sdr8 = sdr && known_depth && dimensions.source_bit_depth <= 8;
-  const bool possible_alpha = dimensions.source_has_alpha || !known_depth ||
+  const bool source_possible_alpha = dimensions.source_has_alpha || !known_depth ||
                              dimensions.source_dynamic_range == ImageDynamicRangeHint::unknown;
+  const bool possible_alpha = source_possible_alpha || (geometry->pads() && cfg.output_format != OutputFormat::jpgli &&
+      cfg.alpha_policy != AlphaModePolicy::off);
   const bool visual_quality = cfg.visual_quality.has_value() && !grid;
-  const bool native_sdr420 = sdr8 && !possible_alpha && dimensions.opaque_sdr8_yuv420;
+  const bool native_sdr420_source = sdr8 && !source_possible_alpha && dimensions.opaque_sdr8_yuv420;
+  const bool native_sdr420 = native_sdr420_source && !physical_resize;
   const auto native420 = add(n, multiply(multiply((static_cast<std::uint64_t>(dimensions.width) + 1) / 2,
       (static_cast<std::uint64_t>(dimensions.height) + 1) / 2), 2));
   const auto fallback_source = sdr && known_depth
-      ? (native_sdr420 ? native420 : multiply(n, dimensions.source_bit_depth > 8 ? 8 : 4))
+      ? (native_sdr420_source ? native420 : multiply(n, dimensions.source_bit_depth > 8 ? 8 : 4))
       : multiply(n, 16); // Unknown is not evidence of SDR or integer storage.
   auto source = dimensions.decoded_storage_bytes
       ? std::max(dimensions.decoded_storage_bytes,
@@ -313,20 +323,17 @@ ImageMemoryEstimate estimated_regular_memory(
   const auto dual_compute = dual ? multiply(t, 3 * sizeof(float)) : 0;
   const auto tone_scratch = !sdr && !dimensions.source_has_gain_map
       ? hdr_cost::tone_scratch_bytes(workers) : 0;
-  // A non-metric geometry view retains its original planes. Metric resize of a
-  // plain image materializes packed pixels and replaces those planes; reserve
-  // old+new during resize, not the released source again throughout encoding.
-  // Gain Map endpoint ownership is conservatively retained until both finish.
-  const bool physical_resize = visual_quality && !dimensions.source_has_gain_map &&
-      (target.width != dimensions.width || target.height != dimensions.height);
-  const auto resized_source = physical_resize ? multiply(t, sdr && known_depth
-      ? (dimensions.source_bit_depth > 8 ? 8 : 4) : 16) : source;
+  // Lanczos／补边始终物化目标像素，编码期间不再长期保留旧的尺寸视图。
+  const auto resized_source = physical_resize ? multiply(t, dual ? 16 : known_depth
+      ? (dimensions.source_bit_depth > 8 ? 8 : 4) : 8) : source;
+  const auto geometry_scratch = geometry->resamples() ? lanczos_detail::scratch_bytes(dimensions.width,
+      dimensions.height, geometry->content_width, geometry->content_height) : 0;
   const auto encoder_common = add(resized_source, multiply(compressed_bytes, 2));
   const auto prepare_live = add(add(encoder_common, normalized), add(dual_resident, tone_scratch));
   estimate.prepare_bytes = add(add(prepare_live, dual_compute), add(8 * mib, worker_scratch));
   if (physical_resize)
     estimate.prepare_bytes = std::max(estimate.prepare_bytes,
-        add(add(common, resized_source), add(8 * mib, worker_scratch)));
+        add(add(add(common, resized_source), geometry_scratch), add(8 * mib, worker_scratch)));
   source = resized_source;
 
   auto output_bound = add(multiply(t, target_depth > 8 ? 8 : 4), 64 * 1024);
@@ -480,7 +487,7 @@ void inherit_memory_diagnostics(EncodeResult& result, EncodeResult& pending) noe
   result.memory_source_has_gain_map = pending.memory_source_has_gain_map;
 }
 
-std::expected<ClassifiedWork, std::string> classify_work_for_avif(
+awj::compat::expected<ClassifiedWork, std::string> classify_work_for_avif(
     const AppConfig& cfg, const std::vector<ImageFile>& files,
     std::uint64_t memory_limit) {
   try {
@@ -512,7 +519,7 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
 
     const auto capabilities = avif_encoder_capabilities_for_current_build();
     const bool grid_available =
-        std::ranges::any_of(capabilities, [](const auto& capability) {
+        awj::compat::ranges::any_of(capabilities, [](const auto& capability) {
           return capability.mode == AvifEncoderMode::aom &&
                  avif_capability_available_for_large_mode(capability) &&
                  capability.supports_avif_grid;
@@ -533,7 +540,7 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
       auto decision = classify_large_image(target, grid_available);
       if (decision.klass == LargeImageClass::large_mode_required && grid_available) {
         auto animated = input_uses_animation_reader(image.path);
-        if (!animated) return std::unexpected{animated.error()};
+        if (!animated) return awj::compat::unexpected{animated.error()};
         if (*animated) decision = classify_large_image(target, false);
       }
       switch (decision.klass) {
@@ -554,9 +561,9 @@ std::expected<ClassifiedWork, std::string> classify_work_for_avif(
     }
     return classified;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"批处理分类列表内存不足。"};
+    return awj::compat::unexpected{"批处理分类列表内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"批处理分类列表数量超过运行时限制。"};
+    return awj::compat::unexpected{"批处理分类列表数量超过运行时限制。"};
   }
 }
 
@@ -589,18 +596,18 @@ std::uint64_t typical_decoded_bytes_per_file(
 std::uint64_t estimated_large_working_set_bytes(
     const BatchLargeImageItem& item, const AppConfig& cfg) noexcept;
 
-std::expected<void, std::string> reject_over_memory_budget(
+awj::compat::expected<void, std::string> reject_over_memory_budget(
     ClassifiedWork& classified, std::uint64_t memory_limit, const AppConfig& cfg) {
   if (memory_limit == 0) {
     return {};
   }
 
   auto reject_from = [&](std::vector<ClassifiedImageFile>& source)
-      -> std::expected<void, std::string> {
+      -> awj::compat::expected<void, std::string> {
     try {
       if (classified.memory_rejected.size() >
           std::numeric_limits<std::size_t>::max() - source.size()) {
-        return std::unexpected{"内存预算预检列表数量超过运行时限制。"};
+        return awj::compat::unexpected{"内存预算预检列表数量超过运行时限制。"};
       }
       classified.memory_rejected.reserve(classified.memory_rejected.size() +
                                          source.size());
@@ -615,9 +622,9 @@ std::expected<void, std::string> reject_over_memory_budget(
       }
       source = std::move(retained);
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"内存预算预检列表内存不足。"};
+      return awj::compat::unexpected{"内存预算预检列表内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"内存预算预检列表数量超过运行时限制。"};
+      return awj::compat::unexpected{"内存预算预检列表数量超过运行时限制。"};
     }
     return {};
   };
@@ -640,13 +647,13 @@ std::expected<void, std::string> reject_over_memory_budget(
     classified.large_mode = std::move(retained);
     return {};
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"大图内存预算预检列表内存不足。"};
+    return awj::compat::unexpected{"大图内存预算预检列表内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"大图内存预算预检列表数量超过运行时限制。"};
+    return awj::compat::unexpected{"大图内存预算预检列表数量超过运行时限制。"};
   }
 }
 
-std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
+awj::compat::expected<std::vector<WorkGroup>, std::string> build_work_groups(
     const AppConfig& cfg, const std::vector<ClassifiedImageFile>& classified) {
   std::vector<WorkGroup> groups;
   std::unordered_map<PathText, std::size_t> index_by_output;
@@ -672,13 +679,13 @@ std::expected<std::vector<WorkGroup>, std::string> build_work_groups(
       group.files.push_back(image);
     }
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"批处理工作组内存不足。"};
+    return awj::compat::unexpected{"批处理工作组内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"批处理工作组数量超过运行时限制。"};
+    return awj::compat::unexpected{"批处理工作组数量超过运行时限制。"};
   }
 
   // 不同输出路径之间按总大小调度；覆盖/跳过模式下同一路径保留扫描顺序。
-  std::ranges::sort(groups, [](const WorkGroup& left, const WorkGroup& right) {
+  awj::compat::ranges::sort(groups, [](const WorkGroup& left, const WorkGroup& right) {
     return left.weight > right.weight;
   });
   return groups;
@@ -698,7 +705,7 @@ std::uint64_t largest_large_mode_working_set(
   return estimate;
 }
 
-std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
+awj::compat::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
     const AppConfig& cfg, const std::vector<BatchLargeImageItem>& items) {
   std::vector<LargeWorkGroup> groups;
   std::unordered_map<PathText, std::size_t> index_by_output;
@@ -721,12 +728,12 @@ std::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
       group.items.push_back(item);
     }
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"大图工作组内存不足。"};
+    return awj::compat::unexpected{"大图工作组内存不足。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"大图工作组数量超过运行时限制。"};
+    return awj::compat::unexpected{"大图工作组数量超过运行时限制。"};
   }
 
-  std::ranges::sort(groups, [](const LargeWorkGroup& left,
+  awj::compat::ranges::sort(groups, [](const LargeWorkGroup& left,
                                const LargeWorkGroup& right) {
     return left.weight > right.weight;
   });
@@ -737,12 +744,12 @@ std::string format_result_line(const EncodeResult& result) {
   const auto warning_suffix = [&] {
     return result.ok && !result.skipped && !result.message.empty() &&
                    result.message != "OK"
-               ? std::format(" [WARN] {}", result.message)
+               ? awj::compat::format(" [WARN] {}", result.message)
                : std::string{};
   };
   if (result.ok) {
     if (result.skipped) {
-      return std::format("[SKIP] {:04} {} -> 已存在", result.index + 1,
+      return awj::compat::format("[SKIP] {:04} {} -> 已存在", result.index + 1,
                          path_to_utf8(result.input_path.filename()));
     }
 
@@ -752,7 +759,7 @@ std::string format_result_line(const EncodeResult& result) {
                                    static_cast<double>(result.original_bytes);
     if (result.requested_visual_quality) {
       if (result.lossless) {
-        return std::format(
+        return awj::compat::format(
             "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s, VQ {}→lossless, q{}, "
             "{} 次){}",
             result.index + 1, path_to_utf8(result.input_path.filename()),
@@ -766,7 +773,7 @@ std::string format_result_line(const EncodeResult& result) {
       // 日志不跟随界面语言。改动前先看那边的说明。
       const char* target_state =
           result.visual_quality_target_met ? "" : ", 未达标兜底";
-      return std::format(
+      return awj::compat::format(
           "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s, VQ {}→{:.2f}{}, q{}, "
           "{} 次){}",
           result.index + 1, path_to_utf8(result.input_path.filename()),
@@ -776,7 +783,7 @@ std::string format_result_line(const EncodeResult& result) {
           result.final_encoder_quality, result.search_attempt_count,
           warning_suffix());
     }
-    return std::format(
+    return awj::compat::format(
         "[ OK ] {:04} {} -> {} ({}, {:.1f}%, {:.2f}s){}", result.index + 1,
         path_to_utf8(result.input_path.filename()),
         path_to_utf8(result.output_path.filename()),
@@ -785,12 +792,12 @@ std::string format_result_line(const EncodeResult& result) {
   }
 
   if (result.canceled) {
-    return std::format("[CANCEL] {:04} {} -> {}", result.index + 1,
+    return awj::compat::format("[CANCEL] {:04} {} -> {}", result.index + 1,
                        path_to_utf8(result.input_path.filename()),
                        result.message);
   }
 
-  return std::format("[FAIL] {:04} {} -> {}", result.index + 1,
+  return awj::compat::format("[FAIL] {:04} {} -> {}", result.index + 1,
                      path_to_utf8(result.input_path.filename()),
                      result.message);
 }
@@ -822,7 +829,7 @@ void log_item_failure_noexcept(FileLogger& logger, const EncodeResult& result) n
       logger.warn(format_result_line(result));
       return;
     }
-    logger.warn(std::format(
+    logger.warn(awj::compat::format(
         "{} [decoder={}, decode_stage={}, source_metadata_available={}, source_icc={}]",
         format_result_line(result), result.decoder_id.empty() ? "unknown" : result.decoder_id,
         result.decode_stage, result.source_metadata_available,
@@ -896,7 +903,7 @@ WorkExecutionResult encode_work_groups(
     const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
     const std::vector<WorkGroup>& work, std::size_t progress_total,
     std::atomic<std::size_t>& completed, std::vector<EncodeResult>& results,
-    const ProgressCallback& progress, std::stop_token stop_token) {
+    const ProgressCallback& progress, awj::compat::stop_token stop_token) {
   WorkExecutionResult execution{};
   if (work.empty()) {
     return execution;
@@ -909,14 +916,14 @@ WorkExecutionResult encode_work_groups(
   std::atomic<int> worker_failures{0};
   WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
 
-  std::vector<std::jthread> workers;
+  std::vector<awj::compat::scoped_worker> workers;
   try {
     workers.reserve(static_cast<std::size_t>(jobs));
   } catch (const std::bad_alloc&) {
     worker_failures.fetch_add(1);
     try {
       const auto text =
-          std::format("[WARN] 工作线程列表内存不足，需要 {} 个线程槽。", jobs);
+          awj::compat::format("[WARN] 工作线程列表内存不足，需要 {} 个线程槽。", jobs);
       report_worker_warning_noexcept(logger, progress, completed.load(),
                                      progress_total, text, text);
     } catch (...) {
@@ -944,7 +951,7 @@ WorkExecutionResult encode_work_groups(
             worker_cfg.emplace(cfg);
             worker_cfg->allow_wic_fallback = false;
             try {
-              const auto text = std::format(
+              const auto text = awj::compat::format(
                   "[WARN] 工作线程 WIC fallback COM 初始化失败，已禁用该线程的 "
                   "WIC fallback: 0x{:08X}",
                   static_cast<unsigned int>(com.init()));
@@ -980,7 +987,7 @@ WorkExecutionResult encode_work_groups(
                     BatchProgress{.kind = BatchEventKind::warning,
                                   .completed = completed.load(),
                                   .total = progress_total,
-                                  .text = std::format(
+                                  .text = awj::compat::format(
                                       "[WARN] 输出重名: {} 个输入将依次覆盖 {}",
                                       group.files.size(),
                                       display_path_for_user(output_path_for(
@@ -1030,7 +1037,7 @@ WorkExecutionResult encode_work_groups(
     } catch (const std::bad_alloc&) {
       worker_failures.fetch_add(1);
       try {
-        const auto text = std::format(
+        const auto text = awj::compat::format(
             "[WARN] 创建工作线程失败，线程状态内存不足，已继续等待已启动线程: "
             "{}/{}",
             worker_index, jobs);
@@ -1068,7 +1075,7 @@ WorkExecutionResult encode_work_groups(
 EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
                                     const BatchLargeImageItem& item,
                                     ResourcePlan resource_plan,
-                                    std::stop_token stop_token) {
+                                    awj::compat::stop_token stop_token) {
   if (cfg.unlock_memory_limit) resource_plan.memory_limit_bytes = 0;
   const auto estimate = estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true);
   EncodeResult failed{
@@ -1091,7 +1098,7 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
 
   const auto required_memory = estimate.bytes;
   if (resource_plan.memory_limit_bytes > 0 && required_memory > resource_plan.memory_limit_bytes) {
-    failed.message = std::format("AOM Grid 预估工作集 {} 超过内存预算 {}。",
+    failed.message = awj::compat::format("AOM Grid 预估工作集 {} 超过内存预算 {}。",
         format_size(required_memory), format_size(resource_plan.memory_limit_bytes));
     return failed;
   }
@@ -1116,7 +1123,7 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
         .mode = GridMode::auto_grid,
         .clamped_padding_enabled = large_cfg.experimental_clamped_grid_padding});
     if (!planned) {
-      failed.message = std::format("Grid 规划失败：{}", planned.error());
+      failed.message = awj::compat::format("Grid 规划失败：{}", planned.error());
       return failed;
     }
     large_cfg.avif_encoder = AvifEncoderMode::aom;
@@ -1140,7 +1147,7 @@ WorkExecutionResult encode_large_work_groups(
     const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
     const std::vector<LargeWorkGroup>& work, std::size_t progress_total,
     std::atomic<std::size_t>& completed, std::vector<EncodeResult>& results,
-    const ProgressCallback& progress, std::stop_token stop_token) {
+    const ProgressCallback& progress, awj::compat::stop_token stop_token) {
   WorkExecutionResult execution{};
   if (work.empty()) {
     return execution;
@@ -1153,14 +1160,14 @@ WorkExecutionResult encode_large_work_groups(
   std::atomic<int> worker_failures{0};
   WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
 
-  std::vector<std::jthread> workers;
+  std::vector<awj::compat::scoped_worker> workers;
   try {
     workers.reserve(static_cast<std::size_t>(jobs));
   } catch (const std::bad_alloc&) {
     worker_failures.fetch_add(1);
     try {
       const auto text =
-          std::format("[WARN] 大图工作线程列表内存不足，需要 {} 个线程槽。", jobs);
+          awj::compat::format("[WARN] 大图工作线程列表内存不足，需要 {} 个线程槽。", jobs);
       report_worker_warning_noexcept(logger, progress, completed.load(),
                                      progress_total, text, text);
     } catch (...) {
@@ -1190,7 +1197,7 @@ WorkExecutionResult encode_large_work_groups(
             worker_cfg.emplace(cfg);
             worker_cfg->allow_wic_fallback = false;
             try {
-              const auto text = std::format(
+              const auto text = awj::compat::format(
                   "[WARN] 大图工作线程 WIC fallback COM 初始化失败，已禁用该线程的 "
                   "WIC fallback: 0x{:08X}",
                   static_cast<unsigned int>(com.init()));
@@ -1225,7 +1232,7 @@ WorkExecutionResult encode_large_work_groups(
                     BatchProgress{.kind = BatchEventKind::warning,
                                   .completed = completed.load(),
                                   .total = progress_total,
-                                  .text = std::format(
+                                  .text = awj::compat::format(
                                       "[WARN] 大图输出重名: {} 个输入将依次覆盖 {}",
                                       group.items.size(),
                                       display_path_for_user(output_path_for(
@@ -1289,7 +1296,7 @@ WorkExecutionResult encode_large_work_groups(
     } catch (const std::bad_alloc&) {
       worker_failures.fetch_add(1);
       try {
-        const auto text = std::format(
+        const auto text = awj::compat::format(
             "[WARN] 创建大图工作线程失败，线程状态内存不足，已继续等待已启动线程: "
             "{}/{}",
             worker_index, jobs);
@@ -1352,7 +1359,7 @@ void mark_unstarted_results(std::vector<EncodeResult>& results, bool canceled,
 }  // namespace pipeline_detail
 
 void print_line(std::string_view text) {
-  std::println("{}", text);
+  awj::compat::println("{}", text);
   std::fflush(stdout);
 }
 
@@ -1392,9 +1399,9 @@ void apply_runtime_input_limit_policy(const AppConfig& cfg) noexcept {
       cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
 }
 
-std::expected<BatchSummary, std::string> run_batch(
+awj::compat::expected<BatchSummary, std::string> run_batch(
     AppConfig cfg, ProgressCallback progress = {},
-    std::stop_token stop_token = {},
+    awj::compat::stop_token stop_token = {},
     std::span<const std::filesystem::path> input_paths = {}) {
   try {
     apply_runtime_input_limit_policy(cfg);
@@ -1403,34 +1410,34 @@ std::expected<BatchSummary, std::string> run_batch(
 #endif
     if (!cfg.studio_queue_manifest.empty() &&
         !cfg.studio_large_action.empty()) {
-      return std::unexpected{
+      return awj::compat::unexpected{
           "Studio 队列 manifest 不能与手动大图 worker 同时使用。"};
     }
     if (!cfg.studio_large_action.empty()) {
       if (auto valid = validate_config(cfg); !valid) {
-        return std::unexpected{valid.error()};
+        return awj::compat::unexpected{valid.error()};
       }
       if (cfg.output_format != OutputFormat::avif) {
-        return std::unexpected{"Studio 大图 worker 仅支持 AVIF 输出。"};
+        return awj::compat::unexpected{"Studio 大图 worker 仅支持 AVIF 输出。"};
       }
       auto dimensions = probe_image_dimensions_for_path(
           cfg.input_path,
           DecoderRegistryOptions{.allow_wic_fallback = cfg.allow_wic_fallback});
       if (!dimensions) {
-        return std::unexpected{dimensions.error()};
+        return awj::compat::unexpected{dimensions.error()};
       }
       std::error_code file_ec;
       const auto bytes = std::filesystem::file_size(cfg.input_path, file_ec);
       if (file_ec) {
-        return std::unexpected{std::format("读取文件大小失败: {}；系统错误：{}。",
+        return awj::compat::unexpected{awj::compat::format("读取文件大小失败: {}；系统错误：{}。",
                                            display_path_for_user(cfg.input_path),
                                            file_ec.message())};
       }
       const bool grid_action = cfg.studio_large_action == L"grid";
       if (grid_action) {
         auto animated = input_uses_animation_reader(cfg.input_path);
-        if (!animated) return std::unexpected{animated.error()};
-        if (*animated) return std::unexpected{"保留动画时不能使用静态 Grid。"};
+        if (!animated) return awj::compat::unexpected{animated.error()};
+        if (*animated) return awj::compat::unexpected{"保留动画时不能使用静态 Grid。"};
       }
       auto decision = classify_large_image(*dimensions, grid_action);
       decision.klass = LargeImageClass::large_mode_required;
@@ -1488,7 +1495,7 @@ std::expected<BatchSummary, std::string> run_batch(
                                  .exit_code = canceled ? 130 : (ok ? 0 : 2)};
       if (cfg.write_summary) {
         if (auto csv = write_csv(output_dir, std::span<const EncodeResult>{&result, 1}); !csv) {
-          return std::unexpected{csv.error()};
+          return awj::compat::unexpected{csv.error()};
         }
       }
       pipeline_detail::best_effort([&] {
@@ -1497,7 +1504,7 @@ std::expected<BatchSummary, std::string> run_batch(
                                     .completed = 1,
                                     .total = 1,
                                     .summary = summary,
-                                    .text = std::format("{}：成功 {}，失败 {}，取消 {}。",
+                                    .text = awj::compat::format("{}：成功 {}，失败 {}，取消 {}。",
                                                         canceled ? "已取消" : "完成",
                                                         summary.ok_count,
                                                         summary.failed_count,
@@ -1506,7 +1513,7 @@ std::expected<BatchSummary, std::string> run_batch(
       return summary;
     }
     if (auto valid = validate_config(cfg); !valid) {
-      return std::unexpected{valid.error()};
+      return awj::compat::unexpected{valid.error()};
     }
 
     const auto output_dir = output_dir_for(cfg);
@@ -1515,19 +1522,19 @@ std::expected<BatchSummary, std::string> run_batch(
     if (!cfg.studio_queue_manifest.empty()) {
       auto manifest = read_studio_queue_manifest(cfg.studio_queue_manifest);
       if (!manifest) {
-        return std::unexpected{manifest.error()};
+        return awj::compat::unexpected{manifest.error()};
       }
       if (auto valid = pipeline_detail::validate_manifest_paths_for_config(
               cfg, manifest->files);
           !valid) {
-        return std::unexpected{valid.error()};
+        return awj::compat::unexpected{valid.error()};
       }
       files = std::move(manifest->files);
     } else {
       if (auto scanned = input_paths.empty() ? scan_images(cfg, files)
                                              : scan_images(cfg, input_paths, files);
           !scanned) {
-        return std::unexpected{scanned.error()};
+        return awj::compat::unexpected{scanned.error()};
       }
     }
 
@@ -1536,7 +1543,7 @@ std::expected<BatchSummary, std::string> run_batch(
     if (cfg.write_log && !logger.enabled()) {
       pipeline_detail::best_effort([&] {
         const auto text =
-            std::format("[WARN] 日志写入失败: {}", logger.last_error());
+            awj::compat::format("[WARN] 日志写入失败: {}", logger.last_error());
         emit_progress(progress, BatchProgress{.kind = BatchEventKind::warning,
                                               .text = text});
       });
@@ -1558,10 +1565,10 @@ std::expected<BatchSummary, std::string> run_batch(
     }
 
     const auto disambiguated_count =
-        std::ranges::count_if(files, &ImageFile::extension_disambiguated);
+        awj::compat::ranges::count_if(files, &ImageFile::extension_disambiguated);
     if (disambiguated_count > 0) {
       pipeline_detail::best_effort([&] {
-        const auto text = std::format(
+        const auto text = awj::compat::format(
             "[WARN] 同名不同扩展: {} 个输入会自动保留源扩展名，"
             "例如 1.jpg.avif / 1.bmp.avif",
             disambiguated_count);
@@ -1576,22 +1583,22 @@ std::expected<BatchSummary, std::string> run_batch(
     const auto configured_memory_limit = effective_memory_limit(cfg, memory_status);
     auto classified = pipeline_detail::classify_work_for_avif(cfg, files, configured_memory_limit);
     if (!classified) {
-      return std::unexpected{classified.error()};
+      return awj::compat::unexpected{classified.error()};
     }
     if (auto memory_filter = pipeline_detail::reject_over_memory_budget(
             *classified, configured_memory_limit, cfg);
         !memory_filter) {
-      return std::unexpected{memory_filter.error()};
+      return awj::compat::unexpected{memory_filter.error()};
     }
     auto ordinary_work =
         pipeline_detail::build_work_groups(cfg, classified->ordinary);
     if (!ordinary_work) {
-      return std::unexpected{ordinary_work.error()};
+      return awj::compat::unexpected{ordinary_work.error()};
     }
     auto large_work =
         pipeline_detail::build_large_work_groups(cfg, classified->large_mode);
     if (!large_work) {
-      return std::unexpected{large_work.error()};
+      return awj::compat::unexpected{large_work.error()};
     }
     // 并发度按「典型」单图占用规划（中位数），而不是队列最大值：最大值会让
     // 一张大图把整批压成串行。真正吃内存的组由 encode_work_groups 的运行时
@@ -1637,7 +1644,7 @@ std::expected<BatchSummary, std::string> run_batch(
           BatchProgress{
               .kind = BatchEventKind::message,
               .total = files.size(),
-              .text = std::format(
+              .text = awj::compat::format(
                   "共 {} 个文件；普通 {}，内存超限 {}，Grid "
                   "{}。普通并发 {}，Grid 并发 {}，编码器线程/文件 "
                   "{}/{}，内存限制 {}。",
@@ -1656,9 +1663,9 @@ std::expected<BatchSummary, std::string> run_batch(
     try {
       results.resize(files.size());
     } catch (const std::bad_alloc&) {
-      return std::unexpected{"批处理结果列表内存不足。"};
+      return awj::compat::unexpected{"批处理结果列表内存不足。"};
     } catch (const std::length_error&) {
-      return std::unexpected{"批处理结果列表数量超过运行时限制。"};
+      return awj::compat::unexpected{"批处理结果列表数量超过运行时限制。"};
     }
     for (const auto& image : files) {
       results[image.index] =
@@ -1700,7 +1707,7 @@ std::expected<BatchSummary, std::string> run_batch(
       auto& result = results[image.file.index];
       result.processed = true;
       result.message =
-          std::format("估算工作集 {} 超过内存限制 {}，未启动编码。",
+          awj::compat::format("估算工作集 {} 超过内存限制 {}，未启动编码。",
                       format_size(image.estimated_bytes),
                       format_size(configured_memory_limit));
     }
@@ -1714,7 +1721,7 @@ std::expected<BatchSummary, std::string> run_batch(
         pipeline_detail::best_effort([&] {
           const auto& result = results[image.file.index];
           logger.warn(
-              std::format("[FAIL] {:04} {}", result.index + 1, result.message));
+              awj::compat::format("[FAIL] {:04} {}", result.index + 1, result.message));
           emit_progress(
               progress,
               BatchProgress{
@@ -1738,7 +1745,7 @@ std::expected<BatchSummary, std::string> run_batch(
                       BatchProgress{.kind = BatchEventKind::message,
                                     .completed = completed.load(),
                                     .total = files.size(),
-                                    .text = std::format(
+                                    .text = awj::compat::format(
                                         "开始自动处理超大图：{} 个文件，并发 "
                                         "{}，编码器线程/文件 {}，使用 AOM Grid。",
                                         classified->large_mode.size(),
@@ -1856,8 +1863,8 @@ std::expected<BatchSummary, std::string> run_batch(
           original_total_incomplete || output_total_incomplete;
       const auto volume_text =
           volume_incomplete
-              ? std::format("体积 {} -> 未统计", format_size(original_total))
-              : std::format("体积 {} -> {} ({:.1f}%)",
+              ? awj::compat::format("体积 {} -> 未统计", format_size(original_total))
+              : awj::compat::format("体积 {} -> {} ({:.1f}%)",
                             format_size(original_total),
                             format_size(output_total), total_ratio * 100.0);
       emit_progress(
@@ -1867,7 +1874,7 @@ std::expected<BatchSummary, std::string> run_batch(
               .completed = completed.load(),
               .total = files.size(),
               .summary = summary,
-              .text = std::format(
+              .text = awj::compat::format(
                   "{}：成功 {}，失败 {}，取消 {}，大图模式 {}{}；{}{}",
                   canceled ? "已取消" : "完成", ok_count, failed_count,
                   canceled_count, classified->large_mode.size(),
@@ -1878,30 +1885,30 @@ std::expected<BatchSummary, std::string> run_batch(
     }
     return summary;
   } catch (const std::bad_alloc&) {
-    return std::unexpected{"批处理运行内存不足，程序已安全退出。"};
+    return awj::compat::unexpected{"批处理运行内存不足，程序已安全退出。"};
   } catch (const std::length_error&) {
-    return std::unexpected{"批处理运行数据超过运行时限制，程序已安全退出。"};
+    return awj::compat::unexpected{"批处理运行数据超过运行时限制，程序已安全退出。"};
   } catch (const std::filesystem::filesystem_error&) {
-    return std::unexpected{"批处理运行文件系统访问失败，程序已安全退出。"};
+    return awj::compat::unexpected{"批处理运行文件系统访问失败，程序已安全退出。"};
   } catch (const std::exception&) {
-    return std::unexpected{"批处理运行时异常，程序已安全退出。"};
+    return awj::compat::unexpected{"批处理运行时异常，程序已安全退出。"};
   } catch (...) {
-    return std::unexpected{"未知异常，程序已安全退出。"};
+    return awj::compat::unexpected{"未知异常，程序已安全退出。"};
   }
 }
 
 // 顶层流水线返回进程退出码；单张图片错误会落到 CSV，不会让程序闪退。
 int run_pipeline(const AppConfig& cfg,
                  std::span<const std::filesystem::path> input_paths,
-                 std::stop_token stop_token);
+                 awj::compat::stop_token stop_token);
 
-int run_pipeline(const AppConfig& cfg, std::stop_token stop_token = {}) {
+int run_pipeline(const AppConfig& cfg, awj::compat::stop_token stop_token = {}) {
   return run_pipeline(cfg, std::span<const std::filesystem::path>{}, stop_token);
 }
 
 int run_pipeline(const AppConfig& cfg,
                  std::span<const std::filesystem::path> input_paths,
-                 std::stop_token stop_token) {
+                 awj::compat::stop_token stop_token) {
   std::mutex print_mutex;
   auto runtime_cfg = cfg;
   runtime_cfg.frame_progress = [&](std::size_t item, std::size_t completed, std::size_t total) {
@@ -1909,9 +1916,9 @@ int run_pipeline(const AppConfig& cfg,
     if (completed != 1 && completed != total && completed % 16 != 0) return;
     std::scoped_lock lock{print_mutex};
     if ((!cfg.studio_queue_manifest.empty() || !cfg.studio_cancel_event_name.empty())) {
-      print_line(std::format("@AWJ-STUDIO/1 FRAME {} {} {}", item, completed, total));
+      print_line(awj::compat::format("@AWJ-STUDIO/1 FRAME {} {} {}", item, completed, total));
     } else {
-      print_line(std::format("动画 {}: 帧 {}/{}", item + 1, completed, total));
+      print_line(awj::compat::format("动画 {}: 帧 {}/{}", item + 1, completed, total));
     }
     if (cfg.frame_progress) cfg.frame_progress(item, completed, total);
   };
@@ -1928,7 +1935,7 @@ int run_pipeline(const AppConfig& cfg,
                   : (event.result.ok
                          ? (event.result.skipped ? 'S' : 'D')
                          : (event.result.canceled ? 'C' : 'F'));
-          print_line(std::format("@AWJ-STUDIO/1 ITEM {} {} {} {}",
+          print_line(awj::compat::format("@AWJ-STUDIO/1 ITEM {} {} {} {}",
                                  event.result.index, status, event.completed,
                                  event.total));
           if (event.kind == BatchEventKind::item_finished) {
@@ -1938,7 +1945,7 @@ int run_pipeline(const AppConfig& cfg,
                          : static_cast<std::int64_t>(seconds * 1'000'000.0 +
                                                      0.5);
             };
-            print_line(std::format(
+            print_line(awj::compat::format(
                 "@AWJ-STUDIO/1 DETAIL {} {} {} {} {} {} {}",
                 event.result.index,
                 event.result.encoder_id.empty() ? "-" : event.result.encoder_id,
@@ -1956,7 +1963,7 @@ int run_pipeline(const AppConfig& cfg,
             event.kind == BatchEventKind::item_finished && event.result.ok &&
             !event.result.skipped && !event.result.message.empty() &&
             event.result.message != "OK") {
-          std::println(stderr, "[WARN] {}", event.result.message);
+          awj::compat::println(stderr, "[WARN] {}", event.result.message);
           std::fflush(stderr);
         }
         if (!event.text.empty()) {
@@ -1966,7 +1973,7 @@ int run_pipeline(const AppConfig& cfg,
       stop_token,
       input_paths);
   if (!summary) {
-    print_line(std::format("[FAIL] {}", summary.error()));
+    print_line(awj::compat::format("[FAIL] {}", summary.error()));
     return 1;
   }
   return summary->exit_code;

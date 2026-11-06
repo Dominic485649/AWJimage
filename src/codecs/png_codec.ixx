@@ -449,13 +449,13 @@ awj::compat::expected<bool, std::string> contains_animation_control_chunk(
 }
 
 awj::compat::expected<bool, std::string> file_contains_animation_control_chunk(
-    const fs::path& path, awj::compat::stop_token stop = {}) {
+    const fs::path& path, awj::compat::stop_token stop = {}, bool prefer_animation = false) {
   PngAnimationLayout layout;
   auto scanned = visit_png_file_chunks(path, [&](auto type, auto prefix, auto size, auto offset) {
     return layout.accept(type, prefix, size, offset);
   }, false, stop);
   if (!scanned) return awj::compat::unexpected{scanned.error()};
-  return layout.uses_animation_reader();
+  return prefer_animation ? layout.actl : layout.uses_animation_reader();
 }
 
 struct ReadState {

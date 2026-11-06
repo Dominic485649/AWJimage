@@ -1,3 +1,4 @@
+#include "../compat/stdlib_compat.h"
 #include "studio_presets.h"
 
 #include <algorithm>
@@ -169,7 +170,7 @@ void reload_user_preset_options(AwjStudio& app, UiState& state) {
       queue_preset_index_for_file(state.user_presets, state.queue_preset_file));
 }
 
-std::expected<awj::AppConfig, std::string> config_from_parameter_params(
+awj::compat::expected<awj::AppConfig, std::string> config_from_parameter_params(
     awj::OutputFormat format, const ParameterFormatParams& params) {
   const bool png_lossless = format == awj::OutputFormat::png;
   MenuFormatParams menu{
@@ -192,20 +193,20 @@ std::expected<awj::AppConfig, std::string> config_from_parameter_params(
       .max_short_edge_text = params.max_short_edge_text,
       .scale_percent_text = params.scale_percent_text};
   auto config = config_from_menu_params(format, menu);
-  if (!config) return std::unexpected{config.error()};
+  if (!config) return awj::compat::unexpected{config.error()};
   if (png_lossless) {
     config->visual_quality.reset();
   } else {
     const auto visual_quality =
         parse_visual_quality_field(params.visual_quality_text);
-    if (!visual_quality) return std::unexpected{visual_quality.error()};
+    if (!visual_quality) return awj::compat::unexpected{visual_quality.error()};
     config->visual_quality = *visual_quality;
   }
   const auto jobs = parse_jobs_field(params.threads_text);
-  if (!jobs) return std::unexpected{jobs.error()};
+  if (!jobs) return awj::compat::unexpected{jobs.error()};
   config->max_jobs = *jobs;
   const auto memory = parse_memory_limit_field(params.memory_limit_text);
-  if (!memory) return std::unexpected{memory.error()};
+  if (!memory) return awj::compat::unexpected{memory.error()};
   config->memory_limit_bytes = *memory;
   config->output_policy = awj::OutputPolicy::normal;
   return config;
@@ -260,8 +261,8 @@ ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config)
   const auto format = config.output_format;
   ParameterFormatParams params = default_parameter_params_for_index(
       parameter_index_from_output_format(format));
-  const auto optional_text = [](const std::optional<int>& value) {
-    return value ? text_from_int(*value) : std::string{};
+  const auto optional_text = [](const auto& value) {
+    return value ? awj::compat::format("{}", *value) : std::string{};
   };
   params.quality_text = text_from_int(config.quality);
   params.visual_quality_text = optional_text(config.visual_quality);
@@ -289,18 +290,7 @@ ParameterFormatParams parameter_params_from_config(const awj::AppConfig& config)
         (config.memory_limit_bytes + awj::studio_defaults::bytes_per_gib - 1) /
         awj::studio_defaults::bytes_per_gib));
   }
-  switch (config.image_size_limit.mode) {
-    case awj::ImageSizeLimitMode::none:
-      params.size_limit_index = 1;
-      break;
-    case awj::ImageSizeLimitMode::manual:
-      params.size_limit_index = 2;
-      break;
-    case awj::ImageSizeLimitMode::automatic:
-    default:
-      params.size_limit_index = 0;
-      break;
-  }
+  params.size_limit_index = awj::image_size_mode_index(config.image_size_limit.mode);
   params.max_width_text = optional_text(config.image_size_limit.max_width);
   params.max_height_text = optional_text(config.image_size_limit.max_height);
   params.max_long_edge_text = optional_text(config.image_size_limit.max_long_edge);
@@ -326,7 +316,7 @@ std::array<ParameterFormatParams, 5> parameter_params_from_user_preset(
   return params;
 }
 
-std::expected<awj::UserPreset, std::string> user_preset_from_parameter_params(
+awj::compat::expected<awj::UserPreset, std::string> user_preset_from_parameter_params(
     std::string name, std::string description,
     const std::array<ParameterFormatParams, 5>& params) {
   awj::UserPreset preset = awj::default_user_preset();
@@ -337,7 +327,7 @@ std::expected<awj::UserPreset, std::string> user_preset_from_parameter_params(
     auto config = config_from_parameter_params(
         format, params[static_cast<std::size_t>(index)]);
     if (!config) {
-      return std::unexpected{std::format("{} 预设参数错误：{}",
+      return awj::compat::unexpected{awj::compat::format("{} 预设参数错误：{}",
                                          awj::output_format_name(format),
                                          config.error())};
     }
@@ -391,7 +381,7 @@ void select_queue_preset(AwjStudio& app, UiState& state, int index) {
                           .description));
 }
 
-std::expected<awj::AppConfig, std::string> config_from_ui(
+awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
     AwjStudio& app, UiState& state) try {
   store_current_parameter_params(app, state);
   const auto queue_choice =
@@ -403,26 +393,26 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   if (preset_index == 0) {
     auto parsed = config_from_parameter_params(
         format, state.builtin_params[static_cast<std::size_t>(queue_format_index)]);
-    if (!parsed) return std::unexpected{parsed.error()};
+    if (!parsed) return awj::compat::unexpected{parsed.error()};
     cfg = std::move(*parsed);
   } else {
     const auto user_index = preset_index - 1;
     if (user_index < 0 || static_cast<std::size_t>(user_index) >=
                               state.user_presets.size()) {
-      return std::unexpected{"选中的用户预设已不存在，请重新选择。"};
+      return awj::compat::unexpected{"选中的用户预设已不存在，请重新选择。"};
     }
     cfg = awj::config_from_user_preset(
         state.user_presets[static_cast<std::size_t>(user_index)], format);
   }
   const auto input_path = awj::normalize_path_argument(
       awj::wide_from_utf8(shared_to_string(app.get_input_path())), "输入路径");
-  if (!input_path) return std::unexpected{input_path.error()};
+  if (!input_path) return awj::compat::unexpected{input_path.error()};
   cfg.input_path = *input_path;
   const auto output_text = shared_to_string(app.get_output_dir());
   if (!output_text.empty()) {
     const auto output_path = awj::normalize_path_argument(
         awj::wide_from_utf8(output_text), "输出目录");
-    if (!output_path) return std::unexpected{output_path.error()};
+    if (!output_path) return awj::compat::unexpected{output_path.error()};
     cfg.output_dir = *output_path;
   }
   cfg.output_template =
@@ -448,15 +438,15 @@ std::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.preserve_access_time = app.get_preserve_access_time();
 
   if (auto valid = awj::finalize_config_defaults(cfg, true, true); !valid) {
-    return std::unexpected{valid.error()};
+    return awj::compat::unexpected{valid.error()};
   }
   return cfg;
 } catch (const std::bad_alloc&) {
-  return std::unexpected{"Studio 配置解析内存不足。"};
+  return awj::compat::unexpected{"Studio 配置解析内存不足。"};
 } catch (const std::length_error&) {
-  return std::unexpected{"Studio 配置解析数据超过运行时限制。"};
+  return awj::compat::unexpected{"Studio 配置解析数据超过运行时限制。"};
 } catch (const std::filesystem::filesystem_error&) {
-  return std::unexpected{"Studio 配置解析文件系统访问失败。"};
+  return awj::compat::unexpected{"Studio 配置解析文件系统访问失败。"};
 }
 
 std::filesystem::path effective_output_dir(const AwjStudio& app) {
