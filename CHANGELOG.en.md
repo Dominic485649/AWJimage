@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.4 - 2026-11-07
+
+### What's new
+
+- Improved color reproduction in lossy JXL output, fixing abnormal color fringes around high-contrast edges.
+- JXL now automatically selects 10/12/16-bit output from the selected image's effective precision, retaining 16-bit sources and honoring explicit bit-depth settings.
+
+### Platform delivery
+
+Windows/Linux applications and SDKs are delivered as formal releases. The HMOS ARM64/API26 SDK is a cross-build preview without on-device loading or execution validation; see PREVIEW.txt in the package.
+
 ## 1.3.3 - 2026-11-07
 
 ### Spline36 and unified size controls
