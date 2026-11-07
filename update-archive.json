@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 22,
+  "sequence": 23,
   "key_id": "release-2026",
-  "issued_at": "2026-11-07T08:34:48Z",
-  "expires_at": "2027-02-05T08:34:48Z",
+  "issued_at": "2026-11-07T11:13:45Z",
+  "expires_at": "2027-02-05T11:13:45Z",
   "entries": [
     {
-      "version": "1.3.3",
+      "version": "1.3.4",
       "channel": "stable",
-      "published_at": "2026-11-07T08:34:48Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.3",
+      "published_at": "2026-11-07T11:13:45Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.4",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Win.7z",
-            "size": 13383386,
-            "sha256": "69186769f2b63aa08d65791bd8e9bb3d79850c293db16482923cb784f5ecb427"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
+            "size": 13385898,
+            "sha256": "9e739cb84de463874623cdc34ad54fa05afe7ca3dd628669c9b84675312ff305"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Win.7z",
-              "size": 24667136,
-              "sha256": "4dd496448fa4de29e30f5c254ef12ec3117edf39d44b74c3d7c16247c85eb65d"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
+              "size": 24668672,
+              "sha256": "cce402767f9d78d44bb63f7e57ebda8d5ed19954385e52f831a57c4ce5bbab0b"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Win.7z",
-              "size": 21015040,
-              "sha256": "6f455a71a6b8ac9e30025fa622657bd3a0e6f946a96dcf872cd7a17807044882"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
+              "size": 21021184,
+              "sha256": "0449c7f06c1fb541ea767d1d93f473d1c023317780c922ebf432ad0e89b6c219"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
               "size": 177573,
-              "sha256": "875cea15521c327c195d87e53016cc2a1cafa285b769ed4e7352c9a9bc8a10bd"
+              "sha256": "c6f672d98532f433771a80455112109abe71d6c40b97981d3832203818467234"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Linux.7z",
-            "size": 18618373,
-            "sha256": "5494cfeb01cb6ccad851150eb56782bbaef1bae8306da752016c5b0914028b98"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
+            "size": 18619557,
+            "sha256": "1ef1fd562a5a4b0016c7a1f60a1f064aa94fd42d7e5af8dc9836948b33934578"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Linux.7z",
-              "size": 67000536,
-              "sha256": "489762678f4d705a132375cebaf39bd427e98c520cb24db496c693a1e7360a1e"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
+              "size": 67006040,
+              "sha256": "615dcd8911e1302709b5724f9258b847f541d13b2aff622ac45807f7f7640c42"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.3/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
               "size": 175807,
-              "sha256": "f434eebac1e741cbfe9271a43de77e0f7b1b929f52f24ed89d9a3635f6697499"
+              "sha256": "c04eeef5c1df3dce05520e3b09d6bd0faa1be57d489d644f0c3388a86843ffbd"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### Spline36 与统一尺寸设置\n\n- 静态图、动画帧与保留的 SDR/HDR 双呈现统一使用 Spline36 进行实际尺寸调整，保留缩小抗混叠、透明边缘、高位深和 FP16 工作值。\n- 提供自动、无限制、手动放大、手动缩小及固定尺寸模式，支持宽、高、长边、短边与比例；固定尺寸与比例互斥，等比居中补透明边或黑边。\n- 兼容已有尺寸配置与预设；CLI 手动 AVIF 分层预缩放使用相同内核。\n\n### 动画与 AVIF 分层\n\n- GIF/APNG/WebP/AVIF 动画可输出动画 WebP，保留时序、循环和透明度；单帧使用静态编码。\n- CLI 新增自动两层渐进和手动 2～4 层的尺寸、比例、颜色及透明通道质量控制；默认关闭，UI 不展示，普通单层 AVIF 仍为默认输出。\n\n### 内存与编码更新\n\n- 重写分阶段内存预测，解码后按实际像素、透明度和采样精化，减少大图误拒绝；改进有限预算任务预约，补充动画、分层保留数据与 CSV 诊断。\n- 更新 AOM 至 3.15.3，为稳定版 libavif 1.4.2 回补逐层预缩放支持。\n\n### 平台交付\n\n- 应用、SDK 与源码同步版本，保持 C ABI v1 及既定平台优化和运行要求。\n- Windows/Linux 应用与 SDK 正式交付；HMOS ARM64/API26 SDK 为交叉构建预览，真机加载与执行未验证，范围见包内 PREVIEW.txt。",
-        "en": "### Spline36 and unified size controls\n\n- Use Spline36 for physical resizing of static images, animation frames and retained SDR/HDR renditions, preserving downsampling antialiasing, transparent edges, high-bit-depth and FP16 working values.\n- Provide automatic, unrestricted, enlarge, shrink and fixed-size modes with width, height, long-edge, short-edge and percentage controls; fixed dimensions and percentage are mutually exclusive, with centered transparent or black padding.\n- Retain existing size configurations and presets, and use the same kernel for manually pre-scaled AVIF layers.\n\n### Animation and AVIF layers\n\n- Convert GIF/APNG/WebP/AVIF animations to animated WebP while retaining timing, loops and transparency; use static encoding for single-frame input.\n- Add automatic two-layer progressive AVIF and manual 2–4-layer controls for dimensions, scaling ratios, color and alpha quality. Progressive stays off by default and is not exposed in the UI; ordinary single-layer AVIF remains the default.\n\n### Memory and codec updates\n\n- Rewrite phase-based memory planning and refine it after decoding from actual pixels, transparency and sampling to reduce large-image rejections; improve finite-budget reservations and account for retained animation/layer data with CSV diagnostics.\n- Update AOM to 3.15.3 and backport pre-scaled layer support to stable libavif 1.4.2.\n\n### Platform delivery\n\n- Align application, SDK and source versions while retaining C ABI v1 and the existing platform optimization and runtime requirements.\n- Deliver Windows/Linux applications and SDKs; provide the HMOS ARM64/API26 SDK as a cross-build preview without on-device loading or execution validation. See PREVIEW.txt in the package."
+        "zh-CN": "### 更新内容\n\n- 改善 JXL 有损编码的色彩表现，修复高反差边缘出现的异常彩边。\n- JXL 自动位深按所选图像的有效精度选择 10/12/16-bit，16-bit 源保持 16-bit，并保留显式位深设置。\n\n### 平台交付\n\nWindows/Linux 应用与 SDK 正式交付；HMOS ARM64/API26 SDK 为交叉构建预览，真机加载与执行未验证，详见包内 PREVIEW.txt。",
+        "en": "### What's new\n\n- Improved color reproduction in lossy JXL output, fixing abnormal color fringes around high-contrast edges.\n- JXL now automatically selects 10/12/16-bit output from the selected image's effective precision, retaining 16-bit sources and honoring explicit bit-depth settings.\n\n### Platform delivery\n\nWindows/Linux applications and SDKs are delivered as formal releases. The HMOS ARM64/API26 SDK is a cross-build preview without on-device loading or execution validation; see PREVIEW.txt in the package."
       }
     }
   ]
