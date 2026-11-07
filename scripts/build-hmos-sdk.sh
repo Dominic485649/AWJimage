@@ -98,7 +98,7 @@ printf '%s\n' "$before" > "$results/source-fingerprint-before.txt"
     "--overlay-triplets=$repo/cmake/triplets" "--overlay-ports=$repo/vcpkg-overlays" \
     "--x-buildtrees-root=$results/dependency-buildtrees" "--x-packages-root=$results/dependency-packages" \
     > "$results/dependencies.log" 2>&1
-"$cmake" -S "$repo/sdk/harmonyos" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release \
+"$cmake" -S "$repo/sdk/harmonyos" -B "$build" -G Ninja -DCMAKE_BUILD_TYPE=Release -DAVIF_ENABLE_RELEASE_IPO=ON \
     -DCMAKE_TOOLCHAIN_FILE="$vcpkg/scripts/buildsystems/vcpkg.cmake" \
     -DVCPKG_CHAINLOAD_TOOLCHAIN_FILE="$repo/cmake/toolchains/ohos-clang23.cmake" \
     -DVCPKG_TARGET_TRIPLET=arm64-ohos-clang23 -DVCPKG_INSTALLED_DIR="$installed" \

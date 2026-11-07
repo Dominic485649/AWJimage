@@ -78,8 +78,8 @@ function Assert-File([string]$Path, [string]$Label) {
 
 function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
     $withHmos = [version]$Version -ge [version]'1.3.1'
-    if ($HmosSdkPreview -and ($Version -cne '1.3.1' -or $LocalCandidate)) {
-        throw 'HMOS 预览范围仅明确授权用于 1.3.1 正式发行中的预览组件。'
+    if ($HmosSdkPreview -and ($Version -cnotin @('1.3.1', '1.3.3') -or $LocalCandidate)) {
+        throw 'HMOS 预览范围仅明确授权用于 1.3.1、1.3.3 正式发行中的预览组件。'
     }
     if (-not $EvidencePaths.Count) {
         if (-not $LocalCandidate -and [version]$Version -ge [version]'1.3.0') {

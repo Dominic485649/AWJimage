@@ -1,13 +1,27 @@
 # Changelog
 
-## 1.3.3 - Local candidate
+## 1.3.3 - 2026-11-07
 
-### Unified Spline36 resizing
+### Spline36 and unified size controls
 
-- Use Spline36 for physical resizing in settings, including static images, animation frames and retained SDR/HDR renditions.
-- Preserve downsampling antialiasing, premultiplied-alpha filtering, high-bit-depth and FP16 values, fixed canvases, padding, memory admission and cancellation.
-- Use the same kernel for manually pre-scaled AVIF layers; automatic progressive encoding retains AOM scaling, stays off by default and is not exposed in the UI.
-- Include the animated WebP, unified size controls, memory planning and codec dependency updates from the 1.3.2 local candidate described below.
+- Use Spline36 for physical resizing of static images, animation frames and retained SDR/HDR renditions, preserving downsampling antialiasing, transparent edges, high-bit-depth and FP16 working values.
+- Provide automatic, unrestricted, enlarge, shrink and fixed-size modes with width, height, long-edge, short-edge and percentage controls; fixed dimensions and percentage are mutually exclusive, with centered transparent or black padding.
+- Retain existing size configurations and presets, and use the same kernel for manually pre-scaled AVIF layers.
+
+### Animation and AVIF layers
+
+- Convert GIF/APNG/WebP/AVIF animations to animated WebP while retaining timing, loops and transparency; use static encoding for single-frame input.
+- Add automatic two-layer progressive AVIF and manual 2–4-layer controls for dimensions, scaling ratios, color and alpha quality. Progressive stays off by default and is not exposed in the UI; ordinary single-layer AVIF remains the default.
+
+### Memory and codec updates
+
+- Rewrite phase-based memory planning and refine it after decoding from actual pixels, transparency and sampling to reduce large-image rejections; improve finite-budget reservations and account for retained animation/layer data with CSV diagnostics.
+- Update AOM to 3.15.3 and backport pre-scaled layer support to stable libavif 1.4.2.
+
+### Platform delivery
+
+- Align application, SDK and source versions while retaining C ABI v1 and the existing platform optimization and runtime requirements.
+- Deliver Windows/Linux applications and SDKs; provide the HMOS ARM64/API26 SDK as a cross-build preview without on-device loading or execution validation. See PREVIEW.txt in the package.
 
 ## 1.3.2 - Local candidate
 
