@@ -222,7 +222,7 @@ export component ParameterForm inherits VerticalLayout {
             horizontal-stretch: 1;
             lead: root.format-index == 3 ? @tr("1–100，越大质量越高；JPG 始终有损") : @tr("1–100，越大质量越高；100 为无损");
             lead-color: root.hint-violet;
-            detail: @tr("AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 仅在 8-bit 输出计划相符时使用可逆转封装，默认 16-bit 重编码。");
+            detail: @tr("AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 仅在 8-bit 输出计划相符时使用可逆转封装，自动按源精度重编码。");
             detail-color: root.text-muted;
         }
     }
@@ -378,10 +378,10 @@ export component ParameterForm inherits VerticalLayout {
         LineEdit { accessible-label: @tr("位深"); text <=> root.bit-depth-text; placeholder-text: @tr("留空自动选择"); enabled: !root.running; width: root.parameter-control-width; height: root.parameter-control-height; }
         ParamHint {
             horizontal-stretch: 1;
-            lead: root.format-index == 4 ? @tr("SDR 8 / HDR 16-bit") : root.format-index == 2 ? @tr("自动 16-bit") : @tr("自动至少 10-bit");
+            lead: root.format-index == 4 ? @tr("SDR 8 / HDR 16-bit") : root.format-index == 2 ? @tr("按源 10 / 12 / 16-bit") : @tr("自动至少 10-bit");
             lead-color: root.hint-orange;
             detail: root.format-index == 4 ? @tr("PNG 兼容性优先：SDR 默认 8-bit，HDR 默认 16-bit。可显式填写 8/16；SDR 16-bit 可能影响兼容性。")
-                : root.format-index == 2 ? @tr("JXL 默认 16-bit，可显式填写 8/10/12/16；JPG 可逆转封装仅在 8-bit 输出计划相符时使用。")
+                : root.format-index == 2 ? @tr("JXL 按所选呈现的有效精度选择 10/12/16-bit，16-bit 源保留 16-bit；显式 8/10/12/16 优先。JPG 可逆转封装仅兼容 8-bit 输出计划。")
                 : @tr("按所选呈现选择 10/12-bit；Gain Map 重建图与原底图分别作为基准，显式 8/10/12 优先。");
             detail-color: root.text-muted;
         }

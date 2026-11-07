@@ -105,7 +105,9 @@ ImageMemoryEstimate estimated_regular_memory(ImageDimensions dimensions, const A
   const auto depth = cfg.output_format == OutputFormat::webp || (cfg.output_format == OutputFormat::jpgli && !hdr_jpeg)
       ? 8 : cfg.bit_depth.value_or(cfg.output_format == OutputFormat::avif ?
           (dimensions.source_has_gain_map || dimensions.source_bit_depth > 10 ? 12 : 10) :
-          cfg.output_format == OutputFormat::jxl ? 16 : cfg.output_format == OutputFormat::png ? (sdr ? 8 : 16) : 8);
+          cfg.output_format == OutputFormat::jxl ? jxl_auto_bit_depth(
+              dimensions.source_has_gain_map ? 16 : dimensions.source_bit_depth) :
+          cfg.output_format == OutputFormat::png ? (sdr ? 8 : 16) : 8);
   const auto chroma = cfg.avif_color_representation == AvifColorRepresentation::rgb_identity ? ChromaMode::yuv444 :
       cfg.chroma_mode == ChromaMode::auto_keep ?
       (resolved ? avif_auto_chroma(resolved->source_format) : dimensions.opaque_sdr8_yuv420 ? ChromaMode::yuv420 : ChromaMode::yuv444)

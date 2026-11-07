@@ -946,11 +946,11 @@ int main() {
   {
     auto automatic = cfg;
     automatic.bit_depth.reset();
-    automatic.output_dir = output / "jxl-jpeg-auto16";
+    automatic.output_dir = output / "jxl-jpeg-auto10";
     awj::NativeBackend backend{automatic, logger, {.encoder_threads_per_file = 1, .global_thread_budget = 1}};
     auto result = backend.encode(awj::ImageFile{.path = jpeg_input, .bytes = jpeg_bytes});
-    if (!result.ok || result.applied_bit_depth != 16 || result.integration_mode == "jxl-jpeg-bitstream-transcode")
-      return fail(result.ok ? "JPEG transcode bypassed the automatic JXL16 plan." : result.message);
+    if (!result.ok || result.applied_bit_depth != 10 || result.integration_mode == "jxl-jpeg-bitstream-transcode")
+      return fail(result.ok ? "JPEG 转封装绕过了自动 JXL10 输出计划。" : result.message);
   }
   cfg.bit_depth = 8;
   awj::NativeBackend jxl_jpeg_backend{cfg, logger, awj::ResourcePlan{

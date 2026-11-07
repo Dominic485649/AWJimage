@@ -28,6 +28,12 @@
 - JPEG Exif 方向、AVIF clap/irot/imir、HEIF 主图/辅助图变换进入像素处理，归一 Exif orientation，避免重复旋转；辅助图无独立变换时共用主图方向。
 - 原 ICC 只在仍描述当前像素时保留；已验证等价的 ICC 可归一到 CICP。不能把旧 Gain Map 色彩/XMP 标签贴给重建像素。strip 仅去可选 metadata，不移除解释主图、另一呈现或增益图所必需的信息。
 
+## JXL 色彩与位深（1.3.4）
+
+- 自动位深按所选呈现的有效 RGB 精度选择：不高于 10-bit 时用 10-bit，11–12-bit 用 12-bit，13–16-bit 保留 16-bit；显式 8/10/12/16 优先。Gain Map 重建后的 HDR 按实际重建精度处理，不以原 SDR 底图位深代替。
+- 有损主图使用 XYB；无损主图与 Gain Map 数值辅助图保留原模式。解码显式请求原始色彩空间，并保存与实际输出像素匹配的色彩解释；strip 不删除必要 ICC。
+- 质量 100 的无损范围是目标位深的主图像素。先从 16-bit 降到 10/12-bit 再无损编码包含量化，不等同于原始 16-bit 逐样本无损；重新生成的双呈现也不声明整对逐样本无损。JPEG 原始码流可逆转封装仅接受显式 8-bit，自动位深使用像素编码。
+
 ## ISO-only：协议与引擎分离
 
 AWJ 仅接受 **ISO 21496-1 Gain Map**，保留固定版本 libultrahdr 作为 JPEG 数值和封装引擎，不改变上游版本、许可证、头文件或来源署名。`UHDR_WRITE_ISO=ON`、`UHDR_WRITE_XMP=OFF` 控制输出；`cmake/patch_libultrahdr_iso_only.cmake` 删除底层 `parseGainMapMetadata()` 的 XMP decoder fallback，不能只凭输出开关宣称 ISO-only。

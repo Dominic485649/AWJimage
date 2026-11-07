@@ -209,23 +209,10 @@ awj::compat::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuff
 
 awj::compat::expected<std::vector<std::byte>, std::string> copy_embedded_icc_profile(
     JxlDecoder* decoder,
-    const JxlBasicInfo& info) {
-  if (info.uses_original_profile != JXL_TRUE) {
-    return std::vector<std::byte>{};
-  }
-
-  const auto encoded_status = JxlDecoderGetColorAsEncodedProfile(
-      decoder, JXL_COLOR_PROFILE_TARGET_ORIGINAL, nullptr);
-  if (encoded_status == JXL_DEC_SUCCESS) {
-    return std::vector<std::byte>{};
-  }
-  if (encoded_status != JXL_DEC_ERROR) {
-    return awj::compat::unexpected{"读取 JXL 色彩 profile 类型失败。"};
-  }
-
+    JxlColorProfileTarget target) {
   std::size_t icc_size = 0;
   const auto size_status = JxlDecoderGetICCProfileSize(
-      decoder, JXL_COLOR_PROFILE_TARGET_ORIGINAL, &icc_size);
+      decoder, target, &icc_size);
   if (size_status == JXL_DEC_ERROR || icc_size == 0) {
     return std::vector<std::byte>{};
   }
@@ -241,7 +228,7 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_embedded_icc_pro
   }
   if (JxlDecoderGetColorAsICCProfile(
           decoder,
-          JXL_COLOR_PROFILE_TARGET_ORIGINAL,
+          target,
           reinterpret_cast<std::uint8_t*>(bytes->data()),
           bytes->size()) != JXL_DEC_SUCCESS) {
     return awj::compat::unexpected{"读取 JXL ICC profile 失败。"};
@@ -1366,12 +1353,11 @@ class JXLImageDecoder final : public ImageDecoder {
       if (!decoder) {
         return awj::compat::unexpected{"创建 JXL decoder 失败。"};
       }
-      if (has_gain_map) {
-        const auto* cms = JxlGetDefaultCms();
-        if (!cms || JxlDecoderSetKeepOrientation(decoder.get(), JXL_TRUE) != JXL_DEC_SUCCESS ||
-            JxlDecoderSetCms(decoder.get(), *cms) != JXL_DEC_SUCCESS)
-          return awj::compat::unexpected{jxl_detail::gain_map_error("无法保留主图像方向或色彩空间。")};
-      }
+      const auto* cms = JxlGetDefaultCms();
+      if (!cms || JxlDecoderSetCms(decoder.get(), *cms) != JXL_DEC_SUCCESS)
+        return awj::compat::unexpected{"设置 JXL 色彩管理失败。"};
+      if (has_gain_map && JxlDecoderSetKeepOrientation(decoder.get(), JXL_TRUE) != JXL_DEC_SUCCESS)
+        return awj::compat::unexpected{jxl_detail::gain_map_error("无法保留主图像方向。")};
       if (JxlDecoderSetUnpremultiplyAlpha(decoder.get(), JXL_TRUE) != JXL_DEC_SUCCESS) {
         return awj::compat::unexpected{"启用 JXL alpha 去预乘失败。"};
       }
@@ -1554,26 +1540,40 @@ class JXLImageDecoder final : public ImageDecoder {
           }
         }
         if (status == JXL_DEC_COLOR_ENCODING) {
-          JxlColorEncoding profile{};
-          if (JxlDecoderGetColorAsEncodedProfile(decoder.get(),
-                                                  JXL_COLOR_PROFILE_TARGET_ORIGINAL,
-                                                  &profile) == JXL_DEC_SUCCESS) {
-            if (gain_map) {
-              ImageSourceInfo source_color;
-              jxl_detail::apply_encoded_color_profile(source_color, profile);
-              if (auto color = jxl_detail::color_encoding_from_source(&source_color, true); !color)
-                return awj::compat::unexpected{jxl_detail::gain_map_error(color.error())};
-              if (info.uses_original_profile != JXL_TRUE &&
-                  JxlDecoderSetOutputColorProfile(decoder.get(), &profile, nullptr, 0) != JXL_DEC_SUCCESS)
-                return awj::compat::unexpected{jxl_detail::gain_map_error("无法保留 XYB 主图像的原始 HDR 色彩空间。")};
-            }
-            encoded_color_profile = profile;
+          JxlColorEncoding original{};
+          const bool structured = JxlDecoderGetColorAsEncodedProfile(decoder.get(),
+              JXL_COLOR_PROFILE_TARGET_ORIGINAL, &original) == JXL_DEC_SUCCESS;
+          std::vector<std::byte> original_icc;
+          if (!structured) {
+            auto icc = jxl_detail::copy_embedded_icc_profile(decoder.get(), JXL_COLOR_PROFILE_TARGET_ORIGINAL);
+            if (!icc) return awj::compat::unexpected{icc.error()};
+            if (icc->empty()) return awj::compat::unexpected{"JXL 缺少可用于解释像素的原始色彩配置。"};
+            original_icc = std::move(*icc);
           }
-          if (copy_metadata_payloads || has_gain_map) {
-            auto icc = jxl_detail::copy_embedded_icc_profile(decoder.get(), info);
-            if (!icc) {
-              return awj::compat::unexpected{icc.error()};
-            }
+          if (gain_map && structured) {
+            ImageSourceInfo source_color;
+            jxl_detail::apply_encoded_color_profile(source_color, original);
+            if (auto color = jxl_detail::color_encoding_from_source(&source_color, true); !color)
+              return awj::compat::unexpected{jxl_detail::gain_map_error(color.error())};
+          }
+          // XYB 默认输出可能是 sRGB；先恢复原始空间，再读取实际输出的解释。
+          if (info.uses_original_profile != JXL_TRUE &&
+              JxlDecoderSetOutputColorProfile(decoder.get(), structured ? &original : nullptr,
+                  original_icc.empty() ? nullptr : reinterpret_cast<const std::uint8_t*>(original_icc.data()),
+                  original_icc.size()) != JXL_DEC_SUCCESS)
+            return awj::compat::unexpected{"无法保留 XYB 图像的原始色彩空间。"};
+          JxlColorEncoding output{};
+          bool needs_icc = true;
+          if (JxlDecoderGetColorAsEncodedProfile(decoder.get(), JXL_COLOR_PROFILE_TARGET_DATA, &output) == JXL_DEC_SUCCESS) {
+            encoded_color_profile = output;
+            ImageSourceInfo source_color;
+            jxl_detail::apply_encoded_color_profile(source_color, output);
+            needs_icc = !jxl_detail::color_encoding_from_source(&source_color, true).has_value();
+          }
+          if (needs_icc) {
+            auto icc = jxl_detail::copy_embedded_icc_profile(decoder.get(), JXL_COLOR_PROFILE_TARGET_DATA);
+            if (!icc) return awj::compat::unexpected{icc.error()};
+            if (icc->empty()) return awj::compat::unexpected{"JXL 输出像素缺少必要的 ICC 色彩配置。"};
             icc_profile = std::move(*icc);
           }
         }
@@ -1713,8 +1713,8 @@ class JXLImageEncoder final : public ImageEncoder {
       awj::compat::stop_token stop_token = {}) const {
     try {
       if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-      if (settings.bit_depth.value_or(16) != 8)
-        return awj::compat::unexpected{"JPEG 原始码流转封装只兼容明确的 JXL 8-bit 输出计划；auto 16-bit 必须像素重编码。"};
+      if (settings.bit_depth.value_or(jxl_auto_bit_depth(8)) != 8)
+        return awj::compat::unexpected{"JPEG 原始码流转封装只兼容明确的 JXL 8-bit 输出计划；自动位深必须像素重编码。"};
       if (jpeg_bytes.empty()) {
         return awj::compat::unexpected{"JPEG 原始码流为空。"};
       }
@@ -1831,7 +1831,7 @@ class JXLImageEncoder final : public ImageEncoder {
     auxiliary_settings.applied_icc = "dropped";
     auxiliary_settings.applied_alpha = "dropped";
     auxiliary_settings.tone_map_to_sdr_pixels = false;
-    auxiliary_settings.bit_depth = 8; // Auxiliary policy is independent of the primary's auto-16 plan.
+    auxiliary_settings.bit_depth = 8; // 辅助图精度独立于主图自动位深。
     auto encoded = encode_pixels(*map_image, auxiliary_settings, stop_token, gain_map_depth + 1);
     if (!encoded) return awj::compat::unexpected{jxl_detail::gain_map_error(encoded.error())};
     auto naked = jxl_detail::naked_gain_map_codestream(std::move(encoded->encoded.bytes));
@@ -1882,7 +1882,7 @@ class JXLImageEncoder final : public ImageEncoder {
       awj::compat::stop_token stop_token, unsigned gain_map_depth) const {
     try {
       if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-      const int bit_depth = settings.bit_depth.value_or(16);
+      const int bit_depth = settings.bit_depth.value_or(jxl_auto_bit_depth(rendition_reference_depth(image)));
       if (bit_depth != 8 && bit_depth != 10 && bit_depth != 12 && bit_depth != 16)
         return awj::compat::unexpected{"JXL bit-depth 只支持 8、10、12 或 16。"};
       if (gain_map_depth > 1 || (gain_map_depth != 0 && settings.gain_map_alternative))
@@ -1948,6 +1948,7 @@ class JXLImageEncoder final : public ImageEncoder {
       }
 
       const bool keep_alpha = settings.applied_alpha == "kept";
+      const bool lossless = settings.visual_quality ? *settings.visual_quality >= 100 : settings.quality >= 100;
       std::size_t encoder_input_size_hint = 0;
       JxlBasicInfo info{};
       JxlEncoderInitBasicInfo(&info);
@@ -1961,7 +1962,8 @@ class JXLImageEncoder final : public ImageEncoder {
         info.alpha_premultiplied =
             image.alpha_mode == AlphaMode::premultiplied ? JXL_TRUE : JXL_FALSE;
       }
-      info.uses_original_profile = JXL_TRUE;
+      // 主图有损编码使用 XYB；无损和增益数值图不做感知色彩变换。
+      info.uses_original_profile = lossless || gain_map_depth != 0 ? JXL_TRUE : JXL_FALSE;
 
       if (JxlEncoderSetBasicInfo(encoder.get(), &info) != JXL_ENC_SUCCESS) {
         return awj::compat::unexpected{"设置 JXL 基础信息失败。"};
@@ -2008,7 +2010,6 @@ class JXLImageEncoder final : public ImageEncoder {
       if (JxlEncoderSetFrameBitDepth(frame_settings, &input_bit_depth) != JXL_ENC_SUCCESS)
         return awj::compat::unexpected{"设置 JXL 输入像素位深标尺失败。"};
 
-      const bool lossless = settings.visual_quality ? *settings.visual_quality >= 100 : settings.quality >= 100;
       const int final_quality = lossless ? 100 : std::clamp(settings.quality, 1, 99);
       if (lossless) {
         if (JxlEncoderSetFrameLossless(frame_settings, JXL_TRUE) != JXL_ENC_SUCCESS) {

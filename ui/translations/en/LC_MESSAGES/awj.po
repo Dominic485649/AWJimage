@@ -84,8 +84,8 @@ msgstr "1–100, higher means better quality; 100 is lossless"
 msgid "1–100，越大质量越高；JPG 始终有损"
 msgstr "1–100, higher means better quality; JPG is always lossy"
 
-msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 仅在 8-bit 输出计划相符时使用可逆转封装，默认 16-bit 重编码。"
-msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPG 90. PNG q100 is lossless. q1–99 quantizes RGB while alpha retains its original precision. Reversible JPEG-to-JXL transcoding requires a matching 8-bit output plan; the default 16-bit plan re-encodes pixels."
+msgid "AWJ 会把该刻度映射到有损编码器的 crf / quality；默认值取开发者判定的视觉无损点：AVIF 70、WebP 95、JXL 85、JPG 90。PNG q100 无损，q1–99 量化 RGB，alpha 保持原精度。JPEG 转 JXL 仅在 8-bit 输出计划相符时使用可逆转封装，自动按源精度重编码。"
+msgstr "AWJ maps this scale to the lossy encoders' crf / quality. The defaults sit where the developer judged the result visually lossless: AVIF 70, WebP 95, JXL 85, JPG 90. PNG q100 is lossless. q1–99 quantizes RGB while alpha retains its original precision. Reversible JPEG-to-JXL transcoding requires a matching 8-bit output plan; the automatic source-precision plan re-encodes pixels."
 
 msgid "视觉质量"
 msgstr "Visual quality"
@@ -222,14 +222,14 @@ msgstr "Leave blank for Auto"
 msgid "SDR 8 / HDR 16-bit"
 msgstr "SDR 8 / HDR 16-bit"
 
-msgid "自动 16-bit"
-msgstr "Auto 16-bit"
+msgid "按源 10 / 12 / 16-bit"
+msgstr "Source-based 10 / 12 / 16-bit"
 
 msgid "PNG 兼容性优先：SDR 默认 8-bit，HDR 默认 16-bit。可显式填写 8/16；SDR 16-bit 可能影响兼容性。"
 msgstr "PNG prioritizes compatibility: SDR defaults to 8-bit, HDR to 16-bit. Explicit 8/16 is supported; 16-bit SDR may reduce compatibility."
 
-msgid "JXL 默认 16-bit，可显式填写 8/10/12/16；JPG 可逆转封装仅在 8-bit 输出计划相符时使用。"
-msgstr "JXL defaults to 16-bit; explicit 8/10/12/16 is supported. Reversible JPG transcoding requires a matching 8-bit output plan."
+msgid "JXL 按所选呈现的有效精度选择 10/12/16-bit，16-bit 源保留 16-bit；显式 8/10/12/16 优先。JPG 可逆转封装仅兼容 8-bit 输出计划。"
+msgstr "JXL selects 10/12/16-bit from the selected rendition's effective precision and retains 16-bit sources. Explicit 8/10/12/16 takes priority. Reversible JPG transcoding requires an 8-bit output plan."
 
 msgid "按所选呈现选择 10/12-bit；Gain Map 重建图与原底图分别作为基准，显式 8/10/12 优先。"
 msgstr "Choose 10/12-bit from the selected rendition: use the reconstructed Gain Map image or the retained base as appropriate. Explicit 8/10/12 takes priority."

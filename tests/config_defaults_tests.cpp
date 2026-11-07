@@ -334,6 +334,10 @@ int main() {
     return fail("CLI should reject speed for PNG.");
   }
 
+  parsed = awj::parse_arguments({L"--format", L"jxl"});
+  if (!parsed || parsed->config.bit_depth ||
+      awj::help_text().find("JXL 8/10/12/16，自动按所选呈现取10/12/16") == std::string::npos)
+    return fail("JXL 自动位深被固定配置覆盖，或 CLI 帮助仍宣称固定 16-bit。");
   for (int depth : {8, 10, 12, 16}) {
     parsed = awj::parse_arguments({L"--format", L"jxl", L"--bit-depth", std::to_wstring(depth)});
     if (!parsed || parsed->config.bit_depth != depth) return fail("JXL explicit supported depth was not preserved.");

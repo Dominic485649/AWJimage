@@ -17,6 +17,7 @@
 #include <limits>
 #include <bit>
 #include <vector>
+#include <utility>
 #include "../src/core/work_memory_admission.h"
 #include "../src/core/hdr_cost.h"
 
@@ -42,7 +43,7 @@ int main() {
   reference.bit_depth = 16;
   reference.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::yuv420, .bit_depth = 8};
   if (awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, false).value_or(0) != 10 ||
-      awj::resolve_rendition_bit_depth(awj::OutputFormat::jxl, reference, false).value_or(0) != 16 ||
+      awj::resolve_rendition_bit_depth(awj::OutputFormat::jxl, reference, false).value_or(0) != 10 ||
       awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, false).value_or(0) != 8 ||
       awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, true).value_or(0) != 16 ||
       awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, false, 8).value_or(0) != 8 ||
@@ -50,6 +51,19 @@ int main() {
       awj::resolve_rendition_bit_depth(awj::OutputFormat::png, reference, false, 12) ||
       awj::resolve_rendition_bit_depth(awj::OutputFormat::webp, reference, false, 10))
     return fail("Rendition precision/PNG compatibility/explicit-parameter policy mismatch.");
+  for (const auto [source, expected] : std::array<std::pair<int, int>, 7>{{
+           {8, 10}, {10, 10}, {11, 12}, {12, 12}, {13, 16}, {16, 16}, {0, 16}}}) {
+    reference.source_info->bit_depth = source;
+    if (awj::resolve_rendition_bit_depth(awj::OutputFormat::jxl, reference, true).value_or(0) != expected ||
+        awj::jxl_auto_bit_depth(source) != expected ||
+        awj::resolve_rendition_bit_depth(awj::OutputFormat::jxl, reference, true, 8).value_or(0) != 8)
+      return fail("JXL 自动源精度或显式覆盖策略不一致。");
+  }
+  reference.source_info->bit_depth = 16;
+  reference.significant_bits = awj::SignificantBits{10, 10, 10, 16};
+  if (awj::resolve_rendition_bit_depth(awj::OutputFormat::jxl, reference, true).value_or(0) != 10)
+    return fail("JXL 将 RGBA16 存储或 alpha 精度误作 RGB 有效精度。");
+  reference.significant_bits.reset();
   reference.source_info->pixel_format = awj::PixelFormat::rgba;
   reference.source_info->bit_depth = 16;
   if (awj::resolve_rendition_bit_depth(awj::OutputFormat::avif, reference, true).value_or(0) != 12 ||

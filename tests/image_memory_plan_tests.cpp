@@ -1,6 +1,8 @@
 #include "../src/compat/stdlib_compat.h"
 #include <algorithm>
+#include <array>
 #include <cstdio>
+#include <utility>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -78,6 +80,21 @@ int main() {
     return fail("未知动态范围被当作小型 SDR 输入。");
   auto gain = high; gain.source_has_gain_map = true; gain.gain_map_width = 2309; gain.gain_map_height = 1632;
   if (awj::estimated_regular_memory(gain, cfg).bytes <= hdr.bytes) return fail("Gain Map 双端与辅助工作区未计入。");
+  auto jxl_cfg = cfg; jxl_cfg.output_format = awj::OutputFormat::jxl;
+  const std::array<std::pair<int, int>, 7> jxl_depths{{
+      {0, 16}, {8, 10}, {10, 10}, {11, 12}, {12, 12}, {13, 16}, {16, 16}}};
+  for (const auto [source_depth, target_depth] : jxl_depths) {
+    auto jxl_dims = dims; jxl_dims.source_bit_depth = source_depth;
+    if (awj::estimated_regular_memory(jxl_dims, jxl_cfg).target_bit_depth != target_depth)
+      return fail("JXL 内存预检与自动位深矩阵不一致。");
+  }
+  auto jxl_gain = dims; jxl_gain.source_has_gain_map = true;
+  if (awj::estimated_regular_memory(jxl_gain, jxl_cfg).target_bit_depth != 16)
+    return fail("JXL 重建 HDR 被原 8-bit 底图低估。");
+  jxl_cfg.bit_depth = 8;
+  if (awj::estimated_regular_memory(jxl_gain, jxl_cfg).target_bit_depth != 8)
+    return fail("JXL 显式位深未覆盖内存预检自动值。");
+
   auto invalid = dims; invalid.width = 0;
   if (awj::estimated_regular_memory(invalid, cfg).bytes != UINT64_MAX) return fail("非法尺寸没有安全拒绝。");
   invalid = awj::make_image_dimensions(UINT32_MAX, UINT32_MAX);

@@ -1,12 +1,12 @@
 include_guard(GLOBAL)
 include("${CMAKE_CURRENT_LIST_DIR}/sdk-release-profiles.cmake")
 
-# 此入口只实现用户分别明确批准的 1.3.1、1.3.3 HMOS 组件预览范围。
+# 此入口只实现用户分别明确批准的 1.3.1、1.3.3、1.3.4 HMOS 组件预览范围。
 # 原有正式 SDK 的 JUnit、目标运行与 loader 门禁保持不变。
 function(awj_sdk_require_hmos_preview_scope version prefix)
-    if((NOT version STREQUAL "1.3.1" AND NOT version STREQUAL "1.3.3") OR NOT ${prefix}_hmos OR
-            NOT "${${prefix}_profile}" STREQUAL "hmos-arm64-api26-clang23")
-        message(FATAL_ERROR "HMOS 预览范围只授权给 1.3.1、1.3.3 的明确目标 profile")
+    if((NOT version STREQUAL "1.3.1" AND NOT version STREQUAL "1.3.3" AND NOT version STREQUAL "1.3.4") OR
+            NOT ${prefix}_hmos OR NOT "${${prefix}_profile}" STREQUAL "hmos-arm64-api26-clang23")
+        message(FATAL_ERROR "HMOS 预览范围只授权给 1.3.1、1.3.3、1.3.4 的明确目标 profile")
     endif()
 endfunction()
 

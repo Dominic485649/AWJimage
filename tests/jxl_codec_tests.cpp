@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <brotli/encode.h>
+#include <jxl/cms.h>
 #include <jxl/decode.h>
 #include <jxl/encode.h>
 #include <jxl/gain_map.h>
@@ -171,7 +172,9 @@ struct IntegerJxl {
 // cannot make a 10/12-bit stream appear correct just by round-tripping it.
 awj::compat::expected<IntegerJxl, std::string> decode_integer_jxl(std::span<const std::byte> bytes) {
   std::unique_ptr<JxlDecoder, decltype(&JxlDecoderDestroy)> decoder{JxlDecoderCreate(nullptr), &JxlDecoderDestroy};
-  if (!decoder || JxlDecoderSubscribeEvents(decoder.get(), JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
+  const auto* cms = JxlGetDefaultCms();
+  if (!decoder || !cms || JxlDecoderSetCms(decoder.get(), *cms) != JXL_DEC_SUCCESS ||
+      JxlDecoderSubscribeEvents(decoder.get(), JXL_DEC_BASIC_INFO | JXL_DEC_COLOR_ENCODING | JXL_DEC_FULL_IMAGE) != JXL_DEC_SUCCESS ||
       JxlDecoderSetInput(decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()) != JXL_DEC_SUCCESS)
     return awj::compat::unexpected{"Cannot initialize independent integer JXL decoder."};
   JxlDecoderCloseInput(decoder.get());
@@ -201,6 +204,11 @@ awj::compat::expected<IntegerJxl, std::string> decode_integer_jxl(std::span<cons
             reinterpret_cast<std::uint8_t*>(result.icc.data()), result.icc.size()) != JXL_DEC_SUCCESS)
           return awj::compat::unexpected{"Cannot read independent original JXL ICC."};
       }
+      if (result.info.uses_original_profile != JXL_TRUE &&
+          JxlDecoderSetOutputColorProfile(decoder.get(), result.color ? &*result.color : nullptr,
+              result.icc.empty() ? nullptr : reinterpret_cast<const std::uint8_t*>(result.icc.data()),
+              result.icc.size()) != JXL_DEC_SUCCESS)
+        return awj::compat::unexpected{"独立 JXL 解码器无法选择原始色彩输出。"};
     } else if (status == JXL_DEC_NEED_IMAGE_OUT_BUFFER) {
       std::size_t size{};
       if (JxlDecoderImageOutBufferSize(decoder.get(), &format, &size) != JXL_DEC_SUCCESS || !size ||
@@ -307,7 +315,7 @@ int encoding_policy_regressions() {
         if (!encoded) return fail(encoded.error());
         const auto decoded = decode_integer_jxl(encoded->encoded.bytes);
         if (!decoded) return fail(decoded.error());
-        const int expected_depth = depth.value_or(16);
+        const int expected_depth = depth.value_or(awj::jxl_auto_bit_depth(input_depth));
         if (!samples_match_depth(image, *decoded, expected_depth, keep_alpha) ||
             encoded->diagnostics.applied_bit_depth != expected_depth)
           return fail("JXL actual BasicInfo/alpha/independent integer samples do not match auto/explicit depth.");
@@ -342,7 +350,7 @@ int encoding_policy_regressions() {
         if (!encoded) return fail(encoded.error());
         auto decoded = decode_integer_jxl(encoded->encoded.bytes);
         if (!decoded) return fail(decoded.error());
-        if (!samples_match_depth(hdr, *decoded, 16, true) || !decoded->color ||
+        if (!samples_match_depth(hdr, *decoded, awj::jxl_auto_bit_depth(input_depth), true) || !decoded->color ||
             decoded->color->transfer_function != static_cast<JxlTransferFunction>(transfer) ||
             decoded->color->primaries != (transfer == 16 ? JXL_PRIMARIES_2100 : JXL_PRIMARIES_P3) ||
             find_box(encoded->encoded.bytes, {'j', 'h', 'g', 'm'}))
@@ -382,7 +390,7 @@ int encoding_policy_regressions() {
   const std::array<std::byte, 1> not_a_jpeg{std::byte{0}};
   const auto incompatible_transcode = encoder.encode_jpeg_bitstream(not_a_jpeg, rendering_settings());
   if (incompatible_transcode || incompatible_transcode.error().find("8-bit") == std::string::npos)
-    return fail("Direct JPEG transcode bypassed the JXL auto-16 output plan.");
+    return fail("JPEG 直接转封装绕过了 JXL 自动位深计划。");
   return 0;
 }
 
@@ -403,6 +411,95 @@ bool close_rgb(const awj::ImageBuffer& a, const awj::ImageBuffer& b, double tole
       for (std::size_t c = 0; c < 3; ++c)
         if (std::abs(sample(a, x, y, c) - sample(b, x, y, c)) > tolerance) return false;
   return true;
+}
+
+int lossy_color_regressions() {
+  awj::JXLImageEncoder encoder;
+  awj::JXLImageDecoder decoder;
+  for (int profile = 0; profile < 4; ++profile) {
+    awj::ImageBuffer image{.width = 64, .height = 64, .pixel_format = awj::PixelFormat::rgba,
+        .alpha_mode = awj::AlphaMode::straight, .bit_depth = 16,
+        .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = 16,
+            .color_primaries = profile == 0 ? 9 : 12,
+            .transfer_characteristics = profile == 0 ? 16 : profile == 1 ? 18 : 13,
+            .matrix_coefficients = 0, .color_range = 1, .has_hdr_metadata = profile < 2}};
+    awj::ImagePlane plane{.stride = image.width * 8};
+    for (std::size_t y = 0; y < image.height; ++y) {
+      for (std::size_t x = 0; x < image.width; ++x) {
+        const auto gray = static_cast<std::uint16_t>((x / 8 + y / 8) % 2 ? 42000 : 11000);
+        for (std::size_t c = 0; c < 3; ++c)
+          push_u16(plane.bytes, x < 32 ? gray : static_cast<std::uint16_t>(9000 +
+              ((x + c * 13 + y * 3) % 48) * 700));
+        push_u16(plane.bytes, x < 48 ? 65535 : static_cast<std::uint16_t>(20000 + y * 600));
+      }
+    }
+    image.planes.push_back(std::move(plane));
+    if (profile == 3) {
+      auto icc = awj::test::display_p3_srgb_icc();
+      if (!icc) return fail(icc.error());
+      image.metadata.push_back({.kind = awj::MetadataKind::icc, .bytes = std::move(*icc)});
+      image.source_info->color_primaries.reset();
+      image.source_info->transfer_characteristics.reset();
+    }
+    for (const bool strip : {false, true}) {
+      auto settings = rendering_settings();
+      settings.quality = 85;
+      settings.speed = 6;
+      settings.bit_depth = profile % 2 ? 10 : 16;
+      settings.applied_alpha = strip ? "kept" : "dropped";
+      settings.applied_icc = profile == 3 ? "kept" : "dropped";
+      settings.strip_metadata = strip;
+      const auto encoded = encoder.encode(image, settings);
+      if (!encoded) return fail(encoded.error());
+      const auto oracle = decode_integer_jxl(encoded->encoded.bytes);
+      if (!oracle) return fail(oracle.error());
+      if (oracle->info.uses_original_profile != JXL_FALSE || encoded->lossless ||
+          oracle->info.bits_per_sample != static_cast<unsigned>(*settings.bit_depth) ||
+          oracle->info.alpha_bits != static_cast<unsigned>(strip ? *settings.bit_depth : 0))
+        return fail("JXL 有损主图未采用 XYB，或改写了目标位深／alpha 策略。");
+      const auto decoded = decoder.decode_memory(encoded->encoded.bytes, "xyb-color-regression",
+          {.copy_metadata_payloads = false});
+      if (!decoded) return fail(decoded.error());
+      const auto& output = decoded->image;
+      if (!output.source_info || output.source_info->has_hdr_metadata != (profile < 2))
+        return fail("普通 XYB 输入丢失了真实 HDR 色彩解释。");
+      if (profile < 3 && (output.source_info->color_primaries != image.source_info->color_primaries ||
+          output.source_info->transfer_characteristics != image.source_info->transfer_characteristics))
+        return fail("普通 XYB 输出被误标为原始 PQ／HLG／P3 以外的空间。");
+      if (profile == 3 && output.source_info->color_primaries != 12 &&
+          std::none_of(output.metadata.begin(), output.metadata.end(),
+              [](const auto& block) { return block.kind == awj::MetadataKind::icc && !block.bytes.empty(); }))
+        return fail("不复制可选元数据时丢弃了 XYB 输出所需的 ICC。");
+      const double maximum = static_cast<double>((1u << *settings.bit_depth) - 1);
+      double chroma_error{};
+      for (std::size_t y = 0; y < output.height; ++y) {
+        for (std::size_t x = 0; x < output.width; ++x) {
+          std::array<double, 3> rgb{};
+          for (std::size_t c = 0; c < 4; ++c) {
+            std::uint16_t sample{};
+            std::memcpy(&sample, output.planes[0].bytes.data() + y * output.planes[0].stride + (x * 4 + c) * 2, 2);
+            const double normalized = sample / 65535.0;
+            if (std::abs(normalized - oracle->rgba[(y * output.width + x) * 4 + c] / maximum) > 2.0 / maximum)
+              return fail("AWJ XYB 输出像素与独立原色彩空间解码结果不一致。");
+            if (c < 3) rgb[c] = normalized;
+          }
+          if (x < 24) chroma_error += std::abs(rgb[0] - rgb[1]) + std::abs(rgb[2] - rgb[1]);
+        }
+      }
+      if (chroma_error / (24 * output.height * 2) > 0.01)
+        return fail("JXL 高反差中性 HDR 边缘新增了过大的通道色差。");
+    }
+  }
+  auto settings = rendering_settings();
+  settings.quality = 85;
+  settings.visual_quality = 100;
+  const auto encoded = encoder.encode(make_depth_fixture(16), settings);
+  if (!encoded) return fail(encoded.error());
+  const auto oracle = decode_integer_jxl(encoded->encoded.bytes);
+  if (!oracle || oracle->info.uses_original_profile != JXL_TRUE ||
+      !samples_match_depth(make_depth_fixture(16), *oracle, 16, false))
+    return fail(oracle ? "visual_quality=100 未保留无损原始色彩模式。" : oracle.error());
+  return 0;
 }
 
 bool gain_map_failure(const awj::compat::expected<awj::ImageDecodeResult, std::string>& result) {
@@ -459,7 +556,30 @@ int gain_map_regressions(const std::filesystem::path& test_root) {
   const auto auxiliary = decode_integer_jxl({reinterpret_cast<const std::byte*>(bundle.gain_map), bundle.gain_map_size});
   if (!auxiliary || auxiliary->info.bits_per_sample != 8 || auxiliary->info.alpha_bits != 0 ||
       auxiliary->info.xsize != 8 || auxiliary->info.ysize != 4)
-    return fail(auxiliary ? "Primary auto-16 policy changed the full-resolution 8-bit Gain Map auxiliary." : auxiliary.error());
+    return fail(auxiliary ? "主图自动位深策略改变了全尺寸 8-bit 增益辅助图。" : auxiliary.error());
+  auto lossy_settings = settings;
+  lossy_settings.quality = 85;
+  const auto lossy = encoder.encode(pair.hdr, lossy_settings);
+  if (!lossy) return fail(lossy.error());
+  const auto lossy_primary = decode_integer_jxl(lossy->encoded.bytes);
+  const auto lossy_box = find_box(lossy->encoded.bytes, {'j', 'h', 'g', 'm'});
+  if (!lossy_primary || lossy_primary->info.uses_original_profile != JXL_FALSE || !lossy_box)
+    return fail("JHGM 有损主图没有使用 XYB 或丢失了功能性辅助图。");
+  JxlGainMapBundle lossy_bundle{};
+  const auto lossy_payload = std::span<const std::byte>{lossy->encoded.bytes}.subspan(
+      lossy_box->offset + lossy_box->header_size, lossy_box->payload_size);
+  if (JxlGainMapReadBundle(&lossy_bundle, reinterpret_cast<const std::uint8_t*>(lossy_payload.data()),
+          lossy_payload.size(), &read) != JXL_TRUE)
+    return fail("JHGM 有损模式的 bundle 无法独立读取。");
+  const auto lossy_auxiliary = decode_integer_jxl({reinterpret_cast<const std::byte*>(lossy_bundle.gain_map), lossy_bundle.gain_map_size});
+  if (!lossy_auxiliary || lossy_auxiliary->info.uses_original_profile != JXL_TRUE ||
+      lossy_auxiliary->info.bits_per_sample != 8)
+    return fail("JHGM 增益数值图被错误切换为感知 XYB 模式或改变精度。");
+  const auto lossy_both = decoder.decode_memory(lossy->encoded.bytes, "xyb-jhgm-both",
+      {.gain_map_mode = awj::GainMapDecodeMode::preserve_both});
+  if (!lossy_both || !lossy_both->gain_map_alternative || !lossy_both->image.source_info ||
+      lossy_both->image.source_info->transfer_characteristics != 16)
+    return fail(lossy_both ? "XYB JHGM 丢失 HDR／SDR 两端。" : lossy_both.error());
   auto base_only = replace_gain_map_box(encoded->encoded.bytes, {}, {'f', 'r', 'e', 'e'});
   if (!base_only) return fail(base_only.error());
   auto raw_base = decoder.decode_memory(*base_only, "jhgm-main-without-map");
@@ -637,6 +757,7 @@ int main(int argc, char** argv) {
   if (!std::filesystem::create_directory(test_root, directory_error)) return fail("Cannot create project-local JXL test directory.");
   ScopedTestDirectory test_directory{test_root};
   if (const int result = encoding_policy_regressions(); result != 0) return result;
+  if (const int result = lossy_color_regressions(); result != 0) return result;
   if (argc == 2 && std::string_view{argv[1]} == "--encoding-policy-only") {
     std::puts("JXL auto/explicit BasicInfo depth, independent integer RGB/alpha, HDR/ICC strip and cancellation passed.");
     return 0;
@@ -700,7 +821,7 @@ int main(int argc, char** argv) {
   awj::JXLImageDecoder decoder;
   auto plain_dimensions = decoder.probe_dimensions(path);
   if (!plain_dimensions || plain_dimensions->width != 2 || plain_dimensions->height != 2 ||
-      plain_dimensions->source_bit_depth != 16 || plain_dimensions->source_has_alpha ||
+      plain_dimensions->source_bit_depth != 10 || plain_dimensions->source_has_alpha ||
       plain_dimensions->source_has_gain_map || plain_dimensions->source_dynamic_range != awj::ImageDynamicRangeHint::sdr ||
       plain_dimensions->decoded_storage_bytes != 32)
     return fail(plain_dimensions ? "Plain JXL dimensions/profile regressed." : plain_dimensions.error());

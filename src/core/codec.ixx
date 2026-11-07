@@ -64,12 +64,18 @@ int rendition_reference_depth(const ImageBuffer& image) noexcept {
   return depth;
 }
 
+int jxl_auto_bit_depth(int source_depth) noexcept {
+  if (source_depth <= 0 || source_depth > 12) return 16;
+  return source_depth > 10 ? 12 : 10;
+}
+
 awj::compat::expected<int, std::string> resolve_rendition_bit_depth(
     OutputFormat format, const ImageBuffer& image, bool hdr,
     std::optional<int> requested = {}) {
   const int depth = requested.value_or(format == OutputFormat::avif
       ? (rendition_reference_depth(image) > 10 ? 12 : 10)
-      : format == OutputFormat::jxl ? 16 : format == OutputFormat::png ? (hdr ? 16 : 8) : 8);
+      : format == OutputFormat::jxl ? jxl_auto_bit_depth(rendition_reference_depth(image))
+      : format == OutputFormat::png ? (hdr ? 16 : 8) : 8);
   const bool supported = format == OutputFormat::avif ? depth == 8 || depth == 10 || depth == 12
       : format == OutputFormat::jxl ? depth == 8 || depth == 10 || depth == 12 || depth == 16
       : format == OutputFormat::png ? depth == 8 || depth == 16 : depth == 8;

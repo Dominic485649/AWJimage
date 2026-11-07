@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前版本：**1.3.0**，同时提供应用与 C ABI SDK。
+AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前版本：**1.3.4**，同时提供应用与 C ABI SDK。
 
 ## 格式支持
 
@@ -16,6 +16,8 @@ AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形�
 默认输出 AVIF，质量 70、速度 5。JPG 默认输出 8-bit YCbCr，auto 与 AVIF 一样跟随源采样：保留已知 4:2:0 / 4:2:2 / 4:4:4，RGB、RGBA 和未知源使用 4:4:4；JPG 灰度源在 auto 下使用三分量 4:4:4，不支持显式 4:0:0。HDR JPG 使用 SDR 主图与 ISO 21496-1 Gain Map，仅接受 ISO 增益图协议，不再兼容旧 Adobe／Google／Apple 增益图。质量 100 的无损行为取决于格式；JPEG 支持无损转封装为 JXL。[Gain Map 与动画说明](docs/gain-map-animation.md)。
 
 SDR 输入不因宽色域、高位深或显示提亮而增加 HDR 层。JXL/AVIF 仅为原有 SDR/HDR 双呈现保留 HDR 底图与重建 SDR 的 Gain Map；普通单层仍为单层。JPG 是例外：HDR 没有现成 SDR 时自动高光滚降生成 SDR 底图，再用 Gain Map 保留 HDR。WebP 自动滚降至 SDR，有原 SDR 时优先复用；PNG 保留所选 HDR/SDR 单层。`--jpeg-hdr hdr` 遇到 SDR 输入也保持普通 SDR，不重标为 HDR。
+
+JXL 自动位深按所选呈现的有效精度选择 10/12/16-bit，16-bit 源保留 16-bit，显式 8/10/12/16 优先。有损主图使用 XYB，无损主图与 Gain Map 数值图保留原模式。质量 100 表示目标位深的主图无损；先降到 10/12-bit 再无损编码不等于原始 16-bit 逐样本无损，重新生成的双呈现也不声明整对逐样本无损。JPEG 原始码流可逆转封装仅限显式 8-bit；自动位深走像素编码。
 
 各格式使用统一的目标像素转换阶段，真实尺寸重采样统一使用 Spline36。尺寸可选自动、无限制、手动放大、手动缩小和固定长／宽；放大／缩小分别取已填宽、高、长边、短边和比例算出的最大／最小倍率，比例可为正小数或超过 100%。固定模式在尺寸与比例之间二选一：填写尺寸后比例框禁用，等比居中放入指定画布，支持 alpha 时补透明边，否则补黑边；只填比例时禁用四个尺寸框并按比例等比缩放。HDR 亮度分析、Gain Map 重建和动画合成按格式要求执行。
 

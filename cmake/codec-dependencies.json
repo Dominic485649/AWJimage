@@ -1,8 +1,8 @@
 {
-  "awj_version": "1.3.3",
+  "awj_version": "1.3.4",
   "selected_at": "2026-11-06",
   "reviewed_at": "2026-11-07",
-  "review_scope": "Spline36-only resampling update: retain the 2026-11-06 dependency selection, pinned sources, overlays and patches without a dependency upgrade; upstream latest-release checks are not rerun by this metadata review.",
+  "review_scope": "JXL color and automatic bit-depth fix, with the explicitly approved 1.3.4 HMOS cross-build preview scope: retain the 2026-11-06 dependency selection and the 1.3.3 pinned sources, overlays and patches without a dependency upgrade; upstream latest-release checks are not rerun by this metadata review.",
   "policy": "Select latest stable upstream releases when preparing each AWJ version; resolve tags to full commits, verify source SHA-256, and commit this lock together with local patches. Builds never resolve latest or main.",
   "vcpkg_baseline": "d4c0a46cb8f63e5c9fa007d13baf1cb3e43bf7e3",
   "libultrahdr": {

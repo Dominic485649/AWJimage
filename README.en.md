@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current version: **1.3.0**, with application and C ABI SDK downloads.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current version: **1.3.4**, with application and C ABI SDK downloads.
 
 ## Formats
 
@@ -16,6 +16,8 @@ AWJimage is a batch image converter for Windows and Linux, with a desktop interf
 Defaults: AVIF, quality 70, speed 5. JPG uses 8-bit YCbCr and follows source sampling in auto mode, like AVIF: known 4:2:0, 4:2:2 and 4:4:4 are preserved; RGB, RGBA and unknown sources use 4:4:4. Grayscale JPG sources use three-component 4:4:4 in auto mode; explicit 4:0:0 is unsupported. HDR JPG stores an SDR base image and an ISO 21496-1 gain map. Only ISO gain-map metadata is accepted; legacy Adobe, Google and Apple gain-map protocols are no longer supported. Lossless behavior at quality 100 depends on the format. JPEG can be losslessly repackaged as JXL. See [Gain Map and animation details](docs/gain-map-animation.md).
 
 Wide gamut, high bit depth and display brightening do not add an HDR layer to SDR input. JXL/AVIF retain an HDR base and a map reconstructing SDR only for an existing SDR/HDR pair; ordinary single-layer input stays single-layer. JPEG is the exception: when HDR has no existing SDR rendition, highlight roll-off generates an SDR base and a gain map preserves HDR. WebP automatically rolls HDR down to SDR, preferring an existing SDR rendition; PNG preserves the selected single HDR/SDR rendition. Even `--jpeg-hdr hdr` keeps SDR-only input as ordinary SDR instead of relabeling it HDR.
+
+JXL automatically selects 10/12/16-bit output from the selected rendition's effective precision, retaining 16-bit sources and honoring explicit 8/10/12/16-bit settings. Lossy primary images use XYB; lossless primary images and numeric gain maps retain the original mode. Quality 100 means lossless primary pixels at the target bit depth: reducing 16-bit input to 10/12-bit first is not sample-exact preservation of the original, and regenerated paired renditions are not declared sample-exact as a whole. Reversible JPEG bitstream repackaging requires explicit 8-bit output; automatic depth uses pixel encoding.
 
 Formats share one target-pixel conversion stage, with Spline36 for geometric resampling. Size modes include automatic, unlimited, maximum-factor scaling, minimum-factor scaling and a fixed canvas. Scaling combines optional width, height, long-edge, short-edge and percentage values; positive fractional percentages and values above 100% are supported. Fixed mode accepts dimensions or a percentage: entering dimensions disables percentage input and places the full aspect-preserved image in a centered canvas with transparent or black padding; entering only a percentage disables the four dimension inputs and scales proportionally. HDR luminance analysis, gain-map reconstruction and animation compositing follow each format's requirements.
 
