@@ -55,7 +55,6 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .queue_preset_file = state != nullptr ? state->queue_preset_file : std::string{},
       .allow_wic_fallback = app.get_allow_wic_fallback(),
       .shell_menu_compatibility = app.get_shell_menu_compatibility(),
-      .visual_quality_gpu = app.get_visual_quality_gpu(),
       .visual_quality_fallback = app.get_visual_quality_fallback(),
       .menu_preset_description = state != nullptr
           ? state->menu_preset_description
@@ -307,12 +306,6 @@ awj::compat::expected<void, std::string> apply_studio_config_file(AwjStudio& app
   if (auto result = apply(apply_config_bool(
           app, *values, "shell_menu_compatibility",
           &AwjStudio::set_shell_menu_compatibility)); !result) {
-    return result;
-  }
-  if (auto result = apply(apply_config_bool(
-          app, *values, "visual_quality_gpu",
-          &AwjStudio::set_visual_quality_gpu));
-      !result) {
     return result;
   }
   if (auto result = apply(apply_config_bool(

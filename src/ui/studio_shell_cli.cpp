@@ -151,8 +151,6 @@ std::vector<std::wstring> cli_arguments_from_config(
                     std::to_wstring(*cfg.visual_quality));
     args.push_back(cfg.visual_quality_fallback ? L"--visual-quality-fallback"
                                                : L"--no-visual-quality-fallback");
-    args.push_back(cfg.visual_quality_gpu ? L"--visual-quality-gpu"
-                                          : L"--no-visual-quality-gpu");
   } else {
     push_cli_option(args, L"--quality", std::to_wstring(cfg.quality));
   }

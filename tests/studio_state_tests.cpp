@@ -182,7 +182,7 @@ void config_check() {
   current.menu_params[3].chroma_index = 4; // Removed JPG 400 from an old UI cache.
   {
     std::ofstream old(path);
-    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","future_extension":"保留"})";
+    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","visual_quality_gpu":true,"future_extension":"保留"})";
   }
   const auto legacy = awj::studio_json::parse_jsonc_config(read(path));
   check(legacy && awj::studio_json::config_string(*legacy, "queue_preset_file")
@@ -191,6 +191,8 @@ void config_check() {
   check(write_studio_config_file(current, defaults).has_value(), "config write failed");
   const auto first = read(path);
   const auto parsed = awj::studio_json::parse_jsonc_config(first);
+  check(parsed && !parsed->contains("visual_quality_gpu"),
+        "旧 GPU 配置键不应在保存时重新写入");
   check(parsed.has_value() && parsed->at("language_index").integer == 1 &&
         parsed->at("last_verified_manifest_v2_sequence").integer == 42 &&
         parsed->at("update_manifest_v2_raw").string == current.update_manifest_v2_raw &&

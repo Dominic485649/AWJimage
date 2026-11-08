@@ -185,7 +185,6 @@ awj_status native_encode(awj_context& context, const awj_frame& frame,
   config.speed = options.speed;
   if (options.bit_depth) config.bit_depth = static_cast<int>(options.bit_depth);
   if (options.visual_quality) config.visual_quality = options.quality;
-  config.visual_quality_gpu = false;
   config.allow_wic_fallback = false;
   config.max_jobs = static_cast<int>(context.options.max_threads);
   config.memory_limit_bytes = context.options.memory_budget_bytes;

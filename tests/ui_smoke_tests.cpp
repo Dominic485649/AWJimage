@@ -1706,6 +1706,8 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
   auto settings =
       find_one(app, "设置", slint::language::AccessibleRole::Tab);
   settings->invoke_accessible_default_action();
+  if (find_one(app, "GPU 加速视觉质量", slint::language::AccessibleRole::Checkbox))
+    return fail("已删除的 GPU 视觉质量开关仍显示在设置页。");
   // A tall window must leave its spare space below the settings cards.
   app->window().set_size(slint::LogicalSize({1220.0f, 2000.0f}));
   auto theme_control = find_one(app, "主题", slint::language::AccessibleRole::Combobox);

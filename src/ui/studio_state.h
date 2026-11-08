@@ -232,7 +232,6 @@ struct StudioConfigSnapshot {
   std::string queue_preset_file{};
   bool allow_wic_fallback{};
   bool shell_menu_compatibility{};
-  bool visual_quality_gpu{true};
   bool visual_quality_fallback{true};
   std::string menu_preset_description{"用于右键菜单转换的参数。"};
   std::array<MenuFormatParams, 5> menu_params{};

@@ -12,9 +12,6 @@ msgstr "Options"
 msgid "自动"
 msgstr "Auto"
 
-msgid "默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"
-msgstr "Direct3D 11 acceleration is on by default for the visual_quality luma, GMSD and MS-SSIM metrics; codec encode/decode still uses the native CPU libraries, and small images or failures fall back to CPU automatically."
-
 msgid "系统默认字体"
 msgstr "System default font"
 
@@ -578,9 +575,6 @@ msgstr "Advanced and experimental features"
 
 msgid "开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"
 msgstr "When enabled, if the built-in professional native decoders (such as libavif or libwebp) fail to load an image, Windows WIC (Windows Imaging Component) is tried automatically as a fallback decode path."
-
-msgid "GPU 加速视觉质量"
-msgstr "GPU-accelerated visual quality"
 
 msgid "视觉质量未达标时兜底输出"
 msgstr "Output a fallback when visual quality is not met"

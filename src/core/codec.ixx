@@ -185,7 +185,6 @@ struct EncodeTimingDiagnostics {
   double visual_quality_metric_seconds{-1.0};
   int visual_quality_candidate_count{};
   int visual_quality_decode_memory_fallback_count{};
-  int visual_quality_gpu_fallback_count{};
   double base_decode_seconds{-1.0};
   double auxiliary_decode_seconds{-1.0};
   double gain_map_render_seconds{-1.0};
@@ -247,10 +246,6 @@ struct EncodeDiagnostics {
   std::string avif_layer_trace{};
   std::uint64_t memory_budget_bytes{};
   bool used_decoder_fallback{};
-  bool visual_quality_gpu_requested{};
-  bool visual_quality_gpu_used{};
-  std::string visual_quality_gpu_path{};
-  std::string visual_quality_gpu_fallback_reason{};
   std::string visual_quality_search_trace{};
   EncodeTimingDiagnostics timing{};
   RenditionDiagnostics rendition{};
@@ -306,7 +301,6 @@ struct NativeEncodeSettings {
   std::string encoder_fallback_reason{};
   bool strip_metadata{};
   bool visual_quality_fallback{};
-  bool visual_quality_gpu{true};
   bool jxl_jpeg_lossless_candidate{};
   bool avif_tune_iq{encoding_defaults::default_avif_tune_iq};
   AvifAnimationTune avif_animation_tune{AvifAnimationTune::automatic};
@@ -388,8 +382,6 @@ EncodeDiagnostics diagnostics_from_settings(const NativeEncodeSettings& settings
                            .jpegli_optimize_huffman = settings.jpegli_optimize_huffman,
                            .jpegli_xyb = settings.jpegli_xyb,
                            .memory_budget_bytes = settings.resources.memory_limit_bytes,
-                           .visual_quality_gpu_requested = settings.visual_quality && settings.visual_quality_gpu,
-                           .visual_quality_gpu_path = settings.visual_quality ? (settings.visual_quality_gpu ? "requested" : "cpu-disabled") : "not-requested",
                            .rendition = settings.rendition};
 }
 

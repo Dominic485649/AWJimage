@@ -711,7 +711,19 @@ int main() {
     return fail("CLI still accepts removed max-resolution option.");
   }
 
+  for (const auto* option : {L"--visual-quality-gpu", L"--visual_quality_gpu",
+                             L"--no-visual-quality-gpu", L"--no_visual_quality_gpu"}) {
+    const auto removed = awj::parse_arguments({option});
+    if (removed || removed.error().find("未知参数") == std::string::npos) {
+      return fail("已删除的视觉质量 GPU 参数仍被接受。");
+    }
+  }
+
   const auto help = awj::help_text();
+  if (help.find("visual-quality-gpu") != std::string::npos ||
+      help.find("使用 CPU 计算 luma、GMSD 与 MS-SSIM 指标") == std::string::npos) {
+    return fail("帮助文本没有反映纯 CPU 视觉质量计算。");
+  }
   if (help.find(awj::compat::format("AVIF q{}",
                             awj::encoding_defaults::default_avif_quality)) ==
           std::string::npos ||

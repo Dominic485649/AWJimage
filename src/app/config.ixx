@@ -315,7 +315,6 @@ struct AppConfig {
   // 不参与编码，保持 UI、CLI 与 worker 的默认一致。
   bool visual_quality_fallback{
       encoding_defaults::default_visual_quality_fallback};
-  bool visual_quality_gpu{true};
   bool strip_metadata{false};
   bool write_summary{false};
   bool write_log{false};
@@ -1175,9 +1174,7 @@ std::string help_text() {
   -f, --format <png|avif|webp|jxl|jpg> 输出格式，默认 avif；PNG 默认 SDR 8-bit/HDR 16-bit，显式8/16优先；q100无损编码目标像素、q1–99量化RGB，JPG 生成 JPEG 兼容 bitstream，扩展名为 .jpg
   -q, --quality <1-100>       编码质量，PNG 默认 100；q1–99 降低 RGB 有效精度（16-bit 最低 10 位），alpha 保持原精度；PNG 不支持视觉质量搜索，AVIF 默认 @AVIF_QUALITY@，WebP 默认 @WEBP_QUALITY@，JXL 默认 @JXL_QUALITY@，JPG 默认 @JPEGLI_QUALITY@；JXL 仅在8-bit输出计划与JPEG码流相符时允许可逆转封装，自动按源选10/12/16-bit并走像素编码；其他 WebP/JXL 100 为编码器无损；JPG 100 表示最高质量 JPEG 兼容编码，不声明无损；AVIF 100 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入原始流直通，其他输入走 AOM 无损量化：默认 YUV 保留 420/422/444 采样但始终使用非 Identity matrix；--avif-color-representation source 仅在 RGB/RGBA 或 Identity 源时使用 RGB/GBR Identity；--avif-color-representation rgb 强制 Identity + 444。也接受 q90 或 0.9
   --visual-quality <1-100>   视觉质量目标；存在时覆盖 --quality，100：JXL 仅在显式8-bit且参数兼容时允许 JPEG 原始码流级可逆转封装，自动位深仍像素重编码；其他 WebP/JXL 按编码器无损语义处理，JPG 按最高质量 JPEG 兼容编码处理，AVIF 仅对未请求改写色彩、alpha、位深或元数据的目标 YUV AVIF 输入直通，其他输入走 AOM 无损量化；默认 YUV 不会因无损自动切换 Identity。1..99 自动搜索最小体积达标候选
-                            1..99 会为每张图片重复编码、解码并计算指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
-  --visual-quality-gpu       启用平台 GPU 加速 visual_quality 的 luma/GMSD/MS-SSIM 指标（Windows D3D11 / Linux Vulkan，默认）；codec 编码/解码仍走 native CPU 库，失败或小图会回退 CPU
-  --no-visual-quality-gpu    禁用 visual_quality GPU 指标路径，固定使用 CPU metric 路径
+                            1..99 会为每张图片重复编码、解码并使用 CPU 计算 luma、GMSD 与 MS-SSIM 指标；大图会明显增加耗时与内存，不需要自动质量搜索时请不要设置
   --visual-quality-fallback  visual_quality 搜索未达标时输出最接近目标的候选（默认）
   --no-visual-quality-fallback visual_quality 搜索未达标时失败
 @WINDOWS_TIMESTAMP_OPTIONS@
@@ -1566,17 +1563,6 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     if (lower == L"--no-unlock-max-input-file-bytes" ||
         lower == L"--no-unlock-20gib-limit") {
       cfg.unlock_max_input_file_bytes = false;
-      continue;
-    }
-
-    if (lower == L"--visual-quality-gpu" || lower == L"--visual_quality_gpu") {
-      cfg.visual_quality_gpu = true;
-      continue;
-    }
-
-    if (lower == L"--no-visual-quality-gpu" ||
-        lower == L"--no_visual_quality_gpu") {
-      cfg.visual_quality_gpu = false;
       continue;
     }
 

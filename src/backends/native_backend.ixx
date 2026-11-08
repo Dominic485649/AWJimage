@@ -1474,7 +1474,6 @@ NativeEncodeSettings settings_from_config(const AppConfig& cfg, ResourcePlan res
                               .requested_bit_depth = cfg.bit_depth,
                               .strip_metadata = cfg.strip_metadata,
                               .visual_quality_fallback = cfg.visual_quality_fallback,
-                              .visual_quality_gpu = cfg.visual_quality_gpu,
                               .jxl_jpeg_lossless_candidate = false,
                               .avif_tune_iq = encoding_defaults::default_avif_tune_iq,
                               .avif_animation_tune = cfg.avif_animation_tune,
@@ -1534,10 +1533,6 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.color_reason = native.diagnostics.color_reason;
   result.fallback_reason = native.diagnostics.fallback_reason;
   result.used_decoder_fallback = native.diagnostics.used_decoder_fallback;
-  result.visual_quality_gpu_requested = native.diagnostics.visual_quality_gpu_requested;
-  result.visual_quality_gpu_used = native.diagnostics.visual_quality_gpu_used;
-  result.visual_quality_gpu_path = native.diagnostics.visual_quality_gpu_path;
-  result.visual_quality_gpu_fallback_reason = native.diagnostics.visual_quality_gpu_fallback_reason;
   result.visual_quality_search_trace = native.diagnostics.visual_quality_search_trace;
   result.encoder_license = native.diagnostics.encoder_license;
   result.integration_mode = native.diagnostics.integration_mode;
@@ -1572,7 +1567,6 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.visual_quality_metric_seconds = native.diagnostics.timing.visual_quality_metric_seconds;
   result.visual_quality_candidate_count = native.diagnostics.timing.visual_quality_candidate_count;
   result.visual_quality_decode_memory_fallback_count = native.diagnostics.timing.visual_quality_decode_memory_fallback_count;
-  result.visual_quality_gpu_fallback_count = native.diagnostics.timing.visual_quality_gpu_fallback_count;
   if (native.visual_score) {
     result.visual_score = native.visual_score->visual_score;
     result.gmsd_quality_score = native.visual_score->gmsd_quality_score;
@@ -1689,10 +1683,6 @@ void copy_settings_diagnostics(const NativeEncodeSettings& settings, EncodeResul
   result.color_metadata_source = diagnostics.color_metadata_source;
   result.color_reason = diagnostics.color_reason;
   result.fallback_reason = settings.encoder_fallback_reason;
-  result.visual_quality_gpu_requested = diagnostics.visual_quality_gpu_requested;
-  result.visual_quality_gpu_used = diagnostics.visual_quality_gpu_used;
-  result.visual_quality_gpu_path = diagnostics.visual_quality_gpu_path;
-  result.visual_quality_gpu_fallback_reason = diagnostics.visual_quality_gpu_fallback_reason;
   result.speed = settings.speed;
   // 这里只拷贝准备阶段配置。实际线程数由已启动编码器的结果填写。
   result.encoder_threads = 0;
@@ -2617,17 +2607,10 @@ class NativeBackend final {
     if (result.visual_quality_search_seconds >= 0.0) {
       native_backend_detail::log_info_noexcept(logger_, [&] {
         return awj::compat::format(
-            "native vq breakdown: item={:04} candidates={} memory_fallback_decodes={} gpu_requested={} gpu_used={} gpu_path={} gpu_fallbacks={} gpu_fallback_reason={} candidate_encode={}s candidate_decode={}s candidate_io={}s luma={}s gmsd={}s ms_ssim={}s metrics={}s metric_share={}%",
+            "native vq breakdown: item={:04} candidates={} memory_fallback_decodes={} candidate_encode={}s candidate_decode={}s candidate_io={}s luma={}s gmsd={}s ms_ssim={}s metrics={}s metric_share={}%",
             result.index + 1,
             result.visual_quality_candidate_count,
             result.visual_quality_decode_memory_fallback_count,
-            result.visual_quality_gpu_requested ? "true" : "false",
-            result.visual_quality_gpu_used ? "true" : "false",
-            result.visual_quality_gpu_path.empty() ? "-" : result.visual_quality_gpu_path,
-            result.visual_quality_gpu_fallback_count,
-            result.visual_quality_gpu_fallback_reason.empty()
-                ? "-"
-                : result.visual_quality_gpu_fallback_reason,
             native_backend_detail::format_timing_seconds(result.visual_quality_candidate_encode_seconds),
             native_backend_detail::format_timing_seconds(result.visual_quality_candidate_decode_seconds),
             native_backend_detail::format_timing_seconds(result.visual_quality_candidate_io_seconds),

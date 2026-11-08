@@ -9,9 +9,8 @@ param(
     [Parameter(Mandatory)] [string]$ResultRoot,
     [string]$BaselineLabel = '1.2.0',
     [string]$CandidateLabel = '1.2.1',
-    [switch]$BaselineDisableGpu,
     [switch]$BaselineOnly,
-    [ValidateSet('default','cpu-search','gpu-search')] [string]$Scenario = 'default',
+    [ValidateSet('default','cpu-search')] [string]$Scenario = 'default',
     [ValidateRange(0,300)] [int]$CooldownSeconds = 30,
     [string[]]$ExtraArguments = @(),
     [ValidateRange(1,64)] [int]$FileConcurrency = 12,
@@ -256,8 +255,19 @@ $labels = @($BaselineLabel,$CandidateLabel)
 if ($labels[0] -eq $labels[1] -or @($labels | Where-Object { $_ -notmatch '^[A-Za-z0-9._-]+$' }).Count) { throw 'Distinct path-safe labels required.' }
 $executables = @($BaselineExecutable,$AwjExecutable)
 $hashes = @($executables | ForEach-Object { (Get-FileHash -LiteralPath $_ -Algorithm SHA256).Hash.ToLowerInvariant() })
+$cpuPolicyModule = Join-Path $PSScriptRoot 'benchmark-cpu-policy.psm1'
+Import-Module $cpuPolicyModule -Force
+$legacyCpuControls = @($false, $false)
+if ($Scenario -eq 'cpu-search') {
+    for ($index = 0; $index -lt $executables.Count; ++$index) {
+        $legacyCpuControls[$index] = Get-AwjBenchmarkLegacyCpuControl -Executable $executables[$index]
+    }
+}
+$cpuPathPolicy = if ($Scenario -eq 'cpu-search') { 'legacy-aware-cpu-v1' } else { 'not-requested' }
 $metadata = [ordered]@{
-    baseline_label=$labels[0]; candidate_label=$labels[1]; baseline_disable_gpu=[bool]$BaselineDisableGpu
+    baseline_label=$labels[0]; candidate_label=$labels[1]; baseline_disable_gpu=$legacyCpuControls[0]
+    candidate_disable_gpu=$legacyCpuControls[1]; cpu_path_policy=$cpuPathPolicy
+    cpu_policy_sha256=(Get-FileHash -LiteralPath $cpuPolicyModule -Algorithm SHA256).Hash.ToLowerInvariant()
     scenario=$Scenario; inputs=$inputs.Count; corpus_sha256=$corpusHash; baseline=$hashes[0]; candidate=$hashes[1]
     extra_arguments=@($ExtraArguments)
     ffmpeg_comparison=$ffmpegMode; file_concurrency=$FileConcurrency
@@ -276,7 +286,10 @@ if (Test-Path -LiteralPath $metaPath) {
     if ($previous.baseline -ne $hashes[0] -or $previous.candidate -ne $hashes[1] -or
         $previous.inputs -ne $inputs.Count -or $previous.scenario -ne $Scenario -or
         $previous.corpus_sha256 -ne $corpusHash -or $previous.baseline_label -ne $labels[0] -or
-        $previous.candidate_label -ne $labels[1] -or $previous.baseline_disable_gpu -ne [bool]$BaselineDisableGpu -or
+        $previous.candidate_label -ne $labels[1] -or $previous.baseline_disable_gpu -ne $legacyCpuControls[0] -or
+        [bool]$previous.candidate_disable_gpu -ne $legacyCpuControls[1] -or
+        ($Scenario -eq 'cpu-search' -and ($previous.cpu_path_policy -ne $cpuPathPolicy -or
+            $previous.cpu_policy_sha256 -ne $metadata.cpu_policy_sha256)) -or
         [string]::Join([char]31, [string[]]@($previous.extra_arguments)) -ne [string]::Join([char]31, $ExtraArguments) -or
         ($previous.script_sha256 -and $previous.script_sha256 -ne $metadata.script_sha256) -or
         [bool]$previous.ffmpeg_comparison -ne $ffmpegMode -or
@@ -307,7 +320,10 @@ for ($iteration=0; $iteration -le $lastIteration; ++$iteration) {
         $arguments = @('--input',$InputRoot,'--output',$output,'--summary','--no-log','--format','avif','--quality','70','--speed','5')
         if ($Scenario -ne 'default') { $arguments += @('--visual-quality','50') }
         $arguments += $ExtraArguments
-        if ($Scenario -eq 'cpu-search' -or ($versionIndex -eq 0 -and $BaselineDisableGpu)) { $arguments += '--no-visual-quality-gpu' }
+        # 只向仍明确支持旧开关的程序发送；新版不会收到已删除的 CLI 参数。
+        if ($Scenario -eq 'cpu-search' -and $legacyCpuControls[$versionIndex]) {
+            $arguments += '--no-visual-quality-gpu'
+        }
         Write-Host "$(Get-Date -Format HH:mm:ss) $Scenario iteration $iteration, $version, $($inputs.Count) images"
         $job = [AwjBenchmarkJob]::new()
         $child = $null
@@ -332,6 +348,7 @@ for ($iteration=0; $iteration -le $lastIteration; ++$iteration) {
         $summary = @(Import-Csv -LiteralPath (Join-Path $output 'summary.csv'))
         if ($summary.Count -ne $inputs.Count) { throw "Expected $($inputs.Count) summary rows, got $($summary.Count)." }
         $ok = @($summary | Where-Object status -EQ 'ok')
+        if ($Scenario -eq 'cpu-search') { Assert-AwjBenchmarkCpuRows -Rows $ok }
         $row = [pscustomobject]@{
             scenario=$Scenario; iteration=$iteration; warmup=($iteration -eq 0 -and -not $Smoke)
             version=$version; wall_seconds=$watch.Elapsed.TotalSeconds; tree_cpu_seconds=$cpuSeconds

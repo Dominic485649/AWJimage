@@ -23,7 +23,6 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/windows-release-profile.cmake")
 option(AWJ_BUILD_APPLICATION "构建桌面程序、CLI 和更新器" ON)
 option(AWJ_BUILD_SDK "构建仅公开 C ABI 的帧处理库" ON)
 option(AWJ_SDK_NATIVE_CODECS "SDK 包含项目原生编码器" ON)
-option(AWJ_ENABLE_GPU_METRICS "构建平台 GPU 视觉质量后端" ON)
 set(AWJ_SDK_VERSION "${PROJECT_VERSION}")
 if(AWJ_BUILD_SDK)
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
@@ -445,98 +444,6 @@ function(avif_copy_slint_runtime target)
     # 重新拷贝而恰好看不出问题。发布打包本身用 release.ps1 的 $ReleaseFiles 白名单
     # 拷到独立目录，编译器不可能被打进包里，所以这个清理没有任何收益。
 endfunction()
-
-if(AWJ_ENABLE_GPU_METRICS)
-set(AWJ_VISUAL_SHADER_DIR "${CMAKE_CURRENT_SOURCE_DIR}/src/core/shaders")
-set(AWJ_VISUAL_SHADER_GENERATED_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/visual_shaders")
-set(AWJ_VISUAL_SHADER_HEADER "${AWJ_VISUAL_SHADER_GENERATED_DIR}/awj_visual_metric_shaders.hpp")
-file(MAKE_DIRECTORY "${AWJ_VISUAL_SHADER_GENERATED_DIR}")
-
-if(WIN32)
-    set(AWJ_SHADER_COMPILER_DIRS)
-    if(DEFINED ENV{WindowsSdkDir} AND DEFINED ENV{WindowsSDKVersion})
-        list(APPEND AWJ_SHADER_COMPILER_DIRS "$ENV{WindowsSdkDir}/bin/$ENV{WindowsSDKVersion}/x64")
-    endif()
-    set(AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
-    if(DEFINED ENV{ProgramFiles})
-        list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES "$ENV{ProgramFiles}/Windows Kits/10")
-    endif()
-    list(APPEND AWJ_WINDOWS_KIT_ROOT_CANDIDATES
-        "C:/Program Files (x86)/Windows Kits/10"
-        "C:/Program Files/Windows Kits/10")
-    foreach(AWJ_WINDOWS_KIT_ROOT IN LISTS AWJ_WINDOWS_KIT_ROOT_CANDIDATES)
-        file(GLOB AWJ_WINDOWS_KIT_SHADER_DIRS "${AWJ_WINDOWS_KIT_ROOT}/bin/*/x64")
-        list(SORT AWJ_WINDOWS_KIT_SHADER_DIRS)
-        list(REVERSE AWJ_WINDOWS_KIT_SHADER_DIRS)
-        list(APPEND AWJ_SHADER_COMPILER_DIRS ${AWJ_WINDOWS_KIT_SHADER_DIRS})
-    endforeach()
-    find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc PATHS ${AWJ_SHADER_COMPILER_DIRS} NO_DEFAULT_PATH)
-    if(NOT AWJ_FXC_EXECUTABLE)
-        find_program(AWJ_FXC_EXECUTABLE NAMES fxc.exe fxc)
-    endif()
-    if(NOT AWJ_FXC_EXECUTABLE)
-        message(FATAL_ERROR "找不到 fxc.exe，无法预编译 visual_quality Direct3D 11 shader。请安装 Windows SDK；最终用户运行时不需要该工具。")
-    endif()
-    message(STATUS "AWJimage visual metric shader compiler: ${AWJ_FXC_EXECUTABLE}")
-
-    function(awj_compile_visual_shader out_var shader_name hlsl_name)
-        set(output_path "${AWJ_VISUAL_SHADER_GENERATED_DIR}/${shader_name}.cso")
-        add_custom_command(
-            OUTPUT "${output_path}"
-            COMMAND "${AWJ_FXC_EXECUTABLE}" /nologo /T cs_5_0 /E main /Ges /O3
-                    /Fo "${output_path}"
-                    "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
-            DEPENDS "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
-            COMMENT "Precompiling visual metric shader ${hlsl_name}"
-            VERBATIM)
-        set(${out_var} "${output_path}" PARENT_SCOPE)
-    endfunction()
-else()
-    find_package(Vulkan REQUIRED)
-    find_program(AWJ_DXC_EXECUTABLE NAMES dxc
-        PATHS "${AVIF_VCPKG_INSTALLED_DIR}/tools/directx-dxc" NO_DEFAULT_PATH)
-    if(NOT AWJ_DXC_EXECUTABLE)
-        find_program(AWJ_DXC_EXECUTABLE NAMES dxc REQUIRED)
-    endif()
-    message(STATUS "AWJimage visual metric shader compiler: ${AWJ_DXC_EXECUTABLE}")
-
-    function(awj_compile_visual_shader out_var shader_name hlsl_name)
-        set(output_path "${AWJ_VISUAL_SHADER_GENERATED_DIR}/${shader_name}.spv")
-        add_custom_command(
-            OUTPUT "${output_path}"
-            COMMAND "${AWJ_DXC_EXECUTABLE}" -spirv -T cs_6_0 -E main -O3
-                    -fspv-target-env=vulkan1.1 -fvk-use-dx-layout -fvk-t-shift 8 all -fvk-u-shift 16 all
-                    -Fo "${output_path}"
-                    "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
-            DEPENDS "${AWJ_VISUAL_SHADER_DIR}/${hlsl_name}"
-            COMMENT "Precompiling visual metric shader ${hlsl_name} to SPIR-V"
-            VERBATIM)
-        set(${out_var} "${output_path}" PARENT_SCOPE)
-    endfunction()
-endif()
-
-awj_compile_visual_shader(AWJ_LUMA_CSO luma visual_luma.hlsl)
-awj_compile_visual_shader(AWJ_GMSD_CSO gmsd visual_gmsd.hlsl)
-awj_compile_visual_shader(AWJ_DOWNSAMPLE_CSO downsample visual_downsample.hlsl)
-awj_compile_visual_shader(AWJ_MS_SSIM_CSO ms_ssim visual_ms_ssim.hlsl)
-
-add_custom_command(
-    OUTPUT "${AWJ_VISUAL_SHADER_HEADER}"
-    COMMAND ${CMAKE_COMMAND}
-            "-DAWJ_SHADER_HEADER=${AWJ_VISUAL_SHADER_HEADER}"
-            "-DAWJ_LUMA_CSO=${AWJ_LUMA_CSO}"
-            "-DAWJ_GMSD_CSO=${AWJ_GMSD_CSO}"
-            "-DAWJ_DOWNSAMPLE_CSO=${AWJ_DOWNSAMPLE_CSO}"
-            "-DAWJ_MS_SSIM_CSO=${AWJ_MS_SSIM_CSO}"
-            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/write_visual_shader_header.cmake"
-    DEPENDS "${AWJ_LUMA_CSO}" "${AWJ_GMSD_CSO}" "${AWJ_DOWNSAMPLE_CSO}" "${AWJ_MS_SSIM_CSO}"
-            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/write_visual_shader_header.cmake"
-    COMMENT "Embedding visual metric shader bytecode"
-    VERBATIM)
-add_custom_target(awj_visual_metric_shaders DEPENDS "${AWJ_VISUAL_SHADER_HEADER}")
-else()
-    add_custom_target(awj_visual_metric_shaders)
-endif()
 
 include(FetchContent)
 
@@ -971,20 +878,7 @@ endif()
 
 add_library(awj_base STATIC)
 avif_enable_common_options(awj_base)
-add_dependencies(awj_base awj_visual_metric_shaders)
 target_link_libraries(awj_base PUBLIC awj_shared awj_libplacebo)
-if(NOT AWJ_ENABLE_GPU_METRICS)
-    target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=0 AWJ_HAS_VULKAN=0)
-elseif(WIN32)
-    target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=1 AWJ_HAS_VULKAN=0)
-else()
-    target_link_libraries(awj_base PUBLIC Vulkan::Headers Threads::Threads ${CMAKE_DL_LIBS})
-    target_compile_definitions(awj_base PUBLIC AWJ_HAS_D3D11=0 AWJ_HAS_VULKAN=1)
-endif()
-if(AWJ_ENABLE_GPU_METRICS)
-    target_sources(awj_base PRIVATE "${AWJ_VISUAL_SHADER_HEADER}")
-    target_include_directories(awj_base PUBLIC "$<BUILD_INTERFACE:${AWJ_VISUAL_SHADER_GENERATED_DIR}>")
-endif()
 if(NOT WIN32)
     target_link_libraries(awj_base PUBLIC Threads::Threads)
 endif()
@@ -992,17 +886,6 @@ target_sources(awj_base PUBLIC
     FILE_SET awj_base_modules TYPE CXX_MODULES FILES
         src/core/visual_metrics.ixx
         src/core/hdr_tonemap.ixx)
-
-if(NOT AWJ_ENABLE_GPU_METRICS)
-    target_sources(awj_base PUBLIC FILE_SET awj_base_modules TYPE CXX_MODULES FILES
-        src/core/visual_metrics_gpu_disabled.ixx)
-elseif(WIN32)
-    target_sources(awj_base PUBLIC FILE_SET awj_base_modules TYPE CXX_MODULES FILES
-        src/core/visual_metrics_gpu.ixx)
-else()
-    target_sources(awj_base PUBLIC FILE_SET awj_base_modules TYPE CXX_MODULES FILES
-        src/core/visual_metrics_gpu_vulkan.ixx)
-endif()
 
 add_library(awj_raw_image_io STATIC)
 avif_enable_common_options(awj_raw_image_io)
@@ -1293,9 +1176,6 @@ if(BUILD_TESTING)
     target_link_libraries(awj_image_memory_plan_tests PRIVATE awj_native_backend)
     add_test(NAME image_memory_plan_core COMMAND awj_image_memory_plan_tests)
 
-    add_executable(awj_optional_graphics_tests tests/optional_graphics_tests.cpp)
-    avif_enable_common_options(awj_optional_graphics_tests)
-    target_link_libraries(awj_optional_graphics_tests PRIVATE awj_base)
     add_executable(awj_visual_metrics_tests tests/visual_metrics_tests.cpp)
     avif_enable_common_options(awj_visual_metrics_tests)
     target_link_libraries(awj_visual_metrics_tests PRIVATE awj_base)
@@ -1482,7 +1362,6 @@ if(BUILD_TESTING)
         awj_config_defaults_tests
         awj_process_tests
         awj_resource_planner_tests
-        awj_optional_graphics_tests
         awj_visual_metrics_tests
         awj_webp_codec_tests
         awj_png_codec_tests
@@ -1535,8 +1414,6 @@ if(BUILD_TESTING)
     add_test(NAME process_core COMMAND awj_process_tests)
     add_test(NAME resource_planner_core COMMAND awj_resource_planner_tests)
     add_test(NAME visual_metrics_core COMMAND awj_visual_metrics_tests)
-    add_test(NAME optional_graphics_core COMMAND awj_optional_graphics_tests)
-    set_tests_properties(optional_graphics_core PROPERTIES TIMEOUT 60)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
     add_test(NAME png_codec_core COMMAND awj_png_codec_tests)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
@@ -1583,6 +1460,8 @@ if(BUILD_TESTING)
     add_test(NAME raw_wgc_stdin_core COMMAND awj_raw_wgc_stdin_tests)
 
     if(WIN32)
+        add_test(NAME benchmark_cpu_policy_contract
+            COMMAND pwsh -NoProfile -File "${CMAKE_CURRENT_SOURCE_DIR}/tests/benchmark_cpu_policy_tests.ps1")
         add_test(NAME cli_help COMMAND awj_cli_config_entry --help)
     set_tests_properties(cli_help PROPERTIES
         PASS_REGULAR_EXPRESSION "AWJimage C[+][+]23")

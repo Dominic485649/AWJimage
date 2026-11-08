@@ -229,11 +229,6 @@ struct EncodeResult {
   double visual_quality_metric_seconds{-1.0};
   int visual_quality_candidate_count{};
   int visual_quality_decode_memory_fallback_count{};
-  int visual_quality_gpu_fallback_count{};
-  bool visual_quality_gpu_requested{};
-  bool visual_quality_gpu_used{};
-  std::string visual_quality_gpu_path{};
-  std::string visual_quality_gpu_fallback_reason{};
   std::string visual_quality_search_trace{};
   bool quality_overridden_by_visual_quality{false};
   bool lossless{false};
@@ -2605,9 +2600,7 @@ awj::compat::expected<void, std::string> write_csv(
          "visual_quality_candidate_io_seconds,visual_quality_luma_seconds,gmsd_"
          "seconds,ms_ssim_seconds,"
          "visual_quality_metric_seconds,visual_quality_candidate_count,visual_"
-         "quality_decode_memory_fallback_count,visual_quality_gpu_fallback_"
-         "count,visual_quality_gpu_requested,visual_quality_gpu_used,"
-         "visual_quality_gpu_path,visual_quality_gpu_fallback_reason,"
+         "quality_decode_memory_fallback_count,"
          "status,message,command,"
          "user_encoder,user_chroma,source_chroma,chroma_reason,source_bit_"
          "depth,"
@@ -2752,11 +2745,6 @@ awj::compat::expected<void, std::string> write_csv(
         << duration(result.visual_quality_metric_seconds) << ','
         << result.visual_quality_candidate_count << ','
         << result.visual_quality_decode_memory_fallback_count << ','
-        << result.visual_quality_gpu_fallback_count << ','
-        << (result.visual_quality_gpu_requested ? "true" : "false") << ','
-        << (result.visual_quality_gpu_used ? "true" : "false") << ','
-        << core_detail::csv_escape(result.visual_quality_gpu_path) << ','
-        << core_detail::csv_escape(result.visual_quality_gpu_fallback_reason) << ','
         << status << ','
         << core_detail::csv_escape(result.message) << ','
         << core_detail::csv_escape(result.command) << ','

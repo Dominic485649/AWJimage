@@ -775,7 +775,6 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   apply_int("language_index", 0, 1, &AwjStudio::set_language_index);
   state.queue_preset_file = linux_config_string(state.config_document, "queue_preset_file");
   apply_bool("allow_wic_fallback", &AwjStudio::set_allow_wic_fallback);
-  apply_bool("visual_quality_gpu", &AwjStudio::set_visual_quality_gpu);
   apply_bool("visual_quality_fallback", &AwjStudio::set_visual_quality_fallback);
   try {
     static_cast<void>(slint::select_bundled_translation(
@@ -843,7 +842,6 @@ awj::compat::expected<void, std::string> persist_linux_update_config(
     document["queue_preset_file"] = state.queue_preset_file;
   }
   document["allow_wic_fallback"] = app.get_allow_wic_fallback();
-  document["visual_quality_gpu"] = app.get_visual_quality_gpu();
   document["visual_quality_fallback"] = app.get_visual_quality_fallback();
   document["menu_preset_description"] = state.menu_preset_description;
   document["update_channel"] = state.update_channel;
@@ -880,7 +878,8 @@ awj::compat::expected<void, std::string> persist_linux_update_config(
   }
   constexpr std::array retired{"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature",
       "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name",
-      "queue_format_index", "format_index", "quality_text", "input_path", "output_dir", "window_width", "window_height"};
+      "queue_format_index", "format_index", "quality_text", "input_path", "output_dir", "window_width", "window_height",
+      "visual_quality_gpu"};
   for (const auto& [key, value] : state.config_document.items()) {
     if (!document.contains(key) && awj::compat::ranges::find(retired, key) == retired.end()) document[key] = value;
   }
@@ -2081,8 +2080,6 @@ awj::compat::expected<awj::AppConfig, std::string> linux_config_from_parameter_p
     push_option(args, L"--template", wide_from_shared(app->get_template_text()));
     push_option(args, L"--collision", collision_arg(app->get_collision_index()));
     if (!trim_copy(visual_quality).empty()) {
-      push_flag(args, app->get_visual_quality_gpu(), L"--visual-quality-gpu",
-                L"--no-visual-quality-gpu");
       push_flag(args, app->get_visual_quality_fallback(),
                 L"--visual-quality-fallback", L"--no-visual-quality-fallback");
     }
@@ -2822,7 +2819,6 @@ void initialize_ui(AwjStudio& app) {
   app.set_menu_allow_wic_fallback(false);
   app.set_timestamp_ui_visible(false);
   app.set_visual_quality_fallback(true);
-  app.set_visual_quality_gpu_help_text(to_shared("默认启用 Vulkan 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。"));
   app.set_avif_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::avif))));
   app.set_webp_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::webp))));
   app.set_jxl_quality_default(to_shared(awj::compat::format("{}", awj::default_quality_for(awj::OutputFormat::jxl))));

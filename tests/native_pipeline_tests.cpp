@@ -198,6 +198,9 @@ bool csv_sampling_matches(std::string_view text, std::span<const awj::EncodeResu
     return value;
   };
   const auto header = csv_record(line());
+  if (awj::compat::ranges::any_of(header, [](const auto& field) {
+        return field.starts_with("visual_quality_gpu");
+      })) return false;
   const auto requested = awj::compat::ranges::find(header, "requested_chroma");
   const auto applied = awj::compat::ranges::find(header, "applied_chroma");
   if (requested == header.end() || applied == header.end()) return false;
@@ -206,7 +209,7 @@ bool csv_sampling_matches(std::string_view text, std::span<const awj::EncodeResu
   for (const auto& result : results) {
     if (offset >= text.size()) return false;
     const auto fields = csv_record(line());
-    if (fields.size() <= std::max(requested_column, applied_column) ||
+    if (fields.size() != header.size() ||
         fields[requested_column] != result.requested_chroma || fields[applied_column] != result.applied_chroma)
       return false;
   }
@@ -1107,7 +1110,6 @@ int main() {
       options.output_dir = output / (search ? "jpeg-auto-search" : "jpeg-auto") / source.stem();
       options.quality = 85;
       if (search) options.visual_quality = 30;
-      options.visual_quality_gpu = false;
       options.visual_quality_fallback = true;
       options.strip_metadata = true;
       options.allow_wic_fallback = false;

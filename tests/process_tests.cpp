@@ -61,7 +61,8 @@ int main() {
   if (!csv.starts_with("\xEF\xBB\xBF" "index,input,") ||
       csv.find("visual_quality_search_trace,decode_stage,source_metadata_available,selected_rendition,rendition_origin,reference_chroma,reference_bit_depth,") ==
           std::string::npos ||
-      csv.find("heif_tile_parallelism,heif_codec_thread_budget,awj_version\n") == std::string::npos ||
+      csv.find("heif_tile_parallelism,heif_codec_thread_budget,") == std::string::npos ||
+      csv.find(",awj_version\n") == std::string::npos ||
       csv.find(",heif.gain-map.render,true,hdr,gain-map-reconstructed,444,16,false,false,true,1080,1440,8,") == std::string::npos ||
       csv.find("1.250000") == std::string::npos ||
       !csv.ends_with(version_cell)) {

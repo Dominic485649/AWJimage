@@ -42,7 +42,7 @@ $files = foreach ($relative in ($paths | Sort-Object -Unique)) {
 }
 $files | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $evidence 'source-files.json') -Encoding utf8
 & (Join-Path $PSScriptRoot 'build-sdk.ps1') -BuildDirectory $BuildDirectory -CompilerDirectory $compiler -Parallelism 2 `
-    -ExtraCMakeArguments @('-DAWJ_SDK_D3D11=ON','-DAWJ_SDK_SHM=ON','-DAWJ_SDK_FFMPEG=ON','-DAWJ_SDK_TOOLS=ON','-DAWJ_ENABLE_GPU_METRICS=OFF',
+    -ExtraCMakeArguments @('-DAWJ_SDK_D3D11=ON','-DAWJ_SDK_SHM=ON','-DAWJ_SDK_FFMPEG=ON','-DAWJ_SDK_TOOLS=ON',
         "-DAWJ_SDK_AVUTIL_INCLUDE_DIR=$root/build/sdk-tools/ffmpeg-headers", "-DAWJ_SDK_FFMPEG_TEST_AVUTIL=$FfmpegDirectory/avutil-61.dll") `
     -ExtraCTestArguments @('--output-junit', (Join-Path $evidence 'sdk-tests.xml')) *>&1 |
     Tee-Object -FilePath (Join-Path $evidence 'build-and-tests.log')

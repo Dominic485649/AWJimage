@@ -85,7 +85,6 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_max_short_edge_text({});
   app.set_scale_percent_text({});
   app.set_format_index(0);
-  app.set_visual_quality_gpu(defaults.visual_quality_gpu);
   app.set_visual_quality_fallback(defaults.visual_quality_fallback);
   app.set_allow_wic_fallback(defaults.allow_wic_fallback);
   refresh_avif_encoder_options(app);
@@ -425,7 +424,6 @@ awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.append_png_suffix = queue_choice.append_png_suffix;
 
   cfg.collision_mode = collision_from_index(app.get_collision_index());
-  cfg.visual_quality_gpu = app.get_visual_quality_gpu();
   cfg.visual_quality_fallback = app.get_visual_quality_fallback();
   cfg.unlock_memory_limit = app.get_unlock_memory_limit();
   cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();

@@ -49,8 +49,6 @@ export component SettingsPage inherits ScrollView {
     in-out property <string> update-last-successful-check;
     in-out property <string> update-status;
     in-out property <bool> visual-quality-fallback;
-    in-out property <bool> visual-quality-gpu;
-    in-out property <string> visual-quality-gpu-help-text;
     in-out property <bool> wic-ui-visible;
 
     horizontal-stretch: 1;
@@ -278,13 +276,6 @@ export component SettingsPage inherits ScrollView {
                     height: self.preferred-height;
                     CheckBox { text: @tr("允许 WIC 兜底"); checked <=> root.allow-wic-fallback; enabled: !root.running; }
                     Text { text: @tr("开启后，若内置的专业级 Native 解码器（如 libavif, libwebp）加载图片失败，系统将自动尝试使用 Windows WIC（Windows Imaging Component）作为兜底解码路径。"); color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
-                }
-                VerticalLayout {
-                    spacing: 8px;
-                    width: 100%;
-                    height: self.preferred-height;
-                    CheckBox { text: @tr("GPU 加速视觉质量"); checked <=> root.visual-quality-gpu; enabled: !root.running; }
-                    Text { text: root.visual-quality-gpu-help-text; color: root.text-muted; font-size: 13px; wrap: word-wrap; min-width: 0px; width: 100%; horizontal-stretch: 1; height: self.preferred-height; }
                 }
                 VerticalLayout {
                     spacing: 8px;

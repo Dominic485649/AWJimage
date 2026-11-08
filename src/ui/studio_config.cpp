@@ -179,8 +179,6 @@ awj::compat::expected<void, std::string> write_studio_config_file(
            defaults.allow_wic_fallback);
   add_bool("shell_menu_compatibility", current.shell_menu_compatibility,
            defaults.shell_menu_compatibility);
-  add_bool("visual_quality_gpu", current.visual_quality_gpu,
-           defaults.visual_quality_gpu);
   add_bool("visual_quality_fallback", current.visual_quality_fallback,
            defaults.visual_quality_fallback);
   add_string("menu_preset_description", current.menu_preset_description,
@@ -272,7 +270,8 @@ awj::compat::expected<void, std::string> write_studio_config_file(
 
   for (const auto* key : {"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature",
       "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name",
-      "queue_format_index", "format_index", "quality_text", "input_path", "output_dir"}) known.emplace(key);
+      "queue_format_index", "format_index", "quality_text", "input_path", "output_dir",
+      "visual_quality_gpu"}) known.emplace(key);
   std::error_code read_error;
   if (std::filesystem::exists(path, read_error)) {
     const auto size = std::filesystem::file_size(path, read_error);

@@ -53,9 +53,10 @@ pwsh -NoProfile -File scripts/build-sdk.ps1 -BuildDirectory build/sdk-native-msv
 - `AWJ_SDK_NATIVE_CODECS=ON`：项目锁定的五种编码器。
 - `AWJ_SDK_D3D11`：仅 Windows；`AWJ_SDK_SHM`：Windows/Linux，分别选择原生实现，不表示 Linux GPU 或 HarmonyOS 已验证。
 - `AWJ_SDK_FFMPEG=ON`、`AWJ_SDK_AVUTIL_INCLUDE_DIR`：编译可选 AVFrame 桥接，**不查找或链接 avutil 导入库**。
-- `AWJ_ENABLE_GPU_METRICS=OFF`：CPU 视觉质量，无 FXC/DXC/Vulkan shader 构建依赖。D3D11 导入可独立开启。
 - `AWJ_SDK_TOOLS=ON`：构建 `awj-stream`。
 - `AWJ_SDK_FFMPEG_TEST_AVUTIL`：仅测试来源动态库的绝对路径，不安装/分发此 DLL 或 `.so`。
+
+视觉质量分析固定使用 CPU，不需要 FXC/DXC/Vulkan shader 构建依赖；D3D11 帧导入独立于指标计算。
 
 Linux 1.3.1 应用与 SDK 使用本项目 WSL 原生文件系统中的 Clang23。当前实际版本为 Ubuntu Clang 23.1.5 时间戳快照，完整 banner 与编译器摘要写入证据，不作为上游稳定版版本声明。桌面完整编码核心保持 C++23 标准设施，配置阶段执行实际编译及最终链接探针；不能仅凭编译器版本推断支持。Linux Release SDK 私有静态链接 C++ 运行库，并精确隐藏非 C API 符号；调用方可独立选择 C/C++ 编译器和标准库。目标系统仍须满足实际 ELF 依赖，本次与已发布 1.3.0 SDK 对照的最高 glibc 需求均为 2.38。部署范围还受共享内存所需内核能力约束，不表示支持任意发行版或 libc。
 

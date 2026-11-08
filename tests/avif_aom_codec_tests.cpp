@@ -35,6 +35,101 @@ int fail(std::string_view message) {
   return 1;
 }
 
+// IQ 使用 deltaq=6；auto-intra-tools-off 的 deltaq=3 预分析不应被误当成
+// IQ 的新优化。用真实编解码结果保护这条依赖行为，并覆盖带 alpha 的输入。
+awj::compat::expected<std::vector<std::uint8_t>, std::string> encode_iq_intra_options(
+    const avifImage& image, int automatic_tools_off, bool explicit_tools) {
+  std::unique_ptr<avifEncoder, decltype(&avifEncoderDestroy)> encoder{
+      avifEncoderCreate(), avifEncoderDestroy};
+  if (!encoder) return awj::compat::unexpected{"IQ 对照无法创建编码器。"};
+  encoder->codecChoice = AVIF_CODEC_CHOICE_AOM;
+  encoder->quality = 70;
+  encoder->qualityAlpha = 70;
+  encoder->speed = 5;
+  encoder->maxThreads = 1;
+  const auto set = [&](const char* key, const char* value) {
+    return avifEncoderSetCodecSpecificOption(encoder.get(), key, value) == AVIF_RESULT_OK;
+  };
+  if (!set("color:tune", "iq") ||
+      (automatic_tools_off >= 0 &&
+       !set("color:auto-intra-tools-off", automatic_tools_off ? "1" : "0"))) {
+    return awj::compat::unexpected{"IQ 对照参数设置失败。"};
+  }
+  if (explicit_tools) {
+    for (const auto* key : {"color:enable-smooth-intra", "color:enable-paeth-intra",
+                            "color:enable-cfl-intra", "color:enable-diagonal-intra"}) {
+      if (!set(key, "1")) return awj::compat::unexpected{"IQ 帧内工具参数设置失败。"};
+    }
+  }
+  struct EncodedData {
+    avifRWData bytes = AVIF_DATA_EMPTY;
+    ~EncodedData() { avifRWDataFree(&bytes); }
+  } output;
+  const auto result = avifEncoderWrite(encoder.get(), &image, &output.bytes);
+  if (result != AVIF_RESULT_OK) {
+    return awj::compat::unexpected{std::string{"IQ 对照编码失败："} + avifResultToString(result)};
+  }
+  if (!output.bytes.data || output.bytes.size == 0)
+    return awj::compat::unexpected{"IQ 对照没有输出码流。"};
+  std::unique_ptr<avifDecoder, decltype(&avifDecoderDestroy)> decoder{
+      avifDecoderCreate(), avifDecoderDestroy};
+  if (!decoder ||
+      avifDecoderSetIOMemory(decoder.get(), output.bytes.data, output.bytes.size) != AVIF_RESULT_OK ||
+      avifDecoderParse(decoder.get()) != AVIF_RESULT_OK ||
+      avifDecoderNextImage(decoder.get()) != AVIF_RESULT_OK ||
+      decoder->image->width != image.width || decoder->image->height != image.height ||
+      decoder->image->depth != image.depth || decoder->image->yuvFormat != image.yuvFormat ||
+      (decoder->image->alphaPlane != nullptr) != (image.alphaPlane != nullptr)) {
+    return awj::compat::unexpected{"IQ 对照解码或位深、采样、透明通道不符。"};
+  }
+  return std::vector<std::uint8_t>{output.bytes.data, output.bytes.data + output.bytes.size};
+}
+
+int verify_iq_intra_tool_defaults() {
+  if (!awj::NativeEncodeSettings{}.avif_tune_iq)
+    return fail("静态 AVIF 的 IQ 默认值意外变化。");
+  struct Case { int depth; avifPixelFormat format; bool alpha; };
+  for (const auto sample : {Case{8, AVIF_PIXEL_FORMAT_YUV420, false},
+                            Case{10, AVIF_PIXEL_FORMAT_YUV444, true},
+                            Case{12, AVIF_PIXEL_FORMAT_YUV444, false},
+                            Case{8, AVIF_PIXEL_FORMAT_YUV400, true}}) {
+    std::unique_ptr<avifImage, decltype(&avifImageDestroy)> image{
+        avifImageCreate(32, 32, sample.depth, sample.format), avifImageDestroy};
+    if (!image) return fail("IQ 对照无法创建图像。");
+    image->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT709;
+    image->yuvRange = AVIF_RANGE_FULL;
+    std::vector<std::uint8_t> pixels(32 * 32 * 4);
+    for (unsigned y = 0; y < 32; ++y) {
+      for (unsigned x = 0; x < 32; ++x) {
+        const auto offset = (y * 32 + x) * 4;
+        pixels[offset] = static_cast<std::uint8_t>(x * 17 + y * 31);
+        pixels[offset + 1] = static_cast<std::uint8_t>(x * 97 + y * 11 + x * y * 3);
+        pixels[offset + 2] = static_cast<std::uint8_t>(x * 7 + y * 89 + x * y * 13);
+        pixels[offset + 3] = sample.alpha ? static_cast<std::uint8_t>(1 + (x * 73 + y * 151) % 254) : 255;
+      }
+    }
+    avifRGBImage rgb{};
+    avifRGBImageSetDefaults(&rgb, image.get());
+    rgb.depth = 8;
+    rgb.format = AVIF_RGB_FORMAT_RGBA;
+    rgb.ignoreAlpha = sample.alpha ? AVIF_FALSE : AVIF_TRUE;
+    rgb.rowBytes = 32 * 4;
+    rgb.pixels = pixels.data();
+    if (avifImageRGBToYUV(image.get(), &rgb) != AVIF_RESULT_OK)
+      return fail("IQ 对照 RGB 转换失败。");
+    const auto baseline = encode_iq_intra_options(*image, -1, false);
+    const auto automatic_off = encode_iq_intra_options(*image, 0, false);
+    const auto automatic_on = encode_iq_intra_options(*image, 1, false);
+    const auto explicit_tools = encode_iq_intra_options(*image, 0, true);
+    for (const auto* encoded : {&baseline, &automatic_off, &automatic_on, &explicit_tools}) {
+      if (!*encoded) return fail(encoded->error());
+    }
+    if (*baseline != *automatic_off || *baseline != *automatic_on || *baseline != *explicit_tools)
+      return fail("IQ 默认、auto=0/1 与显式启用四项工具的码流不再一致，须重新研究依赖行为。");
+  }
+  return 0;
+}
+
 awj::ImageBuffer make_test_image() {
   awj::ImagePlane plane{.stride = 8};
   plane.bytes = {
@@ -471,6 +566,7 @@ int verify_gain_map_geometry_and_samples() {
 }
 
 int main() {
+  if (const int rc = verify_iq_intra_tool_defaults(); rc != 0) return rc;
   if (const int rc = verify_gain_map_geometry_and_samples(); rc != 0) return rc;
   if (const int rc = verify_animation_sequence(); rc != 0) return rc;
   auto aom = awj::make_avif_image_encoder(awj::AvifEncoderMode::aom);

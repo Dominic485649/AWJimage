@@ -59,8 +59,6 @@ export component AwjStudio inherits Window {
     in-out property <string> webp-bit-depth-default: "";
     in-out property <string> quality-text: "80";
     in-out property <string> visual-quality-text: "";
-    in-out property <bool> visual-quality-gpu: true;
-    in-out property <string> visual-quality-gpu-help-text: @tr("默认启用 Direct3D 11 加速 visual_quality 的 luma、GMSD 与 MS-SSIM 指标；codec 编码/解码仍使用 native CPU 库，失败或小图会自动回退 CPU。");
     in-out property <bool> visual-quality-fallback: true;
     in-out property <bool> allow-wic-fallback: true;
     in-out property <bool> wic-ui-visible: true;
@@ -953,8 +951,6 @@ export component AwjStudio inherits Window {
     update-last-successful-check <=> root.update-last-successful-check;
     update-status <=> root.update-status;
     visual-quality-fallback <=> root.visual-quality-fallback;
-    visual-quality-gpu <=> root.visual-quality-gpu;
-    visual-quality-gpu-help-text <=> root.visual-quality-gpu-help-text;
     wic-ui-visible <=> root.wic-ui-visible;
 }
                     }

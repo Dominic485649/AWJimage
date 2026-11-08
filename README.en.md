@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current version: **1.3.4**, with application and C ABI SDK downloads.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current development version: **1.3.5** (local candidate), including the application and C ABI SDK.
 
 ## Formats
 
@@ -27,7 +27,7 @@ Download published builds from [GitHub Releases](https://github.com/Dominic48564
 
 - Windows x64: Windows 10 or newer and an AVX2 CPU. Open `AWJ.exe` for the desktop interface; use `AWJ.com` for the CLI. AWJ.com can convert independently; the GUI and context-menu converter require both programs in the same directory.
 - Linux x64: an x86-64-v3 CPU, glibc 2.39 or newer, fontconfig and FreeType; X11 or Wayland for the desktop interface. Run `./AWJ` to open it.
-- Regular conversion uses the CPU. Unavailable graphics acceleration falls back to CPU metrics and software UI rendering.
+- Conversion and visual-quality metrics (luma, GMSD and MS-SSIM) use the CPU. The interface continues to support hardware-accelerated and software rendering.
 - Keep `LICENSE` and `NOTICE.txt` beside the application. Versions 1.0.12 and earlier require a manual upgrade.
 
 ## Quick start

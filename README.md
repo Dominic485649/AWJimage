@@ -2,7 +2,7 @@
 
 [English](README.en.md)
 
-AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前版本：**1.3.4**，同时提供应用与 C ABI SDK。
+AWJimage 是支持 Windows 和 Linux 的批量图片转换工具，提供图形界面和命令行。当前开发版本：**1.3.5**（本地候选），包含应用与 C ABI SDK。
 
 ## 格式支持
 
@@ -27,7 +27,7 @@ JXL 自动位深按所选呈现的有效精度选择 10/12/16-bit，16-bit 源�
 
 - Windows x64：Windows 10 或更新版本，CPU 支持 AVX2。运行 `AWJ.exe` 打开界面，`AWJ.com` 用于命令行；`AWJ.com` 可独立转换；界面和右键转换需要两个程序位于同一目录。
 - Linux x64：CPU 支持 x86-64-v3，glibc 2.39 或更新版本，并安装 fontconfig、FreeType；桌面使用 X11 或 Wayland。运行 `./AWJ` 打开界面。
-- 普通转换使用 CPU；图形加速不可用时使用 CPU 指标和软件界面渲染。
+- 普通转换和视觉质量指标（luma、GMSD、MS-SSIM）统一使用 CPU；界面渲染仍支持图形加速与软件渲染。
 - 解压后保留程序旁的 `LICENSE` 和 `NOTICE.txt`。1.0.12 及更早版本请手动下载升级。
 
 ## 快速使用

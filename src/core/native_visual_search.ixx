@@ -23,7 +23,6 @@ import awj.core;
 import awj.encoding_defaults;
 import awj.image;
 import awj.visual_metrics;
-import awj.visual_metrics_gpu;
 import awj.visual_quality;
 
 export namespace awj {
@@ -31,20 +30,6 @@ export namespace awj {
 namespace native_visual_search_detail {
 
 using Clock = std::chrono::steady_clock;
-
-std::string_view gpu_session_path() noexcept {
-#if AWJ_HAS_VULKAN
-  return "vulkan-session";
-#elif AWJ_HAS_D3D11
-  return "d3d11-session";
-#else
-  return "cpu-only";
-#endif
-}
-
-std::string gpu_session_cpu_fallback_path() {
-  return awj::compat::format("{}+cpu-fallback", gpu_session_path());
-}
 
 double elapsed_seconds(Clock::time_point started) {
   return std::chrono::duration<double>(Clock::now() - started).count();
@@ -81,8 +66,6 @@ void accumulate_visual_quality_timing(EncodeTimingDiagnostics& target,
       source.visual_quality_candidate_count;
   target.visual_quality_decode_memory_fallback_count +=
       source.visual_quality_decode_memory_fallback_count;
-  target.visual_quality_gpu_fallback_count +=
-      source.visual_quality_gpu_fallback_count;
 }
 
 int midpoint_quality(int low, int high) noexcept {
@@ -293,7 +276,6 @@ evaluate_visual_quality_candidate(
     const ImageBuffer& reference_image, const ImageEncoder& encoder,
     const ImageDecoder& decoder, NativeEncodeSettings settings, int quality,
     const fs::path& candidate_path,
-    AcceleratedVisualMetricSession* metric_session = nullptr,
     awj::compat::stop_token stop_token = {}) {
   auto timing = native_visual_search_detail::make_visual_quality_timing();
   timing.visual_quality_candidate_count = 1;
@@ -329,64 +311,9 @@ evaluate_visual_quality_candidate(
     return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   }
 
-  std::optional<VisualMetricResult> accelerated_metrics;
-  bool metric_session_failed = false;
-  std::string metric_session_error;
-  if (metric_session != nullptr) {
-    AcceleratedVisualMetricTiming accelerated_timing{};
-    if (auto metrics = metric_session->calculate_candidate_metrics(
-            decoded->image, &accelerated_timing)) {
-      accelerated_metrics = std::move(*metrics);
-      timing.visual_quality_luma_seconds += accelerated_timing.luma_seconds;
-      timing.gmsd_seconds += accelerated_timing.gmsd_seconds;
-      timing.ms_ssim_seconds += accelerated_timing.ms_ssim_seconds;
-      timing.visual_quality_metric_seconds +=
-          accelerated_timing.gmsd_seconds + accelerated_timing.ms_ssim_seconds;
-    } else {
-      metric_session_failed = true;
-      metric_session_error = metrics.error();
-      ++timing.visual_quality_gpu_fallback_count;
-      timing.visual_quality_luma_seconds += accelerated_timing.luma_seconds;
-      timing.gmsd_seconds += accelerated_timing.gmsd_seconds;
-      timing.ms_ssim_seconds += accelerated_timing.ms_ssim_seconds;
-      timing.visual_quality_metric_seconds +=
-          accelerated_timing.gmsd_seconds + accelerated_timing.ms_ssim_seconds;
-    }
-  }
-
-  if (stop_token.stop_requested()) {
-    return awj::compat::unexpected{"visual_quality 搜索已取消。"};
-  }
-  if (accelerated_metrics) {
-    const auto encoded_bytes = encoded->encoded.bytes.size();
-    auto encode_result = std::move(*encoded);
-    encode_result.diagnostics.timing = timing;
-    encode_result.diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
-    encode_result.diagnostics.visual_quality_gpu_used = true;
-    encode_result.diagnostics.visual_quality_gpu_path = std::string{native_visual_search_detail::gpu_session_path()};
-    return EvaluatedVisualQualityCandidate{
-        .candidate =
-            VisualQualityCandidate{
-                .quality = encode_result.final_quality,
-                .bytes = encoded_bytes,
-                .visual_score = accelerated_metrics->score.visual_score,
-                .raw_gmsd = accelerated_metrics->raw_gmsd,
-                .raw_ms_ssim = accelerated_metrics->raw_ms_ssim,
-                .gmsd_quality_score =
-                    accelerated_metrics->score.gmsd_quality_score,
-                .msssim_quality_score =
-                    accelerated_metrics->score.msssim_quality_score},
-        .encode_result = std::move(encode_result),
-        .timing = timing};
-  }
-
   started = native_visual_search_detail::Clock::now();
-  auto candidate_luma = [&]() -> awj::compat::expected<LumaImage, std::string> {
-    if (settings.visual_quality_gpu && !metric_session_failed) {
-      return make_luma_image_accelerated(decoded->image);
-    }
-    return make_luma_image(decoded->image, std::move(cpu_workspace.candidate_luma));
-  }();
+  auto candidate_luma =
+      make_luma_image(decoded->image, std::move(cpu_workspace.candidate_luma));
   decoded->image = ImageBuffer{};
   timing.visual_quality_luma_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
@@ -444,11 +371,6 @@ evaluate_visual_quality_candidate(
       return awj::compat::unexpected{current_reference_luma.error()};
     }
     started = native_visual_search_detail::Clock::now();
-    if (settings.visual_quality_gpu && !metric_session_failed) {
-      return record_gmsd_metric(
-          compute_gmsd_accelerated(**current_reference_luma, *candidate_luma),
-          started);
-    }
     return record_gmsd_metric(
         compute_gmsd(**current_reference_luma, *candidate_luma), started);
   }();
@@ -465,12 +387,6 @@ evaluate_visual_quality_candidate(
   }
   auto ms_ssim = [&]() -> awj::compat::expected<double, std::string> {
     started = native_visual_search_detail::Clock::now();
-    if (settings.visual_quality_gpu && !metric_session_failed) {
-      return record_ms_ssim_metric(
-          compute_ms_ssim_accelerated(**current_reference_luma,
-                                      *candidate_luma),
-          started);
-    }
     return record_ms_ssim_metric(
         compute_ms_ssim_cached(**current_reference_luma, *candidate_luma, cpu_workspace), started);
   }();
@@ -489,10 +405,6 @@ evaluate_visual_quality_candidate(
   const auto encoded_bytes = encoded->encoded.bytes.size();
   auto encode_result = std::move(*encoded);
   encode_result.diagnostics.timing = timing;
-  encode_result.diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
-  encode_result.diagnostics.visual_quality_gpu_used = false;
-  encode_result.diagnostics.visual_quality_gpu_path = settings.visual_quality_gpu ? "cpu-fallback" : "cpu";
-  encode_result.diagnostics.visual_quality_gpu_fallback_reason = metric_session_error;
   return EvaluatedVisualQualityCandidate{
       .candidate =
           VisualQualityCandidate{
@@ -555,9 +467,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     encoded->final_quality = 100;
     encoded->search_attempt_count = 1;
     encoded->diagnostics.timing = timing;
-    encoded->diagnostics.visual_quality_gpu_requested = settings.visual_quality_gpu;
-    encoded->diagnostics.visual_quality_gpu_used = false;
-    encoded->diagnostics.visual_quality_gpu_path = "lossless-bypass";
     encoded->diagnostics.visual_quality_search_trace =
         "requested=100 range=lossless selected=q100 lossless-bypass";
     return NativeVisualQualitySearchResult{
@@ -572,21 +481,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
         .target_met = true};
   }
 
-  const bool gpu_requested = settings.visual_quality_gpu;
-  bool gpu_used = false;
-  std::string gpu_path = gpu_requested ? native_visual_search_detail::gpu_session_cpu_fallback_path() : "cpu-disabled";
-  std::string gpu_fallback_reason;
-  std::optional<AcceleratedVisualMetricSession> metric_session;
-  if (gpu_requested) {
-    if (auto session =
-            AcceleratedVisualMetricSession::create(reference_image)) {
-      metric_session.emplace(std::move(*session));
-      gpu_path = std::string{native_visual_search_detail::gpu_session_path()};
-    } else {
-      ++timing.visual_quality_gpu_fallback_count;
-      gpu_fallback_reason = session.error();
-    }
-  }
   std::optional<LumaImage> reference_luma;
   CpuVisualMetricWorkspace cpu_workspace;
 
@@ -646,7 +540,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
   };
 
   std::vector<std::byte> rgb8_input_cache;
-  bool gpu_session_available = metric_session.has_value();
 
   auto evaluate_quality =
       [&](int quality) -> awj::compat::expected<VisualQualityCandidate, std::string> {
@@ -658,9 +551,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       return awj::compat::unexpected{"visual_quality 搜索已取消。"};
     }
     auto candidate_settings = settings;
-    // visual_quality 搜索只使用可复用 session；session 不可用时直接 CPU，
-    // 避免每个候选反复尝试失败的 one-shot GPU 初始化。
-    candidate_settings.visual_quality_gpu = gpu_session_available;
     auto rgb8_input = native_visual_search_detail::make_rgb8_input_view(
         reference_image, candidate_settings, rgb8_input_cache);
     if (!rgb8_input) {
@@ -672,9 +562,8 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       candidate_settings.jpegli_rgb8_input = *rgb8_input;
     }
     auto candidate = evaluate_visual_quality_candidate(
-        reference_luma, cpu_workspace, reference_image, encoder, decoder, candidate_settings,
-        quality, candidate_path, metric_session ? &*metric_session : nullptr,
-        stop_token);
+        reference_luma, cpu_workspace, reference_image, encoder, decoder,
+        candidate_settings, quality, candidate_path, stop_token);
     if (!candidate) {
       return awj::compat::unexpected{candidate.error()};
     }
@@ -695,20 +584,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     }
     native_visual_search_detail::accumulate_visual_quality_timing(
         timing, candidate->timing);
-    gpu_used = gpu_used || candidate->encode_result.diagnostics.visual_quality_gpu_used;
-    const bool candidate_gpu_fallback =
-        candidate->timing.visual_quality_gpu_fallback_count > 0;
-    if (gpu_fallback_reason.empty() &&
-        !candidate->encode_result.diagnostics.visual_quality_gpu_fallback_reason.empty()) {
-      gpu_fallback_reason = candidate->encode_result.diagnostics.visual_quality_gpu_fallback_reason;
-    }
-    if (gpu_session_available && candidate_gpu_fallback) {
-      gpu_session_available = false;
-      metric_session.reset();
-      if (gpu_used) {
-        gpu_path = native_visual_search_detail::gpu_session_cpu_fallback_path();
-      }
-    }
     retain_candidate_result(std::move(*candidate));
     native_visual_search_detail::append_visual_quality_probe(
         search_trace, candidate_summary, requested);
@@ -822,10 +697,6 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
       .gmsd_quality_score = selected.candidate.gmsd_quality_score,
       .msssim_quality_score = selected.candidate.msssim_quality_score};
   encoded.diagnostics.timing = timing;
-  encoded.diagnostics.visual_quality_gpu_requested = gpu_requested;
-  encoded.diagnostics.visual_quality_gpu_used = gpu_used;
-  encoded.diagnostics.visual_quality_gpu_path = gpu_requested ? gpu_path : "cpu-disabled";
-  encoded.diagnostics.visual_quality_gpu_fallback_reason = gpu_fallback_reason;
   encoded.diagnostics.visual_quality_search_trace =
       native_visual_search_detail::format_visual_quality_trace(search_trace);
 
