@@ -16,6 +16,9 @@ module;
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
+#if defined(__linux__) && __has_include(<sys/syscall.h>)
+#include <sys/syscall.h>
+#endif
 #endif
 
 #include <algorithm>
@@ -252,6 +255,13 @@ struct EncodeResult {
   int gain_map_compute_workers{};
   int heif_tile_parallelism{};
   int heif_codec_thread_budget{};
+  // Queue-only evidence captured before moving a source out of its pathname.
+  // Not part of the public C ABI or SDK memory-encoding behavior.
+  std::optional<std::string> input_sha256_snapshot{};
+  fs::path recycled_source_path{};
+  // Opaque Shell parsing name; restores the exact returned item, not an
+  // enumeration of the user's Recycle Bin or a raw move of its data file.
+  std::wstring recycled_source_shell_item{};
 };
 
 std::uint64_t current_process_id() noexcept {
@@ -324,7 +334,7 @@ bool csv_needs_formula_prefix(std::string_view value) noexcept {
 }
 
 std::string csv_escape(std::string value) {
-  // summary.csv 可能被 Excel 打开；用户文件名不能被解释成公式执行。
+  // summery.csv 可能被 Excel 打开；用户文件名不能被解释成公式执行。
   if (csv_needs_formula_prefix(value)) {
     value.insert(value.begin(), '\'');
   }
@@ -703,6 +713,64 @@ awj::compat::expected<fs::path, std::string> executable_directory() {
 
 namespace core_detail {
 
+// Expand only the root/current-directory prefix. In particular, do not pass
+// link/.. through lexical normalization (or Windows full-path expansion) before
+// examining its components: that can name a different file than native I/O.
+fs::path absolute_path_preserving_components(const fs::path& path, std::error_code& ec) {
+  ec.clear();
+  if (path.empty() || path.native().find(fs::path::value_type{}) != PathText::npos) {
+    ec = std::make_error_code(std::errc::invalid_argument);
+    return {};
+  }
+  if (path.is_absolute()) return path;
+  const auto root = path.has_root_path() ? path.root_path() : fs::path{"."};
+  const auto base = fs::absolute(root, ec);
+  return ec ? fs::path{} : base / path.relative_path();
+}
+
+// Logs are opt-in, not permission to follow a link or overwrite an unrelated
+// user file. Check every raw component before any following .., including
+// Windows junctions, and use the same absolute spelling for subsequent I/O.
+bool safe_unlinked_path(const fs::path& path, bool directory) noexcept try {
+  if (path.empty() || path.native().find(fs::path::value_type{}) != PathText::npos)
+    return false;
+  std::error_code ec;
+  const auto absolute = absolute_path_preserving_components(path, ec);
+  if (ec) return false;
+  auto current = absolute.root_path();
+  for (const auto& part : absolute.relative_path()) {
+    current /= part;
+    const auto status = fs::symlink_status(current, ec);
+    if (ec == std::errc::no_such_file_or_directory) ec.clear();
+    if (ec || fs::is_symlink(status)) return false;
+    if (!fs::exists(status)) continue;
+#ifdef _WIN32
+    const auto attributes = GetFileAttributesW(current.c_str());
+    if (attributes == INVALID_FILE_ATTRIBUTES ||
+        (attributes & FILE_ATTRIBUTE_REPARSE_POINT)) return false;
+#endif
+    if (current != absolute || directory) {
+      if (!fs::is_directory(status)) return false;
+    } else if (!fs::is_regular_file(status) || fs::hard_link_count(current, ec) != 1 || ec) {
+      return false;
+    }
+  }
+  return true;
+} catch (...) {
+  return false;
+}
+
+awj::compat::expected<fs::path, std::string> prepare_log_directory(const fs::path& output_dir) {
+  std::error_code ec;
+  const auto directory = absolute_path_preserving_components(output_dir / L"log", ec);
+  if (ec || !safe_unlinked_path(directory, true))
+    return awj::compat::unexpected{"日志目录不是安全的普通目录，已保留原路径。"};
+  fs::create_directories(directory, ec);
+  if (ec || !safe_unlinked_path(directory, true))
+    return awj::compat::unexpected{"无法安全创建日志目录，已保留原路径。"};
+  return directory;
+}
+
 class LogFileLock {
  public:
   LogFileLock() = default;
@@ -723,14 +791,32 @@ class LogFileLock {
 
   bool open(const fs::path& path) noexcept {
 #ifdef _WIN32
+    if (!safe_unlinked_path(path, false)) return false;
     handle_ = CreateFileW(path.c_str(), GENERIC_READ | GENERIC_WRITE,
-                          FILE_SHARE_READ | FILE_SHARE_WRITE |
-                              FILE_SHARE_DELETE,
-                          nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_HIDDEN, nullptr);
-    return handle_ != INVALID_HANDLE_VALUE;
+                          FILE_SHARE_READ | FILE_SHARE_WRITE,
+                          nullptr, OPEN_ALWAYS,
+                          FILE_ATTRIBUTE_HIDDEN | FILE_FLAG_OPEN_REPARSE_POINT, nullptr);
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (handle_ == INVALID_HANDLE_VALUE) return false;
+    if (!GetFileInformationByHandle(handle_, &info) ||
+        (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ||
+        info.nNumberOfLinks != 1) {
+      CloseHandle(handle_);
+      handle_ = INVALID_HANDLE_VALUE;
+      return false;
+    }
+    return true;
 #else
-    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC, 0600);
-    return fd_ >= 0;
+    if (!safe_unlinked_path(path, false)) return false;
+    fd_ = ::open(path.c_str(), O_CREAT | O_RDWR | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, 0600);
+    struct stat info{};
+    if (fd_ < 0) return false;
+    if (::fstat(fd_, &info) != 0 || !S_ISREG(info.st_mode) || info.st_nlink != 1) {
+      ::close(fd_);
+      fd_ = -1;
+      return false;
+    }
+    return true;
 #endif
   }
 
@@ -895,18 +981,15 @@ class FileLogger {
       return;
     }
     try {
-      log_dir_ = std::move(output_dir) / L"log";
+      auto directory = core_detail::prepare_log_directory(output_dir);
+      if (!directory) {
+        disable_with_error("无法安全创建日志目录。", [&] { return directory.error(); });
+        return;
+      }
+      log_dir_ = std::move(*directory);
       log_file_ = log_dir_ / L"awj.log";
       lock_file_ = log_dir_ / L".awj.log.lock";
       std::error_code ec;
-      fs::create_directories(log_dir_, ec);
-      if (ec) {
-        disable_with_error("无法创建日志目录。", [&] {
-          return awj::compat::format("无法创建日志目录 {}: {}",
-                             display_path_for_user(log_dir_), ec.message());
-        });
-        return;
-      }
       if (!interprocess_lock_.open(lock_file_)) {
         disable_with_error("无法创建日志锁文件。", [&] {
           return awj::compat::format("无法创建日志锁文件 {}",
@@ -922,6 +1005,12 @@ class FileLogger {
         });
         return;
       }
+      if (!core_detail::safe_unlinked_path(log_file_, false)) {
+        disable_with_error("日志路径不安全，已保留原文件。", [] {
+          return std::string{"日志路径不安全，已保留原文件。"};
+        });
+        return;
+      }
       const bool log_exists = fs::exists(log_file_, ec);
       if (ec) {
         disable_with_error("无法检查日志文件。", [&] {
@@ -931,14 +1020,10 @@ class FileLogger {
         return;
       }
       if (log_exists && !core_detail::valid_existing_log(log_file_)) {
-        std::ofstream reset{log_file_, std::ios::binary | std::ios::trunc};
-        if (!reset) {
-          disable_with_error("无法清空无效日志文件。", [&] {
-            return awj::compat::format("无法清空无效日志文件 {}",
-                               display_path_for_user(log_file_));
-          });
-          return;
-        }
+        disable_with_error("日志文件内容无法识别，已保留原文件。", [] {
+          return std::string{"日志文件内容无法识别，已保留原文件。"};
+        });
+        return;
       }
       stream_.open(log_file_, std::ios::binary | std::ios::app);
       if (!stream_) {
@@ -1691,7 +1776,10 @@ awj::compat::expected<fs::path, std::string> resolve_collision_output_path(
       if (reserved_outputs == nullptr) {
         return true;
       }
-      auto key = normalized_lower_path_key(path);
+      std::error_code key_ec;
+      const auto absolute = fs::weakly_canonical(path, key_ec);
+      if (key_ec) return awj::compat::unexpected{"无法规范化输出预留路径。"};
+      auto key = normalized_lower_path_key(absolute);
       if (key.empty()) {
         return false;
       }
@@ -1712,13 +1800,15 @@ awj::compat::expected<fs::path, std::string> resolve_collision_output_path(
     std::error_code ec;
     const auto path_available =
         [&](const fs::path& path) -> awj::compat::expected<bool, std::string> {
-      const auto exists = fs::exists(path, ec);
+      const auto status = fs::symlink_status(path, ec);
+      if (ec == std::errc::no_such_file_or_directory) ec.clear();
       if (ec) {
         return awj::compat::unexpected{awj::compat::format("无法检查输出路径 {}: {}",
                                            display_path_for_user(path),
                                            ec.message())};
       }
-      if (exists) {
+      // A dangling symlink is occupied too; never select a user-owned entry.
+      if (fs::exists(status) || fs::is_symlink(status)) {
         return false;
       }
       if (auto reserved = reserve_available(path); !reserved) {
@@ -1822,6 +1912,14 @@ awj::compat::expected<void, std::string> resolve_batch_output_paths(
   std::unordered_map<PathText, int> reserved_outputs;
   try {
     reserved_outputs.reserve(files.size());
+    // Reserve every input before selecting any output, including inputs that
+    // disappear after scanning and path aliases through an existing parent.
+    for (const auto& image : files) {
+      std::error_code ec;
+      const auto input = fs::weakly_canonical(image.path, ec);
+      if (ec) return awj::compat::unexpected{"无法规范化输入保护路径。"};
+      reserved_outputs.try_emplace(normalized_lower_path_key(input), 0);
+    }
     for (auto& image : files) {
       auto output = resolve_collision_output_path(
           output_path_for(cfg, image), cfg.collision_mode, &reserved_outputs,
@@ -2358,6 +2456,47 @@ class UniqueFileHandle {
 
 namespace core_detail {
 
+// Atomically publish an owned temporary file without replacing any destination
+// entry, including a dangling symlink. Success consumes the temporary name.
+// Keep this separate from callers' explicit replacement and durability policy.
+std::error_code publish_file_noreplace(const fs::path& temporary, const fs::path& destination) noexcept {
+#ifdef _WIN32
+  if (MoveFileExW(temporary.c_str(), destination.c_str(), MOVEFILE_WRITE_THROUGH)) return {};
+  const auto error = GetLastError();
+  if (error == ERROR_FILE_EXISTS || error == ERROR_ALREADY_EXISTS)
+    return std::make_error_code(std::errc::file_exists);
+  return {static_cast<int>(error), std::system_category()};
+#else
+#if defined(__linux__) && defined(SYS_renameat2)
+  // Linux UAPI RENAME_NOREPLACE is 1. Use the syscall so older glibc and
+  // HMOS libc headers need not declare/export the newer renameat2 wrapper.
+  constexpr unsigned rename_noreplace = 1u;
+  if (::syscall(SYS_renameat2, AT_FDCWD, temporary.c_str(),
+                AT_FDCWD, destination.c_str(), rename_noreplace) == 0) return {};
+  const int rename_error = errno;
+  // Only an unavailable syscall/flag/filesystem may use the safe hard-link
+  // fallback. Permission, I/O, cross-device and collision errors stay errors.
+  if (rename_error != ENOSYS && rename_error != EINVAL &&
+      rename_error != EOPNOTSUPP && rename_error != ENOTSUP)
+    return {rename_error, std::generic_category()};
+  if (rename_error == EINVAL) {
+    // Flags are a single valid constant; only the owned regular-file contract
+    // permits interpreting EINVAL as missing filesystem flag support.
+    struct stat temporary_info{};
+    if (::lstat(temporary.c_str(), &temporary_info) != 0 || !S_ISREG(temporary_info.st_mode))
+      return {rename_error, std::generic_category()};
+  }
+#endif
+  // Portable safe fallback for systems without renameat2/NOREPLACE. Never
+  // substitute ordinary rename: a concurrent destination must not be replaced.
+  if (::link(temporary.c_str(), destination.c_str()) != 0)
+    return {errno, std::generic_category()};
+  if (::unlink(temporary.c_str()) != 0)
+    return {errno, std::generic_category()};
+  return {};
+#endif
+}
+
 awj::compat::expected<void, std::string> clear_transient_file_attributes(
     const fs::path& path, std::string_view label) {
 #ifdef _WIN32
@@ -2394,7 +2533,7 @@ awj::compat::expected<UniqueFileHandle, std::string> create_summary_csv_temp_fil
     const fs::path& output_dir, fs::path& path) {
   for (std::uint64_t attempt = 0; attempt < 1000; ++attempt) {
     const auto id = summary_csv_temp_counter.fetch_add(1, std::memory_order_relaxed);
-    path = output_dir / awj::compat::format(L"summary.csv.tmp-{}-{}", current_process_id(), id);
+    path = output_dir / awj::compat::format(L"summery.csv.tmp-{}-{}", current_process_id(), id);
 #ifdef _WIN32
     const HANDLE file = CreateFileW(
         path.c_str(), GENERIC_WRITE, 0, nullptr, CREATE_NEW,
@@ -2556,19 +2695,19 @@ class SummaryCsvWriter {
 
 awj::compat::expected<void, std::string> write_csv(
     const fs::path& output_dir, std::span<const EncodeResult> results) try {
-  std::error_code ec;
-  fs::create_directories(output_dir, ec);
-  if (ec) {
-    return awj::compat::unexpected{awj::compat::format(
-        "无法创建报告目录: "
-        "{}；系统错误：{}"
-        "。请确认输出目录可写、磁盘未满，且路径没有被其他程序锁定。",
-        display_path_for_user(output_dir), ec.message())};
-  }
+  auto directory = core_detail::prepare_log_directory(output_dir);
+  if (!directory) return awj::compat::unexpected{directory.error()};
+  const auto report_path = *directory / L"summery.csv";
+  core_detail::LogFileLock report_lock;
+  if (!report_lock.open(*directory / L".summery.csv.lock"))
+    return awj::compat::unexpected{"无法安全创建 CSV 日志锁，报告未写入。"};
+  core_detail::ScopedLogFileLock locked{report_lock};
+  if (!locked) return awj::compat::unexpected{"无法锁定 CSV 日志，报告未写入。"};
+  if (!core_detail::safe_unlinked_path(report_path, false))
+    return awj::compat::unexpected{"CSV 日志路径不安全，已保留原路径。"};
 
-  const auto report_path = output_dir / L"summary.csv";
   fs::path temp_path;
-  auto created = create_summary_csv_temp_file(output_dir, temp_path);
+  auto created = create_summary_csv_temp_file(*directory, temp_path);
   if (!created) {
     return awj::compat::unexpected{created.error()};
   }
@@ -2576,7 +2715,8 @@ awj::compat::expected<void, std::string> write_csv(
   SummaryCsvWriter csv{std::move(*created), report_path};
 
   csv << "\xEF\xBB\xBF";
-  csv << "index,input,output,format,encoder_id,input_sha256,output_sha256,original_bytes,output_"
+  constexpr std::string_view header =
+         "index,input,output,format,encoder_id,input_sha256,output_sha256,original_bytes,output_"
          "bytes,ratio,quality,speed,"
          "requested_visual_quality,visual_score,raw_gmsd,raw_ms_ssim,"
          "gmsd_quality_score,msssim_quality_score,gmsd_weight,msssim_weight,"
@@ -2622,6 +2762,27 @@ awj::compat::expected<void, std::string> write_csv(
          "memory_mandatory_bytes,memory_conversion_bytes,memory_codec_workspace_bytes,memory_output_capacity_bytes,"
          "memory_layer_retained_bytes,memory_decode_phase_bytes,memory_prepare_phase_bytes,memory_encode_phase_bytes,"
          "memory_metric_phase_bytes,memory_output_phase_bytes,memory_target_bit_depth,memory_target_chroma,memory_target_alpha,awj_version\n";
+  csv << header;
+  // Only replace a complete report produced by this schema. An unrelated CSV
+  // at the opt-in path is user data, not a report to truncate.
+  const auto recognizable_report = [&]() -> bool {
+    if (!core_detail::safe_unlinked_path(report_path, false)) return false;
+    std::error_code ec;
+    if (!fs::exists(report_path, ec)) return !ec;
+    std::ifstream existing{report_path, std::ios::binary};
+    std::string prefix(header.size() + 3, '\0');
+    if (!existing.read(prefix.data(), static_cast<std::streamsize>(prefix.size())) ||
+        !prefix.starts_with("\xEF\xBB\xBF") || std::string_view{prefix}.substr(3) != header)
+      return false;
+    existing.clear();
+    existing.seekg(-1, std::ios::end);
+    return existing.get() == '\n';
+  };
+  if (!recognizable_report())
+    return awj::compat::unexpected{"CSV 日志内容无法识别，已保留原文件。"};
+  std::error_code report_ec;
+  const bool replace_existing_report = fs::exists(report_path, report_ec);
+  if (report_ec) return awj::compat::unexpected{"无法检查 CSV 日志，报告未写入。"};
 
   for (const auto& result : results) {
     const double ratio = result.original_bytes == 0
@@ -2678,7 +2839,8 @@ awj::compat::expected<void, std::string> write_csv(
       auto digest = file_sha256_hex(path);
       return digest ? *digest : std::string{};
     };
-    const auto input_sha256 = sha256_or_empty(result.input_path);
+    const auto input_sha256 = result.input_sha256_snapshot
+        ? *result.input_sha256_snapshot : sha256_or_empty(result.input_path);
     const auto output_sha256 = result.ok && !result.skipped
                                    ? sha256_or_empty(result.output_path)
                                    : std::string{};
@@ -2808,24 +2970,33 @@ awj::compat::expected<void, std::string> write_csv(
   if (auto closed = csv.close(); !closed) {
     return awj::compat::unexpected{closed.error()};
   }
+  if (!recognizable_report() || !core_detail::safe_unlinked_path(*directory, true))
+    return awj::compat::unexpected{"CSV 日志路径或内容已变化，已保留原文件。"};
   if (auto attributes = core_detail::clear_transient_file_attributes(
           temp_path, "报告临时文件");
       !attributes) {
     return awj::compat::unexpected{attributes.error()};
   }
+  if (!replace_existing_report) {
+    if (const auto published = core_detail::publish_file_noreplace(temp_path, report_path); published)
+      return awj::compat::unexpected{awj::compat::format("发布报告文件失败: {}；系统错误：{}。",
+          display_path_for_user(report_path), published.message())};
+  } else {
+    // Only an already-recognized report uses atomic replacement.
 #ifdef _WIN32
-  if (!MoveFileExW(temp_path.c_str(), report_path.c_str(),
-                   MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
-    return awj::compat::unexpected{awj::compat::format("替换报告文件失败: {}；系统错误：{}。",
-                                       display_path_for_user(report_path),
-                                       win32_error_message(GetLastError()))};
-  }
+    if (!MoveFileExW(temp_path.c_str(), report_path.c_str(),
+                     MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      return awj::compat::unexpected{awj::compat::format("替换报告文件失败: {}；系统错误：{}。",
+          display_path_for_user(report_path), win32_error_message(GetLastError()))};
+    }
 #else
-  if (::rename(temp_path.c_str(), report_path.c_str()) != 0) {
-    return awj::compat::unexpected{awj::compat::format("替换报告文件失败: {}；系统错误：{}。",
-                                       display_path_for_user(report_path),
-                                       posix_error_message(errno))};
+    if (::rename(temp_path.c_str(), report_path.c_str()) != 0) {
+      return awj::compat::unexpected{awj::compat::format("替换报告文件失败: {}；系统错误：{}。",
+          display_path_for_user(report_path), posix_error_message(errno))};
+    }
+#endif
   }
+#ifndef _WIN32
   const auto parent = report_path.parent_path();
   if (!parent.empty()) {
     const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
@@ -2838,11 +3009,11 @@ awj::compat::expected<void, std::string> write_csv(
   temp_file.release();
   return {};
 } catch (const std::bad_alloc&) {
-  return awj::compat::unexpected{"summary.csv 内容内存不足，报告未写入。"};
+  return awj::compat::unexpected{"summery.csv 内容内存不足，报告未写入。"};
 } catch (const std::length_error&) {
-  return awj::compat::unexpected{"summary.csv 内容超过运行时限制，报告未写入。"};
+  return awj::compat::unexpected{"summery.csv 内容超过运行时限制，报告未写入。"};
 } catch (const std::filesystem::filesystem_error&) {
-  return awj::compat::unexpected{"summary.csv 文件系统访问失败，报告未写入。"};
+  return awj::compat::unexpected{"summery.csv 文件系统访问失败，报告未写入。"};
 }
 
 }  // namespace awj

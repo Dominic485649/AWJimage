@@ -35,6 +35,7 @@
 #include "../src/ui/queue_model.h"
 #include "../src/ui/deferred_model.h"
 #include "../src/ui/slint_string_util.h"
+#include "../src/ui/queue_ui_policy.h"
 
 namespace {
 
@@ -954,34 +955,62 @@ int verify_manual_update(const slint::ComponentHandle<AwjStudio>& app) {
 
 int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
   using Role = slint::language::AccessibleRole;
-  const std::array<std::string_view, 6> zh{"移除元数据", "写入 CSV 报告", "写入运行日志", "保留创建时间", "保留修改时间", "保留访问时间"};
-  const std::array<std::string_view, 6> en{"Strip metadata", "Write CSV report", "Write run log", "Preserve creation time", "Preserve modification time", "Preserve access time"};
+  const std::array<std::string_view, 6> zh{"移除元数据", "写入运行日志", "删除源文件", "保留创建时间", "保留修改时间", "保留访问时间"};
+  const std::array<std::string_view, 6> en{"Strip metadata", "Write run log", "Delete source files", "Preserve creation time", "Preserve modification time", "Preserve access time"};
   app->set_selected_page(1);
   for (const int language : {0, 1}) {
     slint::select_bundled_translation(language ? "en" : "");
     app->set_language_index(language);
+    for (const bool timestamps : {true, false})
     for (const float width : {747.0f, 796.0f, 960.0f, 1171.0f, 1440.0f}) {
+      app->set_timestamp_ui_visible(timestamps);
       app->window().set_size(slint::LogicalSize({width, 827.0f}));
       const auto& labels = language ? en : zh;
-      std::array<float, 6> tops{};
-      float required_width = 50;
+      const std::size_t option_count = timestamps ? 6 : 3;
+      std::array<float, 6> tops{}, lefts{};
+      float required_width = static_cast<float>((option_count - 1) * 10);
       float content_left = 0;
       float option_width = 0;
-      for (std::size_t i = 0; i < labels.size(); ++i) {
+      for (std::size_t i = 0; i < option_count; ++i) {
         const auto option = find_one(app, labels[i], Role::Checkbox);
         if (!option) return fail("queue option is missing");
         if (i == 0) { content_left = option->absolute_position().x; option_width = option->size().width; }
         else if (std::fabs(option->size().width - option_width) > 0.5f) return fail("queue options are not equal width");
         tops[i] = option->absolute_position().y;
+        lefts[i] = option->absolute_position().x;
         required_width += option->size().width;
         if (option->size().width <= 20 ||
             option->absolute_position().x + option->size().width > width - 25.5f)
           return fail("queue option is clipped or has no text space");
       }
+      if (find_one(app, language ? "Write CSV report" : "写入 CSV 报告", Role::Checkbox))
+        return fail("independent CSV checkbox is still exposed");
+      const auto log = find_one(app, labels[1], Role::Checkbox);
+      const auto recycle = find_one(app, labels[2], Role::Checkbox);
+      app->set_write_log(false);
+      app->set_delete_source(false);
+      log->invoke_accessible_default_action();
+      if (!app->get_write_log() || app->get_delete_source())
+        return fail("run-log checkbox changed recycling instead of logging");
+      recycle->invoke_accessible_default_action();
+      if (!app->get_write_log() || !app->get_delete_source())
+        return fail("source checkbox did not control recycling independently");
+      log->invoke_accessible_default_action();
+      if (app->get_write_log() || !app->get_delete_source())
+        return fail("disabling logging changed the recycling choice");
+      app->set_running(true);
+      recycle->invoke_accessible_default_action();
+      log->invoke_accessible_default_action();
+      app->set_running(false);
+      if (app->get_write_log() || !app->get_delete_source())
+        return fail("queue checkboxes stayed active during encoding");
+      recycle->invoke_accessible_default_action();
+      if (app->get_delete_source()) return fail("recycling could not be disabled");
       const float available = width - 26 - content_left;
-      const int columns = required_width <= available + 0.5f ? 6 : option_width * 3 + 20 <= available + 0.5f ? 3 : option_width * 2 + 10 <= available + 0.5f ? 2 : 1;
-      for (std::size_t i = 0; i < tops.size(); ++i) {
+      const int columns = required_width <= available + 0.5f ? static_cast<int>(option_count) : option_width * 3 + 20 <= available + 0.5f ? 3 : option_width * 2 + 10 <= available + 0.5f ? 2 : 1;
+      for (std::size_t i = 0; i < option_count; ++i) {
         if (std::fabs(tops[i] - tops[(i / columns) * columns]) > 0.5f ||
+            std::fabs(lefts[i] - content_left - static_cast<float>(i % columns) * (option_width + 10)) > 0.5f ||
             (i >= columns && tops[i] <= tops[i - columns]))
           return fail("queue options do not use the available equal-width columns");
       }
@@ -1003,6 +1032,100 @@ int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
   }
   slint::select_bundled_translation("");
   app->set_language_index(0);
+  app->set_timestamp_ui_visible(true);
+  return 0;
+}
+
+int verify_queue_collision_choices(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  app->set_selected_page(1);
+  for (const int language : {0, 1}) {
+    slint::select_bundled_translation(language ? "en" : "");
+    app->set_language_index(language);
+    const auto collision = find_one(app, language ? "On conflict" : "重复处理", Role::Combobox);
+    if (!collision) return fail("collision selector is missing");
+    for (int index = 0; index <= 4; ++index) {
+      collision->invoke_accessible_default_action();
+      send_key(app, slint::platform::key_codes::Home);
+      for (int step = 0; step < index; ++step) send_key(app, slint::platform::key_codes::DownArrow);
+      send_key(app, slint::platform::key_codes::Return);
+      if (app->get_collision_index() != index)
+        return fail("collision selector lost a legacy index or the appended numbering choice");
+    }
+  }
+  slint::select_bundled_translation("");
+  app->set_language_index(0);
+  return 0;
+}
+
+int verify_queue_pointer_dispatch(const slint::ComponentHandle<AwjStudio>& app) {
+  app->set_selected_page(1);
+  app->set_selected_queue_index(-1);
+  app->set_queue_failed_only(false);
+  app->window().set_size(slint::LogicalSize({1171.0f, 900.0f}));
+  auto rows = std::make_shared<slint::VectorModel<TaskRow>>();
+  awj::ui::bind_queue_model(*app, rows);
+  int downs = 0, ups = 0, menu_actions = 0;
+  bool invalid = false, recording = false;
+  std::vector<std::pair<int, int>> pointer_events;
+  app->on_queue_row_pointer_event([&](int index, int button, int kind, float) {
+    if (!recording) return;
+    invalid = invalid || index != 0 || (kind != 2 && button != 0);
+    pointer_events.emplace_back(button, kind);
+    if (kind == 0) ++downs;
+    if (kind == 1) ++ups;
+  });
+  app->on_queue_menu_action([&](int, slint::SharedString) { ++menu_actions; });
+  for (const int state : {0, 1, 2, 3, 4}) {
+    app->set_running(state == 1);
+    rows->set_vector({TaskRow{.order = "1", .filename = "double-click.png",
+        .folder = "queue", .size = "1 KiB", .status = "fixture",
+        .locked = state != 0, .state = state, .input_path = "queue/double-click.png",
+        .output_path = "queue/double-click(7).avif"}});
+    // Preselect and settle the detail panel so a 1px hover move stays on the same row.
+    app->set_selected_queue_index(0);
+    slint::private_api::testing::mock_elapsed_time(250);
+    const auto touches = slint::testing::ElementHandle::find_by_element_id(app, "QueuePage::row-touch");
+    if (touches.size() != 1) return fail("queue row pointer target is missing");
+    const auto position = touches[0].absolute_position();
+    const auto extent = touches[0].size();
+    const slint::LogicalPosition point{{position.x + std::min(50.0f, extent.width / 2),
+                                       position.y + extent.height / 2}};
+    for (const bool micro_move : {false, true}) {
+      const int before_down = downs, before_up = ups;
+      pointer_events.clear();
+      recording = true;
+      app->window().dispatch_pointer_press_event(point, slint::PointerEventButton::Left);
+      app->window().dispatch_pointer_release_event(point, slint::PointerEventButton::Left);
+      const slint::LogicalPosition second{{point.x + (micro_move ? 1.0f : 0.0f), point.y}};
+      if (micro_move) app->window().dispatch_pointer_move_event(second);
+      app->window().dispatch_pointer_press_event(second, slint::PointerEventButton::Left);
+      app->window().dispatch_pointer_release_event(second, slint::PointerEventButton::Left);
+      recording = false;
+      if (invalid || downs != before_down + 2 || ups != before_up + 2 || menu_actions != 0)
+        return fail("real double click did not reach the row pointer callback independently of the menu");
+      int releases = 0;
+      bool saw_hover_move = false;
+      for (const auto& [button, kind] : pointer_events) {
+        if (button == 0 && kind == 1) {
+          ++releases;
+        } else if (releases == 1) {
+          // This is the reset predicate used by both actual platform handlers,
+          // not a second implementation of double-click state in this fixture.
+          if (awj::studio::queue_pointer_resets_double_click(button, kind))
+            return fail("event between left releases would reset the platform double-click record");
+          saw_hover_move = saw_hover_move || (button == 2 && kind == 2);
+        }
+      }
+      if (micro_move && !saw_hover_move)
+        return fail("1px movement did not exercise Slint's no-button Other/Move callback");
+    }
+  }
+  app->on_queue_row_pointer_event([](int, int, int, float) {});
+  app->on_queue_menu_action([](int, slint::SharedString) {});
+  app->set_running(false);
+  awj::ui::bind_queue_model(*app, std::make_shared<slint::VectorModel<TaskRow>>());
+  std::puts("queue-pointer-dispatch: fixed and 1px Other/Move between left releases passed");
   return 0;
 }
 
@@ -2217,6 +2340,27 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string_view{argv[1]} == "--queue-options") {
+    if (argc != 2) return fail("queue options regression does not accept extra arguments");
+    slint::testing::init();
+    for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (const int theme : {1, 2}) {
+      auto app = AwjStudio::create();
+      if (app->get_collision_index() != awj::studio::default_queue_collision_index ||
+          app->get_write_log() || app->get_delete_source())
+        return fail("queue UI defaults changed: numbering must be selected and recycling opt-in");
+      app->set_theme_index(theme);
+      app->window().window_handle().set_const_scale_factor(scale);
+      slint::cbindgen_private::slint_testing_use_native_popup(&app->window().window_handle(), false);
+      app->show();
+      if (const int result = verify_queue_option_layout(app)) return result;
+      if (const int result = verify_queue_collision_choices(app)) return result;
+      if (const int result = verify_queue_pointer_dispatch(app)) return result;
+      app->hide();
+      std::printf("queue-options scale=%.2f theme=%d languages=zh,en timestamp-layouts=2 widths=5 result=passed\n",
+                  double(scale), theme);
+    }
+    return 0;
+  }
   if (argc == 2 && std::string_view{argv[1]} == "--memory-budget-unlock") return verify_memory_budget_unlock();
   if (argc == 2 && std::string_view{argv[1]} == "--fixed-size-inputs") return verify_fixed_size_inputs();
   if (const int result = verify_native_file_payload(); result != 0) return result;

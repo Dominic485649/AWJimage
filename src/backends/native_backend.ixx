@@ -436,35 +436,27 @@ awj::compat::expected<void, TempOutputWriteFailure> write_file_bytes_exclusive(c
 awj::compat::expected<void, std::string> commit_temp_output(const fs::path& temp_path,
                                                     const fs::path& path,
                                                     bool replace_existing) {
-#ifdef _WIN32
-  const DWORD move_flags = replace_existing
-                               ? MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH
-                               : MOVEFILE_WRITE_THROUGH;
-  if (!MoveFileExW(temp_path.c_str(), path.c_str(), move_flags)) {
-    const auto error = GetLastError();
-    if (!replace_existing && output_temp_name_collision(static_cast<int>(error))) {
-      return awj::compat::unexpected{awj::compat::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
-    }
-    return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
-                                       win32_error_message(error))};
-  }
-#else
-  if (replace_existing) {
-    if (::rename(temp_path.c_str(), path.c_str()) != 0) {
-      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
-                                         posix_error_message(errno))};
+  if (!replace_existing) {
+    if (const auto published = core_detail::publish_file_noreplace(temp_path, path); published) {
+      if (published == std::errc::file_exists)
+        return awj::compat::unexpected{awj::compat::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
+      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}",
+          display_path_for_user(path), published.message())};
     }
   } else {
-    if (::link(temp_path.c_str(), path.c_str()) != 0) {
-      const int error = errno;
-      if (error == EEXIST) {
-        return awj::compat::unexpected{awj::compat::format("输出路径已存在，未覆盖 {}", display_path_for_user(path))};
-      }
-      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
-                                         posix_error_message(error))};
+#ifdef _WIN32
+    if (!MoveFileExW(temp_path.c_str(), path.c_str(), MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH)) {
+      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}",
+          display_path_for_user(path), win32_error_message(GetLastError()))};
     }
-    (void)::unlink(temp_path.c_str());
+#else
+    if (::rename(temp_path.c_str(), path.c_str()) != 0) {
+      return awj::compat::unexpected{awj::compat::format("替换输出文件失败 {}: {}", display_path_for_user(path),
+          posix_error_message(errno))};
+    }
+#endif
   }
+#ifndef _WIN32
   const auto parent = path.parent_path();
   if (!parent.empty()) {
     const int dir = ::open(parent.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);

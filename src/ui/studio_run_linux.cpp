@@ -56,6 +56,7 @@
 #include "changelog_history.h"
 #include "import_service.h"
 #include "queue_merge.h"
+#include "queue_ui_policy.h"
 
 import awj.config;
 import awj.core;
@@ -147,6 +148,8 @@ struct LinuxUiState {
   std::shared_ptr<awj::ui::DeferredModel<UpdateHistoryRow>> update_history_rows{};
   bool ui_font_options_loaded{};
   bool drag_reordered{};
+  std::uint64_t last_click_id{};
+  std::chrono::steady_clock::time_point last_click_time{};
   bool close_requested{};
   slint::Timer close_timer{};
   std::vector<awj::BatchLargeImageItem> large_image_items{};
@@ -385,6 +388,29 @@ awj::compat::expected<fs::path, std::string> choose_path(bool directory) {
     }
   }
   return awj::compat::unexpected{"未选择路径，或未找到可用的 Linux 文件选择器（zenity/yad/kdialog）。"};
+}
+
+awj::compat::expected<void, std::string> open_image_file(const fs::path& path) {
+  if (path.empty()) return awj::compat::unexpected{"没有可打开的图片路径。"};
+  std::error_code ec;
+  if (!fs::is_regular_file(path, ec) || ec)
+    return awj::compat::unexpected{"图片文件不存在或无法访问。"};
+  // Never use open_path here: it deliberately changes files into directories.
+  const auto& native = path.native();
+  if (awj::ui_process::launch({"gio", "open", native}) ||
+      awj::ui_process::launch({"xdg-open", native})) return {};
+  return awj::compat::unexpected{"未找到可用的图片打开工具（gio/xdg-open）。"};
+}
+
+void open_linux_queue_image(AwjStudio& app, const LinuxUiState& state,
+                            std::size_t index) {
+  if (index >= state.queue_files.size()) return;
+  const auto& item = state.queue_files[index];
+  const auto& target = awj::studio::queue_image_open_target(
+      item.file.path, item.file.resolved_output_path,
+      item.row.state == 2 && !item.file.resolved_output_path.empty());
+  if (auto opened = open_image_file(target); !opened)
+    app.set_status_text(to_shared(awj::compat::format("打开图片失败：{}", opened.error())));
 }
 
 awj::compat::expected<void, std::string> open_path(fs::path path) {
@@ -773,6 +799,17 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   }
   apply_int("theme_index", 0, 2, &AwjStudio::set_theme_index);
   apply_int("language_index", 0, 1, &AwjStudio::set_language_index);
+  apply_int("collision_index", 0, 4, &AwjStudio::set_collision_index);
+  const auto optional_bool = [&](std::string_view key) -> std::optional<bool> {
+    const auto it = state.config_document.find(std::string{key});
+    if (it != state.config_document.end() && it->is_boolean()) return it->get<bool>();
+    return std::nullopt;
+  };
+  const auto queue_options = awj::studio::queue_options_from_config(
+      app.get_collision_index(), optional_bool("write_log"),
+      optional_bool("write_summary"), optional_bool("delete_source"));
+  app.set_write_log(queue_options.write_log);
+  app.set_delete_source(queue_options.delete_source);
   state.queue_preset_file = linux_config_string(state.config_document, "queue_preset_file");
   apply_bool("allow_wic_fallback", &AwjStudio::set_allow_wic_fallback);
   apply_bool("visual_quality_fallback", &AwjStudio::set_visual_quality_fallback);
@@ -841,6 +878,9 @@ awj::compat::expected<void, std::string> persist_linux_update_config(
   if (!state.queue_preset_file.empty()) {
     document["queue_preset_file"] = state.queue_preset_file;
   }
+  document["collision_index"] = app.get_collision_index();
+  document["write_log"] = app.get_write_log();
+  document["delete_source"] = app.get_delete_source();
   document["allow_wic_fallback"] = app.get_allow_wic_fallback();
   document["visual_quality_fallback"] = app.get_visual_quality_fallback();
   document["menu_preset_description"] = state.menu_preset_description;
@@ -879,7 +919,7 @@ awj::compat::expected<void, std::string> persist_linux_update_config(
   constexpr std::array retired{"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature",
       "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name",
       "queue_format_index", "format_index", "quality_text", "input_path", "output_dir", "window_width", "window_height",
-      "visual_quality_gpu"};
+      "visual_quality_gpu", "write_summary"};
   for (const auto& [key, value] : state.config_document.items()) {
     if (!document.contains(key) && awj::compat::ranges::find(retired, key) == retired.end()) document[key] = value;
   }
@@ -1139,22 +1179,24 @@ std::string linux_result_status_text(const awj::EncodeResult& result) {
 }
 
 TaskRow task_row_from_result(const awj::EncodeResult& result) {
+  const bool encoded = result.ok && !result.skipped && !result.canceled;
   return TaskRow{.order = to_shared(awj::compat::format("{}", result.index + 1)),
                  .filename = to_shared(awj::path_to_utf8(result.input_path.filename())),
                  .folder = to_shared(awj::path_to_utf8(result.input_path.parent_path())),
                  .size = to_shared(awj::format_size(result.original_bytes)),
                  // 仅本轮实际成功生成的结果有输出大小，跳过或失败不能沿用旧文件。
-                 .output_size = result.ok && !result.skipped && !result.canceled
-                                    ? to_shared(awj::format_size(result.output_bytes))
-                                    : to_shared("-"),
+                 .output_size = encoded ? to_shared(awj::format_size(result.output_bytes))
+                                        : to_shared("-"),
                  .status = to_shared(linux_result_status_text(result)),
-                 .output = to_shared(awj::path_to_utf8(result.output_path.filename())),
+                 .output = encoded ? to_shared(awj::path_to_utf8(result.output_path.filename()))
+                                   : slint::SharedString{},
                  .log = to_shared(result.ok ? std::string{} : result.message),
                  .warning = !result.ok,
                  .locked = true,
                  .state = result.ok ? 2 : (result.canceled ? 4 : 3),
                  .input_path = to_shared(awj::path_to_utf8(result.input_path)),
-                 .output_path = to_shared(awj::path_to_utf8(result.output_path)),
+                 .output_path = encoded ? to_shared(awj::path_to_utf8(result.output_path))
+                                        : slint::SharedString{},
                  .encoder = to_shared(result.encoder_id),
                  .threads = result.encoder_threads > 0
                                 ? to_shared(awj::compat::format("{}", result.encoder_threads))
@@ -1286,7 +1328,10 @@ void set_linux_task_row_result(
   if (const auto index = linux_task_row_index_for_path(rows, state, result.input_path, result.index)) {
     auto row = task_row_from_result(result);
     row.order = to_shared(awj::compat::format("{}", *index + 1));
-    state.queue_files[*index].row = row;
+    auto& queued = state.queue_files[*index];
+    queued.file.resolved_output_path = result.ok && !result.skipped && !result.canceled
+                                          ? result.output_path : fs::path{};
+    queued.row = row;
     awj::ui::replace_queue_row(app, rows, *index, row);
   }
 }
@@ -1294,7 +1339,11 @@ void set_linux_task_row_result(
 void mark_linux_large_image_queued(AwjStudio& app, LinuxUiState& state,
                                    const awj::BatchLargeImageItem& item) {
   if (const auto index = linux_task_row_index_for_path(state.task_rows, state, item.file.path, item.file.index)) {
-    auto& row = state.queue_files[*index].row;
+    auto& queued = state.queue_files[*index];
+    queued.file.resolved_output_path.clear();
+    auto& row = queued.row;
+    row.output = slint::SharedString{};
+    row.output_path = slint::SharedString{};
     row.status = to_shared("已加入大图队列");
     row.state = 2;
     row.locked = true;
@@ -1501,6 +1550,7 @@ awj::compat::expected<bool, std::string> add_linux_queue_from_paths(
     }
     app.invoke_close_queue_menu();
     state.drag_reordered = false;
+    state.last_click_id = 0;
     refresh_linux_pending_queue(app, state);
     const auto restored = state.queue_id_indices.find(selected_id);
     app.set_selected_queue_index(restored != state.queue_id_indices.end() &&
@@ -1607,7 +1657,11 @@ awj::compat::expected<std::uint64_t, std::string> prepare_linux_queue_run(
       prepared.emplace_back(index, pending_linux_queue_row(file, index, true));
       ids.push_back(state.queue_files[index].id);
     }
-    for (auto& [index, row] : prepared) state.queue_files[index].row = std::move(row);
+    for (auto& [index, row] : prepared) {
+      state.queue_files[index].file.resolved_output_path.clear();
+      state.queue_files[index].row = std::move(row);
+    }
+    state.last_click_id = 0;
     state.run_queue_ids.swap(ids);
     const auto generation = ++state.run_generation;
     refresh_linux_pending_queue(app, state);
@@ -1624,8 +1678,12 @@ bool finish_linux_queue_run(AwjStudio& app, LinuxUiState& state,
   for (const auto id : state.run_queue_ids) {
     const auto found = state.queue_id_indices.find(id);
     if (found == state.queue_id_indices.end()) continue;
-    auto& row = state.queue_files[found->second].row;
+    auto& queued = state.queue_files[found->second];
+    auto& row = queued.row;
     if (row.state != 0 && row.state != 1) continue;
+    queued.file.resolved_output_path.clear();
+    row.output = slint::SharedString{};
+    row.output_path = slint::SharedString{};
     row.state = canceled ? 4 : 3;
     row.status = to_shared(canceled ? "已取消" : "未处理");
     row.warning = !canceled;
@@ -1790,17 +1848,7 @@ std::wstring format_arg(int index) {
 }
 
 std::wstring collision_arg(int index) {
-  switch (index) {
-    case 1:
-      return L"skip";
-    case 2:
-      return L"time";
-    case 3:
-      return L"random";
-    case 0:
-    default:
-      return L"overwrite";
-  }
+  return std::wstring{awj::studio::queue_collision_argument(index)};
 }
 std::wstring avif_encoder_arg(int index) {
   return index == 0 ? L"auto" : index == 1 ? L"aom" : L"invalid";
@@ -2089,8 +2137,8 @@ awj::compat::expected<awj::AppConfig, std::string> linux_config_from_parameter_p
       args.push_back(L"--unlock-max-input-file-bytes");
     }
     push_flag(args, app->get_strip_metadata(), L"--strip", L"--keep-metadata");
-    push_flag(args, app->get_write_summary(), L"--summary", L"--no-summary");
     push_flag(args, app->get_write_log(), L"--log", L"--no-log");
+    push_flag(args, app->get_delete_source(), L"--delete-source", L"--no-delete-source");
   }
 
   auto parsed = awj::parse_arguments(args);
@@ -2830,6 +2878,9 @@ void initialize_ui(AwjStudio& app) {
   app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
   app.set_unlock_memory_limit(false);
   app.set_unlock_max_input_file_bytes(false);
+  app.set_collision_index(awj::studio::default_queue_collision_index);
+  app.set_write_log(false);
+  app.set_delete_source(false);
   app.set_status_text(to_shared("就绪"));
 }
 
@@ -2899,18 +2950,41 @@ int awj::studio::run_studio_ui() {
       }
       } catch (...) { state->close_requested = false; }
     });
+    app->on_queue_menu_action([weak, state](int index, slint::SharedString action) {
+      auto app = weak.lock();
+      if (!app || index < 0 || static_cast<std::size_t>(index) >= state->queue_files.size()) return;
+      if (action == "open-image") {
+        open_linux_queue_image(**app, *state, static_cast<std::size_t>(index));
+      } else if (action == "open-folder") {
+        if (auto opened = open_path(state->queue_files[static_cast<std::size_t>(index)].file.path.parent_path()); !opened)
+          (*app)->set_status_text(to_shared(opened.error()));
+      }
+    });
     app->on_queue_row_pointer_event([weak, state](int index, int button,
                                                  int kind, float) {
+      if (awj::studio::queue_pointer_resets_double_click(button, kind)) {
+        state->last_click_id = 0;
+        if (kind == 3 || kind == 4) state->drag_reordered = kind == 4;
+        return;
+      }
       if (button != 0) return;
       if (kind == 0) {
         state->drag_reordered = false;
-      } else if (kind == 4) {
-        state->drag_reordered = true;
       } else if (kind == 1) {
         const bool dragged = std::exchange(state->drag_reordered, false);
         if (auto app = weak.lock(); app && !dragged && index >= 0 &&
-            static_cast<std::size_t>(index) < state->task_rows->row_count()) {
+            static_cast<std::size_t>(index) < state->queue_files.size()) {
           (*app)->set_selected_queue_index(index);
+          const auto id = state->queue_files[static_cast<std::size_t>(index)].id;
+          const auto now = std::chrono::steady_clock::now();
+          if (state->last_click_id == id &&
+              now - state->last_click_time <= awj::studio_defaults::queue_double_click_delay) {
+            state->last_click_id = 0;
+            open_linux_queue_image(**app, *state, static_cast<std::size_t>(index));
+          } else {
+            state->last_click_id = id;
+            state->last_click_time = now;
+          }
         }
       }
     });
@@ -3264,6 +3338,8 @@ int awj::studio::run_studio_ui() {
         }
         ++state->run_generation;
         state->run_queue_ids.clear();
+        state->last_click_id = 0;
+        state->drag_reordered = false;
         state->queue_id_indices.clear();
         decltype(state->queue_files){}.swap(state->queue_files);
         decltype(state->queue_path_keys){}.swap(state->queue_path_keys);

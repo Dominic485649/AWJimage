@@ -174,6 +174,15 @@ awj::compat::expected<void, std::string> write_studio_config_file(
   add_string("ui_font_family", current.ui_font_family, defaults.ui_font_family);
   add_string("queue_preset_file", current.queue_preset_file,
              defaults.queue_preset_file);
+  add_int("collision_index", current.queue_options.collision_index,
+          defaults.queue_options.collision_index);
+  add_bool("write_log", current.queue_options.write_log,
+           defaults.queue_options.write_log);
+  add_bool("delete_source", current.queue_options.delete_source,
+           defaults.queue_options.delete_source);
+  // Retire the independent CSV switch, including an old true value. Otherwise
+  // unchecking the single log option would be undone by OR migration next time.
+  known.emplace("write_summary");
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);

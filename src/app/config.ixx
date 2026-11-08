@@ -275,7 +275,7 @@ struct AppConfig {
   BackendMode backend{BackendMode::native};
   OutputFormat output_format{OutputFormat::avif};
   OutputPolicy output_policy{OutputPolicy::normal};
-  CollisionMode collision_mode{CollisionMode::overwrite};
+  CollisionMode collision_mode{CollisionMode::suffix_number};
   ChromaMode chroma_mode{ChromaMode::auto_keep};
   AvifColorRepresentation avif_color_representation{
       AvifColorRepresentation::yuv};
@@ -316,8 +316,11 @@ struct AppConfig {
   bool visual_quality_fallback{
       encoding_defaults::default_visual_quality_fallback};
   bool strip_metadata{false};
+  // Compatibility alias: either true enables both awj.log and summery.csv.
   bool write_summary{false};
   bool write_log{false};
+  // Application file queues only; never used by SDK memory encoding.
+  bool delete_source{false};
   // 只在 Windows 实际执行；Linux CLI 不公开也不解析这些开关。
   bool preserve_creation_time{false};
   bool preserve_modification_time{false};
@@ -1136,6 +1139,7 @@ awj::compat::expected<void, std::string> validate_execution_config(const AppConf
 awj::compat::expected<void, std::string> finalize_config_defaults(AppConfig& cfg,
                                                           bool quality_was_set,
                                                           bool preset_was_set) {
+  cfg.write_log = cfg.write_summary = cfg.write_log || cfg.write_summary;
 #ifndef _WIN32
   if (cfg.output_policy == OutputPolicy::shell) {
     cfg.visual_quality.reset();
@@ -1222,16 +1226,16 @@ std::string help_text() {
   --no-wic-fallback          禁用 WIC 解码兜底
   --close-on-finish / --no-close-on-finish 右键转换窗口完成后是否自动关闭
   --option <key=value>       预留 native 高级选项，可重复；当前版本只记录与校验
-  --collision <策略>          overwrite / skip / number / time / random，默认 overwrite
+  --collision <策略>          overwrite / skip / number / time / random，默认 number
   --timeout-encode <分钟>     单张图片编码超时，默认 @ENCODE_TIMEOUT@
   --strip                    去除 EXIF/ICC 等元数据，通常更小且更隐私
   --keep-metadata            保留源元数据，取消 --strip
-  --summary                  写入 CSV 日志 summary.csv
-  --no-summary               不写入 CSV 日志 summary.csv
-  --log                      生成 log\awj.log
-  --no-log                   不生成日志文件
+  --log / --summary          同时写入 log/awj.log 与 log/summery.csv；--summary 为兼容别名
+  --no-log / --no-summary    关闭两种日志；与启用选项按最后一次生效
+  --delete-source            每个输出成功落盘后移入系统回收站；失败、取消、跳过或无法安全回收时保留源
+  --no-delete-source         保留源文件（默认）；不提供永久删除降级
   --skip-existing            已有输出时跳过
-  --overwrite                已有输出时覆盖，默认行为
+  --overwrite                已有输出时覆盖（显式选择）
   --suffix-number            输出名按 name(1)、name(2) 避免重名
   --suffix-time              输出名追加时间后缀
   --suffix-random            输出名追加随机后缀
@@ -2098,23 +2102,15 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (lower == L"--summary") {
-      cfg.write_summary = true;
+    if (lower == L"--summary" || lower == L"--log" ||
+        lower == L"--no-summary" || lower == L"--no-log") {
+      // The last spelling wins, including across the legacy aliases.
+      cfg.write_log = cfg.write_summary = lower == L"--summary" || lower == L"--log";
       continue;
     }
 
-    if (lower == L"--no-summary") {
-      cfg.write_summary = false;
-      continue;
-    }
-
-    if (lower == L"--log") {
-      cfg.write_log = true;
-      continue;
-    }
-
-    if (lower == L"--no-log") {
-      cfg.write_log = false;
+    if (lower == L"--delete-source" || lower == L"--no-delete-source") {
+      cfg.delete_source = lower == L"--delete-source";
       continue;
     }
 

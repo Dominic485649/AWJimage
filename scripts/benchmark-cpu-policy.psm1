@@ -29,4 +29,18 @@ function Assert-AwjBenchmarkCpuRows {
     }
 }
 
-Export-ModuleMember -Function Test-AwjBenchmarkLegacyCpuControl, Get-AwjBenchmarkLegacyCpuControl, Assert-AwjBenchmarkCpuRows
+function Get-AwjBenchmarkSummaryPath {
+    param([Parameter(Mandatory)][string]$OutputDirectory)
+    # 兼容旧版及 FFmpeg 对照的 summary.csv；拒绝两个报告并存时猜测来源。
+    $candidates = @(
+        (Join-Path $OutputDirectory 'log/summery.csv'),
+        (Join-Path $OutputDirectory 'summary.csv')
+    )
+    $found = @($candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
+    if ($found.Count -ne 1) {
+        throw "基准输出必须恰有一份 CSV 报告，实际为 $($found.Count)：$OutputDirectory"
+    }
+    return $found[0]
+}
+
+Export-ModuleMember -Function Test-AwjBenchmarkLegacyCpuControl, Get-AwjBenchmarkLegacyCpuControl, Assert-AwjBenchmarkCpuRows, Get-AwjBenchmarkSummaryPath

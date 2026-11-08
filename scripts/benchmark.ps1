@@ -224,6 +224,8 @@ function Invoke-FfmpegBatch($Executable, $Inputs, $Output, $Job) {
     return $(if(@($summary | Where-Object status -NE 'ok').Count){2}else{0})
 }
 
+# 对照测试必须保留固定语料；不允许成功后回收输入破坏后续轮次。
+if ('--delete-source' -in $ExtraArguments) { throw '基准测试禁止回收源文件。' }
 $InputRoot = (Resolve-Path -LiteralPath $InputRoot).Path
 $ffmpegMode = -not [string]::IsNullOrWhiteSpace($FfmpegExecutable)
 if ($ffmpegMode) {
@@ -317,7 +319,7 @@ for ($iteration=0; $iteration -le $lastIteration; ++$iteration) {
         $output = Join-Path $ResultRoot "$iteration-$version"
         if (Test-Path -LiteralPath $output) { throw "Unrecorded output exists: $output; inspect it before restarting." }
         New-Item -ItemType Directory -Path $output | Out-Null
-        $arguments = @('--input',$InputRoot,'--output',$output,'--summary','--no-log','--format','avif','--quality','70','--speed','5')
+        $arguments = @('--input',$InputRoot,'--output',$output,'--summary','--log','--format','avif','--quality','70','--speed','5')
         if ($Scenario -ne 'default') { $arguments += @('--visual-quality','50') }
         $arguments += $ExtraArguments
         # 只向仍明确支持旧开关的程序发送；新版不会收到已删除的 CLI 参数。
@@ -345,7 +347,7 @@ for ($iteration=0; $iteration -le $lastIteration; ++$iteration) {
             $job.Dispose()
         }
         if ($exitCode -notin @(0,2)) { throw "Conversion exited with $exitCode." }
-        $summary = @(Import-Csv -LiteralPath (Join-Path $output 'summary.csv'))
+        $summary = @(Import-Csv -LiteralPath (Get-AwjBenchmarkSummaryPath -OutputDirectory $output))
         if ($summary.Count -ne $inputs.Count) { throw "Expected $($inputs.Count) summary rows, got $($summary.Count)." }
         $ok = @($summary | Where-Object status -EQ 'ok')
         if ($Scenario -eq 'cpu-search') { Assert-AwjBenchmarkCpuRows -Rows $ok }

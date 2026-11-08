@@ -166,6 +166,7 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     state->worker_active = true;
     state->active_child.reset();
     state->pending_events.clear();
+    state->last_click_id = 0;
     std::size_t run_index = 0;
     for (auto& item : state->queue_items) {
       item.run_index = std::numeric_limits<std::size_t>::max();
@@ -286,6 +287,17 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       auto publish_line = [&](std::string line) {
         line = trim_copy(std::move(line));
         if (line.empty()) {
+          return;
+        }
+        if (auto output = parse_studio_worker_output_event(line)) {
+          const auto path = std::filesystem::path{awj::wide_from_utf8(output->path_utf8)};
+          // The monitor records the final native path before reading ITEM D's
+          // file size; the UI publishes both together with the success status.
+          std::scoped_lock lock{state->mutex};
+          if (state->run_id == run_id) {
+            if (const auto index = queue_index_for_run_index(*state, output->index))
+              state->queue_items[*index].locked_output_path = path;
+          }
           return;
         }
         if (auto frame = parse_studio_worker_frame_event(line)) {
@@ -536,7 +548,7 @@ void handle_queue_menu_action(AwjStudio& app,
     if (action == "open-folder") {
       path_to_open = item.path.parent_path();
     } else if (action == "open-image") {
-      image_to_open = item.path;
+      image_to_open = queue_image_open_target(item);
     } else if (action == "copy-path") {
       text_to_copy = item.path.native();
     } else if (action == "remove") {
@@ -703,10 +715,14 @@ void handle_queue_pointer_event(AwjStudio& app,
                                 const std::shared_ptr<UiState>& state,
                                 int index, int button, int kind,
                                 float /*local_y*/) {
-  if (button != 0) {
+  if (queue_pointer_resets_double_click(button, kind)) {
+    std::scoped_lock lock{state->mutex};
+    state->last_click_id = 0;
+    if (kind == 3 || kind == 4) state->drag_reordered = kind == 4;
     return;
   }
-  std::optional<std::filesystem::path> double_click_folder;
+  if (button != 0) return;
+  std::optional<std::filesystem::path> double_click_image;
   bool select_row = false;
   {
     std::scoped_lock lock{state->mutex};
@@ -716,11 +732,6 @@ void handle_queue_pointer_event(AwjStudio& app,
     }
     auto& item = state->queue_items[static_cast<std::size_t>(index)];
     const auto now = std::chrono::steady_clock::now();
-    if (kind == 4) {
-      state->drag_reordered = true;
-      state->last_click_id = 0;
-      return;
-    }
     if (kind == 0) {
       state->drag_reordered = false;
       return;
@@ -734,7 +745,7 @@ void handle_queue_pointer_event(AwjStudio& app,
         if (state->last_click_id == item.id &&
             now - state->last_click_time <=
                 awj::studio_defaults::queue_double_click_delay) {
-          double_click_folder = item.path.parent_path();
+          double_click_image = queue_image_open_target(item);
           state->last_click_id = 0;
         } else {
           state->last_click_id = item.id;
@@ -746,10 +757,10 @@ void handle_queue_pointer_event(AwjStudio& app,
   if (select_row) {
     app.set_selected_queue_index(index);
   }
-  if (double_click_folder) {
-    if (auto opened = open_path(*double_click_folder, false); !opened) {
+  if (double_click_image) {
+    if (auto opened = open_file_with_default_app(*double_click_image); !opened) {
       app.set_status_text(
-          to_shared(std::format("打开所在位置失败：{}", opened.error())));
+          to_shared(std::format("打开图片失败：{}", opened.error())));
     }
   }
 }
@@ -764,6 +775,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
   }
 
   std::uint64_t run_id{};
+  std::optional<std::uint64_t> queue_item_id;
   std::shared_ptr<slint::VectorModel<TaskRow>> rows;
   std::shared_ptr<slint::VectorModel<LargeImageRow>> large_rows;
   {
@@ -788,6 +800,14 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       large_rows = state->large_image_rows;
     } else {
       set_large_image_status(*state, *large_index, "正在编码…");
+      for (auto& item : state->queue_items) {
+        if (item.path != cfg.input_path) continue;
+        queue_item_id = item.id;
+        reset_queue_item_execution(item);
+        break;
+      }
+      state->last_click_id = 0;
+      refresh_queue_rows(**app, *state);
       rows = state->task_rows;
       large_rows = state->large_image_rows;
     }
@@ -831,19 +851,49 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     worker.emplace(guarded_worker(
         weak, state, run_id, "编码 worker 监控",
         [weak, state, run_id, child = *child,
-                    large_index](std::stop_token token) mutable {
+                    large_index, queue_item_id](std::stop_token token) mutable {
       std::string pending;
       auto publish_line = [&](std::string line) {
         line = trim_copy(std::move(line));
         if (line.empty()) {
           return;
         }
-        post_to_ui(weak, [state, run_id, line = std::move(line)](AwjStudio&) {
+        if (auto output = parse_studio_worker_output_event(line)) {
+          const auto path = std::filesystem::path{awj::wide_from_utf8(output->path_utf8)};
+          std::error_code ec;
+          const auto bytes = std::filesystem::file_size(path, ec);
+          post_to_ui(weak, [state, run_id, queue_item_id, path,
+                           bytes = ec ? std::optional<std::uintmax_t>{} : std::optional{bytes}](AwjStudio& app) {
+            std::scoped_lock lock{state->mutex};
+            if (state->run_id != run_id || !queue_item_id) return;
+            if (const auto index = queue_index_for_id(*state, *queue_item_id)) {
+              auto& item = state->queue_items[*index];
+              // OUTPUT is emitted only for a committed successful encode.
+              item.locked_output_path = path;
+              item.output_bytes = bytes;
+              item.status = QueueItemStatus::done;
+              item.status_text = queue_status_label(item.status);
+              awj::ui::replace_queue_row(app, state->task_rows, *index,
+                                        make_queue_task_row(item, *index));
+            }
+          });
+          return;
+        }
+        if (parse_studio_worker_item_event(line) || parse_studio_worker_detail_event(line) ||
+            parse_studio_worker_frame_event(line)) return;
+        post_to_ui(weak, [state, run_id, queue_item_id, line = std::move(line)](AwjStudio& app) {
           std::scoped_lock lock{state->mutex};
-          if (state->run_id != run_id) {
-            return;
+          if (state->run_id != run_id) return;
+          if (queue_item_id) {
+            if (const auto index = queue_index_for_id(*state, *queue_item_id)) {
+              auto& item = state->queue_items[*index];
+              item.log_text = to_shared(line);
+              awj::ui::replace_queue_row(app, state->task_rows, *index,
+                                        make_queue_task_row(item, *index));
+            }
+          } else {
+            append_log_row(state->task_rows, line);
           }
-          append_log_row(state->task_rows, line);
         });
       };
       auto consume_output = [&] {
@@ -905,7 +955,7 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
       if (forced) {
         cleanup_forced_worker_temp_files(child);
       }
-      post_to_ui(weak, [state, run_id, large_index, exit_code, forced,
+      post_to_ui(weak, [state, run_id, large_index, queue_item_id, exit_code, forced,
                         canceled](AwjStudio& app) {
               {
           std::scoped_lock lock{state->mutex};
@@ -916,6 +966,19 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
           state->pending_events.clear();
           state->worker_active = false;
           state->active_child.reset();
+          if (queue_item_id) {
+            if (const auto index = queue_index_for_id(*state, *queue_item_id)) {
+              auto& item = state->queue_items[*index];
+              if (item.status != QueueItemStatus::done) {
+                item.status = exit_code == 0 ? QueueItemStatus::skipped
+                    : (forced || canceled ? QueueItemStatus::canceled : QueueItemStatus::failed);
+                item.status_text = queue_status_label(item.status);
+                item.warning = item.status == QueueItemStatus::failed;
+              }
+              awj::ui::replace_queue_row(app, state->task_rows, *index,
+                                        make_queue_task_row(item, *index));
+            }
+          }
                 if (large_index) {
             set_large_image_status(
                 *state, *large_index,

@@ -582,15 +582,13 @@ int poster_pipeline(const std::filesystem::path& root, const std::filesystem::pa
 }  // namespace
 
 int main() {
-  const auto root = std::filesystem::temp_directory_path() /
-                    "awjimage-native-pipeline-test";
+  const auto root = std::filesystem::path{AWJ_TEST_RESULTS_ROOT} /
+      ("native-pipeline-" + std::to_string(awj::current_process_id()));
   const auto input = root / "input.webp";
   const auto output = root / "out";
   std::error_code ec;
-  std::filesystem::remove_all(root, ec);
-  std::filesystem::create_directories(root, ec);
-  if (ec) {
-    return fail("failed to create temp dir.");
+  if (!std::filesystem::create_directories(root, ec) || ec) {
+    return fail("Dedicated native pipeline test directory exists or cannot be created.");
   }
 
   awj::WebPImageEncoder encoder;
@@ -736,6 +734,8 @@ int main() {
     } else if (restored->image.alpha_mode == awj::AlphaMode::none || sample(3) != 0)
       return fail("支持 alpha 的格式没有保留透明留边。");
   }
+  // Direct backend/SDK-style encoding must never perform queue recycling.
+  cfg.delete_source = true;
   awj::NativeBackend backend{cfg, logger, awj::ResourcePlan{
                                                .file_parallelism = 1,
                                                .encoder_threads_per_file = 1,
@@ -750,6 +750,10 @@ int main() {
   if (!result.ok || result.skipped || result.canceled) {
     return fail(result.message.empty() ? "native backend encode failed." : result.message);
   }
+  if (!std::filesystem::exists(input) || result.input_sha256_snapshot ||
+      !result.recycled_source_path.empty() || !result.recycled_source_shell_item.empty())
+    return fail("Direct backend encoding unexpectedly performed queue-only recycling.");
+  cfg.delete_source = false;
   const auto output_file = output / "input.webp";
   if (!std::filesystem::exists(output_file)) {
     return fail("native backend did not create output file.");
@@ -1094,7 +1098,7 @@ int main() {
       !csv_ok) {
     return fail(csv_ok.error());
   }
-  const auto jpegli_summary_csv = read_text(jpegli_summary_dir / "summary.csv");
+  const auto jpegli_summary_csv = read_text(jpegli_summary_dir / "log" / "summery.csv");
   if (jpegli_summary_csv.find("format,encoder_id") == std::string::npos ||
       jpegli_summary_csv.find("JPG,jpegli") == std::string::npos) {
     return fail("native backend JPG summary diagnostics invalid.");
@@ -1165,7 +1169,7 @@ int main() {
   }
   const auto sampling_csv_dir = output / "jpeg-auto-summary";
   if (auto written = awj::write_csv(sampling_csv_dir, sampling_results); !written) return fail(written.error());
-  if (!csv_sampling_matches(read_text(sampling_csv_dir / "summary.csv"), sampling_results))
+  if (!csv_sampling_matches(read_text(sampling_csv_dir / "log" / "summery.csv"), sampling_results))
     return fail("JPEG requested/applied sampling CSV columns disagree with encoded SOFs.");
   auto invalid_jpeg = awj::default_app_config();
   invalid_jpeg.output_format = awj::OutputFormat::jpgli;
@@ -1421,10 +1425,10 @@ int main() {
     return fail(csv_ok.error());
   }
   const auto alpha_summary_csv =
-      read_text(alpha_summary_dir / "summary.csv");
+      read_text(alpha_summary_dir / "log" / "summery.csv");
   if (alpha_summary_csv.find("avif_rgb_to_yuv_seconds,avif_add_image_seconds,avif_finish_seconds,avif_output_copy_seconds") ==
       std::string::npos) {
-    return fail("AVIF substage timing columns are missing from summary.csv.");
+    return fail("AVIF substage timing columns are missing from log/summery.csv.");
   }
 
   auto alpha_off_cfg = alpha_cfg;
@@ -1557,6 +1561,10 @@ int main() {
         avif_visual_result.requested_encoder_id));
   }
 
-  // 下一次启动会清理该目录；这里直接退出以避开第三方静态析构阶段的访问违规。
+  // Only this run's generated fixtures are disposable; preserve failed runs.
+  std::filesystem::remove_all(root, ec);
+  if (ec) std::fprintf(stderr, "Generated native fixtures retained at %s: %s\n",
+      awj::path_to_utf8(root).c_str(), ec.message().c_str());
+  // Avoid a third-party static-destruction access violation after reporting.
   terminate_test_process(0);
 }

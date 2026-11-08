@@ -53,6 +53,9 @@ StudioConfigSnapshot capture_studio_config(const AwjStudio& app,
       .language_index = app.get_language_index(),
       .ui_font_family = shared_to_string(app.get_ui_font_family()),
       .queue_preset_file = state != nullptr ? state->queue_preset_file : std::string{},
+      .queue_options = {.collision_index = app.get_collision_index(),
+                        .write_log = app.get_write_log(),
+                        .delete_source = app.get_delete_source()},
       .allow_wic_fallback = app.get_allow_wic_fallback(),
       .shell_menu_compatibility = app.get_shell_menu_compatibility(),
       .visual_quality_fallback = app.get_visual_quality_fallback(),
@@ -296,6 +299,12 @@ awj::compat::expected<void, std::string> apply_studio_config_file(AwjStudio& app
   // 可选身份字段缺失或类型失效时回到内置；稍后只在已验证清单内解析。
   state.queue_preset_file = awj::studio_json::config_string(
       *values, "queue_preset_file").value_or(std::string{});
+
+  const auto queue_options = awj::studio_json::config_queue_options(*values);
+  if (!queue_options) return awj::compat::unexpected{queue_options.error()};
+  app.set_collision_index(queue_options->collision_index);
+  app.set_write_log(queue_options->write_log);
+  app.set_delete_source(queue_options->delete_source);
 
   if (auto result = apply(apply_config_bool(
           app, *values, "allow_wic_fallback",

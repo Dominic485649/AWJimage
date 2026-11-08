@@ -168,8 +168,10 @@ std::vector<std::wstring> cli_arguments_from_config(
                      ? L"--experimental-clamped-grid-padding"
                      : L"--no-experimental-clamped-grid-padding");
   args.push_back(cfg.strip_metadata ? L"--strip" : L"--keep-metadata");
-  args.push_back(cfg.write_summary ? L"--summary" : L"--no-summary");
-  args.push_back(cfg.write_log ? L"--log" : L"--no-log");
+  // Emit one canonical option so legacy disagreement cannot be reversed by
+  // last-option-wins parsing in the child process.
+  args.push_back(cfg.write_log || cfg.write_summary ? L"--log" : L"--no-log");
+  args.push_back(cfg.delete_source ? L"--delete-source" : L"--no-delete-source");
   if (cfg.preserve_creation_time) args.push_back(L"--preserve-creation-time");
   if (cfg.preserve_modification_time) args.push_back(L"--preserve-modification-time");
   if (cfg.preserve_access_time) args.push_back(L"--preserve-access-time");

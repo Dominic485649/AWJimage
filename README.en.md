@@ -62,6 +62,14 @@ Use `--avif-progressive` for automatic two-layer still AVIF, or configure 2–4 
 
 Memory planning separates decode, preparation, encoding, metrics and output peaks, then refines reservations using decoded pixels, alpha and sampling. Uncertain inputs may refine exclusively within a finite budget; automatic budget rules and default limits remain unchanged. CSV diagnostics preserve initial estimates, refinements and reservations. Reservations are not allocator hard limits.
 
+## Queue logs and source files
+
+**Write run log** produces both `log/awj.log` and `log/summery.csv` under the output directory; CSV no longer has a separate queue option. CLI `--log` and its compatibility alias `--summary` enable both; `--no-log`/`--no-summary` disable both, with the last switch taking effect.
+
+The default collision policy is **Append number**: existing outputs produce `name(1).ext`, `name(2).ext`, and so on. Overwrite, skip, time and random suffix policies remain available. Double-click a queue image to open its source before encoding, or its actual output after successful encoding.
+
+**Delete source files** is off by default. When enabled, each source is moved to the system recycle bin immediately after its output has been successfully written. Failed, canceled or skipped items retain their sources. If recycling is unavailable or fails, the source is retained with a warning; there is no permanent-deletion fallback. Linux uses system GIO and retains the source if it is unavailable. Link paths, hard links or other input dependencies that cannot be safely verified also retain their sources with a warning. CLI `--delete-source`/`--no-delete-source` control the same behavior.
+
 ## C ABI SDK
 
 Windows / Linux dynamic SDKs provide one set of C headers for C / C++ integration. Submit CPU frames, shared-memory frames, optional FFmpeg frames or Windows D3D11 textures and receive encoded results in memory. Packages include CMake files, `awj-stream` and integration examples. Windows SDK builds use MSVC and Linux SDK builds use Clang 23, with C99 / C++11 / C++17 consumer examples.

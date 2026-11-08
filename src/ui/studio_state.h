@@ -5,6 +5,7 @@
 
 #include "queue_model.h"
 #include "deferred_model.h"
+#include "queue_ui_policy.h"
 
 #ifdef _WIN32
 
@@ -230,6 +231,7 @@ struct StudioConfigSnapshot {
   std::string ui_font_family{};
   // 空串表示内置预设；用户预设仅保存目录清单中的 UTF-8 basename。
   std::string queue_preset_file{};
+  QueueRunOptions queue_options{};
   bool allow_wic_fallback{};
   bool shell_menu_compatibility{};
   bool visual_quality_fallback{true};

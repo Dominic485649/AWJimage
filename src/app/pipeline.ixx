@@ -11,8 +11,15 @@ module;
 #ifdef _WIN32
 #include <objbase.h>
 #include <windows.h>
+#include <shobjidl.h>
+#include <shellapi.h>
+#include <wrl/client.h>
 #else
+#include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #include <sys/sysinfo.h>
+#include <unistd.h>
 #endif
 
 #include <algorithm>
@@ -22,6 +29,7 @@ module;
 #include <condition_variable>
 #include <cstdio>
 #include <cstdint>
+#include <cstring>
 #include <exception>
 #include <expected>
 #include <filesystem>
@@ -576,6 +584,329 @@ void emit_progress(const ProgressCallback& progress,
 
 namespace pipeline_detail {
 
+struct RecycleObject {
+  std::uint64_t volume{};
+  std::array<std::uint64_t, 2> file{};
+  bool operator==(const RecycleObject&) const = default;
+};
+struct RecycleObjectHash {
+  std::size_t operator()(const RecycleObject& value) const noexcept {
+    return std::hash<std::uint64_t>{}(value.volume ^ value.file[0] ^ value.file[1]);
+  }
+};
+struct RecycleIdentity {
+  RecycleObject object{};
+  std::uint64_t bytes{}, modified{}, changed{}, modified_ns{}, changed_ns{}, links{};
+  bool operator==(const RecycleIdentity&) const = default;
+};
+
+// Capture before any worker starts, then compare immediately before recycling.
+// Identity capture needs no content read; optional CSV SHA-256 is captured
+// later, before recycling. Reads may change atime, so it is not an identity
+// field. Unsupported identities fail closed.
+awj::compat::expected<RecycleIdentity, std::string> recycle_file_identity(const fs::path& path) {
+  std::error_code path_ec;
+  const auto absolute = core_detail::absolute_path_preserving_components(path, path_ec);
+  if (path_ec || !core_detail::safe_unlinked_path(absolute.parent_path(), true))
+    return awj::compat::unexpected{"路径包含链接或不可验证的父目录。"};
+#ifdef _WIN32
+  UniqueFileHandle file{CreateFileW(absolute.c_str(), FILE_READ_ATTRIBUTES,
+      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING,
+      FILE_FLAG_OPEN_REPARSE_POINT, nullptr)};
+  BY_HANDLE_FILE_INFORMATION info{};
+  FILE_ID_INFO id{};
+  FILE_BASIC_INFO basic{};
+  LARGE_INTEGER size{};
+  if (!file || GetFileType(file.get()) != FILE_TYPE_DISK ||
+      !GetFileInformationByHandle(file.get(), &info) ||
+      (info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) ||
+      !GetFileInformationByHandleEx(file.get(), FileIdInfo, &id, sizeof(id)) ||
+      !GetFileInformationByHandleEx(file.get(), FileBasicInfo, &basic, sizeof(basic)) ||
+      !GetFileSizeEx(file.get(), &size) || size.QuadPart < 0)
+    return awj::compat::unexpected{"无法取得普通文件的稳定身份。"};
+  RecycleIdentity identity{.object = {.volume = id.VolumeSerialNumber},
+      .bytes = static_cast<std::uint64_t>(size.QuadPart),
+      .modified = static_cast<std::uint64_t>(basic.LastWriteTime.QuadPart),
+      .changed = static_cast<std::uint64_t>(basic.ChangeTime.QuadPart),
+      .links = info.nNumberOfLinks};
+  static_assert(sizeof(identity.object.file) == sizeof(id.FileId.Identifier));
+  std::memcpy(identity.object.file.data(), id.FileId.Identifier, sizeof(identity.object.file));
+  return identity;
+#else
+  UniqueFileHandle file{::open(absolute.c_str(), O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)};
+  struct stat info{};
+  if (!file || ::fstat(file.get(), &info) != 0 || !S_ISREG(info.st_mode) || info.st_size < 0)
+    return awj::compat::unexpected{"无法取得普通文件的稳定身份。"};
+  return RecycleIdentity{.object = {.volume = static_cast<std::uint64_t>(info.st_dev),
+                                  .file = {static_cast<std::uint64_t>(info.st_ino), 0}},
+      .bytes = static_cast<std::uint64_t>(info.st_size),
+      .modified = static_cast<std::uint64_t>(info.st_mtim.tv_sec),
+      .changed = static_cast<std::uint64_t>(info.st_ctim.tv_sec),
+      .modified_ns = static_cast<std::uint64_t>(info.st_mtim.tv_nsec),
+      .changed_ns = static_cast<std::uint64_t>(info.st_ctim.tv_nsec),
+      .links = static_cast<std::uint64_t>(info.st_nlink)};
+#endif
+}
+
+struct SourceRecycleEntry {
+  fs::path source{};
+  std::optional<RecycleIdentity> identity{};
+  std::string retain_reason{};
+};
+struct SourceRecyclePlan {
+  std::vector<SourceRecycleEntry> entries{};
+};
+
+awj::compat::expected<SourceRecyclePlan, std::string> make_source_recycle_plan(
+    const AppConfig& cfg, std::span<const ImageFile> files) {
+  SourceRecyclePlan plan;
+  plan.entries.resize(files.size());
+  std::unordered_map<PathText, std::size_t> inputs;
+  std::unordered_map<RecycleObject, std::size_t, RecycleObjectHash> objects;
+  std::vector<PathText> keys(files.size());
+  std::vector<std::optional<RecycleObject>> dependency_objects(files.size());
+  for (const auto& file : files) {
+    if (file.index >= files.size()) return awj::compat::unexpected{"输入序号无效。"};
+    auto& entry = plan.entries[file.index];
+    if (!entry.source.empty()) return awj::compat::unexpected{"输入序号重复。"};
+    std::error_code ec;
+    entry.source = core_detail::absolute_path_preserving_components(file.path, ec);
+    if (ec) return awj::compat::unexpected{"无法规范化输入保护路径。"};
+    const auto canonical = fs::weakly_canonical(entry.source, ec);
+    if (ec) return awj::compat::unexpected{"无法规范化输入保护路径。"};
+    keys[file.index] = normalized_lower_path_key(canonical);
+    ++inputs[keys[file.index]];
+    auto identity = recycle_file_identity(entry.source);
+    if (identity) {
+      entry.identity = *identity;
+      dependency_objects[file.index] = identity->object;
+    } else {
+      entry.retain_reason = identity.error();
+      // An unsafe alias is not eligible for recycling, but its actual target
+      // still protects every other input/output that shares that file. Never
+      // promote this canonical-only observation to a recyclable source identity.
+      if (auto dependency = recycle_file_identity(canonical); dependency)
+        dependency_objects[file.index] = dependency->object;
+    }
+    if (dependency_objects[file.index]) ++objects[*dependency_objects[file.index]];
+  }
+  // Apply input protection for every mode, including explicit overwrite and
+  // manifests. Hard-link aliases are not caught by a pathname-only comparison.
+  for (const auto& file : files) {
+    std::error_code ec;
+    const auto output = fs::weakly_canonical(output_path_for(cfg, file), ec);
+    if (ec || inputs.contains(normalized_lower_path_key(output)))
+      return awj::compat::unexpected{"输出路径会覆盖队列输入，已保留所有源文件。"};
+    if (auto identity = recycle_file_identity(output); identity && objects.contains(identity->object))
+      return awj::compat::unexpected{"输出路径是队列输入的硬链接，已保留所有源文件。"};
+  }
+  for (std::size_t i = 0; i < plan.entries.size(); ++i) {
+    auto& entry = plan.entries[i];
+    if (inputs[keys[i]] > 1 || (dependency_objects[i] && objects[*dependency_objects[i]] > 1))
+      entry.retain_reason = "重复源或其他输入仍依赖同一文件。";
+    else if (entry.identity && entry.identity->links != 1)
+      entry.retain_reason = "源文件存在硬链接，无法安全独立回收。";
+  }
+  return plan;
+}
+
+#ifdef _WIN32
+// FOF_ALLOWUNDO only preserves undo *if possible* and is not safe here.
+// FOFX_RECYCLEONDELETE explicitly requests the system Recycle Bin (Win8+).
+// The sink also vetoes a permanent-delete notification and rechecks identity.
+class RecycleOnlySink final : public IFileOperationProgressSink {
+ public:
+  RecycleOnlySink(const fs::path& source, const RecycleIdentity& identity,
+      const fs::path& output, const RecycleIdentity& output_identity,
+      awj::compat::stop_token stop) noexcept
+      : source_{source}, identity_{identity}, output_{output}, output_identity_{output_identity}, stop_{stop} {}
+  HRESULT STDMETHODCALLTYPE QueryInterface(REFIID iid, void** object) override {
+    if (!object) return E_POINTER;
+    *object = nullptr;
+    if (iid != __uuidof(IUnknown) && iid != __uuidof(IFileOperationProgressSink)) return E_NOINTERFACE;
+    *object = static_cast<IFileOperationProgressSink*>(this);
+    AddRef();
+    return S_OK;
+  }
+  ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
+  ULONG STDMETHODCALLTYPE Release() override { return --refs_; } // stack-owned for this synchronous call
+  HRESULT STDMETHODCALLTYPE StartOperations() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE FinishOperations(HRESULT) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreRenameItem(DWORD, IShellItem*, LPCWSTR) override { return E_ABORT; }
+  HRESULT STDMETHODCALLTYPE PostRenameItem(DWORD, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreMoveItem(DWORD, IShellItem*, IShellItem*, LPCWSTR) override { return E_ABORT; }
+  HRESULT STDMETHODCALLTYPE PostMoveItem(DWORD, IShellItem*, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreCopyItem(DWORD, IShellItem*, IShellItem*, LPCWSTR) override { return E_ABORT; }
+  HRESULT STDMETHODCALLTYPE PostCopyItem(DWORD, IShellItem*, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PreDeleteItem(DWORD flags, IShellItem* item) override {
+    if (!(flags & TSF_DELETE_RECYCLE_IF_POSSIBLE) || stop_.stop_requested()) return E_ABORT;
+    try {
+      PWSTR raw{};
+      if (!item || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw))) return E_ABORT;
+      struct FreeName { PWSTR value; ~FreeName() { CoTaskMemFree(value); } } name{raw};
+      const fs::path actual{raw};
+      if (normalized_lower_path_key(actual) != normalized_lower_path_key(source_)) return E_ABORT;
+      const auto current = recycle_file_identity(source_);
+      const auto output = recycle_file_identity(output_);
+      if (!current || *current != identity_ || !output || *output != output_identity_) return E_ABORT;
+      permitted = true;
+      return S_OK;
+    } catch (...) { return E_ABORT; }
+  }
+  HRESULT STDMETHODCALLTYPE PostDeleteItem(DWORD, IShellItem*, HRESULT result, IShellItem* recycled) override {
+    confirmed = permitted && SUCCEEDED(result) && recycled != nullptr;
+    if (confirmed) {
+      try {
+        PWSTR raw{};
+        if (SUCCEEDED(recycled->GetDisplayName(SIGDN_FILESYSPATH, &raw))) {
+          struct FreeName { PWSTR value; ~FreeName() { CoTaskMemFree(value); } } name{raw};
+          recycled_path = fs::path{raw};
+        }
+        raw = nullptr;
+        if (SUCCEEDED(recycled->GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING, &raw))) {
+          struct FreeName { PWSTR value; ~FreeName() { CoTaskMemFree(value); } } name{raw};
+          recycled_shell_item = raw;
+        }
+      } catch (...) { /* the Shell still confirmed a recoverable item */ }
+    }
+    return S_OK;
+  }
+  HRESULT STDMETHODCALLTYPE PreNewItem(DWORD, IShellItem*, LPCWSTR) override { return E_ABORT; }
+  HRESULT STDMETHODCALLTYPE PostNewItem(DWORD, IShellItem*, LPCWSTR, LPCWSTR, DWORD, HRESULT, IShellItem*) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE UpdateProgress(UINT, UINT) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE ResetTimer() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE PauseTimer() override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE ResumeTimer() override { return S_OK; }
+  bool permitted{}, confirmed{};
+  fs::path recycled_path{};
+  std::wstring recycled_shell_item{};
+ private:
+  std::atomic<ULONG> refs_{1};
+  const fs::path& source_;
+  const RecycleIdentity& identity_;
+  const fs::path& output_;
+  const RecycleIdentity& output_identity_;
+  awj::compat::stop_token stop_;
+};
+#else
+struct GioTrashApi {
+  void* library{};
+  void* (*new_for_path)(const char*){};
+  int (*trash)(void*, void*, void**){};
+  void (*unref)(void*){};
+  explicit operator bool() const noexcept { return library && new_for_path && trash && unref; }
+};
+const GioTrashApi& gio_trash_api() noexcept {
+  // GIO can retain global module callbacks/threads: keep it loaded for process
+  // lifetime, rather than dlclose-ing code still referenced by the desktop.
+  static const auto api = [] {
+    GioTrashApi value;
+    value.library = ::dlopen("libgio-2.0.so.0", RTLD_NOW | RTLD_LOCAL | RTLD_NODELETE);
+    if (value.library) {
+      value.new_for_path = reinterpret_cast<decltype(value.new_for_path)>(::dlsym(value.library, "g_file_new_for_path"));
+      value.trash = reinterpret_cast<decltype(value.trash)>(::dlsym(value.library, "g_file_trash"));
+      value.unref = reinterpret_cast<decltype(value.unref)>(::dlsym(value.library, "g_object_unref"));
+    }
+    return value;
+  }();
+  return api;
+}
+#endif
+
+awj::compat::expected<void, std::string> recycle_successful_source(
+    const AppConfig& cfg, const SourceRecyclePlan& plan, EncodeResult& result,
+    awj::compat::stop_token stop_token = {}) {
+  if (!cfg.delete_source || !result.processed || !result.ok || result.skipped ||
+      result.canceled || stop_token.stop_requested()) return {};
+  if (result.index >= plan.entries.size())
+    return awj::compat::unexpected{"源文件身份记录缺失。"};
+  const auto& entry = plan.entries[result.index];
+  if (!entry.retain_reason.empty()) return awj::compat::unexpected{entry.retain_reason};
+  if (!entry.identity) return awj::compat::unexpected{"源文件身份不可验证。"};
+  std::error_code input_ec;
+  const auto actual_input = core_detail::absolute_path_preserving_components(result.input_path, input_ec);
+  // Validate the result's raw spelling too; a lexical key alone can conflate
+  // a link/.. path with an unrelated equal-sized source.
+  const auto input_identity = recycle_file_identity(actual_input);
+  if (input_ec || !input_identity || *input_identity != *entry.identity ||
+      normalized_lower_path_key(actual_input) != normalized_lower_path_key(entry.source) ||
+      result.original_bytes != entry.identity->bytes)
+    return awj::compat::unexpected{"成功结果与扫描源文件不匹配。"};
+  auto current = recycle_file_identity(entry.source);
+  if (!current || *current != *entry.identity)
+    return awj::compat::unexpected{"源路径或文件身份已变化。"};
+  std::error_code output_ec;
+  const auto output_path = core_detail::absolute_path_preserving_components(result.output_path, output_ec);
+  auto output = recycle_file_identity(output_path);
+  if (output_ec || !output || !result.output_bytes || output->bytes != result.output_bytes || output->links != 1)
+    return awj::compat::unexpected{"最终输出未落盘或无法安全确认。"};
+  if (output->object == current->object ||
+      normalized_lower_path_key(output_path) == normalized_lower_path_key(entry.source))
+    return awj::compat::unexpected{"最终输出与源文件相同。"};
+  if (stop_token.stop_requested()) return {};
+  if (cfg.write_log || cfg.write_summary) {
+    auto digest = file_sha256_hex(entry.source);
+    const auto after_hash = recycle_file_identity(entry.source);
+    if (!digest || !after_hash || *after_hash != *entry.identity)
+      return awj::compat::unexpected{"回收前无法保存可靠的源 SHA-256，源文件已保留。"};
+    result.input_sha256_snapshot = std::move(*digest);
+  }
+#ifdef _WIN32
+  const auto recycle_on_sta = [&]() -> awj::compat::expected<void, std::string> {
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    struct ComScope { HRESULT result; ~ComScope() { if (SUCCEEDED(result)) CoUninitialize(); } } com{initialized};
+    if (FAILED(initialized))
+      return awj::compat::unexpected{"系统回收站 STA 初始化失败。"};
+    RecycleOnlySink sink{entry.source, *current, output_path, *output, stop_token};
+    Microsoft::WRL::ComPtr<IFileOperation> operation;
+    Microsoft::WRL::ComPtr<IShellItem> item;
+    HRESULT hr = CoCreateInstance(__uuidof(FileOperation), nullptr, CLSCTX_INPROC_SERVER,
+                                 IID_PPV_ARGS(&operation));
+    if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(
+        FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE | FOFX_NOCOPYHOOKS |
+        FOF_NOERRORUI | FOF_SILENT | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NORECURSION);
+    if (SUCCEEDED(hr)) hr = SHCreateItemFromParsingName(entry.source.c_str(), nullptr, IID_PPV_ARGS(&item));
+    if (SUCCEEDED(hr)) hr = operation->DeleteItem(item.Get(), &sink);
+    if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+    BOOL aborted = TRUE;
+    if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
+    if (FAILED(hr) || aborted || !sink.confirmed)
+      return awj::compat::unexpected{"系统回收未完成或未确认，请检查源文件与系统回收站；不会降级永久删除。"};
+    result.recycled_source_path = std::move(sink.recycled_path);
+    result.recycled_source_shell_item = std::move(sink.recycled_shell_item);
+    return {};
+  };
+  // WIC workers use MTA. Shell file operations require STA; use a short-lived,
+  // joined owner instead of changing the decoder's apartment or detaching work.
+  awj::compat::expected<void, std::string> status = awj::compat::unexpected{"系统回收线程未启动。"};
+  {
+    awj::compat::scoped_worker owner{[&] {
+      try { status = recycle_on_sta(); }
+      catch (...) { status = awj::compat::unexpected{"系统回收检查异常，未降级永久删除。"}; }
+    }};
+  }
+  return status;
+#else
+  const auto expected_output = *output;
+  const auto& api = gio_trash_api();
+  if (!api) return awj::compat::unexpected{"桌面 GIO 回收机制不可用。"};
+  void* file = api.new_for_path(entry.source.c_str());
+  if (!file) return awj::compat::unexpected{"无法创建桌面回收请求。"};
+  struct GioFileScope { const GioTrashApi& api; void* file; ~GioFileScope() { api.unref(file); } } guard{api, file};
+  // g_file_trash fails (e.g. G_IO_ERROR_NOT_SUPPORTED) if recovery is not
+  // available; never substitute g_file_delete, unlink, or a directory named trash.
+  current = recycle_file_identity(entry.source);
+  output = recycle_file_identity(output_path);
+  if (stop_token.stop_requested()) return {};
+  if (!current || *current != *entry.identity || !output || *output != expected_output ||
+      output->object == current->object)
+    return awj::compat::unexpected{"回收前源文件或输出身份已变化。"};
+  if (!api.trash(file, nullptr, nullptr))
+    return awj::compat::unexpected{"桌面回收失败，源文件已保留；不会降级永久删除。"};
+#endif
+  return {};
+}
+
 struct WorkExecutionResult {
   int worker_failures{};
 };
@@ -640,6 +971,29 @@ void report_worker_warning_noexcept(
   }
 }
 
+void recycle_source_noexcept(const AppConfig& cfg, const SourceRecyclePlan& plan,
+    EncodeResult& result, FileLogger& logger, const ProgressCallback& progress,
+    std::size_t completed, std::size_t total, awj::compat::stop_token stop_token) noexcept {
+  if (!cfg.delete_source) return;
+  try {
+    auto recycled = recycle_successful_source(cfg, plan, result, stop_token);
+    if (recycled) return;
+    const auto warning = awj::compat::format("源文件未确认回收：{}", recycled.error());
+    result.message = result.message.empty() || result.message == "OK"
+        ? warning : awj::compat::format("{}；{}", result.message, warning);
+    logger.warn(warning);
+    emit_progress(progress, BatchProgress{.kind = BatchEventKind::warning,
+        .completed = completed, .total = total, .text = "[WARN] " + warning});
+  } catch (...) {
+    logger.warn("源文件回收检查异常，未执行永久删除。");
+    best_effort([&] {
+      emit_progress(progress, BatchProgress{.kind = BatchEventKind::warning,
+          .completed = completed, .total = total,
+          .text = "[WARN] 源文件回收检查异常，未执行永久删除。"});
+    });
+  }
+}
+
 void report_worker_exception_noexcept(FileLogger& logger,
                                       const ProgressCallback& progress,
                                       std::size_t completed,
@@ -671,7 +1025,8 @@ struct MemoryAdmissionGuard {
 
 WorkExecutionResult encode_work_groups(
     const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
-    const std::vector<WorkGroup>& work, std::size_t progress_total,
+    const std::vector<WorkGroup>& work, const SourceRecyclePlan& recycle_plan,
+    std::size_t progress_total,
     std::atomic<std::size_t>& completed, std::vector<EncodeResult>& results,
     const ProgressCallback& progress, awj::compat::stop_token stop_token) {
   WorkExecutionResult execution{};
@@ -777,6 +1132,9 @@ WorkExecutionResult encode_work_groups(
               const auto result_index = result.index;
               inherit_memory_diagnostics(result, results[result_index]);
               results[result_index] = std::move(result);
+              // Recycle before item_finished, never in the end-of-batch sweep.
+              recycle_source_noexcept(cfg, recycle_plan, results[result_index], logger,
+                  progress, completed.load(), progress_total, stop_token);
               log_item_failure_noexcept(logger, results[result_index]);
               const auto done = completed.fetch_add(1) + 1;
               try {
@@ -918,7 +1276,8 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
 
 WorkExecutionResult encode_large_work_groups(
     const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
-    const std::vector<LargeWorkGroup>& work, std::size_t progress_total,
+    const std::vector<LargeWorkGroup>& work, const SourceRecyclePlan& recycle_plan,
+    std::size_t progress_total,
     std::atomic<std::size_t>& completed, std::vector<EncodeResult>& results,
     const ProgressCallback& progress, awj::compat::stop_token stop_token) {
   WorkExecutionResult execution{};
@@ -1034,6 +1393,9 @@ WorkExecutionResult encode_large_work_groups(
               const auto result_index = result.index;
               inherit_memory_diagnostics(result, results[result_index]);
               results[result_index] = std::move(result);
+              // Recycle before item_finished, never in the end-of-batch sweep.
+              recycle_source_noexcept(cfg, recycle_plan, results[result_index], logger,
+                  progress, completed.load(), progress_total, stop_token);
               log_item_failure_noexcept(logger, results[result_index]);
               const auto done = completed.fetch_add(1) + 1;
               try {
@@ -1177,6 +1539,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     awj::compat::stop_token stop_token = {},
     std::span<const std::filesystem::path> input_paths = {}) {
   try {
+    cfg.write_log = cfg.write_summary = cfg.write_log || cfg.write_summary;
     apply_runtime_input_limit_policy(cfg);
 #ifndef _WIN32
     cfg.allow_wic_fallback = false;
@@ -1221,6 +1584,12 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
           .file = ImageFile{.index = 0, .path = cfg.input_path, .bytes = bytes},
           .dimensions = *dimensions,
           .decision = std::move(decision)};
+      std::vector<ImageFile> single_file{item.file};
+      if (auto resolved = resolve_batch_output_paths(cfg, single_file); !resolved)
+        return awj::compat::unexpected{resolved.error()};
+      item.file = single_file.front();
+      auto recycle_plan = pipeline_detail::make_source_recycle_plan(cfg, single_file);
+      if (!recycle_plan) return awj::compat::unexpected{recycle_plan.error()};
       const auto output_dir = output_dir_for(cfg);
       FileLogger logger{output_dir, cfg.write_log};
       const auto memory_status = current_memory_status();
@@ -1248,6 +1617,8 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
           cfg, logger, item, large_resource_plan, stop_token);
       pipeline_detail::record_memory_diagnostics(
           result, cfg, memory_status, configured_memory_limit, estimate);
+      pipeline_detail::recycle_source_noexcept(
+          cfg, *recycle_plan, result, logger, progress, 0, 1, stop_token);
       pipeline_detail::best_effort([&] {
         emit_progress(progress,
                       BatchProgress{.kind = BatchEventKind::item_finished,
@@ -1311,6 +1682,10 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       }
     }
 
+    // Snapshot before classification and all user progress callbacks. The same
+    // immutable plan protects ordinary and deferred Grid workers.
+    auto recycle_plan = pipeline_detail::make_source_recycle_plan(cfg, files);
+    if (!recycle_plan) return awj::compat::unexpected{recycle_plan.error()};
     FileLogger logger{output_dir, cfg.write_log};
     logger.info("native backend enabled");
     if (cfg.write_log && !logger.enabled()) {
@@ -1509,7 +1884,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     }
 
     const auto ordinary_execution = pipeline_detail::encode_work_groups(
-        cfg, logger, resource_plan, *ordinary_work, files.size(), completed,
+        cfg, logger, resource_plan, *ordinary_work, *recycle_plan, files.size(), completed,
         results, progress, stop_token);
     worker_failures += ordinary_execution.worker_failures;
 
@@ -1528,7 +1903,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
                                             .encoder_threads_per_file)});
       });
       const auto large_execution = pipeline_detail::encode_large_work_groups(
-          cfg, logger, large_resource_plan, *large_work, files.size(),
+          cfg, logger, large_resource_plan, *large_work, *recycle_plan, files.size(),
           completed, results, progress, stop_token);
       worker_failures += large_execution.worker_failures;
     }
@@ -1628,7 +2003,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     try {
       std::string summary_report;
       if (cfg.write_summary) {
-        summary_report = "，报告 summary.csv";
+        summary_report = "，报告 log/summery.csv";
         if (csv_write_failed) {
           summary_report += "，报告写入失败";
         }
@@ -1709,6 +2084,17 @@ int run_pipeline(const AppConfig& cfg,
                   : (event.result.ok
                          ? (event.result.skipped ? 'S' : 'D')
                          : (event.result.canceled ? 'C' : 'F'));
+          if (status == 'D') {
+            constexpr std::string_view hex = "0123456789abcdef";
+            const auto path = path_to_utf8(event.result.output_path);
+            std::string encoded;
+            encoded.reserve(path.size() * 2);
+            for (const unsigned char byte : path) {
+              encoded.push_back(hex[byte >> 4]);
+              encoded.push_back(hex[byte & 15]);
+            }
+            print_line(awj::compat::format("@AWJ-STUDIO/1 OUTPUT {} {}", event.result.index, encoded));
+          }
           print_line(awj::compat::format("@AWJ-STUDIO/1 ITEM {} {} {} {}",
                                  event.result.index, status, event.completed,
                                  event.total));

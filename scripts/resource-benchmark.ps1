@@ -7,6 +7,7 @@ param(
     [string[]]$Groups = @('large', 'mixed', 'grid', 'stress')
 )
 $ErrorActionPreference = 'Stop'
+Import-Module (Join-Path $PSScriptRoot 'benchmark-cpu-policy.psm1') -Force
 $exe = (Resolve-Path -LiteralPath $Executable).Path
 $inputRoot = (Resolve-Path -LiteralPath $Inputs).Path
 $outputRoot = [IO.Path]::GetFullPath($Outputs)
@@ -55,7 +56,7 @@ foreach ($group in $Groups) {
         try { $cpuSeconds = $process.TotalProcessorTime.TotalSeconds } catch { }
         $stdout.Result | Set-Content -LiteralPath (Join-Path $folder 'stdout.log')
         $stderr.Result | Set-Content -LiteralPath (Join-Path $folder 'stderr.log')
-        $summary = @(Import-Csv -LiteralPath (Join-Path $folder 'summary.csv'))
+        $summary = @(Import-Csv -LiteralPath (Get-AwjBenchmarkSummaryPath -OutputDirectory $folder))
         $failed = @($summary | Where-Object status -eq 'failed')
         $succeeded = @($summary | Where-Object status -eq 'ok')
         $expectedRejection = $memoryMiB -le 512 -and $failed.Count -gt 0 -and

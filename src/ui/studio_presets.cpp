@@ -35,8 +35,10 @@ awj::CollisionMode collision_from_index(int index) {
     case 3:
       return awj::CollisionMode::suffix_random;
     case 0:
-    default:
       return awj::CollisionMode::overwrite;
+    case 4:
+    default:
+      return awj::CollisionMode::suffix_number;
   }
 }
 
@@ -89,7 +91,9 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   app.set_allow_wic_fallback(defaults.allow_wic_fallback);
   refresh_avif_encoder_options(app);
   app.set_avif_encoder_index(0);
-  app.set_collision_index(0);
+  app.set_collision_index(default_queue_collision_index);
+  app.set_write_log(false);
+  app.set_delete_source(false);
   app.set_chroma_index(0);
   app.set_jpegli_progressive_index(
       awj::encoding_defaults::default_jpegli_progressive_level);
@@ -429,8 +433,9 @@ awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();
   awj::encoding_defaults::unlock_max_input_file_bytes.store(cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
   cfg.strip_metadata = app.get_strip_metadata();
-  cfg.write_summary = app.get_write_summary();
-  cfg.write_log = app.get_write_log();
+  cfg.write_summary = cfg.write_log = app.get_write_log();
+  // Destructive queue actions are explicit UI choices, never preset side effects.
+  cfg.delete_source = app.get_delete_source();
   cfg.preserve_creation_time = app.get_preserve_creation_time();
   cfg.preserve_modification_time = app.get_preserve_modification_time();
   cfg.preserve_access_time = app.get_preserve_access_time();

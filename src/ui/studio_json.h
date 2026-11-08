@@ -9,6 +9,8 @@
 #include <string_view>
 #include <unordered_map>
 
+#include "queue_ui_policy.h"
+
 namespace awj::studio_json {
 
 struct JsonConfigValue {
@@ -43,5 +45,9 @@ std::expected<std::string, std::string> config_string(
 bool config_has_key(
     const std::unordered_map<std::string, JsonConfigValue>& values,
     std::string_view key);
+
+// Migrate the two old report flags with OR; source recycling is independent.
+std::expected<awj::studio::QueueRunOptions, std::string> config_queue_options(
+    const std::unordered_map<std::string, JsonConfigValue>& values);
 
 }  // namespace awj::studio_json

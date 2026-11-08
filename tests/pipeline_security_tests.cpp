@@ -1,15 +1,19 @@
+#include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
+#include <chrono>
 #include <expected>
 #include <filesystem>
 #include <fstream>
 #include <format>
 #include <iterator>
 #include <limits>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -18,6 +22,10 @@
 #include <utility>
 #ifdef _WIN32
 #include <windows.h>
+#include <objbase.h>
+#include <shobjidl.h>
+#include <shellapi.h>
+#include <wrl/client.h>
 #endif
 
 import awj.codec;
@@ -87,9 +95,407 @@ std::string read_text(const std::filesystem::path& path) {
   return std::string{std::istreambuf_iterator<char>{stream}, {}};
 }
 
+int queue_path_component_contract(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  const auto base = root / "raw-path-components";
+  const auto p = base / "P", q = base / "Q";
+  const auto decoy = p / "image.webp", selected = q / "image.webp";
+  const auto output = base / "out" / "result.png";
+  std::error_code ec;
+  fs::create_directories(p / "plain", ec);
+  fs::create_directories(q / "sub", ec);
+  fs::create_directories(output.parent_path(), ec);
+  if (ec) return fail("Could not create raw-path component fixtures.");
+  const auto seed = [](const fs::path& path, std::string_view text) {
+    std::ofstream stream{path, std::ios::binary};
+    stream << text;
+    return static_cast<bool>(stream);
+  };
+  if (!seed(decoy, "P-decoy!") || !seed(selected, "Q-source") || !seed(output, "output!!"))
+    return fail("Could not seed equal-size source/decoy fixtures.");
+  const auto plain = p / "plain" / ".." / "image.webp";
+  const auto decoy_identity = awj::pipeline_detail::recycle_file_identity(decoy);
+  const auto plain_identity = awj::pipeline_detail::recycle_file_identity(plain);
+  if (!decoy_identity || !plain_identity || *decoy_identity != *plain_identity ||
+      !awj::core_detail::safe_unlinked_path(plain.parent_path(), true))
+    return fail("Ordinary no-link .. paths must remain usable.");
+  const auto relative_base = fs::relative(p, fs::current_path(), ec);
+  if (ec) return fail("Could not locate the relative path fixture.");
+  if (!relative_base.empty()) {
+    const auto relative = relative_base / "plain" / ".." / "image.webp";
+    const auto relative_identity = awj::pipeline_detail::recycle_file_identity(relative);
+    if (!relative_identity || *relative_identity != *decoy_identity)
+      return fail("Relative no-link .. paths must resolve to the actual file.");
+  } else std::fputs("Relative path subcase NOT COVERED: fixture and CWD use different roots.\n", stdout);
+  auto cfg = awj::default_app_config();
+  cfg.input_path = plain;
+  cfg.output_dir = output.parent_path();
+  cfg.output_format = awj::OutputFormat::png;
+  cfg.delete_source = true;
+  std::vector<awj::ImageFile> files{{.index = 0, .path = plain, .bytes = 8,
+      .resolved_output_path = output, .output_path_resolved = true}};
+  auto ordinary = awj::pipeline_detail::make_source_recycle_plan(cfg, files);
+  if (!ordinary || !ordinary->entries[0].identity || !ordinary->entries[0].retain_reason.empty() ||
+      ordinary->entries[0].source != plain)
+    return fail("A safe source spelling was normalized away or unnecessarily rejected.");
+  fs::create_directory_symlink(q / "sub", p / "link", ec);
+  if (ec) {
+#ifdef _WIN32
+    std::fputs("Raw link/.. source regression NOT COVERED: reparse creation unavailable.\n", stdout);
+    return 0;
+#else
+    return fail("Linux raw link/.. regression requires its owned directory symlink.");
+#endif
+  }
+  const auto raw = p / "link" / ".." / "image.webp";
+#ifndef _WIN32
+  if (!fs::equivalent(raw, selected, ec) || ec || fs::file_size(raw) != fs::file_size(decoy))
+    return fail("link/.. fixture did not select Q/image with an equal-size P/image decoy.");
+#endif
+  // These tests never call the recycler with a fabricated successful result.
+  // Fail using read-only planning/validation first, even against an old binary.
+  if (awj::core_detail::safe_unlinked_path(raw.parent_path(), true) ||
+      awj::pipeline_detail::recycle_file_identity(raw))
+    return fail("An unsafe raw link/.. source/output chain passed identity validation.");
+  const auto preserved = awj::core_detail::absolute_path_preserving_components(raw, ec);
+  if (ec || preserved != raw)
+    return fail("The original link/.. output spelling was changed before validation.");
+  files[0].path = raw;
+  auto unsafe = awj::pipeline_detail::make_source_recycle_plan(cfg, files);
+  if (!unsafe || unsafe->entries[0].identity || unsafe->entries[0].retain_reason.empty() ||
+      unsafe->entries[0].source != raw)
+    return fail("An unsafe source chain acquired a recyclable decoy identity.");
+  // Windows may apply native dot processing differently; protect the target
+  // of this platform's canonical dependency observation without assuming Q.
+  const auto dependency_target = fs::weakly_canonical(raw, ec);
+  if (ec || (dependency_target != selected && dependency_target != decoy))
+    return fail("Unexpected canonical dependency target in the owned alias fixture.");
+  const auto dependency_payload = read_text(dependency_target);
+  const auto alias = q / "shared-input.webp";
+  fs::create_hard_link(dependency_target, alias, ec);
+  if (ec) return fail("Could not create owned input-dependency alias.");
+  auto shared = files;
+  shared.push_back(awj::ImageFile{.index = 1, .path = alias, .bytes = 8,
+      .resolved_output_path = output.parent_path() / "other.png", .output_path_resolved = true});
+  auto dependencies = awj::pipeline_detail::make_source_recycle_plan(cfg, shared);
+  if (!dependencies || dependencies->entries[0].identity ||
+      dependencies->entries[1].retain_reason.find("重复源") == std::string::npos)
+    return fail("A non-eligible alias lost protection for another input sharing its actual file.");
+  const auto output_alias = output.parent_path() / "input-alias.png";
+  fs::create_hard_link(dependency_target, output_alias, ec);
+  if (ec) return fail("Could not create owned output-dependency alias.");
+  files[0].resolved_output_path = output_alias;
+  if (awj::pipeline_detail::make_source_recycle_plan(cfg, files))
+    return fail("A non-eligible alias lost hard-link input/output protection.");
+  if (read_text(decoy) != "P-decoy!" || read_text(selected) != "Q-source" ||
+      read_text(alias) != dependency_payload || read_text(output) != "output!!")
+    return fail("Raw-path planning changed a source, decoy, or committed output fixture.");
+  return 0;
+}
+
+int queue_core_contract(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  if (const auto checked = queue_path_component_contract(root)) return checked;
+  const auto input_dir = root / "queue-input";
+  const auto source = input_dir / "queue-contract.webp";
+  std::error_code ec;
+  fs::create_directories(input_dir, ec);
+  if (ec) return fail("Could not create dedicated queue inputs.");
+  if (auto written = write_webp(source); !written) return fail(written.error());
+  const auto source_hash = awj::file_sha256_hex(source);
+  if (!source_hash) return fail(source_hash.error());
+  auto cfg = awj::default_app_config();
+  cfg.input_path = source;
+  cfg.output_format = awj::OutputFormat::png;
+  cfg.quality = 100;
+  cfg.max_jobs = 1;
+  for (const bool log : {false, true}) for (const bool summary : {false, true}) {
+    cfg.write_log = log;
+    cfg.write_summary = summary;
+    cfg.output_dir = root / std::format("queue-log-{}-{}", log, summary);
+    const auto converted = awj::run_batch(cfg);
+    if (!converted || converted->ok_count != 1 || !fs::exists(source) ||
+        fs::exists(cfg.output_dir / "log" / "awj.log") != (log || summary) ||
+        fs::exists(cfg.output_dir / "log" / "summery.csv") != (log || summary) ||
+        fs::exists(cfg.output_dir / "summary.csv"))
+      return fail(converted ? "Direct AppConfig legacy log bools did not control both outputs." : converted.error());
+  }
+  cfg.write_log = cfg.write_summary = false;
+  {
+    auto numbered = cfg;
+    numbered.input_path = root / "queue-number-input";
+    numbered.output_dir = root / "queue-number-output";
+    numbered.output_template = L"same";
+    fs::create_directories(numbered.input_path, ec);
+    fs::create_directories(numbered.output_dir, ec);
+    if (ec) return fail("Could not create numbered queue fixture.");
+    if (auto a = write_webp(numbered.input_path / "a.webp"); !a) return fail(a.error());
+    if (auto b = write_webp(numbered.input_path / "b.webp", std::byte{23}); !b) return fail(b.error());
+    { std::ofstream existing{numbered.output_dir / "same.png", std::ios::binary}; existing << "user output"; }
+    const auto converted = awj::run_batch(numbered);
+    if (!converted || converted->ok_count != 2 ||
+        !fs::exists(numbered.output_dir / "same(1).png") ||
+        !fs::exists(numbered.output_dir / "same(2).png") ||
+        read_text(numbered.output_dir / "same.png") != "user output" ||
+        !fs::exists(numbered.input_path / "a.webp") || !fs::exists(numbered.input_path / "b.webp"))
+      return fail("Default queue numbering overwrote an existing/batch output or its input.");
+  }
+  cfg.delete_source = true;
+  cfg.output_dir = root / "queue-guards";
+  fs::create_directories(cfg.output_dir, ec);
+  const auto output = cfg.output_dir / "queue-contract.png";
+  fs::copy_file(root / "queue-log-false-false" / "queue-contract.png", output, ec);
+  if (ec) return fail("Could not seed a committed queue output.");
+  std::vector<awj::ImageFile> files{{.index = 0, .path = source, .bytes = fs::file_size(source),
+      .resolved_output_path = output, .output_path_resolved = true}};
+  auto plan = awj::pipeline_detail::make_source_recycle_plan(cfg, files);
+  if (!plan) return fail(plan.error());
+#ifdef _WIN32
+  {
+    const auto output_identity = awj::pipeline_detail::recycle_file_identity(output);
+    if (!output_identity || !plan->entries.front().identity) return fail("Missing recycle identity fixture.");
+    awj::pipeline_detail::RecycleOnlySink sink{source, *plan->entries.front().identity,
+        output, *output_identity, {}};
+    if (sink.PreDeleteItem(TSF_NORMAL, nullptr) != E_ABORT || sink.permitted)
+      return fail("The Shell sink did not veto a permanent-delete notification.");
+  }
+#endif
+  const awj::EncodeResult committed{.index = 0, .input_path = source, .output_path = output,
+      .original_bytes = fs::file_size(source), .output_bytes = fs::file_size(output),
+      .processed = true, .ok = true};
+  for (int state = 0; state < 6; ++state) {
+    auto result = committed;
+    auto effective = cfg;
+    awj::compat::stop_source stop;
+    switch (state) {
+      case 0: result.ok = false; break;
+      case 1: result.skipped = true; break;
+      case 2: result.canceled = true; break;
+      case 3: result.processed = false; break;
+      case 4: effective.delete_source = false; break;
+      case 5: stop.request_stop(); break;
+    }
+    const auto recycled = awj::pipeline_detail::recycle_successful_source(effective, *plan, result, stop.get_token());
+    const auto retained_hash = awj::file_sha256_hex(source);
+    if (!recycled || !fs::exists(source) || !retained_hash || *retained_hash != *source_hash)
+      return fail("A failed/canceled/skipped/uncommitted/default-preserve result recycled its source.");
+  }
+  {
+    auto missing = committed;
+    missing.output_path = cfg.output_dir / "not-written.png";
+    if (awj::pipeline_detail::recycle_successful_source(cfg, *plan, missing) || !fs::exists(source))
+      return fail("A missing output was treated as committed.");
+    auto same = committed;
+    same.output_path = source;
+    same.output_bytes = same.original_bytes;
+    if (awj::pipeline_detail::recycle_successful_source(cfg, *plan, same) || !fs::exists(source))
+      return fail("Same-source output was recycled.");
+    auto mismatched = committed;
+    mismatched.input_path = input_dir / "another.webp";
+    if (awj::pipeline_detail::recycle_successful_source(cfg, *plan, mismatched) || !fs::exists(source))
+      return fail("A result not bound to the captured source was recycled.");
+  }
+  {
+    auto duplicate_files = files;
+    duplicate_files.push_back(files.front());
+    duplicate_files.back().index = 1;
+    duplicate_files.back().resolved_output_path = cfg.output_dir / "duplicate.png";
+    auto duplicates = awj::pipeline_detail::make_source_recycle_plan(cfg, duplicate_files);
+    auto result = committed;
+    if (!duplicates || awj::pipeline_detail::recycle_successful_source(cfg, *duplicates, result) ||
+        !fs::exists(source)) return fail("Duplicate source dependency was not retained.");
+  }
+  {
+    const auto alias = input_dir / "hardlink.webp";
+    fs::create_hard_link(source, alias, ec);
+    if (ec) return fail("Could not create dedicated hard-link input.");
+    auto hard = awj::pipeline_detail::make_source_recycle_plan(cfg, files);
+    auto result = committed;
+    if (!hard || awj::pipeline_detail::recycle_successful_source(cfg, *hard, result) ||
+        !fs::exists(source) || !fs::exists(alias)) return fail("A hard-linked source was recycled.");
+    auto aliased_output_files = files;
+    aliased_output_files.front().resolved_output_path = alias;
+    if (awj::pipeline_detail::make_source_recycle_plan(cfg, aliased_output_files))
+      return fail("An output aliasing an input hard link was accepted.");
+    fs::remove(alias, ec);
+    if (ec) return fail("Could not remove dedicated hard-link fixture.");
+  }
+  {
+    auto captured = awj::pipeline_detail::make_source_recycle_plan(cfg, files);
+    if (!captured) return fail(captured.error());
+    const auto saved = input_dir / "captured-source.webp";
+    fs::rename(source, saved, ec);
+    if (ec) return fail("Could not preserve replacement-test source.");
+    if (auto replacement = write_webp(source, std::byte{17}); !replacement) return fail(replacement.error());
+    const auto replacement_hash = awj::file_sha256_hex(source);
+    auto result = committed;
+    const auto recycled = awj::pipeline_detail::recycle_successful_source(cfg, *captured, result);
+    const auto retained_hash = awj::file_sha256_hex(source);
+    if (recycled || !replacement_hash || !retained_hash ||
+        *retained_hash != *replacement_hash || !fs::exists(saved))
+      return fail("A replaced source pathname was recycled.");
+    fs::remove(source, ec);
+    fs::rename(saved, source, ec);
+    if (ec) return fail("Could not restore replacement-test fixture.");
+  }
+  cfg.output_dir = root / "queue-cancel";
+  awj::compat::stop_source canceled;
+  bool started = false;
+  const auto canceled_batch = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+    if (event.kind == awj::BatchEventKind::item_started) { started = true; canceled.request_stop(); }
+  }, canceled.get_token());
+  if (!canceled_batch || !started || !canceled_batch->canceled || !fs::exists(source))
+    return fail("Cancellation at item start recycled its source.");
+
+  cfg.output_dir = root / "queue-late-collision";
+  bool seeded = false;
+  const auto collision = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+    if (event.kind == awj::BatchEventKind::item_started) {
+      fs::create_directories(event.result.output_path.parent_path(), ec);
+      std::ofstream sentinel{event.result.output_path, std::ios::binary};
+      sentinel << "new user output";
+      seeded = static_cast<bool>(sentinel);
+    }
+  });
+  if (!collision || !seeded || collision->ok_count != 0 || !fs::exists(source) ||
+      read_text(cfg.output_dir / "queue-contract.png") != "new user output")
+    return fail("Late output collision overwrote the new path or recycled the source.");
+
+  cfg.collision_mode = awj::CollisionMode::skip;
+  const auto skipped = awj::run_batch(cfg);
+  if (!skipped || skipped->ok_count != 1 || !fs::exists(source))
+    return fail("Skipped existing output recycled its source.");
+  const auto invalid = input_dir / "invalid-empty.webp";
+  { std::ofstream empty{invalid, std::ios::binary}; }
+  cfg.input_path = invalid;
+  cfg.output_dir = root / "queue-failure";
+  const auto failed = awj::run_batch(cfg);
+  if (!failed || failed->ok_count || failed->failed_count != 1 || !fs::exists(invalid))
+    return fail("Failed input recycled its source.");
+  return 0;
+}
+
+#ifdef _WIN32
+bool restore_generated_recycle_item(const std::wstring& recycled,
+    const std::filesystem::path& original) {
+  const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+  struct ComScope { HRESULT value; ~ComScope() { if (SUCCEEDED(value)) CoUninitialize(); } } com{initialized};
+  if (FAILED(initialized) || recycled.empty() || std::filesystem::exists(original)) return false;
+  Microsoft::WRL::ComPtr<IFileOperation> operation;
+  Microsoft::WRL::ComPtr<IShellItem> item, parent;
+  const auto directory = original.parent_path();
+  const auto filename = original.filename().native();
+  HRESULT hr = CoCreateInstance(__uuidof(FileOperation), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
+  if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(
+      FOF_NOERRORUI | FOFX_EARLYFAILURE | FOF_SILENT | FOF_NO_CONNECTED_ELEMENTS | FOFX_NOCOPYHOOKS);
+  if (SUCCEEDED(hr)) hr = SHCreateItemFromParsingName(recycled.c_str(), nullptr, IID_PPV_ARGS(&item));
+  if (SUCCEEDED(hr)) hr = SHCreateItemFromParsingName(directory.c_str(), nullptr, IID_PPV_ARGS(&parent));
+  if (SUCCEEDED(hr)) hr = operation->MoveItem(item.Get(), parent.Get(), filename.c_str(), nullptr);
+  if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+  BOOL aborted = TRUE;
+  if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
+  return SUCCEEDED(hr) && !aborted && std::filesystem::exists(original);
+}
+#endif
+
+int queue_recycle_system_contract(const std::filesystem::path& root) {
+  namespace fs = std::filesystem;
+  const auto unique = std::to_string(awj::current_process_id()) + "-" +
+      std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+  const auto inputs = root / "system-recycle-input";
+  const auto source = inputs / ("awj-queue-recycle-" + unique + ".webp");
+  const auto failed_input = inputs / ("z-failed-" + unique + ".webp");
+  std::error_code ec;
+  fs::create_directories(inputs, ec);
+  if (ec) return fail("Could not create uniquely owned system-recycle fixture.");
+  if (auto written = write_webp(source); !written) return fail(written.error());
+  { std::ofstream invalid{failed_input, std::ios::binary}; }
+  const auto original_hash = awj::file_sha256_hex(source);
+  if (!original_hash) return fail(original_hash.error());
+#ifndef _WIN32
+  // A fresh test process isolates GIO's home trash to this owned build/results
+  // directory. Never enumerate or empty the user's real desktop trash.
+  const char* previous = std::getenv("XDG_DATA_HOME");
+  const std::optional<std::string> old_xdg = previous ? std::optional<std::string>{previous} : std::nullopt;
+  struct RestoreEnvironment {
+    const std::optional<std::string>& old;
+    ~RestoreEnvironment() { if (old) ::setenv("XDG_DATA_HOME", old->c_str(), 1); else ::unsetenv("XDG_DATA_HOME"); }
+  } restore_environment{old_xdg};
+  const auto xdg = root / "isolated-desktop-data";
+  fs::create_directories(xdg, ec);
+  if (ec || ::setenv("XDG_DATA_HOME", xdg.c_str(), 1) != 0)
+    return fail("Could not isolate the test desktop trash.");
+#endif
+  auto cfg = awj::default_app_config();
+  cfg.input_path = inputs;
+  cfg.output_dir = root / "system-recycle-output";
+  cfg.output_format = awj::OutputFormat::png;
+  cfg.quality = 100;
+  cfg.max_jobs = 1;
+  cfg.delete_source = true;
+  cfg.write_log = true;
+  awj::EncodeResult successful;
+  bool immediate = false, before_next_item = false;
+  const auto converted = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+    if (event.kind == awj::BatchEventKind::item_finished && event.result.input_path == source) {
+      successful = event.result;
+      immediate = !fs::exists(source);
+    }
+    if (event.kind == awj::BatchEventKind::item_started && event.result.input_path == failed_input)
+      before_next_item = !fs::exists(source);
+  });
+  if (!converted || converted->ok_count != 1 || converted->failed_count != 1 ||
+      !successful.ok || successful.skipped || !fs::exists(failed_input) ||
+      !fs::exists(successful.output_path))
+    return fail(converted ? "System-recycle queue did not retain its failed input or commit the successful output." : converted.error());
+  if (fs::exists(source)) {
+    const auto retained_hash = awj::file_sha256_hex(source);
+    if (!retained_hash || *retained_hash != *original_hash || successful.message.find("回收") == std::string::npos)
+      return fail("Unavailable recycling did not preserve the source and produce a warning.");
+    std::fprintf(stdout, "System recycle success NOT COVERED; source safely retained: %s\n", successful.message.c_str());
+    return 77;
+  }
+  if (!immediate || !before_next_item || !successful.input_sha256_snapshot ||
+      *successful.input_sha256_snapshot != *original_hash ||
+      read_text(cfg.output_dir / "log" / "summery.csv").find(*original_hash) == std::string::npos)
+    return fail("Successful recycling was deferred or lost the pre-recycle source SHA-256.");
+#ifdef _WIN32
+  // Use only the exact item returned by PostDeleteItem. Shell MoveItem restores
+  // its own bookkeeping; no Recycle Bin enumeration or blanket empty operation.
+  if (!restore_generated_recycle_item(successful.recycled_source_shell_item, source))
+    return fail("Could not restore this generated Shell recycle item: " +
+        awj::utf8_from_wide(successful.recycled_source_shell_item));
+  if (!successful.recycled_source_path.empty()) {
+    auto info_name = successful.recycled_source_path.filename().native();
+    if (fs::exists(successful.recycled_source_path))
+      return fail("The exact generated recycle data entry remained after Shell restoration.");
+    if (info_name.starts_with(L"$R")) {
+      info_name[1] = L'I';
+      if (fs::exists(successful.recycled_source_path.parent_path() / info_name))
+        return fail("The exact generated recycle metadata entry remained after Shell restoration.");
+    }
+  }
+#else
+  const auto recycled = xdg / "Trash" / "files" / source.filename();
+  const auto metadata = xdg / "Trash" / "info" / (source.filename().native() + ".trashinfo");
+  const auto trashed_hash = awj::file_sha256_hex(recycled);
+  if (!trashed_hash || *trashed_hash != *original_hash ||
+      !read_text(metadata).starts_with("[Trash Info]\n"))
+    return fail("GIO did not produce the expected recoverable entry in the isolated desktop trash.");
+  fs::rename(recycled, source, ec);
+  if (ec || !fs::remove(metadata, ec) || ec)
+    return fail("Could not restore and remove the generated isolated trash entry.");
+#endif
+  const auto restored_hash = awj::file_sha256_hex(source);
+  if (!restored_hash || *restored_hash != *original_hash)
+    return fail("Restoring the generated recycle item changed its content.");
+  std::fputs("Real system recycling verified before the next item; generated entry restored and cleaned.\n", stdout);
+  return 0;
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   {
     constexpr std::uint64_t mib = 1024ull * 1024;
     constexpr std::uint64_t n = 2048ull * 1536;
@@ -263,12 +669,24 @@ int main() {
         awj::estimated_regular_memory({}, defaults).bytes != UINT64_MAX)
       return fail("Image working-set dimensions/input arithmetic overflowed or admitted empty geometry");
   }
-  const auto root = std::filesystem::temp_directory_path() / "awjimage-pipeline-security-tests";
+  const auto root = std::filesystem::path{AWJ_TEST_RESULTS_ROOT} /
+      ("pipeline-security-" + std::to_string(awj::current_process_id()));
   std::error_code ec;
-  std::filesystem::remove_all(root, ec);
-  std::filesystem::create_directories(root, ec);
-  if (ec) {
-    return fail("failed to create temp root.");
+  if (!std::filesystem::create_directories(root, ec) || ec) {
+    return fail("Dedicated pipeline test directory exists or cannot be created.");
+  }
+  if (argc == 2 && std::string_view{argv[1]} == "--queue-recycle-only") {
+    const auto checked = queue_recycle_system_contract(root);
+    if (checked == 0 || checked == 77) {
+      std::filesystem::remove_all(root, ec);
+      if (ec) return fail("Could not clean generated system-recycle test files.");
+    }
+    return checked;
+  }
+  if (const auto checked = queue_core_contract(root)) return checked;
+  if (argc == 2 && std::string_view{argv[1]} == "--queue-contract-only") {
+    std::filesystem::remove_all(root, ec);
+    return ec ? fail("Could not clean dedicated queue test files.") : 0;
   }
   {
     const auto input = root / "memory-unlock.webp";
@@ -294,7 +712,7 @@ int main() {
               result.memory_target_width == 2 && result.memory_target_height == 2;
         }
       });
-      const auto csv = read_text(cfg.output_dir / "summary.csv");
+      const auto csv = read_text(cfg.output_dir / "log" / "summery.csv");
       if (!summary || summary->ok_count != 1 || !traced ||
           csv.find("memory_budget_bytes,memory_budget_mode,memory_budget_source,estimated_working_set_bytes") == std::string::npos ||
           csv.find(",0,unlocked,session_unlock,") == std::string::npos)
@@ -315,7 +733,7 @@ int main() {
         }
       }, cancel.get_token());
       if (!manual || !manual->canceled || !manual_traced ||
-          read_text(cfg.output_dir / "summary.csv").find(",0,unlocked,session_unlock,") == std::string::npos)
+          read_text(cfg.output_dir / "log" / "summery.csv").find(",0,unlocked,session_unlock,") == std::string::npos)
         return fail("Manual Grid worker reinterpreted unlocked zero as automatic or fabricated unstarted measurements.");
     }
   }
@@ -422,7 +840,7 @@ int main() {
       return fail("Grid preflight failed to record its actual budget/estimate or fabricated encoder work");
     if (auto csv = awj::write_csv(cfg.output_dir, std::span<const awj::EncodeResult>{&result, 1}); !csv)
       return fail(csv.error());
-    if (read_text(cfg.output_dir / "summary.csv").find(",67108864,manual,configuration,") == std::string::npos)
+    if (read_text(cfg.output_dir / "log" / "summery.csv").find(",67108864,manual,configuration,") == std::string::npos)
       return fail("Budget rejection CSV silently emitted zero instead of the actual manual budget");
   }
   {
@@ -466,7 +884,7 @@ int main() {
       }
     });
     if (!rejected_summary || rejected_summary->failed_count != 1 || !rejected_before_start || rejected_started ||
-        read_text(rejected_cfg.output_dir / "summary.csv").find(",67108864,manual,configuration,") == std::string::npos)
+        read_text(rejected_cfg.output_dir / "log" / "summery.csv").find(",67108864,manual,configuration,") == std::string::npos)
       return fail("Batch admission rejection lost its Grid estimate/budget or reported encoder work before start");
     bool successful_trace = false;
     auto summary = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
@@ -477,7 +895,7 @@ int main() {
             event.result.estimated_working_set_bytes > 0;
     });
     if (!summary) return fail(summary.error());
-    if (summary->ok_count != 1 || !successful_trace) return fail("automatic Grid encode failed or lost memory diagnostics: " + read_text(cfg.output_dir / "summary.csv"));
+    if (summary->ok_count != 1 || !successful_trace) return fail("automatic Grid encode failed or lost memory diagnostics: " + read_text(cfg.output_dir / "log" / "summery.csv"));
     auto decoded = awj::make_avif_image_decoder(1)->decode(cfg.output_dir / "auto-grid.avif");
     if (!summary || summary->ok_count != 1 || !decoded || decoded->image.width != 65537 || decoded->image.height != 64)
       return fail(decoded ? "automatic Grid changed original dimensions" : decoded.error());
@@ -753,7 +1171,7 @@ int main() {
                     : invalid_batch_summary.error());
   }
   const auto invalid_batch_csv =
-      read_text(invalid_batch_output / "summary.csv");
+      read_text(invalid_batch_output / "log" / "summery.csv");
   if (invalid_batch_csv.find("empty.webp") == std::string::npos ||
       invalid_batch_csv.find("failed") == std::string::npos ||
       invalid_batch_csv.find("decode_stage,source_metadata_available,selected_rendition,rendition_origin") == std::string::npos ||
@@ -971,7 +1389,7 @@ int main() {
 
 #endif
 
-  const auto csv = read_text(output_dir / "summary.csv");
+  const auto csv = read_text(output_dir / "log" / "summery.csv");
   if (csv.find("same-a.webp") == std::string::npos ||
       csv.find(root.string()) != std::string::npos) {
     return fail("summary should contain file names but not full temp root paths.");
@@ -995,7 +1413,7 @@ int main() {
   if (auto csv_ok = awj::write_csv(output_dir / "csv-formula", std::span<const awj::EncodeResult>{&formula_result, 1}); !csv_ok) {
     return fail(csv_ok.error());
   }
-  const auto formula_csv = read_text(output_dir / "csv-formula" / "summary.csv");
+  const auto formula_csv = read_text(output_dir / "csv-formula" / "log" / "summery.csv");
   if (formula_csv.find("'=cmd.webp") == std::string::npos ||
       formula_csv.find("'=FORMULA") == std::string::npos) {
     return fail("summary CSV did not escape formula-like cells.");

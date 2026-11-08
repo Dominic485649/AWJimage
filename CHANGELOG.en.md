@@ -7,6 +7,13 @@
 - Use the CPU for luma, GMSD and MS-SSIM, retaining reference/pyramid caches, quality search and cancellation.
 - Simplify related settings and diagnostics while retaining existing configuration and preset compatibility; the interface still supports hardware-accelerated and software rendering.
 
+### Encoding queue
+
+- Merge CSV and run-log controls, writing `log/summery.csv` and `log/awj.log` together.
+- Add **Append number** as the default collision policy, preserving existing outputs with `(1)`, `(2)` and subsequent suffixes.
+- Add an opt-in **Delete source files** control that recycles each source only after successful output; retain the source if recycling fails.
+- Double-click queue images to open their sources before encoding and their actual outputs after success.
+
 ### AVIF parameter validation
 
 - Add real encode/decode regression coverage for IQ and intra-prediction tools, including high bit depths, sampling and alpha; retain the existing IQ, quality and speed defaults.

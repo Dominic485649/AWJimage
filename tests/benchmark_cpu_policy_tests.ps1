@@ -25,9 +25,36 @@ foreach ($row in @(
     try { Assert-AwjBenchmarkCpuRows -Rows @($row) } catch { $rejected = $true }
     if (-not $rejected) { throw 'CPU 基准没有拒绝 GPU 请求、GPU 执行或未证明的路径。' }
 }
+$root = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$fixture = Join-Path $root ('build/test-benchmark-report-' + [Guid]::NewGuid().ToString('N'))
+try {
+    New-Item -ItemType Directory -Path (Join-Path $fixture 'log') | Out-Null
+    foreach ($phase in @('missing','legacy','ambiguous','current')) {
+        if ($phase -eq 'legacy') { [IO.File]::WriteAllText((Join-Path $fixture 'summary.csv'), 'legacy') }
+        if ($phase -eq 'ambiguous') { [IO.File]::WriteAllText((Join-Path $fixture 'log/summery.csv'), 'current') }
+        if ($phase -eq 'current') { Remove-Item -LiteralPath (Join-Path $fixture 'summary.csv') -Confirm:$false }
+        $rejected = $false
+        $selected = $null
+        try { $selected = Get-AwjBenchmarkSummaryPath -OutputDirectory $fixture } catch { $rejected = $true }
+        if ($rejected -ne ($phase -in @('missing','ambiguous'))) { throw "报告选择策略不符：$phase" }
+        if ($phase -eq 'legacy' -and $selected -ne (Join-Path $fixture 'summary.csv')) { throw '未选择旧版报告。' }
+        if ($phase -eq 'current' -and $selected -ne (Join-Path $fixture 'log/summery.csv')) { throw '未选择新版报告。' }
+    }
+} finally {
+    if (Test-Path -LiteralPath $fixture) { Remove-Item -LiteralPath $fixture -Recurse -Force -Confirm:$false }
+}
+$blocked = $false
+try {
+    & (Join-Path $PSScriptRoot '../scripts/benchmark.ps1') -InputRoot $fixture `
+        -AwjExecutable 'must-not-run' -ResultRoot $fixture -ExtraArguments '--delete-source' | Out-Null
+} catch {
+    if ($_.Exception.Message -notmatch '基准测试禁止回收源文件') { throw }
+    $blocked = $true
+}
+if (-not $blocked) { throw '基准测试没有在访问语料前拒绝回收选项。' }
 $tokens = $null
 $parseErrors = $null
 $null = [Management.Automation.Language.Parser]::ParseFile(
     (Join-Path $PSScriptRoot '../scripts/benchmark.ps1'), [ref]$tokens, [ref]$parseErrors)
 if ($parseErrors.Count) { throw ($parseErrors | Out-String) }
-'CPU 基准策略测试通过：旧版能力识别、新版无旧开关、CPU 路径与拒绝 GPU/回退/未知状态。'
+'基准策略测试通过：CPU 路径、新旧报告兼容、歧义拒绝及源语料保护。'

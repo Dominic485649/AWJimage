@@ -10,6 +10,7 @@
 #include <vector>
 
 import awj.config;
+import awj.core;
 import awj.codec;
 import awj.encoding_defaults;
 import awj.preset;
@@ -88,6 +89,44 @@ int main() {
     return fail("Out-of-range chroma cache index was not rejected or normalized.");
 
   const auto defaults = awj::default_app_config();
+  if (defaults.delete_source || defaults.write_log || defaults.write_summary ||
+      defaults.collision_mode != awj::CollisionMode::suffix_number)
+    return fail("Queue defaults must preserve sources, disable logs and number collisions.");
+  for (const auto* enable : {L"--log", L"--summary"}) {
+    const auto on = awj::parse_arguments({enable});
+    if (!on || !on->config.write_log || !on->config.write_summary)
+      return fail("Either log spelling must enable both outputs.");
+    for (const auto* disable : {L"--no-log", L"--no-summary"}) {
+      const auto off_last = awj::parse_arguments({enable, disable});
+      const auto on_last = awj::parse_arguments({disable, enable});
+      if (!off_last || off_last->config.write_log || off_last->config.write_summary ||
+          !on_last || !on_last->config.write_log || !on_last->config.write_summary)
+        return fail("The last log/summary alias must win across spellings.");
+    }
+  }
+  for (const bool log : {false, true}) for (const bool summary : {false, true}) {
+    auto legacy = defaults;
+    legacy.write_log = log;
+    legacy.write_summary = summary;
+    const auto normalized = awj::parse_arguments_with_preset_base({}, legacy);
+    const auto disabled = awj::parse_arguments_with_preset_base({L"--no-summary"}, legacy);
+    if (!normalized || normalized->config.write_log != (log || summary) ||
+        normalized->config.write_summary != (log || summary) ||
+        !disabled || disabled->config.write_log || disabled->config.write_summary)
+      return fail("Legacy AppConfig log bools were not merged or explicitly disabled.");
+  }
+  const auto recycle_on = awj::parse_arguments({L"--delete-source"});
+  const auto recycle_off = awj::parse_arguments({L"--delete-source", L"--no-delete-source"});
+  const auto recycle_last = awj::parse_arguments({L"--no-delete-source", L"--delete-source"});
+  if (!recycle_on || !recycle_on->config.delete_source ||
+      !recycle_off || recycle_off->config.delete_source ||
+      !recycle_last || !recycle_last->config.delete_source)
+    return fail("Source recycling CLI flags did not use explicit opt-in/last-wins semantics.");
+  const auto explicit_overwrite = awj::parse_arguments({L"--overwrite"});
+  const auto explicit_skip = awj::parse_arguments({L"--skip-existing"});
+  if (!explicit_overwrite || explicit_overwrite->config.collision_mode != awj::CollisionMode::overwrite ||
+      !explicit_skip || explicit_skip->config.collision_mode != awj::CollisionMode::skip)
+    return fail("Explicit legacy collision modes changed.");
   for (const auto& args : {
       std::vector<std::wstring>{L"--threads", L"10", L"--cpu-affinity", L"0-4,9-13"},
       std::vector<std::wstring>{L"--cpu-affinity", L"0-4,9-13", L"--threads", L"10"},
@@ -500,10 +539,12 @@ int main() {
     return fail("user preset selector did not preserve the built-in defaults.");
   }
 
-  const auto preset_test_path = std::filesystem::temp_directory_path() /
-                                "awjimage-config-defaults-preset.jsonc";
+  const auto preset_test_root = std::filesystem::path{AWJ_TEST_RESULTS_ROOT} /
+      ("config-defaults-" + std::to_string(awj::current_process_id()));
+  const auto preset_test_path = preset_test_root / "preset.jsonc";
   std::error_code preset_test_ec;
-  std::filesystem::remove(preset_test_path, preset_test_ec);
+  if (!std::filesystem::create_directories(preset_test_root, preset_test_ec) || preset_test_ec)
+    return fail("Dedicated config test directory exists or cannot be created.");
   {
     std::ofstream output{preset_test_path, std::ios::binary | std::ios::trunc};
   output << R"jsonc(// JSONC comments are accepted.
@@ -618,7 +659,7 @@ int main() {
     std::filesystem::remove(preset_test_path, preset_test_ec);
     return fail("unsupported user preset schema was accepted.");
   }
-  std::filesystem::remove(preset_test_path, preset_test_ec);
+  std::filesystem::remove_all(preset_test_root, preset_test_ec);
 
 #ifdef _WIN32
   parsed = awj::parse_arguments({L"--preserve-creation-time",
@@ -720,6 +761,12 @@ int main() {
   }
 
   const auto help = awj::help_text();
+  if (help.find("--delete-source") == std::string::npos ||
+      help.find("--no-delete-source") == std::string::npos ||
+      help.find("log/summery.csv") == std::string::npos ||
+      help.find("默认 number") == std::string::npos ||
+      help.find("默认 overwrite") != std::string::npos)
+    return fail("Help does not describe queue recycling, merged logs or numbering defaults.");
   if (help.find("visual-quality-gpu") != std::string::npos ||
       help.find("使用 CPU 计算 luma、GMSD 与 MS-SSIM 指标") == std::string::npos) {
     return fail("帮助文本没有反映纯 CPU 视觉质量计算。");

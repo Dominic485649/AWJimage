@@ -1055,6 +1055,11 @@ avif_enable_common_options(awj_pipeline)
 target_link_libraries(awj_pipeline PUBLIC
     awj_base
     awj_native_backend)
+if(WIN32)
+    target_link_libraries(awj_pipeline PRIVATE ole32 shell32)
+else()
+    target_link_libraries(awj_pipeline PRIVATE ${CMAKE_DL_LIBS})
+endif()
 target_sources(awj_pipeline
     PUBLIC
         FILE_SET awj_pipeline_modules TYPE CXX_MODULES FILES
@@ -1392,6 +1397,15 @@ if(BUILD_TESTING)
     foreach(test_target IN LISTS AWJ_TEST_TARGETS)
         awj_set_runtime_directory(${test_target} "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
     endforeach()
+    # Queue regression inputs must stay in this build, even when executable
+    # delivery paths are configured elsewhere (including a versioned bin/).
+    foreach(queue_test_target IN ITEMS awj_config_defaults_tests awj_process_tests
+            awj_native_pipeline_tests awj_pipeline_security_tests)
+        if(TARGET ${queue_test_target})
+            target_compile_definitions(${queue_test_target} PRIVATE
+                AWJ_TEST_RESULTS_ROOT="${CMAKE_CURRENT_BINARY_DIR}/results")
+        endif()
+    endforeach()
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
     add_test(NAME animation_decoder_core COMMAND awj_animation_decoder_tests)
@@ -1456,6 +1470,10 @@ if(BUILD_TESTING)
         add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
     endif()
     add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
+    add_test(NAME queue_core_contract COMMAND awj_pipeline_security_tests --queue-contract-only)
+    add_test(NAME queue_recycle_system COMMAND awj_pipeline_security_tests --queue-recycle-only)
+    set_tests_properties(queue_core_contract queue_recycle_system PROPERTIES TIMEOUT 90)
+    set_tests_properties(queue_recycle_system PROPERTIES SKIP_RETURN_CODE 77)
     add_test(NAME memory_cancel_core COMMAND awj_memory_cancel_tests)
     add_test(NAME raw_wgc_stdin_core COMMAND awj_raw_wgc_stdin_tests)
 
@@ -1751,6 +1769,10 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_queue_merge_tests)
     add_test(NAME queue_merge_contract COMMAND awj_queue_merge_tests)
     set_tests_properties(queue_merge_contract PROPERTIES TIMEOUT 30)
+    add_executable(awj_queue_ui_policy_tests tests/queue_ui_policy_tests.cpp)
+    avif_enable_common_options(awj_queue_ui_policy_tests)
+    add_test(NAME queue_ui_policy_contract COMMAND awj_queue_ui_policy_tests)
+    set_tests_properties(queue_ui_policy_contract PROPERTIES TIMEOUT 30)
 
     add_executable(awj_import_service_tests
         tests/import_service_tests.cpp
@@ -1842,6 +1864,8 @@ if(BUILD_TESTING)
     set_tests_properties(ui_memory_budget_unlock PROPERTIES TIMEOUT 120)
     add_test(NAME ui_fixed_size_inputs COMMAND awj_ui_smoke_tests --fixed-size-inputs)
     set_tests_properties(ui_fixed_size_inputs PROPERTIES TIMEOUT 120)
+    add_test(NAME ui_queue_options COMMAND awj_ui_smoke_tests --queue-options)
+    set_tests_properties(ui_queue_options PROPERTIES TIMEOUT 120)
     add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
     add_test(NAME ui_queue_stress COMMAND awj_ui_smoke_tests --queue-stress)
     set_tests_properties(ui_queue_stress PROPERTIES TIMEOUT 120)

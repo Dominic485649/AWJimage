@@ -89,7 +89,8 @@ export component AwjStudio inherits Window {
     in-out property <bool> template-rand-selected: false;
     in-out property <bool> template-hash8-selected: false;
     in-out property <bool> template-sha2568-selected: false;
-    in-out property <int> collision-index: 0;
+    // Persisted indices 0..3 retain their old meaning; 4 appends numbering.
+    in-out property <int> collision-index: 4;
     in-out property <int> theme-index: 0;
     // 0 = 中文（msgid 原文），1 = English（bundled 翻译）。
     in-out property <int> language-index: 0;
@@ -114,7 +115,8 @@ export component AwjStudio inherits Window {
     in-out property <int> ui-font-index: 0;
     in-out property <bool> system-dark-mode: false;
     in-out property <bool> strip-metadata: false;
-    // 队列级运行设置：点击“开始转换”时由 C++ 统一快照，不写入 AWJ.jsonc。
+    // 格式是会话状态；预设仅按文件身份保存。日志/回收/碰撞策略独立保存，
+    // 不随编码预设选择改变，点击“开始转换”时统一快照。
     in-out property <int> queue-format-index: 0;
     in-out property <int> queue-preset-index: 0;
     in property <[ComboOption]> queue-preset-options: [{ text: @tr("内置默认"), enabled: true }];
@@ -123,8 +125,8 @@ export component AwjStudio inherits Window {
     in-out property <bool> preserve-modification-time: false;
     in-out property <bool> preserve-access-time: false;
     in property <bool> timestamp-ui-visible: true;
-    in-out property <bool> write-summary: false;
     in-out property <bool> write-log: false;
+    in-out property <bool> delete-source: false;
     in-out property <string> context-menu-status: "";
     in-out property <string> context-menu-warning: "";
     in-out property <int> menu-format-index: 0;
@@ -846,7 +848,7 @@ export component AwjStudio inherits Window {
     warning : root.warning;
     window-width : root.width;
     write-log <=> root.write-log;
-    write-summary <=> root.write-summary;
+    delete-source <=> root.delete-source;
 }
 
                 if root.selected-page == 4 && root.show-update-changelog: Rectangle {

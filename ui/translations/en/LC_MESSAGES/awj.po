@@ -432,6 +432,12 @@ msgstr "Append time"
 msgid "追加随机"
 msgstr "Append random"
 
+msgid "追加序号"
+msgstr "Append number"
+
+msgid "追加序号：同名时使用 name(1).ext、name(2).ext，不覆盖已有文件。"
+msgstr "Append number: use name(1).ext, name(2).ext on conflict without replacing existing files."
+
 msgid "参数"
 msgstr "Params"
 
@@ -447,11 +453,20 @@ msgstr "Rand"
 msgid "哈希"
 msgstr "Hash"
 
-msgid "写入 CSV 报告"
-msgstr "Write CSV report"
-
 msgid "写入运行日志"
 msgstr "Write run log"
+
+msgid "删除源文件"
+msgstr "Delete source files"
+
+msgid "同时写入运行日志与 CSV 报告（log/summery.csv）。"
+msgstr "Write both the run log and CSV report (log/summery.csv)."
+
+msgid "仅成功编码后立即移入回收站，不会永久删除；失败、取消或跳过时保留源文件。"
+msgstr "Move source files to the Recycle Bin immediately after successful encoding, never permanently delete them. Keep sources on failure, cancellation or skip."
+
+msgid "日志同时包含 CSV 报告；删除源文件仅在成功编码后移入回收站，不会永久删除。"
+msgstr "Logs include CSV. Sources go to the Recycle Bin only after encoding succeeds, never deleted permanently."
 
 msgid "强制终止"
 msgstr "Force stop"

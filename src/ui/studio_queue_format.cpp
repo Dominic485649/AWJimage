@@ -94,6 +94,12 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
                      item.encode_seconds, item.write_seconds))};
 }
 
+const std::filesystem::path& queue_image_open_target(
+    const QueueImageItem& item) noexcept {
+  return queue_image_open_target(item.path, item.locked_output_path,
+                                 item.status == QueueItemStatus::done);
+}
+
 void reset_queue_item_execution(QueueImageItem& item) {
   item.status_text = "等待编码";
   item.status = QueueItemStatus::pending;

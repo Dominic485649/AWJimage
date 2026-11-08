@@ -91,6 +91,27 @@ void queue_output_size_check() {
   check(make_queue_task_row(item, 0).output_size == to_shared("-"),
         "reset output size retained a previous completion");
 }
+void queue_open_target_check() {
+  using namespace awj::studio;
+  QueueImageItem item{.path = L"C:\\queue-fixture\\source.png",
+      .locked_output_path = L"C:\\queue-fixture\\source(7).avif.png"};
+  for (const auto status : {QueueItemStatus::pending, QueueItemStatus::running,
+                           QueueItemStatus::failed, QueueItemStatus::canceled,
+                           QueueItemStatus::skipped}) {
+    item.status = status;
+    check(queue_image_open_target(item) == item.path,
+          "unfinished or skipped item opened a predicted output");
+  }
+  item.status = QueueItemStatus::done;
+  check(queue_image_open_target(item) == item.locked_output_path,
+        "successful item did not open its final numbered output");
+  item.locked_output_path.clear();
+  check(queue_image_open_target(item).empty(),
+        "success without an output path did not fail closed");
+  reset_queue_item_execution(item);
+  check(queue_image_open_target(item) == item.path,
+        "reset item retained an old output target");
+}
 void queue_reimport_check() {
   using namespace awj::studio;
   namespace fs = std::filesystem;
@@ -119,7 +140,8 @@ void queue_reimport_check() {
         "未保留完成项或末次导入顺序/稳定 ID 错误");
   const auto& old = state.queue_items[0];
   check(old.status == QueueItemStatus::done && old.output_bytes == 80 &&
-        old.log_text == to_shared("上轮日志") && old.warning,
+        old.log_text == to_shared("上轮日志") && old.warning &&
+        queue_image_open_target(old) == old.locked_output_path,
         "未重导入的完成项被重置");
   const auto& again = state.queue_items[1];
   check(again.status == QueueItemStatus::pending && again.status_text == "等待编码" &&
@@ -127,7 +149,8 @@ void queue_reimport_check() {
         again.log_text.empty() && again.encoder_id.empty() && !again.encoder_threads &&
         again.decode_seconds == -1 && again.prepare_seconds == -1 &&
         again.encode_seconds == -1 && again.write_seconds == -1 && !again.warning &&
-        again.run_index == std::numeric_limits<std::size_t>::max(),
+        again.run_index == std::numeric_limits<std::size_t>::max() &&
+        queue_image_open_target(again) == again.path,
         "重导入未清除上轮执行字段");
   check(state.queue_items[2].bytes == 30 && state.queue_items[2].source_root.empty() &&
         state.queue_items[2].relative_dir.empty() && state.next_queue_id == 4 &&
@@ -149,6 +172,33 @@ void queue_reimport_check() {
         state.run_id == 8, "准备失败破坏了原队列");
 }
 
+void queue_config_migration_check() {
+  using namespace awj::studio;
+  const auto parse = [](std::string_view text) {
+    const auto values = awj::studio_json::parse_jsonc_config(text);
+    check(values.has_value(), "queue config fixture is not valid JSONC");
+    return awj::studio_json::config_queue_options(*values);
+  };
+  const auto defaults = parse("{}");
+  check(defaults && defaults->collision_index == 4 && !defaults->write_log &&
+        !defaults->delete_source, "queue defaults are not safe");
+  for (const bool log : {false, true}) {
+    for (const bool summary : {false, true}) {
+      const auto options = parse(awj::compat::format(
+          R"({{"write_log":{},"write_summary":{}}})", log, summary));
+      check(options && options->write_log == (log || summary) && !options->delete_source,
+            "legacy log flags changed recycling or lost OR migration");
+    }
+  }
+  for (int index = 0; index <= 4; ++index) {
+    const auto options = parse(awj::compat::format(R"({{"collision_index":{}}})", index));
+    check(options && options->collision_index == index, "old collision index was reinterpreted");
+  }
+  for (const auto invalid : {R"({"collision_index":5})", R"({"write_log":1})",
+                             R"({"write_summary":"true"})", R"({"delete_source":1})"})
+    check(!parse(invalid), "invalid queue config was accepted");
+}
+
 void config_check() {
   using namespace awj::studio;
   namespace fs = std::filesystem;
@@ -164,9 +214,15 @@ void config_check() {
   check(current == defaults, "cleared queue preset did not restore default snapshot equality");
   check(write_studio_config_file(current, defaults).has_value(), "default config write failed");
   const auto default_config = awj::studio_json::parse_jsonc_config(read(path));
+  check(default_config && !default_config->contains("collision_index") &&
+        !default_config->contains("write_log") && !default_config->contains("delete_source") &&
+        awj::studio_json::config_queue_options(*default_config) ==
+            std::expected<QueueRunOptions, std::string>{defaults.queue_options},
+        "default queue options were not safely omitted and restored");
   check(default_config && !default_config->contains("queue_preset_file"),
         "built-in queue preset should be omitted from the config file");
   current.queue_preset_file = "照片 测试.jsonc";
+  current.queue_options = {.collision_index = 0, .write_log = true, .delete_source = true};
   current.show_update_changelog = false;
   current.only_show_changelog_after_update = false;
   current.language_index = 1;
@@ -182,7 +238,7 @@ void config_check() {
   current.menu_params[3].chroma_index = 4; // Removed JPG 400 from an old UI cache.
   {
     std::ofstream old(path);
-    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","visual_quality_gpu":true,"future_extension":"保留"})";
+    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","visual_quality_gpu":true,"write_log":false,"write_summary":true,"delete_source":false,"collision_index":3,"future_extension":"保留"})";
   }
   const auto legacy = awj::studio_json::parse_jsonc_config(read(path));
   check(legacy && awj::studio_json::config_string(*legacy, "queue_preset_file")
@@ -193,6 +249,10 @@ void config_check() {
   const auto parsed = awj::studio_json::parse_jsonc_config(first);
   check(parsed && !parsed->contains("visual_quality_gpu"),
         "旧 GPU 配置键不应在保存时重新写入");
+  const auto queue_options = awj::studio_json::config_queue_options(*parsed);
+  check(queue_options && *queue_options == current.queue_options &&
+        !parsed->contains("write_summary"),
+        "queue options did not round-trip canonically");
   check(parsed.has_value() && parsed->at("language_index").integer == 1 &&
         parsed->at("last_verified_manifest_v2_sequence").integer == 42 &&
         parsed->at("update_manifest_v2_raw").string == current.update_manifest_v2_raw &&
@@ -258,6 +318,19 @@ void config_check() {
         "returning to built-in retained its old identity or lost other config");
   check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
         "config rewrite was not idempotent");
+  auto reports_off = current;
+  reports_off.queue_options.write_log = false;
+  reports_off.queue_options.delete_source = false;
+  check(write_studio_config_file(reports_off, defaults).has_value(),
+        "cannot disable logging and recycling");
+  const auto disabled = awj::studio_json::parse_jsonc_config(read(path));
+  const auto disabled_options = disabled ? awj::studio_json::config_queue_options(*disabled)
+      : std::expected<QueueRunOptions, std::string>{std::unexpected{"invalid saved config"}};
+  check(disabled_options && !disabled_options->write_log && !disabled_options->delete_source &&
+        !disabled->contains("write_summary"),
+        "old CSV flag resurrected disabled logging or recycling");
+  check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
+        "restoring queue options changed unrelated configuration");
   {
     auto locked = adopt_win32_handle(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                                nullptr, OPEN_EXISTING, 0, nullptr));
@@ -272,7 +345,8 @@ void config_check() {
 int main(int argc, char** argv) try {
   if (argc == 4 && std::string_view{argv[1]} == "--queue-benchmark") {
     queue_check(std::stoull(argv[2]), std::string_view{argv[3]} == "legacy");
-  } else { queue_check(10, false); queue_output_size_check(); queue_reimport_check(); config_check(); }
+  } else { queue_check(10, false); queue_output_size_check(); queue_open_target_check();
+    queue_reimport_check(); queue_config_migration_check(); config_check(); }
   return 0;
 } catch (const std::exception& error) {
   std::fprintf(stderr, "%s\n", error.what());
