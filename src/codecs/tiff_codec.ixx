@@ -76,8 +76,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_metadata_payload
   if (data == nullptr || size == 0) {
     return std::vector<std::byte>{};
   }
-  if (size > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{awj::compat::format("{} 超过 64 MiB 上限。", context)};
+  if (size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{awj::compat::format("{} 超过 当前运行时上限。", context)};
   }
   auto bytes = decoder_common::make_byte_buffer(size, context);
   if (!bytes) {

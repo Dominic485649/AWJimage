@@ -1193,6 +1193,10 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_png_codec_tests)
     target_link_libraries(awj_png_codec_tests PRIVATE awj_native_codecs)
 
+    add_executable(awj_library_memory_policy_tests tests/library_memory_policy_tests.cpp)
+    avif_enable_common_options(awj_library_memory_policy_tests)
+    target_link_libraries(awj_library_memory_policy_tests PRIVATE awj_native_codecs)
+
     add_executable(awj_spline36_geometry_tests tests/spline36_geometry_tests.cpp)
     avif_enable_common_options(awj_spline36_geometry_tests)
     target_link_libraries(awj_spline36_geometry_tests PRIVATE awj_native_codecs)
@@ -1370,6 +1374,7 @@ if(BUILD_TESTING)
         awj_visual_metrics_tests
         awj_webp_codec_tests
         awj_png_codec_tests
+        awj_library_memory_policy_tests
         awj_avif_aom_codec_tests
         awj_avif_gain_map_tests
         awj_gain_map_parallel_tests
@@ -1430,6 +1435,14 @@ if(BUILD_TESTING)
     add_test(NAME visual_metrics_core COMMAND awj_visual_metrics_tests)
     add_test(NAME webp_codec_core COMMAND awj_webp_codec_tests)
     add_test(NAME png_codec_core COMMAND awj_png_codec_tests)
+    add_test(NAME library_memory_policy_core COMMAND awj_library_memory_policy_tests)
+    add_test(NAME png_memory_policy_core COMMAND awj_png_codec_tests --memory-policy-only)
+    add_test(NAME webp_memory_policy_core COMMAND awj_webp_codec_tests --memory-policy-only)
+    add_test(NAME jxl_memory_policy_core COMMAND awj_jxl_codec_tests --memory-policy-only)
+    add_test(NAME pipeline_memory_policy_core COMMAND awj_pipeline_security_tests --memory-policy-only)
+    set_tests_properties(library_memory_policy_core png_memory_policy_core
+        webp_memory_policy_core jxl_memory_policy_core pipeline_memory_policy_core
+        PROPERTIES TIMEOUT 120)
     add_test(NAME avif_aom_codec_core COMMAND awj_avif_aom_codec_tests)
     add_test(NAME avif_gain_map_core COMMAND awj_avif_gain_map_tests)
     set_tests_properties(avif_gain_map_core PROPERTIES TIMEOUT 120)
@@ -1862,6 +1875,8 @@ if(BUILD_TESTING)
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/winit_dpi_patch_tests.cmake")
     add_test(NAME ui_memory_budget_unlock COMMAND awj_ui_smoke_tests --memory-budget-unlock)
     set_tests_properties(ui_memory_budget_unlock PROPERTIES TIMEOUT 120)
+    add_test(NAME ui_parameter_hints COMMAND awj_ui_smoke_tests --parameter-hints)
+    set_tests_properties(ui_parameter_hints PROPERTIES TIMEOUT 120)
     add_test(NAME ui_fixed_size_inputs COMMAND awj_ui_smoke_tests --fixed-size-inputs)
     set_tests_properties(ui_fixed_size_inputs PROPERTIES TIMEOUT 120)
     add_test(NAME ui_queue_options COMMAND awj_ui_smoke_tests --queue-options)
@@ -1891,6 +1906,14 @@ if(WIN32)
             -InputImage "${CMAKE_CURRENT_SOURCE_DIR}/tests/slint_runtime_images/pixel.jpg"
             -WorkDirectory "${CMAKE_CURRENT_BINARY_DIR}/cli-independence")
         set_tests_properties(cli_independence PROPERTIES TIMEOUT 180 RUN_SERIAL TRUE)
+        if(TARGET awj_wgc_cli_validation)
+            add_test(NAME cli_memory_policy COMMAND "${AWJ_PWSH}" -NoProfile -File
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/memory_cli_policy_tests.ps1"
+                -Cli $<TARGET_FILE:AWJ-com> -WgcCli $<TARGET_FILE:awj_wgc_cli_validation>
+                -InputImage "${CMAKE_CURRENT_SOURCE_DIR}/tests/slint_runtime_images/pixel.jpg"
+                -WorkRoot "${CMAKE_CURRENT_BINARY_DIR}/results/memory-cli-policy")
+            set_tests_properties(cli_memory_policy PROPERTIES TIMEOUT 180)
+        endif()
     endif()
 endif()
 foreach(awj_windows_target IN ITEMS AWJ AWJ-com)

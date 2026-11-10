@@ -111,6 +111,11 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
     return;
   }
 
+  if (auto frozen = awj::freeze_operation_memory_policy(cfg); !frozen) {
+    (*app)->set_status_text(to_shared(frozen.error()));
+    return;
+  }
+  const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*cfg.runtime_memory_policy};
   std::expected<std::vector<awj::ImageFile>, std::string> files;
   {
     std::scoped_lock lock{state->mutex};

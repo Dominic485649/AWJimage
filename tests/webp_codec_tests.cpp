@@ -22,6 +22,7 @@
 import awj.animation;
 import awj.codec;
 import awj.config;
+import awj.encoding_defaults;
 import awj.image;
 import awj.resource_planner;
 import awj.webp_codec;
@@ -127,7 +128,35 @@ int animation_encoder_checks() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  {
+    using namespace awj::encoding_defaults;
+    const ScopedMemoryPolicy unlocked{MemoryPolicy{UINT64_MAX, true, true}};
+    awj::webp_detail::WebPVectorWriter writer;
+    WebPPicture picture{};
+    picture.custom_ptr = &writer;
+    const std::array<std::uint8_t, 4> bytes{1, 2, 3, 4};
+    {
+      const ScopedMemoryPolicy unrelated{MemoryPolicy{1, false, false}};
+      if (!awj::webp_detail::write_webp_bytes(bytes.data(), bytes.size(), &picture) ||
+          writer.bytes.size() != bytes.size() || writer.byte_limit != UINT64_MAX)
+        return fail("WebP C callback consulted the invoking thread rather than its operation snapshot.");
+    }
+    awj::webp_detail::WebPVectorWriter bounded{.byte_limit = 3};
+    picture.custom_ptr = &bounded;
+    if (!awj::webp_detail::write_webp_bytes(bytes.data(), 2, &picture) ||
+        awj::webp_detail::write_webp_bytes(bytes.data(), 2, &picture) || bounded.bytes.size() != 2 ||
+        !bounded.error || awj::webp_detail::write_webp_bytes(bytes.data(), SIZE_MAX, &picture))
+      return fail("WebP writer lost its finite cap or accepted overflow before allocation.");
+    awj::compat::stop_source cancelled;
+    cancelled.request_stop();
+    auto token = cancelled.get_token();
+    awj::webp_detail::WebPVectorWriter stopped{.stop_token = &token};
+    picture.custom_ptr = &stopped;
+    if (awj::webp_detail::write_webp_bytes(bytes.data(), bytes.size(), &picture) || !stopped.error)
+      return fail("WebP full unlock disabled cancellation.");
+  }
+  if (argc == 2 && std::string_view{argv[1]} == "--memory-policy-only") return 0;
   if (const auto result = animation_encoder_checks()) return result;
   awj::ImagePlane plane{.stride = 8};
   plane.bytes = {

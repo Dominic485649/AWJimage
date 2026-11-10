@@ -14,6 +14,12 @@
 - Add an opt-in **Delete source files** control that recycles each source only after successful output; retain the source if recycling fails.
 - Double-click queue images to open their sources before encoding and their actual outputs after success.
 
+### Memory controls and parameter hints
+
+- Unify session memory unlocking under the existing working-set control, with linked input/buffer protection and preserved manual values.
+- Scale default input/buffer protection to 80% of physical memory and apply the selected policy consistently to import, probing and encoding.
+- Match visual-quality description colors to other parameter hints, show **Unlimited** for unrestricted dimensions, and simplify chroma guidance.
+
 ### AVIF parameter validation
 
 - Add real encode/decode regression coverage for IQ and intra-prediction tools, including high bit depths, sampling and alpha; retain the existing IQ, quality and speed defaults.

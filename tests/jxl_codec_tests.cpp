@@ -749,6 +749,39 @@ struct ScopedTestDirectory {
 }  // namespace
 
 int main(int argc, char** argv) {
+  {
+    using namespace awj::encoding_defaults;
+    using Allocator = awj::jxl_detail::BoundedMetadataAllocator;
+    const ScopedMemoryPolicy full{MemoryPolicy{UINT64_MAX, true, true}};
+    Allocator captured;
+    if (captured.limit != SIZE_MAX || awj::jxl_detail::basic_info_probe_limit() != SIZE_MAX)
+      return fail("JXL retained an artificial metadata/probe byte cap after full unlock.");
+    {
+      const ScopedMemoryPolicy finite{MemoryPolicy{8, false, false}};
+      if (awj::jxl_detail::basic_info_probe_limit() != jxl_max_basic_info_probe_bytes)
+        return fail("JXL finite probe lost its normal protection.");
+      auto* allocation = Allocator::allocate(&captured, 8);
+      if (!allocation || captured.limit != SIZE_MAX) return fail("JXL allocator consulted an unrelated scope.");
+      Allocator::release(&captured, allocation);
+    }
+    Allocator small{.limit = sizeof(Allocator::Header) + 4};
+    auto* allocation = Allocator::allocate(&small, 4);
+    if (!allocation || Allocator::allocate(&small, 1)) return fail("JXL allocator ignored its captured small quota.");
+    Allocator::release(&small, allocation);
+    if (small.allocated || Allocator::allocate(&captured, SIZE_MAX))
+      return fail("JXL allocator overflowed a header/size sum or failed to release accounting.");
+    bool called = false;
+    auto* failed = Allocator::allocate_using(&captured, 8, [&](std::size_t) noexcept -> void* {
+      called = true;
+      return nullptr;
+    });
+    if (!called || failed || captured.allocated)
+      return fail("JXL full unlock hid an allocation failure or leaked its accounting.");
+    captured.allocated = SIZE_MAX - sizeof(Allocator::Header);
+    if (Allocator::allocate(&captured, 1)) return fail("JXL cumulative allocator accounting overflowed.");
+    captured.allocated = 0;
+  }
+  if (argc == 2 && std::string_view{argv[1]} == "--memory-policy-only") return 0;
   // CTest runs in this project's build tree. Keep all fixtures in one newly
   // created task-owned directory rather than scattering them in a shared /tmp.
   const auto test_root = std::filesystem::current_path() /

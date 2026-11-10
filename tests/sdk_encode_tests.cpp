@@ -12,6 +12,7 @@
 #include <memory>
 #include <span>
 #include <vector>
+import awj.encoding_defaults;
 import awj.image;
 import awj.codec;
 import awj.hdr_tonemap;
@@ -65,11 +66,38 @@ int main() {
   awj_frame* frame{}; CHECK(awj_frame_create(context, &desc, nullptr, &frame) == AWJ_OK);
   awj_encode_options options; awj_encode_options_init(&options); options.speed = 9;
   awj_result* result{};
+  {
+    const awj::encoding_defaults::ScopedMemoryPolicy unrelated_full{
+        awj::encoding_defaults::MemoryPolicy{UINT64_MAX, true, true}};
+    awj_context_options explicit_limits;
+    awj_context_options_init(&explicit_limits);
+    explicit_limits.max_frame_bytes = 1;
+    explicit_limits.memory_budget_bytes = 512;
+    awj_context* bounded{};
+    CHECK(awj_context_create(&explicit_limits, &bounded) == AWJ_OK);
+    CHECK(awj_frame_validate(bounded, &desc) == AWJ_LIMIT_EXCEEDED);
+    awj_context_destroy(bounded);
+    explicit_limits.max_frame_bytes = 512;
+    CHECK(awj_context_create(&explicit_limits, &bounded) == AWJ_OK);
+    awj_frame* bounded_frame{};
+    CHECK(awj_frame_create(bounded, &desc, nullptr, &bounded_frame) == AWJ_OK);
+    auto bounded_options = options;
+    bounded_options.codec = AWJ_CODEC_PNG;
+    CHECK(awj_encode(bounded, bounded_frame, &bounded_options, &result) == AWJ_BUSY && !result);
+    awj_frame_release(bounded_frame);
+    awj_context_destroy(bounded);
+    CHECK(awj::encoding_defaults::memory_limits_unlocked());
+  }
   for (uint32_t codec : {AWJ_CODEC_PNG, AWJ_CODEC_WEBP, AWJ_CODEC_JXL, AWJ_CODEC_JPEGLI, AWJ_CODEC_AVIF}) {
     options.codec = codec; options.quality = codec == AWJ_CODEC_JPEGLI ? 90 : 100;
     options.lossless = codec == AWJ_CODEC_PNG || codec == AWJ_CODEC_WEBP || codec == AWJ_CODEC_JXL;
     options.copy_policy = AWJ_COPY_ALLOW_REQUIRED;
-    CHECK(awj_encode(context, frame, &options, &result) == AWJ_OK && result);
+    {
+      const awj::encoding_defaults::MemoryPolicy unrelated{1, false, false};
+      const awj::encoding_defaults::ScopedMemoryPolicy ambient{unrelated};
+      CHECK(awj_encode(context, frame, &options, &result) == AWJ_OK && result);
+      CHECK(awj::encoding_defaults::current_memory_policy() == unrelated);
+    }
     CHECK(awj_result_size(result) > 0 && awj_result_data(result));
     auto decoded = decoder(codec)->decode_memory({reinterpret_cast<const std::byte*>(awj_result_data(result)), static_cast<size_t>(awj_result_size(result))}, "memory-sdk");
     if (!decoded) std::fprintf(stderr, "codec %u 回读失败：%s\n", codec, decoded.error().c_str());

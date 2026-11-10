@@ -73,8 +73,9 @@ namespace pipeline_detail {
 constexpr std::array<unsigned char, 8> studio_queue_manifest_magic{
     'A', 'W', 'J', 'S', 'Q', 'M', 'F', 0};
 constexpr std::uint32_t studio_queue_manifest_version = 1;
-constexpr std::uintmax_t max_studio_queue_manifest_bytes =
-    64ull * 1024ull * 1024ull;
+std::uintmax_t max_studio_queue_manifest_bytes() noexcept {
+  return encoding_defaults::effective_codec_metadata_max_bytes();
+}
 constexpr std::uint64_t max_studio_queue_manifest_files = 1'000'000;
 constexpr std::uint32_t max_studio_queue_manifest_text_bytes = 1024 * 1024;
 constexpr std::uintmax_t studio_queue_manifest_header_bytes = 8 + 4 + 8;
@@ -283,10 +284,10 @@ awj::compat::expected<void, std::string> write_studio_queue_manifest(
            !file.resolved_output_path.empty())) {
         return awj::compat::unexpected{"Studio 队列 manifest 图片记录无效。"};
       }
-      if (manifest_bytes >
-          pipeline_detail::max_studio_queue_manifest_bytes -
-              pipeline_detail::studio_queue_manifest_record_min_bytes) {
-        return awj::compat::unexpected{"Studio 队列 manifest 超过 64 MiB。"};
+      if (!encoding_defaults::byte_sum_fits(manifest_bytes,
+              pipeline_detail::studio_queue_manifest_record_min_bytes,
+              pipeline_detail::max_studio_queue_manifest_bytes())) {
+        return awj::compat::unexpected{"Studio 队列 manifest 超过当前运行时上限。"};
       }
       manifest_bytes += pipeline_detail::studio_queue_manifest_record_min_bytes;
       pipeline_detail::manifest_write_u64(output, file.index);
@@ -308,10 +309,9 @@ awj::compat::expected<void, std::string> write_studio_queue_manifest(
           utf8_from_wide(file.sha256_token),
           path_to_utf8(file.resolved_output_path)};
       for (const auto& field : fields) {
-        if (field.size() >
-            pipeline_detail::max_studio_queue_manifest_bytes -
-                manifest_bytes) {
-          return awj::compat::unexpected{"Studio 队列 manifest 超过 64 MiB。"};
+        if (!encoding_defaults::byte_sum_fits(manifest_bytes, field.size(),
+                pipeline_detail::max_studio_queue_manifest_bytes())) {
+          return awj::compat::unexpected{"Studio 队列 manifest 超过当前运行时上限。"};
         }
         manifest_bytes += field.size();
         if (auto written = pipeline_detail::manifest_write_text(output, field);
@@ -324,8 +324,8 @@ awj::compat::expected<void, std::string> write_studio_queue_manifest(
     const auto size = output.tellp();
     if (!output || size < 0 ||
         static_cast<std::uintmax_t>(size) >
-            pipeline_detail::max_studio_queue_manifest_bytes) {
-      return awj::compat::unexpected{"Studio 队列 manifest 写入失败或超过 64 MiB。"};
+            pipeline_detail::max_studio_queue_manifest_bytes()) {
+      return awj::compat::unexpected{"Studio 队列 manifest 写入失败或超过当前运行时上限。"};
     }
     return {};
   } catch (const std::bad_alloc&) {
@@ -344,8 +344,8 @@ awj::compat::expected<StudioQueueManifest, std::string> read_studio_queue_manife
     const auto manifest_bytes = fs::file_size(path, ec);
     if (ec ||
         manifest_bytes < pipeline_detail::studio_queue_manifest_header_bytes ||
-        manifest_bytes > pipeline_detail::max_studio_queue_manifest_bytes) {
-      return awj::compat::unexpected{"Studio 队列 manifest 不存在、为空或超过 64 MiB。"};
+        manifest_bytes > pipeline_detail::max_studio_queue_manifest_bytes()) {
+      return awj::compat::unexpected{"Studio 队列 manifest 不存在、为空或超过当前运行时上限。"};
     }
     std::ifstream input{path, std::ios::binary};
     if (!input) {

@@ -15,10 +15,11 @@ import awj.encoding_defaults;
 
 export namespace awj {
 
-struct MemoryStatus {
-  std::uint64_t total_bytes{};
-  std::uint64_t available_bytes{};
-};
+using MemoryStatus = encoding_defaults::PhysicalMemoryStatus;
+
+MemoryStatus current_memory_status() noexcept {
+  return encoding_defaults::physical_memory_status();
+}
 
 struct ResourcePlanRequest {
   int automatic_thread_budget{1};
@@ -34,6 +35,16 @@ struct ResourcePlan {
   std::uint64_t memory_limit_bytes{};
   int memory_file_parallelism{1};
 };
+
+// Direct backend/WGC callers may supply a previously finite resource plan.
+// The session opt-out wins there too; it must not be reinterpreted as auto.
+ResourcePlan normalize_memory_policy_resources(const AppConfig& cfg, ResourcePlan plan) noexcept {
+  if (cfg.unlock_memory_limit) {
+    plan.memory_limit_bytes = 0;
+    plan.memory_file_parallelism = std::max(1, plan.file_parallelism);
+  }
+  return plan;
+}
 
 struct HeifDecodeThreadPlan {
   int tile_parallelism{1};
@@ -51,8 +62,7 @@ HeifDecodeThreadPlan plan_heif_decode_threads(int requested, std::uint64_t tiles
 // 自动内存上限取 min(总内存 80%, 当前可用 50%)：总内存那一项防止在空闲机器上
 // 把整台机器吃满，可用内存那一项给其他进程留出继续申请的余量。只读到一项时用该项。
 std::uint64_t automatic_memory_limit(MemoryStatus status) noexcept {
-  const auto total_headroom = static_cast<std::uint64_t>(
-      static_cast<long double>(status.total_bytes) * 0.8L);
+  const auto total_headroom = encoding_defaults::physical_input_limit(status.total_bytes);
   const auto available_headroom = status.available_bytes / 2;
   if (total_headroom == 0) {
     return available_headroom;
@@ -72,6 +82,46 @@ std::uint64_t effective_memory_limit(const AppConfig& cfg,
                                      : automatic_memory_limit(status);
 }
 
+// A raw zero from an unavailable automatic estimate must never reach a
+// ResourcePlan: zero there means unlimited, not an unknown system budget.
+[[nodiscard]] awj::compat::expected<std::uint64_t, std::string> checked_effective_memory_limit(
+    const AppConfig& cfg, MemoryStatus status) {
+  const auto limit = effective_memory_limit(cfg, status);
+  if (!cfg.unlock_memory_limit && limit == 0) {
+    return awj::compat::unexpected{
+        "无法确定非零的 auto 工作集内存预算（系统内存信息不可用或过小）；"
+        "请重试或通过 --memory-limit 显式指定预算。"};
+  }
+  return limit;
+}
+
+[[nodiscard]] awj::compat::expected<std::uint64_t, std::string> checked_effective_memory_limit(
+    const AppConfig& cfg) {
+  // Neither an explicit budget nor the full session unlock needs an OS query.
+  return checked_effective_memory_limit(cfg,
+      cfg.unlock_memory_limit || cfg.memory_limit_bytes != 0 ? MemoryStatus{} : current_memory_status());
+}
+
+// Preserve already-resolved finite plans (including per-file reservations).
+// A direct caller's zero plan needs resolution unless the full unlock is set;
+// the legacy input-only opt-out never authorizes unlimited working memory.
+[[nodiscard]] awj::compat::expected<ResourcePlan, std::string> checked_memory_policy_resources(
+    const AppConfig& cfg, ResourcePlan plan, MemoryStatus status) {
+  plan = normalize_memory_policy_resources(cfg, plan);
+  if (cfg.unlock_memory_limit || plan.memory_limit_bytes != 0) return plan;
+  const auto limit = checked_effective_memory_limit(cfg, status);
+  if (!limit) return awj::compat::unexpected{limit.error()};
+  plan.memory_limit_bytes = *limit;
+  return plan;
+}
+
+[[nodiscard]] awj::compat::expected<ResourcePlan, std::string> checked_memory_policy_resources(
+    const AppConfig& cfg, ResourcePlan plan) {
+  return checked_memory_policy_resources(cfg, plan,
+      cfg.unlock_memory_limit || cfg.memory_limit_bytes != 0 || plan.memory_limit_bytes != 0
+          ? MemoryStatus{} : current_memory_status());
+}
+
 std::string_view memory_limit_mode(const AppConfig& cfg) noexcept {
   if (cfg.unlock_memory_limit) return "unlocked";
   return cfg.memory_limit_bytes != 0 ? "manual" : "automatic";
@@ -83,8 +133,7 @@ std::string_view memory_limit_source(const AppConfig& cfg,
   if (cfg.memory_limit_bytes != 0) return "configuration";
   if (status.total_bytes == 0 && status.available_bytes == 0)
     return "system_unavailable";
-  const auto total_headroom = static_cast<std::uint64_t>(
-      static_cast<long double>(status.total_bytes) * 0.8L);
+  const auto total_headroom = encoding_defaults::physical_input_limit(status.total_bytes);
   const auto available_headroom = status.available_bytes / 2;
   if (total_headroom == 0) return "system_available";
   if (available_headroom == 0) return "system_total";

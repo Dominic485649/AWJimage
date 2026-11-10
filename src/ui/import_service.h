@@ -4,6 +4,7 @@
 #include <filesystem>
 #include <functional>
 #include <memory>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -24,6 +25,8 @@ struct Request {
   std::filesystem::path input_hint;
   bool update_input_path{true};
   std::uint64_t epoch{};
+  // Frozen by the submitting UI operation, not sampled by the worker later.
+  std::optional<std::uintmax_t> maximum_file_bytes{};
 };
 
 struct File {

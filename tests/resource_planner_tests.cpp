@@ -39,6 +39,120 @@ int fail(std::string_view message) {
 }  // namespace
 
 int main() {
+  {
+    // No large allocations or OS memory-query failure injection: resolve the
+    // working-set budget from explicit numerical status snapshots.
+    auto cfg = awj::default_app_config();
+    cfg.studio_input_limit_bytes = 8;
+    const awj::ResourcePlan unresolved{.file_parallelism = 2, .encoder_threads_per_file = 2,
+        .global_thread_budget = 4, .memory_file_parallelism = 2};
+    for (const bool input_only : {false, true}) {
+      cfg.unlock_max_input_file_bytes = input_only;
+      cfg.unlock_memory_limit = false;
+      cfg.memory_limit_bytes = 0;
+      if (!awj::operation_memory_policy(cfg))
+        return fail("A finite Studio snapshot or legacy input-only opt-out required an OS input query.");
+      const auto unknown = awj::checked_effective_memory_limit(cfg, awj::MemoryStatus{});
+      if (unknown || unknown.error().find("--memory-limit") == std::string::npos ||
+          awj::checked_memory_policy_resources(cfg, unresolved, awj::MemoryStatus{}))
+        return fail("Unknown finite auto became an unlimited batch/WGC/direct-backend budget.");
+      for (const auto status : {awj::MemoryStatus{1, 0}, awj::MemoryStatus{0, 1}, awj::MemoryStatus{1, 1}})
+        if (awj::checked_effective_memory_limit(cfg, status))
+          return fail("An unrepresentable automatic budget became unlimited.");
+      for (const auto [status, expected] : std::array<std::pair<awj::MemoryStatus, std::uint64_t>, 5>{{
+               {{100, 100}, 50}, {{100, 500}, 80}, {{100, 0}, 80}, {{0, 100}, 50},
+               {{UINT64_MAX, UINT64_MAX}, UINT64_MAX / 2}}}) {
+        const auto resolved = awj::checked_effective_memory_limit(cfg, status);
+        const auto planned = awj::checked_memory_policy_resources(cfg, unresolved, status);
+        if (!resolved || *resolved != expected || !planned || planned->memory_limit_bytes != expected ||
+            planned->file_parallelism != 2 || planned->encoder_threads_per_file != 2)
+          return fail("Checked auto lost min(floor(total*4/5), available/2) or single-source fallback.");
+      }
+      auto finite_plan = unresolved;
+      finite_plan.memory_limit_bytes = 7;
+      const auto kept = awj::checked_memory_policy_resources(cfg, finite_plan, awj::MemoryStatus{});
+      if (!kept || kept->memory_limit_bytes != 7)
+        return fail("A previously resolved finite direct-backend budget required another OS query.");
+      for (const auto manual : std::array<std::uint64_t, 3>{1, 64ull * 1024 * 1024, UINT64_MAX}) {
+        cfg.memory_limit_bytes = manual;
+        const auto resolved = awj::checked_effective_memory_limit(cfg, awj::MemoryStatus{});
+        const auto planned = awj::checked_memory_policy_resources(cfg, unresolved, awj::MemoryStatus{});
+        if (!resolved || *resolved != manual || !planned || planned->memory_limit_bytes != manual ||
+            cfg.memory_limit_bytes != manual)
+          return fail("An explicit manual budget depended on an OS query or was replaced by unlimited zero.");
+      }
+      cfg.unlock_memory_limit = true;
+      for (const auto manual : std::array<std::uint64_t, 3>{0, 1, UINT64_MAX}) {
+        cfg.memory_limit_bytes = manual;
+        const auto resolved = awj::checked_effective_memory_limit(cfg, awj::MemoryStatus{});
+        const auto planned = awj::checked_memory_policy_resources(cfg, finite_plan, awj::MemoryStatus{});
+        if (!resolved || *resolved != 0 || !planned || planned->memory_limit_bytes != 0 ||
+            planned->memory_file_parallelism != 2 || cfg.memory_limit_bytes != manual)
+          return fail("Full unlock required system memory or failed to override a stale finite/manual budget.");
+      }
+    }
+  }
+  {
+    using namespace awj::encoding_defaults;
+    for (std::uint64_t total = 0; total < 1000; ++total)
+      if (physical_input_limit(total) != total * 4 / 5)
+        return fail("Input protection did not use exact floor(total*4/5).");
+    if (physical_input_limit(UINT64_MAX) != 14757395258967641292ull ||
+        resolve_memory_policy(false, false, 0) || resolve_memory_policy(false, false, 1))
+      return fail("Unknown/tiny physical total became unlimited or the 80% calculation overflowed.");
+    const auto full = resolve_memory_policy(true, false, 0);
+    const auto input_only = resolve_memory_policy(false, true, 0);
+    const auto finite = resolve_memory_policy(false, false, 10);
+    if (!full || !full->unrestricted_input || !full->unrestricted_memory || full->input_limit() != UINT64_MAX ||
+        !input_only || !input_only->unrestricted_input || input_only->unrestricted_memory ||
+        input_only->metadata_limit() != codec_metadata_max_bytes ||
+        !finite || finite->input_limit() != 8 || finite->metadata_limit(SIZE_MAX) != SIZE_MAX ||
+        finite->metadata_limit(1024) != codec_metadata_max_bytes + 1024 ||
+        physical_input_limit(1024ull * 1024 * 1024 * 1024) <= 512ull * 1024 * 1024 * 1024)
+      return fail("Full/input-only policies retained the old cap or conflated their contracts.");
+    if (!byte_sum_fits(7, 1, 8) || byte_sum_fits(9, 0, 8) || byte_sum_fits(1, 9, 8) ||
+        !byte_sum_fits(UINT64_MAX, 0, UINT64_MAX) || byte_sum_fits(UINT64_MAX, 1, UINT64_MAX) ||
+        byte_sum_fits(1, UINT64_MAX, UINT64_MAX))
+      return fail("Dynamic byte-cap addition underflowed or overflowed.");
+    const ScopedMemoryPolicy outer{*finite};
+    try {
+      const ScopedMemoryPolicy inner{*full};
+      if (effective_max_input_file_bytes() != UINT64_MAX ||
+          effective_codec_metadata_max_bytes(1024) != SIZE_MAX)
+        return fail("Unlimited input or metadata still has an artificial byte cap.");
+      throw 7;
+    } catch (int) {}
+    if (effective_max_input_file_bytes() != 8 || memory_limits_unlocked())
+      return fail("A nested operation failed to restore its thread policy.");
+    std::promise<void> entered, release;
+    auto entered_future = entered.get_future();
+    auto release_future = release.get_future();
+    auto overlapping = std::async(std::launch::async, [policy = *full, &entered, &release_future] {
+      const bool not_inherited = !memory_limits_unlocked();
+      const ScopedMemoryPolicy scope{policy};
+      entered.set_value();
+      release_future.wait();
+      return not_inherited && effective_max_input_file_bytes() == UINT64_MAX && memory_limits_unlocked();
+    });
+    entered_future.wait();
+    const bool isolated = effective_max_input_file_bytes() == 8 && !memory_limits_unlocked();
+    release.set_value();
+    if (!overlapping.get() || !isolated || effective_max_input_file_bytes() != 8)
+      return fail("Overlapping threads changed another operation's immutable memory policy.");
+    {
+      const ScopedMemoryPolicy issuer{*full};
+      if (std::async(std::launch::async, [] { return memory_limits_unlocked(); }).get())
+        return fail("A new unscoped thread inherited another thread's full unlock.");
+    }
+    auto cfg = awj::default_app_config();
+    cfg.memory_limit_bytes = 1;
+    cfg.unlock_memory_limit = true;
+    cfg.unlock_max_input_file_bytes = false;
+    const auto normalized = awj::normalize_memory_policy_resources(cfg,
+        awj::ResourcePlan{.file_parallelism = 2, .memory_limit_bytes = 1, .memory_file_parallelism = 1});
+    if (normalized.memory_limit_bytes || normalized.memory_file_parallelism != 2 || cfg.memory_limit_bytes != 1)
+      return fail("Direct backend resource normalization retained a finite lower-priority budget.");
+  }
   awj::ImageBuffer reference{};
   reference.bit_depth = 16;
   reference.source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::yuv420, .bit_depth = 8};

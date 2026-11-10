@@ -74,7 +74,8 @@ export component AwjStudio inherits Window {
     in-out property <string> threads-text: "";
     in-out property <string> memory-limit-text: "";
     in-out property <bool> unlock-memory-limit: false;
-    in-out property <bool> unlock-max-input-file-bytes: false;
+    // 输入/缓冲解除状态仅由会话主开关派生，不再允许独立分歧。
+    out property <bool> unlock-max-input-file-bytes: root.unlock-memory-limit;
     in-out property <int> size-limit-index: 0;
     in-out property <string> max-width-text: "";
     in-out property <string> max-height-text: "";
@@ -726,6 +727,7 @@ export component AwjStudio inherits Window {
     menu-visual-quality-text <=> root.menu-visual-quality-text;
     menu-threads-text <=> root.menu-threads-text;
     menu-memory-limit-text <=> root.menu-memory-limit-text;
+    unlock-memory-limit: root.unlock-memory-limit;
     menu-size-limit-index <=> root.menu-size-limit-index;
     menu-speed-text <=> root.menu-speed-text;
     menu-strip-metadata <=> root.menu-strip-metadata;
@@ -944,7 +946,6 @@ export component AwjStudio inherits Window {
     ui-font-index <=> root.ui-font-index;
     ui-font-options : root.ui-font-options;
     unlock-memory-limit <=> root.unlock-memory-limit;
-    unlock-max-input-file-bytes <=> root.unlock-max-input-file-bytes;
     update-channel-index <=> root.update-channel-index;
     update-channel-selection-requested(a0) => { root.update-channel-selection-requested(a0); }
     check-update-requested => { root.check-update-requested(); }

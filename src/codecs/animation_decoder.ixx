@@ -251,7 +251,8 @@ class GifReader final : public AnimationReader {
               loop = repetitions;
             }
             if (profile) {
-              if (icc.size() + size > encoding_defaults::codec_metadata_max_bytes) return awj::compat::unexpected{"GIF ICC 太大。"};
+              if (!encoding_defaults::byte_sum_fits(icc.size(), size, encoding_defaults::effective_codec_metadata_max_bytes()))
+                return awj::compat::unexpected{"GIF ICC 太大。"};
               icc.insert(icc.end(), bytes.begin() + pos, bytes.begin() + pos + size);
             }
             pos += size;
@@ -402,7 +403,8 @@ class ApngReader final : public AnimationReader {
       } else if (type == "fdAT") {
         append_data(payload.subspan(4));
       } else if (png_detail::is_global_decoding_chunk(type)) {
-        if (inherited.size() + size + 12ull > encoding_defaults::codec_metadata_max_bytes + 1024ull)
+        if (!encoding_defaults::byte_sum_fits(inherited.size(), static_cast<std::uint64_t>(size) + 12,
+                                             encoding_defaults::effective_codec_metadata_max_bytes(1024)))
           return awj::compat::unexpected{"APNG 全局 metadata 过大。"};
         inherited.insert(inherited.end(), bytes.begin() + offset - 8, bytes.begin() + offset + size + 4);
       }
@@ -427,10 +429,13 @@ class ApngReader final : public AnimationReader {
     if (index == specs.size()) return false;
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     const auto& spec = specs[index];
-    std::uint64_t encoded_size = 45 + inherited.size();
     const auto limit = encoding_defaults::effective_max_input_file_bytes();
+    if (!encoding_defaults::byte_sum_fits(inherited.size(), 45, limit))
+      return awj::compat::unexpected{"APNG 合成帧 buffer 超过当前运行时上限。"};
+    std::uint64_t encoded_size = inherited.size() + 45;
     for (auto data : spec.data) {
-      if (encoded_size > limit - 12 || data.size() > limit - encoded_size - 12)
+      if (!encoding_defaults::byte_sum_fits(encoded_size, 12, limit) ||
+          !encoding_defaults::byte_sum_fits(encoded_size + 12, data.size(), limit))
         return awj::compat::unexpected{"APNG 合成帧 buffer 超过当前运行时上限。"};
       encoded_size += data.size() + 12;
     }

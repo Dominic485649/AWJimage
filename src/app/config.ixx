@@ -331,11 +331,39 @@ struct AppConfig {
   std::filesystem::path studio_queue_manifest{};
   // ponytail: empty = auto chain; kept for worker/CLI compatibility, not a Studio page action.
   std::wstring studio_large_action{};
-  // Session-only unlock of 20 GiB input/buffer caps, not working-set admission.
+  // Legacy CLI input-only opt-out. Studio derives it from unlock_memory_limit.
   bool unlock_max_input_file_bytes{false};
+  // Internal operation/worker snapshots; never persisted in JSONC or presets.
+  std::optional<encoding_defaults::MemoryPolicy> runtime_memory_policy{};
+  std::optional<std::uint64_t> studio_input_limit_bytes{};
   // Runtime callback only; never serialized into presets or update manifests.
   std::function<void(std::size_t, std::size_t, std::size_t)> frame_progress{};
 };
+
+awj::compat::expected<encoding_defaults::MemoryPolicy, std::string>
+operation_memory_policy(const AppConfig& cfg) {
+  const bool input_unlocked = cfg.unlock_memory_limit || cfg.unlock_max_input_file_bytes;
+  if (cfg.runtime_memory_policy && cfg.runtime_memory_policy->valid() &&
+      cfg.runtime_memory_policy->unrestricted_memory == cfg.unlock_memory_limit &&
+      cfg.runtime_memory_policy->unrestricted_input == input_unlocked)
+    return *cfg.runtime_memory_policy;
+  if (!input_unlocked && cfg.studio_input_limit_bytes) {
+    if (!*cfg.studio_input_limit_bytes)
+      return awj::compat::unexpected{"Studio 输入保护快照不能为零。"};
+    return encoding_defaults::MemoryPolicy{*cfg.studio_input_limit_bytes, false, false};
+  }
+  const auto policy = encoding_defaults::system_memory_policy(
+      cfg.unlock_memory_limit, cfg.unlock_max_input_file_bytes);
+  if (!policy) return awj::compat::unexpected{std::string{encoding_defaults::memory_policy_unavailable_message}};
+  return *policy;
+}
+
+awj::compat::expected<void, std::string> freeze_operation_memory_policy(AppConfig& cfg) {
+  auto policy = operation_memory_policy(cfg);
+  if (!policy) return awj::compat::unexpected{policy.error()};
+  cfg.runtime_memory_policy = *policy;
+  return {};
+}
 
 awj::compat::expected<void, std::string> validate_image_size_limit(const ImageSizeLimit& limit) {
   if (!manual_image_size_mode(limit.mode)) return {};
@@ -1121,7 +1149,7 @@ awj::compat::expected<void, std::string> validate_config(const AppConfig& cfg) {
   }
   // visual_quality 未设置时 fallback 没有工作可做，因此允许默认值保留；一旦
   // 启用搜索，native backend 才读取该开关。
-  if (cfg.memory_limit_bytes > 0 &&
+  if (!cfg.unlock_memory_limit && cfg.memory_limit_bytes > 0 &&
       cfg.memory_limit_bytes < 64ull * 1024ull * 1024ull) {
     return awj::compat::unexpected{
         "memory-limit 不能低于 64MiB；使用 auto 可由程序自动估算。"};
@@ -1216,8 +1244,8 @@ std::string help_text() {
   --cpu-affinity <编号列表>  限定逻辑 CPU，例如 0-3,6；编号从 0 开始，必须在进程允许集合内；Windows 使用当前处理器组
   --memory-limit <auto|大小>  工作集准入预算（非进程内存硬上限）；auto 为总内存 80% 与可用内存 50% 的较小值，可用 4GiB/4096MiB
   --unlock-memory-limit / --no-unlock-memory-limit 会话内解除/恢复工作集预算；解除优先于手动和 auto，不清除手动值，不写入配置
-  --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除默认 20 GiB 输入/缓冲区保护，不改变工作集预算（默认关闭，不写入配置）
-  --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持默认 20 GiB 输入/缓冲区保护
+  --unlock-max-input-file-bytes / --unlock-20gib-limit 会话内解除物理总内存 80% 的输入/缓冲区保护，不改变工作集预算（兼容入口，默认关闭，不写入配置）
+  --no-unlock-max-input-file-bytes / --no-unlock-20gib-limit 保持物理总内存 80% 的输入/缓冲区保护；--unlock-memory-limit 优先解除全部内存预算
   --image-size-limit <auto|none|upscale|downscale|fixed> 自动／无限制／取最大倍率／取最小倍率／固定尺寸或比例；兼容 manual
   --width/--height/--long-edge/--short-edge <像素> 可组合填写；固定模式等比居中并补透明或黑边，其他手动模式按倍率取最大／最小
   -m, --template <模板>       输出命名，最多 512 个字符，默认 @OUTPUT_TEMPLATE@
@@ -1532,6 +1560,16 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
         return awj::compat::unexpected{value.error()};
       }
       cfg.studio_queue_manifest = path_from_argument_text(*value);
+      continue;
+    }
+
+    if (lower == L"--studio-input-limit-bytes") {
+      const auto text = require_value(i, args[i]);
+      if (!text) return awj::compat::unexpected{text.error()};
+      const auto value = config_detail::scan_number<std::uint64_t>(*text);
+      if (!value || !*value || cfg.studio_input_limit_bytes)
+        return awj::compat::unexpected{"studio-input-limit-bytes 必须是非零 uint64 字节值且只能指定一次。"};
+      cfg.studio_input_limit_bytes = *value;
       continue;
     }
 

@@ -40,12 +40,12 @@ import awj.pipeline;
 #endif
 import awj.decoder_registry;
 import awj.preset;
+import awj.encoding_defaults;
 #ifdef _WIN32
 import awj.image;
 import awj.codec;
 import awj.native_backend;
 import awj.resource_planner;
-import awj.encoding_defaults;
 #endif
 
 namespace {
@@ -183,11 +183,11 @@ std::expected<std::size_t, std::string> read_stdin_bytes(std::span<std::byte> by
 }
 
 std::expected<awj::ImageDecodeResult, std::string> read_wgc_stdin(
-    const WgcStdinSpec& spec, const awj::AppConfig& config, std::stop_token stop) {
+    const WgcStdinSpec& spec, std::uint64_t memory_limit_bytes, std::stop_token stop) {
   const auto stride = static_cast<std::uint64_t>(spec.width) * 8;
-  const auto maximum = awj::encoding_defaults::effective_max_input_file_bytes();
-  if (stride > maximum || spec.height > maximum / stride ||
-      (config.memory_limit_bytes && spec.height > config.memory_limit_bytes / stride))
+  const auto maximum = std::min<std::uint64_t>(awj::encoding_defaults::effective_max_input_file_bytes(), SIZE_MAX);
+  if (!stride || !spec.height || stride > maximum || spec.height > maximum / stride ||
+      (memory_limit_bytes && spec.height > memory_limit_bytes / stride))
     return std::unexpected{"WGC stdin 帧超过输入或配置内存上限。"};
   awj::ImageDecodeResult decoded;
   decoded.decoder_id = "stdin-wgc-memory";
@@ -220,7 +220,13 @@ std::expected<int, std::string> run_wgc_memory(const WgcStdinSpec& spec, awj::Ap
   if (config.output_dir.empty()) return std::unexpected{"--stdin-wgc-rgba16f 必须显式指定 -o/--output。"};
   if (config.output_template.find(L"{sha256") != std::wstring::npos)
     return std::unexpected{"内存 stdin 不提供原输入文件的 SHA-256 模板；请使用帧号或普通名称。"};
-  auto decoded = read_wgc_stdin(spec, config, stop);
+  if (auto frozen = awj::freeze_operation_memory_policy(config); !frozen)
+    return std::unexpected{frozen.error()};
+  const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*config.runtime_memory_policy};
+  const auto resolved_memory_limit = awj::checked_effective_memory_limit(config);
+  if (!resolved_memory_limit) return std::unexpected{resolved_memory_limit.error()};
+  const auto memory_limit = *resolved_memory_limit;
+  auto decoded = read_wgc_stdin(spec, memory_limit, stop);
   if (!decoded) return std::unexpected{decoded.error()};
   const auto input_bytes = decoded->image.planes[0].bytes.size();
   std::uint64_t hash = 14695981039346656037ull;
@@ -230,7 +236,7 @@ std::expected<int, std::string> run_wgc_memory(const WgcStdinSpec& spec, awj::Ap
   config.write_log = false; config.write_summary = false;
   awj::FileLogger logger{{}, false};
   const auto resources = awj::plan_resources({.automatic_thread_budget = std::max(1, config.max_jobs),
-      .file_count = 1, .memory_limit_bytes = config.memory_limit_bytes, .estimated_bytes_per_file = input_bytes});
+      .file_count = 1, .memory_limit_bytes = memory_limit, .estimated_bytes_per_file = input_bytes});
   awj::NativeBackend backend{config, logger, resources};
   auto encoded = backend.encode_memory(std::move(*decoded), stop);
   if (!encoded) return std::unexpected{encoded.error()};
@@ -310,10 +316,18 @@ int run_cli_args(std::vector<std::wstring> args) {
       return 0;
     }
     if (!args.empty() && args.front() == L"--studio-probe-image") {
-      if (args.size() != 3 || (args[2] != L"wic" && args[2] != L"native")) {
+      if (args.size() < 3 || (args[2] != L"wic" && args[2] != L"native")) {
         print_line("图片尺寸探测参数无效。");
         return 1;
       }
+      auto probe = awj::parse_arguments(std::vector<std::wstring>{args.begin() + 3, args.end()});
+      if (!probe || probe->should_exit) {
+        print_line(probe ? "图片尺寸探测参数无效。" : probe.error());
+        return 1;
+      }
+      const auto policy = awj::operation_memory_policy(probe->config);
+      if (!policy) { print_line(policy.error()); return 1; }
+      const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*policy};
       auto dimensions = awj::probe_image_dimensions_for_path(
           std::filesystem::path{args[1]}, awj::DecoderRegistryOptions{.allow_wic_fallback = args[2] == L"wic"});
       if (!dimensions) { print_line(dimensions.error()); return 1; }

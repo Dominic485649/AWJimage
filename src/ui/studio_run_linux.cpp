@@ -1486,6 +1486,9 @@ awj::compat::expected<bool, std::string> add_linux_queue_from_paths(
     bool update_input_path) {
   if (app.get_running()) return awj::compat::unexpected{"当前任务仍在运行或收尾，无法导入。"};
   try {
+    const auto policy = awj::encoding_defaults::system_memory_policy(app.get_unlock_memory_limit());
+    if (!policy) return awj::compat::unexpected{std::string{awj::encoding_defaults::memory_policy_unavailable_message}};
+    const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*policy};
     std::vector<awj::ui_import::Root> roots;
     roots.reserve(paths.size());
     for (const auto& path : paths) roots.push_back({.path = path});
@@ -1579,6 +1582,9 @@ build_linux_queue_files(const awj::AppConfig& cfg,
                         const std::vector<LinuxQueueItem>& queue,
                         const std::vector<fs::path>* only_paths = nullptr) {
   try {
+    const auto policy = awj::operation_memory_policy(cfg);
+    if (!policy) return awj::compat::unexpected{policy.error()};
+    const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*policy};
     std::unordered_set<std::string> selected;
     if (only_paths != nullptr) {
       selected.reserve(only_paths->size());
@@ -1701,8 +1707,11 @@ bool finish_linux_queue_run(AwjStudio& app, LinuxUiState& state,
 }
 
 awj::compat::expected<fs::path, std::string> create_linux_queue_manifest(
-    std::uint64_t run_id, const std::vector<awj::ImageFile>& files) {
+    std::uint64_t run_id, const std::vector<awj::ImageFile>& files, const awj::AppConfig& cfg) {
   try {
+    const auto policy = awj::operation_memory_policy(cfg);
+    if (!policy) return awj::compat::unexpected{policy.error()};
+    const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*policy};
     std::error_code ec;
     const auto temp_dir = fs::temp_directory_path(ec);
     if (ec) {
@@ -2133,7 +2142,7 @@ awj::compat::expected<awj::AppConfig, std::string> linux_config_from_parameter_p
     }
     push_flag(args, app->get_unlock_memory_limit(), L"--unlock-memory-limit",
               L"--no-unlock-memory-limit");
-    if (app->get_unlock_max_input_file_bytes()) {
+    if (app->get_unlock_memory_limit()) {
       args.push_back(L"--unlock-max-input-file-bytes");
     }
     push_flag(args, app->get_strip_metadata(), L"--strip", L"--keep-metadata");
@@ -2365,6 +2374,10 @@ awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
     config->input_path = *input;
     config->output_dir = *output;
     config->append_png_suffix = queue_choice.append_png_suffix;
+    config->unlock_memory_limit = app.get_unlock_memory_limit();
+    config->unlock_max_input_file_bytes = config->unlock_memory_limit;
+    if (auto frozen = awj::freeze_operation_memory_policy(*config); !frozen)
+      return awj::compat::unexpected{frozen.error()};
   }
   return config;
 }
@@ -2877,7 +2890,6 @@ void initialize_ui(AwjStudio& app) {
   app.set_template_text(to_shared(std::string{awj::encoding_defaults::default_output_template_text}));
   app.set_memory_limit_text(to_shared(std::string{awj::encoding_defaults::default_memory_limit_text}));
   app.set_unlock_memory_limit(false);
-  app.set_unlock_max_input_file_bytes(false);
   app.set_collision_index(awj::studio::default_queue_collision_index);
   app.set_write_log(false);
   app.set_delete_source(false);
@@ -3579,7 +3591,7 @@ int awj::studio::run_studio_ui() {
             to_shared(awj::compat::format("重试准备失败：{}", files.error())));
         return;
       }
-      auto manifest = create_linux_queue_manifest(state->next_queue_run_id++, *files);
+      auto manifest = create_linux_queue_manifest(state->next_queue_run_id++, *files, *cfg);
       if (!manifest) {
         (*app)->set_status_text(
             to_shared(awj::compat::format("重试准备失败：{}", manifest.error())));
@@ -3778,7 +3790,7 @@ int awj::studio::run_studio_ui() {
             to_shared(awj::compat::format("队列准备失败：{}", files.error())));
         return;
       }
-      auto manifest = create_linux_queue_manifest(state->next_queue_run_id++, *files);
+      auto manifest = create_linux_queue_manifest(state->next_queue_run_id++, *files, *cfg);
       if (!manifest) {
         (*app)->set_status_text(
             to_shared(awj::compat::format("队列准备失败：{}", manifest.error())));

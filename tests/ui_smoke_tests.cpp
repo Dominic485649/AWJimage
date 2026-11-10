@@ -310,56 +310,377 @@ std::optional<slint::testing::ElementHandle> find_one(
   return match;
 }
 
+std::string_view visual_quality_detail(bool english) {
+  return english
+      ? "Leave blank to let the regular quality setting control the encode directly. If you explicitly need visual-quality search, start around 50; once set, AWJ repeatedly encodes the same image and searches for the target quality with GMSD / MS-SSIM, which can significantly increase processing time."
+      : "留空时由普通质量参数直接控制。若确实需要启用视觉质量搜索，建议从 50 左右开始；填写后会对同一张图反复编码，并用 GMSD / MS-SSIM 搜索目标画质，耗时会显著增加。";
+}
+
+int verify_hidden_input_unlock(const slint::ComponentHandle<AwjStudio>& app) {
+  for (const auto& checkbox : slint::testing::ElementHandle::find_by_element_type_name(app, "CheckBox")) {
+    const auto label = checkbox.accessible_label();
+    if (label && (std::string_view{*label}.find("输入/缓冲") != std::string_view::npos ||
+                  std::string_view{*label}.find("input/buffer") != std::string_view::npos))
+      return fail("独立输入/缓冲解除开关仍出现在界面或可访问性树中。");
+  }
+  if (app->get_unlock_memory_limit() != app->get_unlock_max_input_file_bytes())
+    return fail("隐藏输入保护状态与工作集解除主开关不同步。");
+  return 0;
+}
+
+std::optional<slint::testing::ElementHandle> find_size_hint(
+    const slint::ComponentHandle<AwjStudio>& app, std::string_view text,
+    const slint::testing::ElementHandle& control) {
+  using Role = slint::language::AccessibleRole;
+  std::optional<slint::testing::ElementHandle> match;
+  const auto position = control.absolute_position();
+  const auto size = control.size();
+  for (const auto& element : slint::testing::ElementHandle::find_by_accessible_label(app, text)) {
+    const auto hint_position = element.absolute_position();
+    if (element.accessible_role() != Role::Text || element.size().width <= 0 ||
+        hint_position.x + 1 < position.x + size.width ||
+        std::fabs(hint_position.y - position.y) > 100) continue;
+    if (match) return std::nullopt;
+    match = element;
+  }
+  return match;
+}
+
+int verify_parameter_hint_rows(const slint::ComponentHandle<AwjStudio>& app, bool english) {
+  using Role = slint::language::AccessibleRole;
+  const bool unlimited = (app->get_parameter_preset_index() == 1
+      ? app->get_menu_size_limit_index() : app->get_size_limit_index()) == 1;
+  const auto dimensions = find_one(app, english ? "Image size limit" : "图片尺寸限制", Role::Combobox);
+  if (!dimensions) return fail("尺寸说明回归缺少尺寸策略控件。");
+  const auto selected = dimensions->accessible_value();
+  const std::string_view expected_selection = unlimited
+      ? (english ? "Unlimited" : "无限制") : (english ? "Auto" : "自动");
+  if (!selected || std::string_view{*selected} != expected_selection)
+    return fail("尺寸下拉框的实际选中项与右侧说明或保存状态不一致。");
+  const auto automatic_text = english ? "Automatic format dimension limits" : "自动按格式限制边长";
+  if (unlimited && (!find_size_hint(app, english ? "Unlimited" : "无限制", *dimensions) ||
+                    find_size_hint(app, automatic_text, *dimensions)))
+    return fail("无限制模式右侧仍显示自动限制，或没有对应的无限制说明。");
+  if (!unlimited && !find_size_hint(app, automatic_text, *dimensions))
+    return fail("自动尺寸模式右侧没有保持原有说明。");
+  if (!find_one(app, visual_quality_detail(english), Role::Text))
+    return fail("视觉质量说明正文或翻译缺失。");
+  for (const auto& text : slint::testing::ElementHandle::find_by_element_type_name(app, "Text")) {
+    const auto label = text.accessible_label();
+    if (label && (std::string_view{*label}.find("444 不等于 RGB Identity") != std::string_view::npos ||
+                  std::string_view{*label}.find("444 does not imply RGB Identity") != std::string_view::npos))
+      return fail("已要求删除的 RGB Identity 附加句仍显示。");
+  }
+  return 0;
+}
+
 int verify_memory_budget_unlock() {
   using Role = slint::language::AccessibleRole;
   slint::testing::init();
   for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (const int theme : {1, 2})
-    for (const bool english : {false, true}) {
+    for (const bool english : {false, true}) for (const float width : {800.0f, 1220.0f}) {
       auto app = AwjStudio::create();
       if (!slint::select_bundled_translation(english ? "en" : ""))
-        return fail(awj::compat::format("内存解锁测试缺少界面翻译：{}", english ? "en" : "zh"));
+        return fail("内存解除测试缺少界面翻译。");
       app->set_theme_index(theme); app->set_language_index(english ? 1 : 0);
       app->window().window_handle().set_const_scale_factor(scale);
-      const slint::PhysicalSize window_size{{static_cast<std::uint32_t>(std::lround(1220 * scale)),
+      const slint::PhysicalSize window_size{{static_cast<std::uint32_t>(std::lround(width * scale)),
                                               static_cast<std::uint32_t>(std::lround(2000 * scale))}};
       app->window().set_size(window_size);
       if (app->window().size().width != window_size.width || app->window().size().height != window_size.height ||
           std::fabs(app->window().scale_factor() - scale) > 0.001f)
-        return fail("内存解锁测试的窗口尺寸或显示缩放不符");
-      app->set_memory_limit_text("2.25"); app->set_menu_memory_limit_text("3.75");
-      app->set_selected_page(2); app->show();
-      const auto unlock = find_one(app, english ? "Lift the working-set memory budget" : "解除工作集内存预算", Role::Checkbox);
-      const auto input = find_one(app, english ? "Lift the 20 GiB input/buffer protection" : "解除 20 GiB 输入/缓冲区保护", Role::Checkbox);
-      if (!unlock || !input || app->get_unlock_memory_limit() || app->get_unlock_max_input_file_bytes()) {
-        for (const auto& checkbox : slint::testing::ElementHandle::find_by_element_type_name(app, "CheckBox")) {
-          const auto label = checkbox.accessible_label();
-          if (!label) continue;
-          const auto position = checkbox.absolute_position();
-          const auto size = checkbox.size();
-          std::printf("内存开关诊断 label=%s x=%.1f y=%.1f width=%.1f height=%.1f\n",
-              label->data(), double(position.x), double(position.y), double(size.width), double(size.height));
-        }
-        return fail(awj::compat::format("内存开关初态校验失败：scale={} theme={} language={} unlock-control={} input-control={} unlock-value={} input-value={}",
-            scale, theme, english ? "en" : "zh", unlock.has_value(), input.has_value(),
-            app->get_unlock_memory_limit(), app->get_unlock_max_input_file_bytes()));
+        return fail("内存解除测试的窗口尺寸或显示缩放不符。");
+      app->set_selected_page(0); app->show();
+      for (const int page : {0, 1}) {
+        app->set_parameter_preset_index(page);
+        const auto memory = find_one(app, english ? "Memory limit" : "内存限制", Role::TextInput);
+        if (!memory || !memory->accessible_enabled().value_or(false))
+          return fail("解除前手动内存输入不可用。");
+        memory->set_accessible_value(page ? "3.75" : "2.25");
+        const auto value = memory->accessible_value();
+        if (!value || *value != (page ? "3.75" : "2.25"))
+          return fail("两套手动内存值未通过实际输入控件写入。");
       }
+      if (app->get_memory_limit_text() != "2.25" || app->get_menu_memory_limit_text() != "3.75")
+        return fail("实际内存输入没有正确回写各自的参数状态。");
+      app->set_selected_page(2);
+      if (verify_hidden_input_unlock(app) || app->get_unlock_memory_limit())
+        return fail("内存解除的初始状态不符。");
+      auto unlock = find_one(app, english ? "Lift the working-set memory budget" : "解除工作集内存预算", Role::Checkbox);
+      if (!unlock) return fail("工作集解除主开关缺失。");
       unlock->invoke_accessible_default_action();
-      if (!app->get_unlock_memory_limit() || app->get_unlock_max_input_file_bytes() ||
-          app->get_memory_limit_text() != "2.25" || app->get_menu_memory_limit_text() != "3.75")
-        return fail("memory unlock lost manual values or toggled input protection");
-      input->invoke_accessible_default_action();
-      if (!app->get_unlock_memory_limit() || !app->get_unlock_max_input_file_bytes())
-        return fail("input protection changed the working-set unlock");
-      unlock->invoke_accessible_default_action();
-      if (app->get_unlock_memory_limit() || !app->get_unlock_max_input_file_bytes() ||
-          app->get_memory_limit_text() != "2.25" || app->get_menu_memory_limit_text() != "3.75")
-        return fail("turning off memory unlock did not preserve manual budgets");
+      if (verify_hidden_input_unlock(app) || !app->get_unlock_memory_limit()) return 1;
+      for (const int page : {0, 1}) {
+        app->set_selected_page(0); app->set_parameter_preset_index(page);
+        const auto memory = find_one(app, english ? "Memory limit" : "内存限制", Role::TextInput);
+        if (!memory || memory->accessible_enabled().value_or(true))
+          return fail("解除模式下，普通/右键菜单手动内存值仍可覆盖主开关。");
+        const auto value = memory->accessible_value();
+        if (!value || *value != (page ? "3.75" : "2.25"))
+          return fail("解除模式没有在实际输入框中保留两套手动内存值。");
+        if (page == 1 && !find_one(app, english ? "New sessions keep the menu budget" : "新会话沿用菜单预算", Role::Text))
+          return fail("菜单参数没有说明：新进程仍使用保存预算，不持久化本会话解除状态。");
+      }
+      app->set_selected_page(2);
+      unlock = find_one(app, english ? "Lift the working-set memory budget" : "解除工作集内存预算", Role::Checkbox);
+      if (!unlock) return fail("切换页面后工作集解除开关丢失。");
       app->set_running(true);
-      if (unlock->accessible_enabled().value_or(true) || input->accessible_enabled().value_or(true))
-        return fail("resource safety controls remained editable during a run");
+      if (unlock->accessible_enabled().value_or(true) || verify_hidden_input_unlock(app))
+        return fail("运行中内存解除状态仍可独立修改。");
+      app->set_running(false);
+      unlock->invoke_accessible_default_action();
+      if (verify_hidden_input_unlock(app) || app->get_unlock_memory_limit() ||
+          app->get_memory_limit_text() != "2.25" || app->get_menu_memory_limit_text() != "3.75")
+        return fail("关闭解除后没有同时恢复保护并保留两套手动值。");
+      for (const int page : {0, 1}) {
+        app->set_selected_page(0); app->set_parameter_preset_index(page);
+        const auto memory = find_one(app, english ? "Memory limit" : "内存限制", Role::TextInput);
+        if (!memory || !memory->accessible_enabled().value_or(false))
+          return fail("关闭解除后手动内存输入没有恢复。");
+        const auto value = memory->accessible_value();
+        if (!value || *value != (page ? "3.75" : "2.25"))
+          return fail("恢复保护后实际内存输入框没有恢复原有手动值。");
+      }
       app->hide();
-      std::printf("memory-unlock scale=%.2f theme=%d language=%s result=passed\n", double(scale), theme, english ? "en" : "zh");
+      std::printf("memory-unlock scale=%.2f theme=%d language=%s width=%.0f linked=true manual-preserved=true result=passed\n",
+          double(scale), theme, english ? "en" : "zh", double(width));
     }
+  return 0;
+}
+
+int verify_parameter_hint_policy() {
+  slint::testing::init();
+  for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (const int theme : {1, 2})
+    for (const bool english : {false, true}) for (const float width : {800.0f, 1220.0f}) {
+      auto app = AwjStudio::create();
+      if (!slint::select_bundled_translation(english ? "en" : "")) return fail("参数说明测试翻译缺失。");
+      app->set_theme_index(theme); app->set_language_index(english ? 1 : 0);
+      app->window().window_handle().set_const_scale_factor(scale);
+      app->window().set_size(slint::PhysicalSize({static_cast<std::uint32_t>(std::lround(width * scale)),
+                                               static_cast<std::uint32_t>(std::lround(2000 * scale))}));
+      app->set_selected_page(0); app->set_format_index(0); app->set_menu_format_index(0); app->show();
+      for (const int page : {0, 1}) for (const int mode : {0, 1}) {
+        app->set_parameter_preset_index(page);
+        const auto dimensions = find_one(app, english ? "Image size limit" : "图片尺寸限制",
+            slint::language::AccessibleRole::Combobox);
+        if (!dimensions) return fail("缺少可操作的尺寸下拉框。");
+        dimensions->invoke_accessible_default_action();
+        send_key(app, slint::platform::key_codes::Home);
+        if (mode) send_key(app, slint::platform::key_codes::DownArrow);
+        send_key(app, slint::platform::key_codes::Return);
+        slint::private_api::testing::mock_elapsed_time(1);
+        if ((page ? app->get_menu_size_limit_index() : app->get_size_limit_index()) != mode)
+          return fail("实际选择尺寸下拉框后没有回写普通/菜单的对应状态。");
+        if (verify_parameter_hint_rows(app, english)) return 1;
+      }
+      app->hide();
+      std::printf("parameter-hints scale=%.2f theme=%d language=%s width=%.0f pages=2 auto-unlimited=passed\n",
+          double(scale), theme, english ? "en" : "zh", double(width));
+    }
+  return 0;
+}
+
+int verify_visual_detail_pixels(const slint::ComponentHandle<AwjStudio>& app,
+    const auto& snapshot, bool english, int theme, float scale) {
+  using Role = slint::language::AccessibleRole;
+  const auto detail = find_one(app, visual_quality_detail(english), Role::Text);
+  if (!detail) return fail("原生截图缺少视觉质量说明正文。");
+  const auto position = detail->absolute_position();
+  const auto size = detail->size();
+  const int left = static_cast<int>(std::ceil((position.x + 1) * scale));
+  const int right = static_cast<int>(std::floor((position.x + size.width - 1) * scale));
+  const int top = static_cast<int>(std::ceil((position.y + 1) * scale));
+  const int bottom = static_cast<int>(std::floor((position.y + size.height - 1) * scale));
+  if (left < 0 || top < 0 || right <= left || bottom <= top ||
+      right > static_cast<int>(snapshot.width()) || bottom > static_cast<int>(snapshot.height()))
+    return fail("视觉质量说明的实际截图区域被裁切。");
+  // 与 StudioTheme.text-muted 一致；检查整个正文区域，避免抗锯齿偶然命中单个像素。
+  const std::array<int, 3> muted = theme == 2 ? std::array{173, 173, 173} : std::array{100, 116, 139};
+  std::size_t matching = 0, wrong_foreground = 0;
+  for (int y = top; y < bottom; ++y) for (int x = left; x < right; ++x) {
+    const auto& pixel = snapshot.begin()[static_cast<std::size_t>(y) * snapshot.width() + static_cast<std::size_t>(x)];
+    const std::array<int, 3> channels{int(pixel.r), int(pixel.g), int(pixel.b)};
+    bool exact_tint = true, out_of_range = false;
+    for (std::size_t channel = 0; channel < channels.size(); ++channel) {
+      exact_tint = exact_tint && std::abs(channels[channel] - muted[channel]) <= 4;
+      out_of_range = out_of_range || (theme == 2
+          ? channels[channel] > muted[channel] + 4 : channels[channel] < muted[channel] - 4);
+    }
+    matching += exact_tint;
+    wrong_foreground += out_of_range;
+  }
+  std::printf("parameter-detail-pixels theme=%d language=%s scale=%.2f muted=%zu out-of-range=%zu\n",
+      theme, english ? "en" : "zh", double(scale), matching, wrong_foreground);
+  if (matching < 16 || wrong_foreground != 0)
+    return fail("视觉质量正文像素没有使用同类说明的 text-muted 主题色。");
+  return 0;
+}
+
+bool element_inside_window(const slint::ComponentHandle<AwjStudio>& app,
+    const slint::testing::ElementHandle& element) {
+  const auto position = element.absolute_position();
+  const auto size = element.size();
+  const auto window = app->window().size();
+  const auto scale = app->window().scale_factor();
+  return size.width > 0 && size.height > 0 && position.x >= 0 && position.y >= 0 &&
+      (position.x + size.width) * scale <= window.width + 1 &&
+      (position.y + size.height) * scale <= window.height + 1;
+}
+
+int verify_native_memory_controls(const slint::ComponentHandle<AwjStudio>& app,
+    bool english, int view, bool unlocked) {
+  using Role = slint::language::AccessibleRole;
+  if (verify_hidden_input_unlock(app) || app->get_unlock_memory_limit() != unlocked) return 1;
+  if (view == 2) {
+    const auto checkbox = find_one(app,
+        english ? "Lift the working-set memory budget" : "解除工作集内存预算", Role::Checkbox);
+    if (!checkbox || checkbox->accessible_checked() != std::optional{unlocked} ||
+        !checkbox->accessible_enabled().value_or(false) || !element_inside_window(app, *checkbox))
+      return fail("原生设置页的主开关缺失、被裁切或实际勾选状态错误。");
+    return 0;
+  }
+  const auto memory = find_one(app, english ? "Memory limit" : "内存限制", Role::TextInput);
+  if (!memory || !element_inside_window(app, *memory) ||
+      memory->accessible_enabled() != std::optional{!unlocked})
+    return fail("原生参数页内存输入不可见，或解除优先级未反映到实际控件。");
+  const auto value = memory->accessible_value();
+  if (!value || *value != (view == 1 ? "3.75" : "2.25"))
+    return fail("原生参数页的实际输入值未保留。");
+  if (unlocked && (!find_one(app, english ? "Budget lifted for this session" : "当前会话已解除预算", Role::Text) ||
+      !find_one(app, view == 1 ? (english ? "New sessions keep the menu budget" : "新会话沿用菜单预算")
+                               : (english ? "Manual value preserved" : "保留手动值"), Role::Text)))
+    return fail("原生参数页没有显示解除状态或对应的手动预算说明。");
+  return verify_parameter_hint_rows(app, english);
+}
+
+int verify_memory_policy_native_snapshots(const std::filesystem::path& directory,
+    float scale, float width) {
+  if ((scale != 1 && scale != 1.25f && scale != 1.5f && scale != 2) ||
+      !std::isfinite(width) || width < 800 || width > 1800)
+    return fail("内存截图的缩放或逻辑宽度不受支持。");
+  if (!std::filesystem::create_directory(directory)) return fail("内存截图目录必须为新目录。");
+  bool saw_opengl = false;
+  auto app = AwjStudio::create();
+  app->window().window_handle().set_const_scale_factor(scale);
+  app->set_current_version(AWJ_UI_VERSION);
+  app->set_size_limit_index(1); app->set_menu_size_limit_index(1);
+  app->set_memory_limit_text("2.25"); app->set_menu_memory_limit_text("3.75");
+  app->set_format_index(0); app->set_menu_format_index(0);
+  const slint::PhysicalSize requested{{static_cast<std::uint32_t>(std::lround(width * scale)),
+                                       static_cast<std::uint32_t>(std::lround(1000 * scale))}};
+  if (app->window().set_rendering_notifier([&](slint::RenderingState, slint::GraphicsAPI api) {
+        saw_opengl = saw_opengl || api == slint::GraphicsAPI::NativeOpenGL;
+      })) return fail("内存参数像素验证需要真实原生渲染器。");
+  std::optional<std::string> error;
+  int state = 0, captured = 0, frame_attempts = 0;
+  bool size_requested = false, configured = false, scrolled = false;
+  auto changed_at = std::chrono::steady_clock::now();
+  const auto finish = [&](std::string message) {
+    if (!message.empty()) error = std::move(message);
+    app->hide();
+    slint::quit_event_loop();
+  };
+  slint::Timer frames;
+  // Winit 必须先运行事件循环才能创建窗口和恢复 OpenGL 表面。
+  frames.start(slint::TimerMode::Repeated, std::chrono::milliseconds{50}, [&] {
+    try {
+      if (!size_requested) {
+        app->window().set_size(requested);
+        size_requested = true;
+        return;
+      }
+      const auto snapshot = app->window().take_snapshot();
+      const auto actual = app->window().size();
+      if (!snapshot || snapshot->width() != requested.width || snapshot->height() != requested.height ||
+          actual.width != requested.width || actual.height != requested.height || !saw_opengl) {
+        if (++frame_attempts < 60) return;
+        std::fprintf(stderr, "memory-native requested=%ux%u window=%ux%u snapshot=%ux%u opengl=%s\n",
+            requested.width, requested.height, actual.width, actual.height,
+            snapshot ? snapshot->width() : 0, snapshot ? snapshot->height() : 0,
+            saw_opengl ? "yes" : "no");
+        finish("原生窗口没有生成请求尺寸的 OpenGL 帧。");
+        return;
+      }
+      frame_attempts = 0;
+      if (std::fabs(app->window().scale_factor() - scale) > 0.001f) {
+        finish("内存参数原生窗口缩放与请求不符。");
+        return;
+      }
+#ifdef _WIN32
+      if (!app->window().win32_hwnd()) {
+        finish("内存参数截图缺少真实 Win32 窗口。");
+        return;
+      }
+#endif
+      const int language = state / 12;
+      const int theme = (state / 6) % 2 + 1;
+      const int stage = (state / 3) % 2;
+      const int view = state % 3;
+      const int page = view == 2 ? 2 : 0;
+      if (!configured) {
+        if (!slint::select_bundled_translation(language ? "en" : "")) {
+          finish("内存参数原生截图缺少翻译。");
+          return;
+        }
+        app->set_language_index(language); app->set_theme_index(theme);
+        app->set_unlock_memory_limit(stage != 0);
+        app->set_selected_page(page); app->set_parameter_preset_index(view == 1 ? 1 : 0);
+        configured = true; scrolled = false;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
+      if (std::chrono::steady_clock::now() - changed_at < std::chrono::milliseconds{250}) return;
+      if (!scrolled) {
+        app->window().dispatch_pointer_scroll_event(slint::LogicalPosition({width - 30, 500}),
+            0, view == 2 ? -100000 : 100000);
+        scrolled = true;
+        changed_at = std::chrono::steady_clock::now();
+        return;
+      }
+      const int checked = verify_native_memory_controls(app, language != 0, view, stage != 0) ||
+          (view != 2 && verify_visual_detail_pixels(app, *snapshot, language != 0, theme, scale));
+      if (checked) {
+        (void)write_snapshot_ppm(directory / awj::compat::format(
+            "failed-lang{}-theme{}-view{}-unlocked{}.ppm", language, theme, view, stage), *snapshot);
+        finish("原生控件、说明或正文像素检查失败；失败帧已保留。");
+        return;
+      }
+      // 三页/两状态均验证，仅保留普通参数页和设置页解除后的八张代表帧。
+      if (stage && view != 1) {
+        if (!write_snapshot_ppm(directory / awj::compat::format(
+            "lang{}-theme{}-page{}-format0-unlocked.ppm", language, theme, page), *snapshot)) {
+          finish("无法保存聚焦内存界面的原生帧。");
+          return;
+        }
+        ++captured;
+      }
+      std::printf("memory-native language=%s theme=%d view=%d unlocked=%d size=%ux%u scale=%.2f api=NativeOpenGL controls=passed\n",
+          language ? "en" : "zh", theme, view, stage, snapshot->width(), snapshot->height(), double(scale));
+      std::fflush(stdout);
+      ++state;
+      if (state == 24) { finish({}); return; }
+      configured = false;
+    } catch (const std::exception& exception) {
+      finish(exception.what());
+    }
+  });
+  app->window().on_close_requested([&] {
+    error = "原生内存截图窗口在验证完成前关闭。";
+    slint::quit_event_loop();
+    return slint::CloseRequestResponse::HideWindow;
+  });
+  slint::Timer timeout;
+  timeout.start(slint::TimerMode::SingleShot, std::chrono::seconds{45}, [&] {
+    finish("等待聚焦内存界面原生截图超时。");
+  });
+  app->show();
+  slint::run_event_loop();
+  frames.stop(); timeout.stop();
+  if (error) return fail(*error);
+  if (state != 24 || captured != 8 || !saw_opengl)
+    return fail("原生内存截图未完成中英、明暗、普通/菜单/设置与解除前后全部检查。");
+  std::printf("memory-policy-snapshots scale=%.2f states=%d representative-frames=%d result=passed\n",
+      double(scale), state, captured);
   return 0;
 }
 
@@ -2362,6 +2683,7 @@ int main(int argc, char** argv) {
     return 0;
   }
   if (argc == 2 && std::string_view{argv[1]} == "--memory-budget-unlock") return verify_memory_budget_unlock();
+  if (argc == 2 && std::string_view{argv[1]} == "--parameter-hints") return verify_parameter_hint_policy();
   if (argc == 2 && std::string_view{argv[1]} == "--fixed-size-inputs") return verify_fixed_size_inputs();
   if (const int result = verify_native_file_payload(); result != 0) return result;
   if (const int result = verify_shared_string_clearing(); result != 0) {
@@ -2610,6 +2932,10 @@ int main(int argc, char** argv) {
     app->hide();
     return 0;
   }
+  if ((argc >= 3 && argc <= 5) && std::string_view{argv[1]} == "--memory-policy-snapshots") {
+    return verify_memory_policy_native_snapshots(std::filesystem::path{argv[2]},
+        argc >= 4 ? std::stof(argv[3]) : 1.0f, argc == 5 ? std::stof(argv[4]) : 1220.0f);
+  }
   if ((argc >= 3 && argc <= 5) && (std::string_view{argv[1]} == "--snapshots" ||
                                  std::string_view{argv[1]} == "--scroll-snapshots" ||
                                  std::string_view{argv[1]} == "--menu-snapshots" ||
@@ -2642,7 +2968,8 @@ int main(int argc, char** argv) {
       app->set_language_index(language);
       for (const int theme : {1, 2}) {
         app->set_theme_index(theme);
-        for (const int page : (menu_only ? std::vector{0} : scrolling ? std::vector{0, 2, 4} : std::vector{0, 1, 2, 4})) {
+        for (const int page : (menu_only ? std::vector{0}
+                                    : scrolling ? std::vector{0, 2, 4} : std::vector{0, 1, 2, 4})) {
           app->set_selected_page(page);
           app->set_parameter_preset_index(menu_only ? 1 : 0);
           app->set_selected_queue_index(page == 1 ? 0 : -1);
@@ -2652,29 +2979,28 @@ int main(int argc, char** argv) {
           for (int format = 0; format < (menu_operations ? 3 : scrolling || page == 1 || page == 2 || page == 4 || menu_only ? 1 : 5); ++format) {
             app->set_format_index(menu_operations ? 0 : format);
             app->set_menu_format_index(menu_operations ? 0 : format);
-            // Snapshot 0 is idle, 1 is ordinary registration, 2 requires UAC.
             app->set_menu_operation_active(menu_operations && format != 0);
             app->set_menu_elevation_required(menu_operations && format == 2);
             for (int stage = 0; stage < (scrolling ? 3 : 1); ++stage) {
-            if (stage > 0) app->window().dispatch_pointer_scroll_event(
-                slint::LogicalPosition({static_cast<float>(size.width / scale - 30), 300}),
-                0, stage == 1 ? -220 : -100000);
-            (void)app->window().take_snapshot();
-            if (scrolling) {
-              std::this_thread::sleep_for(std::chrono::milliseconds{250});
-              slint::platform::update_timers_and_animations();
-            } else {
-              slint::private_api::testing::mock_elapsed_time(250);
-            }
-            const auto snapshot = app->window().take_snapshot();
-            if (!snapshot) return fail("Slint renderer could not produce a snapshot");
-            if (snapshot->width() != size.width || snapshot->height() != size.height ||
-                std::fabs(app->window().scale_factor() - scale) > 0.001f)
-              return fail("snapshot did not use the requested pixel size and scale");
-            const auto name = awj::compat::format("lang{}-theme{}-page{}-format{}", language, theme, page, format) +
-                (scrolling ? awj::compat::format("-scroll{}.ppm", stage) : ".ppm");
-            if (!write_snapshot_ppm(directory / name, *snapshot))
-              return fail("could not write the renderer snapshot");
+              if (stage > 0) app->window().dispatch_pointer_scroll_event(
+                  slint::LogicalPosition({static_cast<float>(size.width / scale - 30), 300}),
+                  0, stage == 1 ? -220 : -100000);
+              (void)app->window().take_snapshot();
+              if (scrolling) {
+                std::this_thread::sleep_for(std::chrono::milliseconds{250});
+                slint::platform::update_timers_and_animations();
+              } else {
+                slint::private_api::testing::mock_elapsed_time(250);
+              }
+              const auto snapshot = app->window().take_snapshot();
+              if (!snapshot) return fail("Slint renderer could not produce a snapshot");
+              if (snapshot->width() != size.width || snapshot->height() != size.height ||
+                  std::fabs(app->window().scale_factor() - scale) > 0.001f)
+                return fail("snapshot did not use the requested pixel size and scale");
+              const auto name = awj::compat::format("lang{}-theme{}-page{}-format{}", language, theme, page, format) +
+                  (scrolling ? awj::compat::format("-scroll{}.ppm", stage) : ".ppm");
+              if (!write_snapshot_ppm(directory / name, *snapshot))
+                return fail("could not write the renderer snapshot");
             }
           }
         }

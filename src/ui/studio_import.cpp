@@ -227,6 +227,12 @@ bool apply_scanned_import(AwjStudio& app, UiState& state,
 bool add_queue_from_path(AwjStudio& app, UiState& state,
                          const std::filesystem::path& picked,
                          bool pick_folder, bool update_input_path) {
+  const auto policy = awj::encoding_defaults::system_memory_policy(app.get_unlock_memory_limit());
+  if (!policy) {
+    app.set_status_text(to_shared(awj::encoding_defaults::memory_policy_unavailable_message));
+    return false;
+  }
+  const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*policy};
   const auto result = awj::ui_import::scan({{.path = picked, .force_directory = pick_folder}},
       pick_folder ? awj::ui_import::Origin::folder_dialog : awj::ui_import::Origin::file_dialog,
       {.is_supported = awj::is_supported_image_extension,
@@ -256,6 +262,12 @@ void add_manual_large_images_from_picker(AwjStudio& app, UiState& state,
     paths.push_back(picked);
   }
 
+  const auto policy = awj::encoding_defaults::system_memory_policy(app.get_unlock_memory_limit());
+  if (!policy) {
+    app.set_status_text(to_shared(awj::encoding_defaults::memory_policy_unavailable_message));
+    return;
+  }
+  const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{*policy};
   const bool was_empty = state.large_image_items.empty();
   std::size_t added = 0;
   std::size_t failed = 0;

@@ -6,6 +6,7 @@ module;
 #include <bit>
 #include <cstddef>
 #include <cstdint>
+#include <csetjmp>
 #include <cstring>
 #include <cmath>
 #include <filesystem>
@@ -286,7 +287,7 @@ struct PngAnimationLayout {
     } else if (type == "acTL") {
       if (actl || idat || size != 8) return awj::compat::unexpected{"APNG acTL 位置或长度无效。"};
       actl = true;
-      if (inherited_bytes > encoding_defaults::codec_metadata_max_bytes + 1024ull)
+      if (inherited_bytes > encoding_defaults::effective_codec_metadata_max_bytes(1024))
         return awj::compat::unexpected{"APNG 全局 metadata 过大。"};
       declared_frames = read_be_u32(prefix, 0); plays = read_be_u32(prefix, 4);
       if (!declared_frames || declared_frames > apng_max_frames ||
@@ -327,8 +328,8 @@ struct PngAnimationLayout {
       ended = true;
     } else if (is_global_decoding_chunk(type)) {
       if (idat && type != "eXIf") return awj::compat::unexpected{"PNG 色彩/解码 chunk 必须位于 IDAT 前。"};
-      constexpr auto limit = encoding_defaults::codec_metadata_max_bytes + 1024ull;
-      if (actl && (inherited_bytes > limit || size + 12ull > limit - inherited_bytes))
+      const auto limit = actl ? encoding_defaults::effective_codec_metadata_max_bytes(1024) : UINT64_MAX;
+      if (!encoding_defaults::byte_sum_fits(inherited_bytes, size + 12ull, limit))
         return awj::compat::unexpected{"APNG 全局 metadata 过大。"};
       inherited_bytes += size + 12ull;
     } else if ((type[0] & 32) == 0) {
@@ -373,8 +374,8 @@ awj::compat::expected<void, std::string> scan_png_chunks(std::uint64_t input_siz
     if (metadata_only && type == "IDAT") return {};
     auto retained = std::min<std::size_t>(size, 26);
     if (metadata_only && type == "iCCP") {
-      if (size > encoding_defaults::codec_metadata_max_bytes)
-        return awj::compat::unexpected{"PNG ICC chunk 超过 64 MiB 上限。"};
+      if (size > encoding_defaults::effective_codec_metadata_max_bytes())
+        return awj::compat::unexpected{"PNG ICC chunk 超过 当前运行时或格式上限。"};
       retained = size;
     }
     prefix.resize(retained);
@@ -476,6 +477,7 @@ struct DecodeContext {
 struct WriteState {
   std::vector<std::byte> bytes{};
   std::vector<std::byte> row{};
+  const std::uint64_t byte_limit{encoding_defaults::effective_max_input_file_bytes()};
 };
 
 struct PngReadDeleter {
@@ -507,32 +509,57 @@ using PngReadPtr = std::unique_ptr<png_struct, PngReadDeleter>;
 using PngWritePtr = std::unique_ptr<png_struct, PngWriteDeleter>;
 using PngInfoPtr = std::unique_ptr<png_info, PngInfoDeleter>;
 
-void read_callback(png_structp png, png_bytep out, png_size_t count) {
+#if defined(_MSC_VER)
+#define AWJ_PNG_NOINLINE __declspec(noinline)
+#else
+#define AWJ_PNG_NOINLINE __attribute__((noinline))
+#endif
+
+void read_callback(png_structp png, png_bytep out, png_size_t count) noexcept {
   auto* state = static_cast<ReadState*>(png_get_io_ptr(png));
-  if (state == nullptr || count > state->size - state->offset) {
+  if (state == nullptr || !encoding_defaults::byte_sum_fits(state->offset, count, state->size)) {
     png_error(png, "PNG input is truncated");
     return;
   }
-  awj::compat::ranges::copy_n(reinterpret_cast<const png_byte*>(state->data + state->offset),
-                      count, out);
+  if (count != 0) std::memcpy(out, state->data + state->offset, count);
   state->offset += count;
 }
 
-void write_callback(png_structp png, png_bytep data, png_size_t count) {
+// Finish all C++ allocation/exception handling before the callback can longjmp.
+// Keep this frame separate even with LTCG; no exception crosses libpng's C ABI.
+AWJ_PNG_NOINLINE const char* append_output_bytes(
+    WriteState* state, png_const_bytep data, png_size_t count) noexcept {
+  try {
+    if (count != 0) {
+      const auto* begin = reinterpret_cast<const std::byte*>(data);
+      state->bytes.insert(state->bytes.end(), begin, begin + count);
+    }
+    return nullptr;
+  } catch (const std::bad_alloc&) {
+    return "PNG output allocation failed";
+  } catch (const std::length_error&) {
+    return "PNG output exceeds container limit";
+  } catch (...) {
+    return "PNG output write failed";
+  }
+}
+
+void write_callback(png_structp png, png_bytep data, png_size_t count) noexcept {
   auto* state = static_cast<WriteState*>(png_get_io_ptr(png));
   if (state == nullptr) {
     png_error(png, "PNG output state is missing");
     return;
   }
-  if (count > encoding_defaults::effective_max_input_file_bytes() - state->bytes.size()) {
+  if (!encoding_defaults::byte_sum_fits(state->bytes.size(), count,
+                                       std::min<std::uint64_t>(state->byte_limit, state->bytes.max_size()))) {
     png_error(png, "PNG output exceeds runtime limit");
     return;
   }
-  const auto* begin = reinterpret_cast<const std::byte*>(data);
-  state->bytes.insert(state->bytes.end(), begin, begin + count);
+  const char* error = append_output_bytes(state, data, count);
+  if (error != nullptr) png_error(png, error);
 }
 
-void flush_callback(png_structp) {}
+void flush_callback(png_structp) noexcept {}
 
 awj::compat::expected<const ImagePlane*, std::string> rgba_plane(const ImageBuffer& image) {
   if (image.pixel_format != PixelFormat::rgba ||
@@ -591,8 +618,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_metadata_payload
   if (data == nullptr || size == 0) {
     return std::vector<std::byte>{};
   }
-  if (size > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{awj::compat::format("{} 超过 64 MiB 上限。", context)};
+  if (size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{awj::compat::format("{} 超过 当前运行时或格式上限。", context)};
   }
   auto bytes = decoder_common::make_byte_buffer(size, context);
   if (!bytes) {
@@ -607,6 +634,10 @@ void clamp_chunk_limits(png_structp png) noexcept {
   if (png == nullptr) {
     return;
   }
+  if (encoding_defaults::memory_limits_unlocked()) {
+    // The defaults are allocation guards; PNG's actual dimension field is 31-bit.
+    png_set_user_limits(png, PNG_UINT_31_MAX, PNG_UINT_31_MAX);
+  }
   const auto current_cache_limit = png_get_chunk_cache_max(png);
   if (current_cache_limit == 0 ||
       current_cache_limit > encoding_defaults::png_max_cached_metadata_chunks) {
@@ -615,11 +646,12 @@ void clamp_chunk_limits(png_structp png) noexcept {
         static_cast<png_uint_32>(
             encoding_defaults::png_max_cached_metadata_chunks));
   }
-  constexpr auto max_chunk_malloc_bytes =
-      static_cast<png_alloc_size_t>(
-          encoding_defaults::codec_metadata_max_bytes);
+  const auto max_chunk_malloc_bytes =
+      static_cast<png_alloc_size_t>(std::min<std::uint64_t>(
+          std::numeric_limits<png_alloc_size_t>::max(), encoding_defaults::effective_codec_metadata_max_bytes()));
   const auto current_malloc_limit = png_get_chunk_malloc_max(png);
-  if (current_malloc_limit == 0 || current_malloc_limit > max_chunk_malloc_bytes) {
+  if (encoding_defaults::memory_limits_unlocked() ||
+      current_malloc_limit == 0 || current_malloc_limit > max_chunk_malloc_bytes) {
     png_set_chunk_malloc_max(png, max_chunk_malloc_bytes);
   }
 #else
@@ -627,6 +659,114 @@ void clamp_chunk_limits(png_structp png) noexcept {
 #endif
 }
 
+// Each live setjmp boundary has only trivial locals and borrowed pointers. The
+// owning C++ frames (including objects constructed AFTER a libpng call) must not
+// be longjmp targets: MSVC's unwinder also visits EH cleanup state under LTCG.
+// Never inline these into their RAII callers or add allocation/formatting here.
+// A later libpng operation establishes a NEW boundary, not a returned jmp_buf.
+struct ReadHeader {
+  png_uint_32 width{}, height{};
+  int bit_depth{}, color_type{};
+  png_size_t row_bytes{};
+  bool source_has_alpha{}, has_significant_bits{};
+  SignificantBits significant_bits{};
+};
+
+AWJ_PNG_NOINLINE bool read_header(png_structp png, png_infop info,
+    ReadState* state, ReadHeader* header) noexcept {
+  auto* jump = png_set_longjmp_fn(png, std::longjmp, sizeof(std::jmp_buf));
+  if (jump == nullptr) return false;
+  if (setjmp(*jump) != 0) return false;
+
+  clamp_chunk_limits(png);
+  png_set_read_fn(png, state, read_callback);
+  png_read_info(png, info);
+  // Even this getter validates IHDR and can call png_error.
+  png_get_IHDR(png, info, &header->width, &header->height,
+               &header->bit_depth, &header->color_type, nullptr, nullptr, nullptr);
+  const bool transparency = png_get_valid(png, info, PNG_INFO_tRNS) != 0;
+  header->source_has_alpha = (header->color_type & PNG_COLOR_MASK_ALPHA) != 0 || transparency;
+  png_color_8p bits = nullptr;
+  if (png_get_sBIT(png, info, &bits) && bits) {
+    const bool gray = (header->color_type & PNG_COLOR_MASK_COLOR) == 0;
+    header->has_significant_bits = true;
+    header->significant_bits = SignificantBits{
+        gray ? bits->gray : bits->red, gray ? bits->gray : bits->green,
+        gray ? bits->gray : bits->blue,
+        (header->color_type & PNG_COLOR_MASK_ALPHA) ? bits->alpha : (header->bit_depth == 16 ? 16 : 8)};
+  }
+  if (header->color_type == PNG_COLOR_TYPE_PALETTE) png_set_palette_to_rgb(png);
+  if (header->color_type == PNG_COLOR_TYPE_GRAY && header->bit_depth < 8)
+    png_set_expand_gray_1_2_4_to_8(png);
+  if (transparency) png_set_tRNS_to_alpha(png);
+  if (header->color_type == PNG_COLOR_TYPE_GRAY || header->color_type == PNG_COLOR_TYPE_GRAY_ALPHA)
+    png_set_gray_to_rgb(png);
+  if (!header->source_has_alpha)
+    png_set_filler(png, header->bit_depth == 16 ? 0xffff : 0xff, PNG_FILLER_AFTER);
+  png_set_interlace_handling(png);
+  png_read_update_info(png, info);
+  if (header->bit_depth == 16 && std::endian::native == std::endian::little) png_set_swap(png);
+  header->row_bytes = png_get_rowbytes(png, info);
+  return true;
+}
+
+AWJ_PNG_NOINLINE bool read_pixels(png_structp png, png_infop end_info,
+    png_bytepp rows) noexcept {
+  auto* jump = png_set_longjmp_fn(png, std::longjmp, sizeof(std::jmp_buf));
+  if (jump == nullptr) return false;
+  if (setjmp(*jump) != 0) return false;
+  png_read_image(png, rows);
+  png_read_end(png, end_info);
+  return true;
+}
+
+struct WriteHeader {
+  png_uint_32 width{}, height{};
+  int bit_depth{};
+  bool has_significant_bits{};
+  png_color_8 significant_bits{};
+  png_const_bytep icc{};
+  png_uint_32 icc_size{};
+};
+
+AWJ_PNG_NOINLINE bool write_header(png_structp png, png_infop info,
+    WriteState* state, const WriteHeader* header) noexcept {
+  auto* jump = png_set_longjmp_fn(png, std::longjmp, sizeof(std::jmp_buf));
+  if (jump == nullptr) return false;
+  if (setjmp(*jump) != 0) return false;
+  clamp_chunk_limits(png);
+  png_set_write_fn(png, state, write_callback, flush_callback);
+  png_set_IHDR(png, info, header->width, header->height, header->bit_depth,
+               PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
+               PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
+  if (header->has_significant_bits) png_set_sBIT(png, info, &header->significant_bits);
+  if (header->icc != nullptr)
+    png_set_iCCP(png, info, "ICC profile", PNG_COMPRESSION_TYPE_BASE, header->icc, header->icc_size);
+  png_write_info(png, info);
+  if (header->bit_depth == 16 && std::endian::native == std::endian::little) png_set_swap(png);
+  return true;
+}
+
+AWJ_PNG_NOINLINE bool write_row(png_structp png, png_const_bytep row) noexcept {
+  auto* jump = png_set_longjmp_fn(png, std::longjmp, sizeof(std::jmp_buf));
+  if (jump == nullptr) return false;
+  if (setjmp(*jump) != 0) return false;
+  png_write_row(png, row);
+  return true;
+}
+
+AWJ_PNG_NOINLINE bool write_end(png_structp png) noexcept {
+  auto* jump = png_set_longjmp_fn(png, std::longjmp, sizeof(std::jmp_buf));
+  if (jump == nullptr) return false;
+  if (setjmp(*jump) != 0) return false;
+  png_write_end(png, nullptr);
+  return true;
+}
+
+#undef AWJ_PNG_NOINLINE
+
+// These metadata getters only borrow stored fields in libpng 1.6 (unlike
+// png_get_IHDR); payload allocation and LCMS ownership stay outside all jumps.
 awj::compat::expected<std::vector<std::byte>, std::string> copy_icc_profile(png_structp png,
                                                                      png_infop info) {
   png_charp name = nullptr;
@@ -672,7 +812,7 @@ awj::compat::expected<std::vector<std::byte>, std::string> gamma_chromaticity_pr
   if (!profile) return awj::compat::unexpected{"PNG cHRM 无效。"};
   struct Guard { cmsHPROFILE profile; ~Guard() { cmsCloseProfile(profile); } } guard{profile};
   cmsUInt32Number size{};
-  if (!cmsSaveProfileToMem(profile, nullptr, &size) || size > encoding_defaults::codec_metadata_max_bytes)
+  if (!cmsSaveProfileToMem(profile, nullptr, &size) || size > encoding_defaults::effective_codec_metadata_max_bytes())
     return awj::compat::unexpected{"无法序列化 PNG 色彩 profile。"};
   auto bytes = decoder_common::make_byte_buffer(size, "PNG gamma/chromaticity ICC");
   if (!bytes) return awj::compat::unexpected{bytes.error()};
@@ -779,8 +919,10 @@ awj::compat::expected<ImageDynamicRangeHint, std::string> inspect_icc_dynamic_ra
     stream.avail_out = static_cast<uInt>(block.size());
     const auto status = inflate(&stream, Z_NO_FLUSH);
     const auto count = block.size() - stream.avail_out;
-    if (count > encoding_defaults::codec_metadata_max_bytes - profile.size())
-      return awj::compat::unexpected{"PNG ICC profile 超过 64 MiB 上限。"};
+    if (!encoding_defaults::byte_sum_fits(profile.size(), count,
+        std::min<std::uint64_t>(encoding_defaults::effective_codec_metadata_max_bytes(),
+                                std::numeric_limits<cmsUInt32Number>::max())))
+      return awj::compat::unexpected{"PNG ICC profile 超过 当前运行时或格式上限。"};
     profile.insert(profile.end(), block.begin(), block.begin() + count);
     if (status == Z_STREAM_END) {
       if (stream.avail_in) return ImageDynamicRangeHint::unknown;
@@ -916,7 +1058,6 @@ class PngImageDecoder final : public ImageDecoder {
       if (!png) {
         return awj::compat::unexpected{"创建 PNG decoder 失败。"};
       }
-      png_detail::clamp_chunk_limits(png.get());
       png_detail::PngInfoPtr info{png_create_info_struct(png.get()), png_detail::PngInfoDeleter{.png = png.get()}};
       if (!info) {
         return awj::compat::unexpected{"创建 PNG info 失败。"};
@@ -928,63 +1069,20 @@ class PngImageDecoder final : public ImageDecoder {
       }
 
       png_detail::ReadState state{.data = bytes->data(), .size = bytes->size()};
-      png_set_read_fn(png.get(), &state, png_detail::read_callback);
-
-#if defined(_MSC_VER)
-#pragma warning(push)
-#pragma warning(disable : 4611)
-#endif
-      if (setjmp(png_jmpbuf(png.get())) != 0) {
+      png_detail::ReadHeader header{};
+      if (!png_detail::read_header(png.get(), info.get(), &state, &header)) {
         return awj::compat::unexpected{awj::compat::format("PNG 解码失败: {}", display_path_for_user(path))};
       }
-#if defined(_MSC_VER)
-#pragma warning(pop)
-#endif
-
-      png_read_info(png.get(), info.get());
-      png_uint_32 width = 0;
-      png_uint_32 height = 0;
-      int bit_depth = 0;
-      int color_type = 0;
-      png_get_IHDR(png.get(), info.get(), &width, &height, &bit_depth, &color_type,
-                   nullptr, nullptr, nullptr);
+      const auto width = header.width;
+      const auto height = header.height;
+      const int bit_depth = header.bit_depth;
+      const int color_type = header.color_type;
       if (width == 0 || height == 0) {
         return awj::compat::unexpected{awj::compat::format("PNG 尺寸无效: {}", display_path_for_user(path))};
       }
-
-      const bool source_has_alpha = (color_type & PNG_COLOR_MASK_ALPHA) != 0 ||
-                                    png_get_valid(png.get(), info.get(), PNG_INFO_tRNS) != 0;
-
-      png_color_8p bits = nullptr;
-      if (png_get_sBIT(png.get(), info.get(), &bits) && bits) {
-        const bool gray = (color_type & PNG_COLOR_MASK_COLOR) == 0;
-        context->significant_bits = SignificantBits{
-            gray ? bits->gray : bits->red, gray ? bits->gray : bits->green,
-            gray ? bits->gray : bits->blue,
-            (color_type & PNG_COLOR_MASK_ALPHA) ? bits->alpha : (bit_depth == 16 ? 16 : 8)};
-      }
-
-      if (color_type == PNG_COLOR_TYPE_PALETTE) {
-        png_set_palette_to_rgb(png.get());
-      }
-      if (color_type == PNG_COLOR_TYPE_GRAY && bit_depth < 8) {
-        png_set_expand_gray_1_2_4_to_8(png.get());
-      }
-      if (png_get_valid(png.get(), info.get(), PNG_INFO_tRNS)) {
-        png_set_tRNS_to_alpha(png.get());
-      }
-      if (color_type == PNG_COLOR_TYPE_GRAY || color_type == PNG_COLOR_TYPE_GRAY_ALPHA) {
-        png_set_gray_to_rgb(png.get());
-      }
-      if ((color_type & PNG_COLOR_MASK_ALPHA) == 0 && !png_get_valid(png.get(), info.get(), PNG_INFO_tRNS)) {
-        png_set_filler(png.get(), bit_depth == 16 ? 0xffff : 0xff, PNG_FILLER_AFTER);
-      }
-      png_set_interlace_handling(png.get());
-      png_read_update_info(png.get(), info.get());
+      const bool source_has_alpha = header.source_has_alpha;
+      if (header.has_significant_bits) context->significant_bits = header.significant_bits;
       const int output_bit_depth = bit_depth == 16 ? 16 : 8;
-      if (output_bit_depth == 16 && std::endian::native == std::endian::little) {
-        png_set_swap(png.get());
-      }
 
       std::size_t stride = 0;
       {
@@ -995,7 +1093,7 @@ class PngImageDecoder final : public ImageDecoder {
         }
         stride = *checked_stride;
       }
-      if (png_get_rowbytes(png.get(), info.get()) != stride) {
+      if (header.row_bytes != stride) {
         return awj::compat::unexpected{awj::compat::format("PNG 转换后行字节数无效: {}", display_path_for_user(path))};
       }
       {
@@ -1023,8 +1121,9 @@ class PngImageDecoder final : public ImageDecoder {
       for (png_uint_32 y = 0; y < height; ++y) {
         context->rows[y] = reinterpret_cast<png_bytep>(context->rgba.data() + y * stride);
       }
-      png_read_image(png.get(), context->rows.data());
-      png_read_end(png.get(), end_info.get());
+      if (!png_detail::read_pixels(png.get(), end_info.get(), context->rows.data())) {
+        return awj::compat::unexpected{awj::compat::format("PNG 解码失败: {}", display_path_for_user(path))};
+      }
 
       if (copy_payloads) {
         auto icc_profile = png_detail::copy_icc_profile(png.get(), info.get());
@@ -1190,6 +1289,23 @@ class PngImageEncoder final : public ImageEncoder {
           std::min(source_bits.green, target_bits), std::min(source_bits.blue, target_bits)};
       const bool quantize = rgb_bits[0] < source_bits.red || rgb_bits[1] < source_bits.green ||
                             rgb_bits[2] < source_bits.blue;
+      png_detail::WriteHeader header{
+          .width = static_cast<png_uint_32>(image.width),
+          .height = static_cast<png_uint_32>(image.height), .bit_depth = bit_depth,
+          .has_significant_bits = quantize || image.significant_bits.has_value()};
+      header.significant_bits.red = static_cast<png_byte>(rgb_bits[0]);
+      header.significant_bits.green = static_cast<png_byte>(rgb_bits[1]);
+      header.significant_bits.blue = static_cast<png_byte>(rgb_bits[2]);
+      header.significant_bits.alpha = static_cast<png_byte>(source_bits.alpha);
+      if (settings.applied_icc == "kept") {
+        if (const auto* icc = png_detail::first_metadata(image, MetadataKind::icc)) {
+          if (icc->bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes() ||
+              icc->bytes.size() > std::numeric_limits<png_uint_32>::max())
+            return awj::compat::unexpected{"PNG ICC profile 超过当前运行时或格式上限。"};
+          header.icc = reinterpret_cast<png_const_bytep>(icc->bytes.data());
+          header.icc_size = static_cast<png_uint_32>(icc->bytes.size());
+        }
+      }
       auto state = std::make_unique<png_detail::WriteState>();
       state->bytes.reserve(std::min((*plane)->read_bytes().size(), std::size_t{1u << 20}));
       if (quantize) state->row.resize((*plane)->stride);
@@ -1202,36 +1318,8 @@ class PngImageEncoder final : public ImageEncoder {
       if (!info) {
         return awj::compat::unexpected{"创建 PNG info 失败。"};
       }
-      if (setjmp(png_jmpbuf(png.get())) != 0) {
+      if (!png_detail::write_header(png.get(), info.get(), state.get(), &header)) {
         return awj::compat::unexpected{"PNG 编码失败。"};
-      }
-
-      png_set_write_fn(png.get(), state.get(), png_detail::write_callback,
-                       png_detail::flush_callback);
-      png_set_IHDR(png.get(), info.get(), static_cast<png_uint_32>(image.width),
-                   static_cast<png_uint_32>(image.height), bit_depth,
-                   PNG_COLOR_TYPE_RGBA, PNG_INTERLACE_NONE,
-                   PNG_COMPRESSION_TYPE_DEFAULT, PNG_FILTER_TYPE_DEFAULT);
-      if (quantize || image.significant_bits) {
-        png_color_8 bits{};
-        bits.red = static_cast<png_byte>(rgb_bits[0]);
-        bits.green = static_cast<png_byte>(rgb_bits[1]);
-        bits.blue = static_cast<png_byte>(rgb_bits[2]);
-        bits.alpha = static_cast<png_byte>(source_bits.alpha);
-        png_set_sBIT(png.get(), info.get(), &bits);
-      }
-      if (settings.applied_icc == "kept") {
-        if (const auto* icc = png_detail::first_metadata(image, MetadataKind::icc)) {
-          if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes)
-            return awj::compat::unexpected{"PNG ICC profile 超过 64 MiB 上限。"};
-          png_set_iCCP(png.get(), info.get(), "ICC profile", PNG_COMPRESSION_TYPE_BASE,
-                       reinterpret_cast<png_const_bytep>(icc->bytes.data()),
-                       static_cast<png_uint_32>(icc->bytes.size()));
-        }
-      }
-      png_write_info(png.get(), info.get());
-      if (bit_depth == 16 && std::endian::native == std::endian::little) {
-        png_set_swap(png.get());
       }
 
       for (std::size_t y = 0; y < image.height; ++y) {
@@ -1254,12 +1342,16 @@ class PngImageEncoder final : public ImageEncoder {
           }
           row = state->row.data();
         }
-        png_write_row(png.get(), reinterpret_cast<png_const_bytep>(row));
+        if (!png_detail::write_row(png.get(), reinterpret_cast<png_const_bytep>(row))) {
+          return awj::compat::unexpected{"PNG 编码失败。"};
+        }
       }
       if (stop_token.stop_requested()) {
         return awj::compat::unexpected{"任务已取消。"};
       }
-      png_write_end(png.get(), nullptr);
+      if (!png_detail::write_end(png.get())) {
+        return awj::compat::unexpected{"PNG 编码失败。"};
+      }
       if (auto hdr_chunks = png_detail::add_png_hdr_chunks(state->bytes, image, settings);
           !hdr_chunks) {
         return awj::compat::unexpected{hdr_chunks.error()};

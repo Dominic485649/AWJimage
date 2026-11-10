@@ -62,6 +62,7 @@ export component MenuParameterPage inherits Rectangle {
     in property <color> hint-red;
     in property <color> hint-violet;
     in-out property <string> memory-limit-text;
+    in property <bool> unlock-memory-limit;
     callback open-preset-editor();
     in property <string> parameter-preset-description;
     in-out property <int> parameter-preset-index;
@@ -132,6 +133,7 @@ export component MenuParameterPage inherits Rectangle {
                 scale-percent-text <=> root.menu-scale-percent-text;
                 max-width-text <=> root.menu-max-width-text;
                 memory-limit-text <=> root.menu-memory-limit-text;
+                unlock-memory-limit: root.unlock-memory-limit;
                 panel-bg : root.panel-bg;
                 panel-border : root.panel-border;
                 parameter-control-height : root.parameter-control-height;

@@ -828,7 +828,11 @@ awj::compat::expected<ImageBuffer, std::string> tone_map_prepared(const ImageBuf
   std::vector<awj::compat::scoped_worker> threads;
   try {
     threads.reserve(workers - 1);
-    for (std::size_t i = 1; i < workers; ++i) threads.emplace_back([&, i] { work(i); });
+    for (std::size_t i = 1; i < workers; ++i)
+      threads.emplace_back([&, i, policy = encoding_defaults::current_memory_policy()] {
+        const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
+        work(i);
+      });
   } catch (const std::system_error&) {
     // Existing workers and the caller can finish the same queue within budget.
   } catch (const std::bad_alloc&) {

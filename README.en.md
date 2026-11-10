@@ -60,7 +60,15 @@ Use `AWJ.com` on Windows; replace it with `./AWJ` on Linux.
 
 Use `--avif-progressive` for automatic two-layer still AVIF, or configure 2–4 layers with per-layer dimensions and quality through the CLI. It remains off by default, without new UI controls. See [progressive AVIF and layer options](docs/avif-progressive.md).
 
-Memory planning separates decode, preparation, encoding, metrics and output peaks, then refines reservations using decoded pixels, alpha and sampling. Uncertain inputs may refine exclusively within a finite budget; automatic budget rules and default limits remain unchanged. CSV diagnostics preserve initial estimates, refinements and reservations. Reservations are not allocator hard limits.
+Memory planning separates decode, preparation, encoding, metrics and output peaks, then refines reservations using decoded pixels, alpha and sampling. Uncertain inputs may refine exclusively within a finite budget; refinement does not implicitly lift that budget. CSV diagnostics preserve initial estimates, refinements and reservations. Reservations are not allocator hard limits.
+
+## Memory protection
+
+With protection enabled, the automatic working-set budget is `min(80% of total memory, 50% of currently available memory)`. A manual memory value specifies working-set admission. Single-file inputs and primary image/encoded buffers are protected at 80% of the execution environment's physical memory.
+
+Settings expose only **Lift the working-set memory budget**; input/buffer protection follows the same control rather than appearing separately. Enabling it overrides automatic and manual budgets and removes artificial memory-byte limits for the current image operation. Manual values for regular and context-menu parameters are retained and become effective again when the control is cleared. The unlock is session-only and never saved to configuration or presets; use `--unlock-memory-limit` in the CLI. The compatibility option `--unlock-max-input-file-bytes` remains input/buffer-only and does not implicitly lift the working-set budget.
+
+Lifting protection does not create unlimited physical memory: the OS can still run out of memory, and actual allocation failures remain errors. Format representation, structural counts, integer-overflow and cancellation checks stay in force. Non-configurable limits in the pinned codecs also remain: the libavif decoding API accepts at most 268,435,456 pixels; LibRaw has a separate compile-time input-file size limit, 2 GiB−1 for regular RAW and either 2 GiB−1 or 4 GiB−1 for DNG depending on its SDK build configuration. These are not session-configurable AWJ memory budgets. The SDK continues to honor caller-provided context/frame/memory contracts and does not inherit the application's UI unlock state.
 
 ## Queue logs and source files
 

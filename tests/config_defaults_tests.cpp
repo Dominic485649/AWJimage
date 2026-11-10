@@ -234,7 +234,10 @@ int main() {
     if (!unlocked || !unlocked->config.unlock_memory_limit ||
         unlocked->config.unlock_max_input_file_bytes ||
         unlocked->config.memory_limit_bytes != 3ull * 1024 * 1024 * 1024)
-      return fail("Memory unlock lost its manual value, argument-order independence or separate input policy.");
+      return fail("Memory unlock lost its manual value or argument-order independence.");
+    const auto policy = awj::operation_memory_policy(unlocked->config);
+    if (!policy || !policy->unrestricted_memory || !policy->unrestricted_input || policy->input_limit() != UINT64_MAX)
+      return fail("Full unlock did not override the legacy input flag.");
   }
   const auto shell_relocked = awj::parse_arguments({L"--shell-convert", L"--memory-limit", L"3GiB",
       L"--unlock-memory-limit", L"--no-unlock-memory-limit"});
@@ -246,6 +249,39 @@ int main() {
   if (!relocked || relocked->config.unlock_memory_limit ||
       !relocked->config.unlock_max_input_file_bytes || relocked->config.memory_limit_bytes != 0)
     return fail("Explicit relock or legacy zero=auto/input-unlock independence changed.");
+
+  for (const auto& args : {
+      std::vector<std::wstring>{L"--memory-limit", L"1b", L"--unlock-memory-limit", L"--no-unlock-max-input-file-bytes"},
+      std::vector<std::wstring>{L"--no-unlock-max-input-file-bytes", L"--unlock-memory-limit", L"--memory-limit", L"1b"}}) {
+    auto parsed = awj::parse_arguments(args);
+    if (!parsed || parsed->config.memory_limit_bytes != 1 || !awj::freeze_operation_memory_policy(parsed->config) ||
+        !parsed->config.runtime_memory_policy->unrestricted_memory ||
+        parsed->config.runtime_memory_policy->input_limit() != UINT64_MAX)
+      return fail("Full unlock did not override a small retained manual budget/negative legacy flag.");
+    parsed->config.unlock_memory_limit = false;
+    if (awj::validate_config(parsed->config)) return fail("Relocking failed to validate the retained manual value.");
+    const auto policy = awj::operation_memory_policy(parsed->config);
+    if (!policy || policy->unrestricted_memory || policy->unrestricted_input)
+      return fail("Relocking reused a stale unlimited operation snapshot.");
+  }
+  if (awj::parse_arguments({L"--memory-limit", L"1b"}) ||
+      awj::parse_arguments({L"--unlock-max-input-file-bytes", L"--memory-limit", L"1b"}))
+    return fail("Legacy input opt-out disabled manual working-set validation.");
+  const auto snapshot = awj::parse_arguments({L"--studio-input-limit-bytes", L"18446744073709551615"});
+  if (!snapshot || !awj::operation_memory_policy(snapshot->config) ||
+      awj::operation_memory_policy(snapshot->config)->input_limit() != UINT64_MAX)
+    return fail("Worker input snapshot lost uint64 precision.");
+  for (const auto* value : {L"0", L"-1", L"18446744073709551616", L"1.5", L"auto"})
+    if (awj::parse_arguments({L"--studio-input-limit-bytes", value}))
+      return fail("Invalid worker input snapshot was accepted.");
+  if (awj::parse_arguments({L"--studio-input-limit-bytes", L"8", L"--studio-input-limit-bytes", L"16"}) ||
+      awj::parse_arguments({L"--studio-input-limit-bytes"}))
+    return fail("Duplicate or missing worker input snapshot was accepted.");
+  const auto small_snapshot = awj::parse_arguments({L"--studio-input-limit-bytes", L"8"});
+  if (!small_snapshot) return fail("A finite worker snapshot did not parse.");
+  const auto small_policy = awj::operation_memory_policy(small_snapshot->config);
+  if (!small_policy || small_policy->input_limit() != 8)
+    return fail("A finite worker silently recomputed the submitting operation's snapshot.");
 
   if (defaults.encode_timeout_minutes !=
       awj::encoding_defaults::default_encode_timeout_minutes) {
@@ -631,6 +667,8 @@ int main() {
   png_config.unlock_memory_limit = true;
   png_config.unlock_max_input_file_bytes = true;
   png_config.memory_limit_bytes = 3ull * 1024 * 1024 * 1024;
+  if (!awj::freeze_operation_memory_policy(png_config)) return fail("Could not freeze an unlocked preset source.");
+  png_config.studio_input_limit_bytes = 17;
   const auto png_preset_format = awj::preset_format_from_config(png_config);
   if (png_preset_format.quality != 23 || png_preset_format.visual_quality) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
@@ -640,6 +678,7 @@ int main() {
   session_preset.formats.back() = png_preset_format;
   const auto restored_session_config = awj::config_from_user_preset(session_preset, awj::OutputFormat::png);
   if (restored_session_config.unlock_memory_limit || restored_session_config.unlock_max_input_file_bytes ||
+      restored_session_config.runtime_memory_policy || restored_session_config.studio_input_limit_bytes ||
       restored_session_config.memory_limit_bytes != png_config.memory_limit_bytes) {
     std::filesystem::remove(preset_test_path, preset_test_ec);
     return fail("A session unlock persisted into presets or erased the saved manual budget.");

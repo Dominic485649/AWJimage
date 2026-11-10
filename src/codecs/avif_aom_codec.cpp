@@ -343,8 +343,8 @@ awj::compat::expected<void, std::string> set_avif_metadata(
 
 awj::compat::expected<void, std::string> ensure_metadata_size(std::size_t size,
                                                       std::string_view context) {
-  if (size > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{awj::compat::format("AVIF {} 元数据超过 64 MiB 上限。", context)};
+  if (size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{awj::compat::format("AVIF {} 元数据超过 当前运行时上限。", context)};
   }
   return {};
 }
@@ -952,7 +952,8 @@ awj::compat::expected<void, std::string> prepare_grid_tiles_parallel(
   try {
     workers.reserve(static_cast<std::size_t>(thread_count));
     for (int worker = 0; worker < thread_count; ++worker) {
-      workers.emplace_back([&]() noexcept {
+      workers.emplace_back([&, policy = encoding_defaults::current_memory_policy()]() noexcept {
+        const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
         try {
           while (failure.reason() == TileFailure::none &&
                  !stop_token.stop_requested()) {
@@ -1111,10 +1112,12 @@ std::string avif_decode_error(avifResult result, const avifDecoder* decoder = nu
   return avifResultToString(result);
 }
 
-void configure_decoder(avifDecoder& decoder,
-                                         bool copy_metadata_payloads) noexcept {
-  // Grid canvases exceed AV1 cell dimensions. Bound allocation by the same
-  // runtime byte cap as other decoders, allowing for 16-bit RGBA output.
+void configure_decoder(avifDecoder& decoder, bool copy_metadata_payloads) {
+  // Grid canvases exceed AV1 cell dimensions. Account for 16-bit RGBA output.
+  // The pinned libavif API rejects imageSizeLimit == 0 AND values above
+  // AVIF_DEFAULT_IMAGE_SIZE_LIMIT in avifDecoderParse (read.c). That mandatory
+  // API boundary is not a configurable byte budget and must remain even when
+  // AWJ's input/memory policy is unrestricted.
   decoder.imageSizeLimit = static_cast<std::uint32_t>(std::clamp<std::uint64_t>(
       encoding_defaults::effective_max_input_file_bytes() / 8, 1,
       AVIF_DEFAULT_IMAGE_SIZE_LIMIT));

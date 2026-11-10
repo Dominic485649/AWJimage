@@ -111,7 +111,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> read_file_bytes(
       return awj::compat::unexpected{awj::compat::format(
           "{} 文件超过当前输入上限: {}", codec_name, display_path_for_user(path))};
     }
-    if (file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
+    if (file_size > SIZE_MAX ||
+        file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {
       return awj::compat::unexpected{awj::compat::format(
           "{} 文件超过流读取 API 限制: {}", codec_name, display_path_for_user(path))};
     }

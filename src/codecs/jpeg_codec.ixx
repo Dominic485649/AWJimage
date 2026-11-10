@@ -129,10 +129,10 @@ awj::compat::expected<void, std::string> add_saved_metadata_payload(
       encoding_defaults::jpeg_max_saved_metadata_marker_count) {
     return awj::compat::unexpected{"JPEG metadata marker 数量超过上限。"};
   }
-  if (payload_size > encoding_defaults::codec_metadata_max_bytes ||
+  if (payload_size > encoding_defaults::effective_codec_metadata_max_bytes() ||
       metadata_bytes >
-          encoding_defaults::codec_metadata_max_bytes - payload_size) {
-    return awj::compat::unexpected{"JPEG metadata 累计大小超过 64 MiB 上限。"};
+          encoding_defaults::effective_codec_metadata_max_bytes() - payload_size) {
+    return awj::compat::unexpected{"JPEG metadata 累计大小超过 当前运行时上限。"};
   }
   metadata_bytes += payload_size;
   return {};
@@ -327,8 +327,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_icc_profile(
       return awj::compat::unexpected{"JPEG ICC profile 大小超过运行时限制。"};
     }
     profile_size += chunk_size;
-    if (profile_size > encoding_defaults::codec_metadata_max_bytes) {
-      return awj::compat::unexpected{"JPEG ICC profile 超过 64 MiB 上限。"};
+    if (profile_size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+      return awj::compat::unexpected{"JPEG ICC profile 超过 当前运行时上限。"};
     }
   }
   if (profile_size == 0) {
@@ -630,7 +630,7 @@ class JpegImageDecoder final : public ImageDecoder {
       DecodeOptions options = {}) const override {
     try {
       const bool copy_metadata = options.copy_metadata_payloads.value_or(false);
-      if (bytes.size() > static_cast<std::size_t>(encoding_defaults::effective_max_input_file_bytes()) ||
+      if (bytes.size() > encoding_defaults::effective_max_input_file_bytes() ||
           bytes.size() > static_cast<std::size_t>(std::numeric_limits<unsigned long>::max()))
         return awj::compat::unexpected{"JPEG 输入超过当前文件或 libjpeg API 大小限制。"};
       // Run before constructing the libjpeg longjmp context. Recognized legacy

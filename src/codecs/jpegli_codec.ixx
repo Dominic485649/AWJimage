@@ -247,9 +247,9 @@ awj::compat::expected<void, std::string> write_app1_marker(jpeg_compress_struct&
 inline constexpr std::size_t jpeg_icc_profile_max_bytes =
     (encoding_defaults::jpeg_marker_payload_max_bytes - 14u) * 255u;
 
-constexpr bool jpeg_icc_size_supported(std::size_t bytes) noexcept {
+bool jpeg_icc_size_supported(std::size_t bytes) noexcept {
   return bytes != 0 && bytes <= jpeg_icc_profile_max_bytes &&
-      bytes <= encoding_defaults::codec_metadata_max_bytes;
+      bytes <= encoding_defaults::effective_codec_metadata_max_bytes();
 }
 
 struct EssentialSdrIcc {

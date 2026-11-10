@@ -79,7 +79,6 @@ void initialize_ui_defaults(AwjStudio& app, UiState& state) {
   }
   apply_parameter_params_to_ui(app, state.builtin_params[0], 0);
   app.set_unlock_memory_limit(false);
-  app.set_unlock_max_input_file_bytes(false);
   app.set_size_limit_index(0);
   app.set_max_width_text({});
   app.set_max_height_text({});
@@ -430,8 +429,9 @@ awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.collision_mode = collision_from_index(app.get_collision_index());
   cfg.visual_quality_fallback = app.get_visual_quality_fallback();
   cfg.unlock_memory_limit = app.get_unlock_memory_limit();
-  cfg.unlock_max_input_file_bytes = app.get_unlock_max_input_file_bytes();
-  awj::encoding_defaults::unlock_max_input_file_bytes.store(cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
+  cfg.unlock_max_input_file_bytes = cfg.unlock_memory_limit;
+  if (auto frozen = awj::freeze_operation_memory_policy(cfg); !frozen)
+    return awj::compat::unexpected{frozen.error()};
   cfg.strip_metadata = app.get_strip_metadata();
   cfg.write_summary = cfg.write_log = app.get_write_log();
   // Destructive queue actions are explicit UI choices, never preset side effects.

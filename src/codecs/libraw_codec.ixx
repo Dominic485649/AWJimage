@@ -14,6 +14,7 @@ module;
 #include <vector>
 
 #include <libraw/libraw.h>
+#include "library_memory_policy.h"
 
 export module awj.libraw_codec;
 
@@ -89,6 +90,7 @@ class LibRawImageDecoder final : public ImageDecoder {
         return awj::compat::unexpected{file_size.error()};
       }
       LibRaw raw;
+      library_memory_policy::apply_libraw(raw.imgdata.rawparams, encoding_defaults::memory_limits_unlocked());
       const auto opened = libraw_detail::open_file(raw, path);
       if (opened != LIBRAW_SUCCESS) {
         return awj::compat::unexpected{awj::compat::format("LibRaw 打开失败: {}", libraw_strerror(opened))};
@@ -118,6 +120,7 @@ class LibRawImageDecoder final : public ImageDecoder {
         return awj::compat::unexpected{file_size.error()};
       }
       LibRaw raw;
+      library_memory_policy::apply_libraw(raw.imgdata.rawparams, encoding_defaults::memory_limits_unlocked());
       const auto opened = libraw_detail::open_file(raw, path);
       if (opened != LIBRAW_SUCCESS) {
         return awj::compat::unexpected{awj::compat::format("LibRaw 打开失败: {}", libraw_strerror(opened))};

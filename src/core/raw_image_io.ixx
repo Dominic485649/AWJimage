@@ -217,8 +217,8 @@ awj::compat::expected<void, std::string> write_wgc_scrgb_half_stream_file(
     }
     const auto stride = static_cast<std::uint64_t>(width) * 8ull;
     const auto byte_count = stride * height;
-    if (byte_count > encoding_defaults::effective_max_input_file_bytes() -
-                         sizeof(raw_image_detail::Header)) {
+    if (!encoding_defaults::byte_sum_fits(byte_count, sizeof(raw_image_detail::Header),
+                                         encoding_defaults::effective_max_input_file_bytes())) {
       return awj::compat::unexpected{"WGC raw 输入超过当前运行时上限。"};
     }
     raw_image_detail::Header header{};
@@ -333,7 +333,8 @@ awj::compat::expected<void, std::string> write_raw_image_file(
     if (plane.read_bytes().size() < min_bytes) {
       return awj::compat::unexpected{"raw 图像 payload 小于尺寸要求。"};
     }
-    if (min_bytes > encoding_defaults::effective_max_input_file_bytes() - sizeof(raw_image_detail::Header)) {
+    if (!encoding_defaults::byte_sum_fits(min_bytes, sizeof(raw_image_detail::Header),
+                                         encoding_defaults::effective_max_input_file_bytes())) {
       return awj::compat::unexpected{"raw 图像输出超过当前运行时上限。"};
     }
     raw_image_detail::Header header{};

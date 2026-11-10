@@ -1128,7 +1128,8 @@ WorkExecutionResult encode_work_groups(
   }
   for (const int worker_index : std::views::iota(0, jobs)) {
     try {
-      workers.emplace_back([&] {
+      workers.emplace_back([&, policy = encoding_defaults::current_memory_policy()] {
+        const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
         WicFallbackComApartment com{cfg.allow_wic_fallback};
         try {
           std::optional<AppConfig> worker_cfg;
@@ -1381,7 +1382,8 @@ WorkExecutionResult encode_large_work_groups(
 
   for (const int worker_index : std::views::iota(0, jobs)) {
     try {
-      workers.emplace_back([&] {
+      workers.emplace_back([&, policy = encoding_defaults::current_memory_policy()] {
+        const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
         WicFallbackComApartment com{cfg.allow_wic_fallback};
         try {
           std::optional<AppConfig> worker_cfg;
@@ -1569,38 +1571,15 @@ void emit_progress(const ProgressCallback& progress,
   }
 }
 
-MemoryStatus current_memory_status() noexcept {
-#ifdef _WIN32
-  MEMORYSTATUSEX status{};
-  status.dwLength = sizeof(status);
-  if (!GlobalMemoryStatusEx(&status)) {
-    return {};
-  }
-  return MemoryStatus{.total_bytes = status.ullTotalPhys,
-                      .available_bytes = status.ullAvailPhys};
-#else
-  struct sysinfo status {};
-  if (sysinfo(&status) != 0) {
-    return {};
-  }
-  const auto unit = static_cast<std::uint64_t>(status.mem_unit == 0 ? 1 : status.mem_unit);
-  return MemoryStatus{.total_bytes = static_cast<std::uint64_t>(status.totalram) * unit,
-                      .available_bytes = static_cast<std::uint64_t>(status.freeram + status.bufferram) * unit};
-#endif
-}
-
-void apply_runtime_input_limit_policy(const AppConfig& cfg) noexcept {
-  encoding_defaults::unlock_max_input_file_bytes.store(
-      cfg.unlock_max_input_file_bytes, std::memory_order_relaxed);
-}
-
 awj::compat::expected<BatchSummary, std::string> run_batch(
     AppConfig cfg, ProgressCallback progress = {},
     awj::compat::stop_token stop_token = {},
     std::span<const std::filesystem::path> input_paths = {}) {
   try {
     cfg.write_log = cfg.write_summary = cfg.write_log || cfg.write_summary;
-    apply_runtime_input_limit_policy(cfg);
+    if (auto frozen = freeze_operation_memory_policy(cfg); !frozen)
+      return awj::compat::unexpected{frozen.error()};
+    const encoding_defaults::ScopedMemoryPolicy memory_scope{*cfg.runtime_memory_policy};
 #ifndef _WIN32
     cfg.allow_wic_fallback = false;
 #endif
@@ -1652,8 +1631,11 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       if (!recycle_plan) return awj::compat::unexpected{recycle_plan.error()};
       const auto output_dir = output_dir_for(cfg);
       FileLogger logger{output_dir, cfg.write_log};
-      const auto memory_status = current_memory_status();
-      const auto configured_memory_limit = effective_memory_limit(cfg, memory_status);
+      const auto memory_status = cfg.unlock_memory_limit || cfg.memory_limit_bytes != 0
+          ? MemoryStatus{} : current_memory_status();
+      const auto resolved_memory_limit = checked_effective_memory_limit(cfg, memory_status);
+      if (!resolved_memory_limit) return awj::compat::unexpected{resolved_memory_limit.error()};
+      const auto configured_memory_limit = *resolved_memory_limit;
       pipeline_detail::best_effort([&] {
         emit_progress(progress,
                       BatchProgress{.kind = BatchEventKind::message,
@@ -1787,8 +1769,11 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       });
     }
 
-    const auto memory_status = current_memory_status();
-    const auto configured_memory_limit = effective_memory_limit(cfg, memory_status);
+    const auto memory_status = cfg.unlock_memory_limit || cfg.memory_limit_bytes != 0
+        ? MemoryStatus{} : current_memory_status();
+    const auto resolved_memory_limit = checked_effective_memory_limit(cfg, memory_status);
+    if (!resolved_memory_limit) return awj::compat::unexpected{resolved_memory_limit.error()};
+    const auto configured_memory_limit = *resolved_memory_limit;
     auto classified = pipeline_detail::classify_work_for_avif(cfg, files, configured_memory_limit);
     if (!classified) {
       return awj::compat::unexpected{classified.error()};

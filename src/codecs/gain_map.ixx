@@ -84,7 +84,7 @@ awj::compat::expected<std::vector<std::byte>, std::string> sdr_presentation_icc(
   if (!profile) return awj::compat::unexpected{"无法创建 SDR ICC 色彩描述。"};
   cmsSetProfileVersion(profile.get(), 4.3);
   cmsUInt32Number size{};
-  if (!cmsSaveProfileToMem(profile.get(), nullptr, &size) || !size || size > encoding_defaults::codec_metadata_max_bytes)
+  if (!cmsSaveProfileToMem(profile.get(), nullptr, &size) || !size || size > encoding_defaults::effective_codec_metadata_max_bytes())
     return awj::compat::unexpected{"SDR ICC 输出大小无效。"};
   std::vector<std::byte> bytes(size);
   if (!cmsSaveProfileToMem(profile.get(), bytes.data(), &size) || size != bytes.size())
@@ -122,7 +122,7 @@ awj::compat::expected<IsoColorSpace, std::string> icc_iso_color(
     std::span<const std::byte> bytes, awj::compat::stop_token stop) {
   constexpr auto error = "Gain Map: ISO 21496-1: ICC 损坏或超出受支持的 RGB 矩阵/TRC 色彩空间。";
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-  if (bytes.size() < 132 || bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
+  if (bytes.size() < 132 || bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes() ||
       bytes.size() > UINT32_MAX || icc_u32(bytes, 0) != bytes.size() ||
       icc_u32(bytes, 36) != 0x61637370u ||
       (std::to_integer<unsigned>(bytes[8]) != 2 && std::to_integer<unsigned>(bytes[8]) != 4))
@@ -337,7 +337,7 @@ awj::compat::expected<IsoColorSpace, std::string> resolve_iso_color(
   if (source.metadata.size() > encoding_defaults::jpeg_max_saved_metadata_marker_count)
     return awj::compat::unexpected{"Gain Map: ISO 21496-1: metadata 数量超过上限。"};
   for (const auto& block : source.metadata) {
-    if (block.bytes.size() > encoding_defaults::codec_metadata_max_bytes - metadata_bytes)
+    if (!encoding_defaults::byte_sum_fits(metadata_bytes, block.bytes.size(), encoding_defaults::effective_codec_metadata_max_bytes()))
       return awj::compat::unexpected{"Gain Map: ISO 21496-1: metadata 大小超过上限。"};
     metadata_bytes += block.bytes.size();
     if (block.kind != MetadataKind::icc) continue;
@@ -363,7 +363,7 @@ awj::compat::expected<IsoColorSpace, std::string> resolve_iso_color(
 
 awj::compat::expected<void, std::string> normalize_iso_alternate(avifGainMap& local, awj::compat::stop_token stop) {
   if (!local.altICC.size) return {};
-  if (!local.altICC.data || local.altICC.size > encoding_defaults::codec_metadata_max_bytes)
+  if (!local.altICC.data || local.altICC.size > encoding_defaults::effective_codec_metadata_max_bytes())
     return awj::compat::unexpected{"Gain Map: ISO 21496-1: alternate ICC 无效或超过大小上限。"};
   auto color = icc_iso_color({reinterpret_cast<const std::byte*>(local.altICC.data), local.altICC.size}, stop);
   if (!color) return awj::compat::unexpected{color.error()};
@@ -564,12 +564,13 @@ std::optional<std::string> extended_xmp_guid(std::string_view value) {
 // and complete non-overlapping coverage before allocating a bounded buffer.
 awj::compat::expected<std::vector<std::vector<std::byte>>, std::string> reassemble_extended_xmp(
     std::span<const JpegXmpSegment> segments) {
-  constexpr auto limit = encoding_defaults::codec_metadata_max_bytes;
+  const auto limit = encoding_defaults::effective_codec_metadata_max_bytes();
   constexpr auto marker_limit = encoding_defaults::jpeg_max_saved_metadata_marker_count;
   if (segments.size() > marker_limit) return awj::compat::unexpected{"JPEG Extended XMP marker 数量超过上限。"};
   std::size_t raw_bytes = 0;
   for (const auto& segment : segments) {
-    if (segment.bytes.size() > limit - raw_bytes) return awj::compat::unexpected{"JPEG Extended XMP payload 超过 metadata 上限。"};
+    if (!encoding_defaults::byte_sum_fits(raw_bytes, segment.bytes.size(), limit))
+      return awj::compat::unexpected{"JPEG Extended XMP payload 超过 metadata 上限。"};
     raw_bytes += segment.bytes.size();
   }
   struct Link { std::size_t image; std::string guid; };
@@ -665,7 +666,7 @@ void inspect_jpeg_app(unsigned marker, std::span<const std::byte> bytes, JpegGai
     found.extended |= extended;
     if (collect_xmp && (standard || extended)) {
       if (found.xmp_segments.size() == encoding_defaults::jpeg_max_saved_metadata_marker_count ||
-          bytes.size() > encoding_defaults::codec_metadata_max_bytes - found.xmp_bytes) found.xmp_over_budget = true;
+          !encoding_defaults::byte_sum_fits(found.xmp_bytes, bytes.size(), encoding_defaults::effective_codec_metadata_max_bytes())) found.xmp_over_budget = true;
       else { found.xmp_segments.push_back({bytes,image_index}); found.xmp_bytes += bytes.size(); }
     }
   }

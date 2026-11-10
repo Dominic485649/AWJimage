@@ -142,8 +142,11 @@ std::vector<std::wstring> cli_arguments_from_config(
   if (!cfg.studio_large_action.empty()) {
     push_cli_option(args, L"--studio-large-action", cfg.studio_large_action);
   }
-  if (cfg.unlock_max_input_file_bytes) {
-    args.push_back(L"--unlock-max-input-file-bytes");
+  args.push_back(cfg.unlock_memory_limit || cfg.unlock_max_input_file_bytes
+      ? L"--unlock-max-input-file-bytes" : L"--no-unlock-max-input-file-bytes");
+  if (cfg.runtime_memory_policy) {
+    push_cli_option(args, L"--studio-input-limit-bytes",
+                    std::to_wstring(cfg.runtime_memory_policy->input_limit()));
   }
 
   if (cfg.visual_quality) {
@@ -540,6 +543,11 @@ std::optional<std::string> shell_context_menu_warning(
 awj::compat::expected<std::shared_ptr<StudioChildProcess>, std::string>
 start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
                         std::span<const std::wstring> query_args) {
+  auto worker_cfg = cfg;
+  if (query_args.empty()) {
+    if (auto frozen = awj::freeze_operation_memory_policy(worker_cfg); !frozen)
+      return awj::compat::unexpected{frozen.error()};
+  }
   auto exe_path = awj::executable_path();
   if (!exe_path) {
     return awj::compat::unexpected{exe_path.error()};
@@ -563,7 +571,7 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
                                        awj::win32_error_message(GetLastError()))};
   }
 
-  auto args = query_args.empty() ? cli_arguments_from_config(cfg, event_name)
+  auto args = query_args.empty() ? cli_arguments_from_config(worker_cfg, event_name)
                                  : std::vector<std::wstring>{query_args.begin(), query_args.end()};
   if (!query_args.empty() && query_args.front() != L"--studio-probe-image") {
     args.insert(args.begin(), {L"--studio-cancel-event", event_name});
@@ -650,8 +658,12 @@ start_studio_cli_worker(const awj::AppConfig& cfg, std::uint64_t run_id,
 
 awj::compat::expected<awj::ImageDimensions, std::string> probe_studio_image_dimensions(
     const std::filesystem::path& path, bool allow_wic_fallback) {
-  const std::array<std::wstring, 3> args{
-      L"--studio-probe-image", path.native(), allow_wic_fallback ? L"wic" : L"native"};
+  const auto policy = awj::encoding_defaults::current_memory_policy();
+  const std::vector<std::wstring> args{
+      L"--studio-probe-image", path.native(), allow_wic_fallback ? L"wic" : L"native",
+      policy.unrestricted_memory ? L"--unlock-memory-limit" : L"--no-unlock-memory-limit",
+      policy.unrestricted_input ? L"--unlock-max-input-file-bytes" : L"--no-unlock-max-input-file-bytes",
+      L"--studio-input-limit-bytes", std::to_wstring(policy.input_limit())};
   auto started = start_studio_cli_worker(awj::AppConfig{}, GetTickCount64(), args);
   if (!started) return awj::compat::unexpected{started.error()};
   const auto child = *started;

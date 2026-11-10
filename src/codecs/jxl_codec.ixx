@@ -81,6 +81,11 @@ using RunnerPtr = std::unique_ptr<void, RunnerDeleter>;
 constexpr JxlBoxType exif_box_type{'E', 'x', 'i', 'f'};
 constexpr JxlBoxType xmp_box_type{'x', 'm', 'l', ' '};
 
+std::size_t basic_info_probe_limit() noexcept {
+  return encoding_defaults::memory_limits_unlocked()
+      ? SIZE_MAX : encoding_defaults::jxl_max_basic_info_probe_bytes;
+}
+
 awj::compat::expected<bool, std::string> provide_basic_info_probe_input(
     JxlDecoder* decoder,
     std::ifstream& input,
@@ -102,18 +107,18 @@ awj::compat::expected<bool, std::string> provide_basic_info_probe_input(
   }
 
   const auto hint = JxlDecoderSizeHintBasicInfo(decoder);
+  // Keep individual reads small even when the accumulated probe is unbounded.
   const auto requested_size = std::clamp(
       hint == 0 ? encoding_defaults::jxl_min_basic_info_probe_bytes : hint,
       encoding_defaults::jxl_min_basic_info_probe_bytes,
       encoding_defaults::jxl_max_basic_info_probe_bytes);
   const auto previous_size = next.size();
-  if (previous_size >= encoding_defaults::jxl_max_basic_info_probe_bytes) {
-    return awj::compat::unexpected{awj::compat::format("JXL 尺寸探测输入超过 1 MiB 上限: {}",
+  const auto limit = std::min(basic_info_probe_limit(), next.max_size());
+  if (previous_size >= limit) {
+    return awj::compat::unexpected{awj::compat::format("JXL 尺寸探测输入超过当前运行时上限: {}",
                                        display_path_for_user(path))};
   }
-  const auto read_size = std::min(
-      requested_size,
-      encoding_defaults::jxl_max_basic_info_probe_bytes - previous_size);
+  const auto read_size = std::min(requested_size, limit - previous_size);
   if (read_size > std::numeric_limits<std::size_t>::max() - previous_size) {
     return awj::compat::unexpected{awj::compat::format("JXL 尺寸探测输入 buffer 过大: {}", display_path_for_user(path))};
   }
@@ -219,8 +224,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_embedded_icc_pro
   if (size_status != JXL_DEC_SUCCESS) {
     return awj::compat::unexpected{"读取 JXL ICC profile 大小失败。"};
   }
-  if (icc_size > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{"JXL ICC profile 超过 64 MiB 上限。"};
+  if (icc_size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{"JXL ICC profile 超过 当前运行时上限。"};
   }
   auto bytes = decoder_common::make_byte_buffer(icc_size, "JXL ICC profile");
   if (!bytes) {
@@ -360,17 +365,24 @@ bool box_type_matches(std::span<const std::byte> bytes, const JxlBoxType& type) 
 struct BoundedMetadataAllocator {
   struct alignas(std::max_align_t) Header { std::size_t bytes; };
   std::size_t allocated{};
+  const std::size_t limit{encoding_defaults::effective_codec_metadata_max_bytes()};
 
-  static void* allocate(void* opaque, std::size_t size) noexcept {
+  template <class Allocate>
+  static void* allocate_using(void* opaque, std::size_t size, Allocate&& allocate_bytes) noexcept {
+    static_assert(noexcept(allocate_bytes(size)));
     auto& self = *static_cast<BoundedMetadataAllocator*>(opaque);
-    constexpr auto limit = encoding_defaults::codec_metadata_max_bytes;
-    if (size > limit - sizeof(Header) || self.allocated > limit - sizeof(Header) - size) return nullptr;
+    if (!encoding_defaults::byte_sum_fits(sizeof(Header), size, self.limit) ||
+        !encoding_defaults::byte_sum_fits(self.allocated, sizeof(Header) + size, self.limit)) return nullptr;
     const auto total = sizeof(Header) + size;
-    auto* block = static_cast<Header*>(std::malloc(total));
+    auto* block = static_cast<Header*>(allocate_bytes(total));
     if (!block) return nullptr;
     ::new (block) Header{total};
     self.allocated += total;
     return block + 1;
+  }
+
+  static void* allocate(void* opaque, std::size_t size) noexcept {
+    return allocate_using(opaque, size, [](std::size_t bytes) noexcept { return std::malloc(bytes); });
   }
 
   static void release(void* opaque, void* address) noexcept {
@@ -407,9 +419,10 @@ awj::compat::expected<std::vector<std::byte>, std::string> decompress_gain_map_b
       return std::move(*output);
     }
     if (result != BROTLI_DECODER_RESULT_NEEDS_MORE_OUTPUT ||
-        output->size() >= encoding_defaults::codec_metadata_max_bytes)
-      return awj::compat::unexpected{gain_map_error("jhgm Brotli 数据损坏、截断或超过 64 MiB 上限。")};
-    const auto next_size = std::min(encoding_defaults::codec_metadata_max_bytes, output->size() * 2);
+        output->size() >= encoding_defaults::effective_codec_metadata_max_bytes())
+      return awj::compat::unexpected{gain_map_error("jhgm Brotli 数据损坏、截断或超过 当前运行时上限。")};
+    const auto limit = encoding_defaults::effective_codec_metadata_max_bytes();
+    const auto next_size = output->size() > limit / 2 ? limit : output->size() * 2;
     if (auto resized = decoder_common::resize_buffer(*output, next_size, "JXL jhgm"); !resized)
       return awj::compat::unexpected{gain_map_error(resized.error())};
   }
@@ -468,8 +481,8 @@ awj::compat::expected<std::optional<std::vector<std::byte>>, std::string> read_g
     }
     if (is_gain_map) {
       if (found) return awj::compat::unexpected{gain_map_error("不允许多个 jhgm Gain Map。")};
-      if (payload_size == 0 || payload_size > encoding_defaults::codec_metadata_max_bytes)
-        return awj::compat::unexpected{gain_map_error("jhgm 为空或超过 64 MiB 上限。")};
+      if (payload_size == 0 || payload_size > encoding_defaults::effective_codec_metadata_max_bytes())
+        return awj::compat::unexpected{gain_map_error("jhgm 为空或超过 当前运行时上限。")};
       auto payload = decoder_common::make_byte_buffer(static_cast<std::size_t>(payload_size), "JXL jhgm");
       if (!payload) return awj::compat::unexpected{gain_map_error(payload.error())};
       if (auto read = read_at(payload_offset, std::span{*payload}); !read)
@@ -500,7 +513,7 @@ awj::compat::expected<std::optional<std::vector<std::byte>>, std::string> read_g
 
 awj::compat::expected<std::vector<std::byte>, std::string> transcode_alt_icc(
     std::span<const std::byte> input, bool compress) {
-  if (input.empty() || input.size() > encoding_defaults::codec_metadata_max_bytes)
+  if (input.empty() || input.size() > encoding_defaults::effective_codec_metadata_max_bytes())
     return awj::compat::unexpected{gain_map_error("alternate ICC 尺寸无效。")};
   BoundedMetadataAllocator allocator;
   JxlMemoryManager manager{&allocator, &BoundedMetadataAllocator::allocate, &BoundedMetadataAllocator::release};
@@ -511,7 +524,7 @@ awj::compat::expected<std::vector<std::byte>, std::string> transcode_alt_icc(
                                 : JxlICCProfileDecode(&manager, data, input.size(), &raw, &size);
   auto release = [&](std::uint8_t* p) noexcept { BoundedMetadataAllocator::release(&allocator, p); };
   std::unique_ptr<std::uint8_t, decltype(release)> owner{raw, release};
-  if (success != JXL_TRUE || !raw || size == 0 || size > encoding_defaults::codec_metadata_max_bytes)
+  if (success != JXL_TRUE || !raw || size == 0 || size > encoding_defaults::effective_codec_metadata_max_bytes())
     return awj::compat::unexpected{gain_map_error("alternate ICC 压缩数据无效或超过安全上限。")};
   auto output = decoder_common::make_byte_buffer(size, "JXL alternate ICC");
   if (!output) return awj::compat::unexpected{gain_map_error(output.error())};
@@ -668,7 +681,7 @@ awj::compat::expected<JxlBasicInfo, std::string> probe_gain_map_codestream(const
   if (!decoder || JxlDecoderSetKeepOrientation(decoder.get(), JXL_TRUE) != JXL_DEC_SUCCESS ||
       JxlDecoderSubscribeEvents(decoder.get(), JXL_DEC_BASIC_INFO) != JXL_DEC_SUCCESS)
     return awj::compat::unexpected{gain_map_error("无法创建辅助 header decoder。")};
-  const auto input_size = std::min<std::size_t>(bundle.gain_map_size, encoding_defaults::jxl_max_basic_info_probe_bytes);
+  const auto input_size = std::min<std::size_t>(bundle.gain_map_size, basic_info_probe_limit());
   if (JxlDecoderSetInput(decoder.get(), bundle.gain_map, input_size) != JXL_DEC_SUCCESS)
     return awj::compat::unexpected{gain_map_error("无法设置辅助 header 输入。")};
   if (input_size == bundle.gain_map_size) JxlDecoderCloseInput(decoder.get());
@@ -702,8 +715,8 @@ awj::compat::expected<void, std::string> add_metadata_box(JxlEncoder* encoder,
                                                   const JxlBoxType& type,
                                                   std::span<const std::byte> bytes,
                                                   std::string_view context) {
-  if (bytes.size() > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{awj::compat::format("JXL {} metadata 超过 64 MiB 上限。", context)};
+  if (bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{awj::compat::format("JXL {} metadata 超过 当前运行时上限。", context)};
   }
   if (JxlEncoderAddBox(encoder,
                        type,
@@ -724,8 +737,8 @@ awj::compat::expected<void, std::string> add_standard_metadata_boxes(JxlEncoder*
 
   if (const auto* exif = first_metadata(image, MetadataKind::exif); exif != nullptr) {
     if (exif->bytes.size() >
-        encoding_defaults::codec_metadata_max_bytes - 4) {
-      return awj::compat::unexpected{"JXL Exif metadata 超过 64 MiB 上限。"};
+        encoding_defaults::effective_codec_metadata_max_bytes() - 4) {
+      return awj::compat::unexpected{"JXL Exif metadata 超过 当前运行时上限。"};
     }
     auto exif_payload = decoder_common::make_byte_buffer(exif->bytes.size() + 4, "JXL Exif metadata");
     if (!exif_payload) {
@@ -753,8 +766,8 @@ awj::compat::expected<void, std::string> apply_color_profile(JxlEncoder* encoder
   // for their interpretation, independently of optional metadata stripping.
   if (settings.applied_icc == "kept") {
     if (const auto* icc = first_icc_metadata(image); icc != nullptr) {
-      if (icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes) {
-        return awj::compat::unexpected{"JXL ICC profile 超过 64 MiB 上限。"};
+      if (icc->bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes()) {
+        return awj::compat::unexpected{"JXL ICC profile 超过 当前运行时上限。"};
       }
       if (JxlEncoderSetICCProfile(
               encoder,
@@ -820,9 +833,9 @@ struct MetadataBoxBudget {
 awj::compat::expected<void, std::string> reserve_standard_metadata_box_bytes(
     MetadataBoxBudget& budget,
     std::size_t byte_count) {
-  if (byte_count > encoding_defaults::codec_metadata_max_bytes ||
-      budget.bytes > encoding_defaults::codec_metadata_max_bytes - byte_count) {
-    return awj::compat::unexpected{"JXL metadata 累计大小超过 64 MiB 上限。"};
+  if (byte_count > encoding_defaults::effective_codec_metadata_max_bytes() ||
+      budget.bytes > encoding_defaults::effective_codec_metadata_max_bytes() - byte_count) {
+    return awj::compat::unexpected{"JXL metadata 累计大小超过 当前运行时上限。"};
   }
   budget.bytes += byte_count;
   return {};
@@ -999,9 +1012,9 @@ awj::compat::expected<std::vector<std::byte>, std::string> naked_gain_map_codest
   std::uint32_t next_part = 0;
   std::size_t offset = 0, count = 0;
   auto append = [&](std::span<const std::byte> bytes) -> awj::compat::expected<void, std::string> {
-    if (bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
-        codestream.size() > encoding_defaults::codec_metadata_max_bytes - bytes.size())
-      return awj::compat::unexpected{gain_map_error("辅助裸 codestream 超过 64 MiB 上限。")};
+    if (bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes() ||
+        codestream.size() > encoding_defaults::effective_codec_metadata_max_bytes() - bytes.size())
+      return awj::compat::unexpected{gain_map_error("辅助裸 codestream 超过 当前运行时上限。")};
     codestream.insert(codestream.end(), bytes.begin(), bytes.end());
     return {};
   };
@@ -1233,7 +1246,7 @@ class JXLImageDecoder final : public ImageDecoder {
           return awj::compat::unexpected{awj::compat::format("JXL 读取尺寸失败: {}", display_path_for_user(path))};
         }
         if (status == JXL_DEC_NEED_MORE_INPUT) {
-          if (basic_info && (input_closed || probe_input.size() >= encoding_defaults::jxl_max_basic_info_probe_bytes))
+          if (basic_info && (input_closed || probe_input.size() >= jxl_detail::basic_info_probe_limit()))
             return finish();
           if (input_closed) {
             return awj::compat::unexpected{awj::compat::format("JXL 输入不完整: {}", display_path_for_user(path))};
@@ -1593,8 +1606,8 @@ class JXLImageDecoder final : public ImageDecoder {
             std::uint64_t box_size = 0;
             std::size_t buffer_size = 16 * 1024;
             if (JxlDecoderGetBoxSizeContents(decoder.get(), &box_size) == JXL_DEC_SUCCESS) {
-              if (box_size > encoding_defaults::codec_metadata_max_bytes) {
-                return awj::compat::unexpected{"JXL metadata box 超过 64 MiB 上限。"};
+              if (box_size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+                return awj::compat::unexpected{"JXL metadata box 超过 当前运行时上限。"};
               }
               if (box_size == 0) {
                 continue;
@@ -1630,14 +1643,14 @@ class JXLImageDecoder final : public ImageDecoder {
             return awj::compat::unexpected{"JXL metadata box 输出尺寸无效。"};
           }
           const auto written = current_box.size() - remaining;
-          if (written >= encoding_defaults::codec_metadata_max_bytes) {
-            return awj::compat::unexpected{"JXL metadata box 超过 64 MiB 上限。"};
+          if (written >= encoding_defaults::effective_codec_metadata_max_bytes()) {
+            return awj::compat::unexpected{"JXL metadata box 超过 当前运行时上限。"};
           }
           const auto grow_by = std::max<std::size_t>(16 * 1024, written);
-          const auto new_size = std::min(
-              encoding_defaults::codec_metadata_max_bytes, written + grow_by);
+          const auto limit = encoding_defaults::effective_codec_metadata_max_bytes();
+          const auto new_size = written + std::min(grow_by, limit - written);
           if (new_size <= written) {
-            return awj::compat::unexpected{"JXL metadata box 超过 64 MiB 上限。"};
+            return awj::compat::unexpected{"JXL metadata box 超过 当前运行时上限。"};
           }
           if (new_size <= current_box.size()) {
             return awj::compat::unexpected{"JXL metadata box 输出尺寸无效。"};
@@ -1866,8 +1879,8 @@ class JXLImageEncoder final : public ImageEncoder {
     }
     std::size_t size = 0, written = 0;
     if (JxlGainMapGetBundleSize(&bundle, &size) != JXL_TRUE || size == 0 ||
-        size > encoding_defaults::codec_metadata_max_bytes)
-      return awj::compat::unexpected{jxl_detail::gain_map_error("jhgm bundle 为空或超过 64 MiB 上限。")};
+        size > encoding_defaults::effective_codec_metadata_max_bytes())
+      return awj::compat::unexpected{jxl_detail::gain_map_error("jhgm bundle 为空或超过 当前运行时上限。")};
     auto payload = decoder_common::make_byte_buffer(size, "JXL jhgm");
     if (!payload) return awj::compat::unexpected{jxl_detail::gain_map_error(payload.error())};
     if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
@@ -2108,7 +2121,7 @@ class JXLImageEncoder final : public ImageEncoder {
 
       auto output = jxl_detail::collect_encoder_output(
           encoder.get(), encoder_input_size_hint, stop_token,
-          gain_map_depth != 0 ? encoding_defaults::codec_metadata_max_bytes : 0);
+          gain_map_depth != 0 ? encoding_defaults::effective_codec_metadata_max_bytes() : 0);
       if (!output) {
         return awj::compat::unexpected{output.error()};
       }

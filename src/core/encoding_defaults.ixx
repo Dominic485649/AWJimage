@@ -1,6 +1,6 @@
 module;
 
-#include <atomic>
+#include "memory_policy.h"
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -45,16 +45,35 @@ inline constexpr int default_jpegli_progressive_level = 2;
 inline constexpr bool default_jpegli_optimize_huffman = true;
 inline constexpr bool default_jpegli_xyb = false;
 
-inline constexpr std::uint64_t max_input_file_bytes =
-    20ull * 1024ull * 1024ull * 1024ull;
-// ponytail: session unlock for huge inputs; default stays 20 GiB. Not persisted.
-inline std::atomic_bool unlock_max_input_file_bytes{false};
-inline std::uint64_t effective_max_input_file_bytes() noexcept {
-  // Unlocked path still caps absurd values to avoid size_t wrap in buffers.
-  constexpr std::uint64_t unlocked_cap = 512ull * 1024ull * 1024ull * 1024ull; // 512 GiB
-  return unlock_max_input_file_bytes.load(std::memory_order_relaxed)
-             ? unlocked_cap
-             : max_input_file_bytes;
+using MemoryPolicy = memory_policy::Policy;
+using ScopedMemoryPolicy = memory_policy::Scope;
+using PhysicalMemoryStatus = memory_policy::MemoryStatus;
+inline constexpr auto memory_policy_unavailable_message = memory_policy::unavailable_message;
+
+inline PhysicalMemoryStatus physical_memory_status() noexcept {
+  return memory_policy::current_memory_status();
+}
+inline constexpr std::uint64_t physical_input_limit(std::uint64_t total) noexcept {
+  return memory_policy::physical_input_limit(total);
+}
+inline auto resolve_memory_policy(bool unlock_memory, bool unlock_input,
+                                  std::uint64_t physical_total) noexcept {
+  return memory_policy::resolve(unlock_memory, unlock_input, physical_total);
+}
+inline auto system_memory_policy(bool unlock_memory = false, bool unlock_input = false) noexcept {
+  return memory_policy::resolve_system(unlock_memory, unlock_input);
+}
+inline MemoryPolicy current_memory_policy() { return memory_policy::current(); }
+inline std::uint64_t effective_max_input_file_bytes() {
+  return current_memory_policy().input_limit();
+}
+inline std::size_t effective_codec_metadata_max_bytes(std::size_t overhead = 0) noexcept {
+  return memory_policy::metadata_limit(overhead);
+}
+inline bool memory_limits_unlocked() noexcept { return memory_policy::unrestricted_memory(); }
+inline constexpr bool byte_sum_fits(std::uint64_t used, std::uint64_t extra,
+                                    std::uint64_t limit) noexcept {
+  return memory_policy::fits_sum(used, extra, limit);
 }
 
 inline constexpr std::uint32_t avif_single_image_max_dimension = 65'536u;
@@ -67,7 +86,8 @@ inline constexpr bool default_experimental_clamped_grid_padding = true;
 inline constexpr int default_grid_overlap_pixels = 0;
 inline constexpr int max_automatic_thread_budget = 128;
 
-inline constexpr std::size_t codec_metadata_max_bytes = 64 * 1024 * 1024;
+// Finite-mode default only. Runtime codec checks use the scoped getter above.
+inline constexpr std::size_t codec_metadata_max_bytes = memory_policy::default_metadata_limit;
 inline constexpr std::size_t jpeg_max_saved_metadata_marker_count = 4096;
 inline constexpr std::size_t jpeg_marker_payload_max_bytes = 0xFFFFu - 2u;
 inline constexpr std::size_t png_max_cached_metadata_chunks = 64;

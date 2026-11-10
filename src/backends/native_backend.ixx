@@ -1358,7 +1358,8 @@ awj::compat::expected<std::uintmax_t, std::string> copy_file_to_output(const fs:
         if (read == 0) {
           break;
         }
-        if (copied_bytes > encoding_defaults::effective_max_input_file_bytes() - static_cast<std::uintmax_t>(read)) {
+        if (!encoding_defaults::byte_sum_fits(copied_bytes, static_cast<std::uintmax_t>(read),
+                                             encoding_defaults::effective_max_input_file_bytes())) {
           return awj::compat::unexpected{awj::compat::format("AVIF 直通输入超过当前输入上限: {}",
                                              display_path_for_user(source))};
         }
@@ -1724,7 +1725,13 @@ class NativeBackend final {
  public:
   NativeBackend(const AppConfig& cfg, FileLogger& logger, ResourcePlan resources,
                 std::function<bool(std::uint64_t)> memory_reservation = {})
-      : cfg_{cfg}, logger_{logger}, resources_{resources}, reserve_memory_{std::move(memory_reservation)} {}
+      : cfg_{cfg}, logger_{logger}, resources_{normalize_memory_policy_resources(cfg, resources)},
+        reserve_memory_{cfg.unlock_memory_limit ? std::function<bool(std::uint64_t)>{} : std::move(memory_reservation)},
+        memory_policy_{operation_memory_policy(cfg)} {
+    const auto checked = checked_memory_policy_resources(cfg, resources_);
+    if (checked) resources_ = *checked;
+    else resource_plan_error_ = checked.error();
+  }
 
   EncodeResult encode(const ImageFile& image,
                       awj::compat::stop_token stop_token = {}) const {
@@ -1743,6 +1750,9 @@ class NativeBackend final {
   // 内存入口只复用参数决策和编码；不扫描文件、不初始化文件结果、不写出。
   awj::compat::expected<NativeEncodeResult, std::string> encode_memory(
       ImageDecodeResult decoded, awj::compat::stop_token stop_token = {}) const {
+    if (!memory_policy_) return awj::compat::unexpected{memory_policy_.error()};
+    if (resource_plan_error_) return awj::compat::unexpected{*resource_plan_error_};
+    const encoding_defaults::ScopedMemoryPolicy memory_scope{*memory_policy_};
     if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (auto selected = native_backend_detail::select_output_rendition(decoded, cfg_, stop_token); !selected)
       return awj::compat::unexpected{selected.error()};
@@ -1849,6 +1859,9 @@ class NativeBackend final {
   EncodeResult encode_with_requested_file_times(
       const ImageFile& image, EncodeOverrides overrides,
       awj::compat::stop_token stop_token) const {
+    if (!memory_policy_) return failed_encode_result(image, memory_policy_.error());
+    if (resource_plan_error_) return failed_encode_result(image, *resource_plan_error_);
+    const encoding_defaults::ScopedMemoryPolicy memory_scope{*memory_policy_};
 #ifdef _WIN32
     const bool preserve_any_time = cfg_.preserve_creation_time ||
                                    cfg_.preserve_modification_time ||
@@ -2842,6 +2855,8 @@ class NativeBackend final {
   FileLogger& logger_;
   ResourcePlan resources_;
   std::function<bool(std::uint64_t)> reserve_memory_;
+  const awj::compat::expected<encoding_defaults::MemoryPolicy, std::string> memory_policy_;
+  std::optional<std::string> resource_plan_error_;
 };
 
 }  // namespace awj

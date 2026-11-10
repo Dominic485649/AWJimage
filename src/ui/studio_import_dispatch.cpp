@@ -33,8 +33,16 @@ void apply_import_result(AwjStudio& app, UiState& state,
   apply_scanned_import(app, state, result, request.input_hint, request.update_input_path);
 }
 
-bool enqueue_import(const std::shared_ptr<UiState>& state,
+bool enqueue_import(AwjStudio& app, const std::shared_ptr<UiState>& state,
                     awj::ui_import::Request request) {
+  // Capture on the UI thread, before queuing; the worker must never sample a
+  // later toggle or reach into a Slint component from its scan thread.
+  const auto policy = awj::encoding_defaults::system_memory_policy(app.get_unlock_memory_limit());
+  if (!policy) {
+    app.set_status_text(to_shared(awj::encoding_defaults::memory_policy_unavailable_message));
+    return false;
+  }
+  request.maximum_file_bytes = policy->input_limit();
   std::scoped_lock run_lock{state->mutex};
   if (state->worker_active || !state->import_dispatcher) return false;
   request.epoch = state->import_epoch;
@@ -51,9 +59,7 @@ void start_import_dispatcher(slint::ComponentWeakHandle<AwjStudio> weak,
             .is_supported = [](const std::filesystem::path& path) {
               return awj::is_supported_image_extension(path);
             },
-            .stop_requested = {},
-            .maximum_file_bytes = static_cast<std::uintmax_t>(
-                awj::encoding_defaults::effective_max_input_file_bytes())};
+            .stop_requested = {}}; // The request owns its frozen byte limit.
       },
       [weak, state](awj::ui_import::Request request,
                     awj::ui_import::Result result) mutable {
@@ -143,11 +149,9 @@ awj::ui_drop::Callbacks make_native_drop_callbacks(
           for (auto& path : paths) {
             job.roots.push_back({.path = std::move(path)});
           }
-          if (enqueue_import(state, std::move(job))) {
+          if (auto app = weak.lock(); app && enqueue_import(**app, state, std::move(job))) {
             accepted = true;
-            if (auto app = weak.lock()) {
-              (*app)->set_status_text(to_shared("正在导入拖入的文件与文件夹…"));
-            }
+            (*app)->set_status_text(to_shared("正在导入拖入的文件与文件夹…"));
           }
         });
         return accepted;

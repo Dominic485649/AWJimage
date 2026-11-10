@@ -978,7 +978,7 @@ int run_studio_ui(const wchar_t* health_event,
                                       : awj::ui_import::Origin::file_dialog,
                 .input_hint = *path,
                 .update_input_path = true};
-            if (enqueue_import(state, std::move(job))) {
+            if (enqueue_import(**app, state, std::move(job))) {
               (*app)->set_status_text(to_shared(pick_folder ? "正在扫描文件夹…"
                                                             : "正在导入文件…"));
             }
@@ -1006,7 +1006,7 @@ int run_studio_ui(const wchar_t* health_event,
                             .origin = awj::ui_import::Origin::command_line,
                             .input_hint = *path,
                             .update_input_path = true};
-              if (enqueue_import(state, std::move(job))) {
+              if (enqueue_import(**app, state, std::move(job))) {
                 (*app)->set_status_text(to_shared("正在导入输入路径…"));
               }
             }

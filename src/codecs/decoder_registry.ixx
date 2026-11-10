@@ -9,6 +9,7 @@ module;
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -287,6 +288,13 @@ awj::compat::expected<ImageDimensions, std::string> probe_image_dimensions_for_p
     const fs::path& path,
     DecoderRegistryOptions options) {
   try {
+    if (options.stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    std::error_code size_error;
+    const auto input_bytes = fs::file_size(path, size_error);
+    if (size_error) return awj::compat::unexpected{awj::compat::format(
+        "读取待探测输入文件大小失败: {}；系统错误：{}。", display_path_for_user(path), size_error.message())};
+    if (auto within_limit = check_scanned_input_file_size(path, input_bytes); !within_limit)
+      return awj::compat::unexpected{within_limit.error()};
     auto enhanced = probe_jpeg_gain_map_dimensions(path, options.stop_token);
     if (!enhanced) return awj::compat::unexpected{enhanced.error()};
     if (*enhanced) return **enhanced;

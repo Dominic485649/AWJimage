@@ -613,7 +613,8 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
       const auto stride = size[0] * channels * (request.bit_depth > 8 ? 2u : 1u);
       auto count = decoder_common::checked_image_bytes(stride, size[1], "pixel conversion");
       if (!count) return awj::compat::unexpected{count.error()};
-      if (*count > encoding_defaults::effective_max_input_file_bytes() - allocation) return awj::compat::unexpected{"目标像素超过内存上限。"};
+      if (!encoding_defaults::byte_sum_fits(allocation, *count, encoding_defaults::effective_max_input_file_bytes()))
+        return awj::compat::unexpected{"目标像素超过内存上限。"};
       allocation += *count;
       auto bytes = decoder_common::make_byte_buffer(*count, "pixel conversion");
       if (!bytes) return awj::compat::unexpected{bytes.error()};

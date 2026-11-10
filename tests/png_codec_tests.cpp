@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <csetjmp>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -15,6 +16,9 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <limits>
+#include <memory>
+#include <png.h>
 #include <zlib.h>
 #include <lcms2.h>
 
@@ -22,6 +26,7 @@
 
 import awj.codec;
 import awj.config;
+import awj.encoding_defaults;
 import awj.image;
 import awj.large_image_plan;
 import awj.png_codec;
@@ -434,8 +439,183 @@ int benchmark(const fs::path& inputs, const fs::path& outputs) {
   return 0;
 }
 
+// The test must obey the same boundary as the codec: no scoped policies,
+// containers, assertions or exception handlers in the frame receiving longjmp.
+#if defined(_MSC_VER)
+__declspec(noinline)
+#else
+__attribute__((noinline))
+#endif
+bool invoke_write_callback(png_structp png, awj::png_detail::WriteState* state,
+    png_bytep bytes, png_size_t count) noexcept {
+  auto* jump = png_set_longjmp_fn(png, std::longjmp, sizeof(std::jmp_buf));
+  if (jump == nullptr) return false;
+  if (setjmp(*jump) != 0) return false;
+  png_set_write_fn(png, state, awj::png_detail::write_callback, awj::png_detail::flush_callback);
+  awj::png_detail::write_callback(png, bytes, count);
+  return true;
+}
+
+bool write_with_captured_limit(std::uint64_t limit, std::uint64_t ambient) {
+  using namespace awj::encoding_defaults;
+  const ScopedMemoryPolicy submitting{MemoryPolicy{limit, limit == UINT64_MAX, limit == UINT64_MAX}};
+  const auto state = std::make_unique<awj::png_detail::WriteState>();
+  awj::png_detail::PngWritePtr png{png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)};
+  check(png != nullptr, "PNG writer creation failed");
+  const ScopedMemoryPolicy invoking{MemoryPolicy{ambient, ambient == UINT64_MAX, ambient == UINT64_MAX}};
+  std::array<png_byte, 4> bytes{1, 2, 3, 4};
+  if (!invoke_write_callback(png.get(), state.get(), bytes.data(), bytes.size())) return false;
+  return state->bytes.size() == bytes.size();
+}
+
+void check_wide_image_memory_policy() {
+  using namespace awj::encoding_defaults;
+  auto cfg = awj::default_app_config();
+  cfg.output_format = awj::OutputFormat::png;
+  cfg.image_size_limit.mode = awj::ImageSizeLimitMode::none;
+  cfg.unlock_memory_limit = true;
+  // Exceed the pinned libpng's 1,000,000-pixel instance width guard with only
+  // 4,000,004 bytes of RGBA input, not a large or memory-exhaustion fixture.
+  constexpr std::size_t width = 1'000'001;
+  const auto geometry = require(awj::plan_image_geometry(width, 1, cfg));
+  check(!geometry.changes(), "Unlimited size mode changed the wide PNG fixture dimensions");
+  awj::ImageBuffer image{.width = width, .height = 1,
+      .pixel_format = awj::PixelFormat::rgba, .alpha_mode = awj::AlphaMode::straight, .bit_depth = 8};
+  image.planes.push_back({.bytes = std::vector<std::byte>(width * 4), .stride = width * 4});
+  for (std::size_t i = 0; i < image.planes[0].bytes.size(); ++i)
+    image.planes[0].bytes[i] = static_cast<std::byte>(i % 251);
+  const awj::NativeEncodeSettings settings{
+      .output_format = awj::OutputFormat::png, .quality = 100, .bit_depth = 8};
+  const ScopedMemoryPolicy full{require(awj::operation_memory_policy(cfg))};
+  const auto encoded = require(awj::PngImageEncoder{}.encode(image, settings));
+  const auto decoded = require(awj::PngImageDecoder{}.decode_memory(
+      encoded.encoded.bytes, "memory-unlocked-wide-strip.png"));
+  check(encoded.lossless && decoded.image.width == width && decoded.image.height == 1 &&
+      decoded.image.bit_depth == 8 && decoded.image.planes[0].stride == width * 4 &&
+      decoded.image.planes[0].bytes == image.planes[0].bytes,
+      "Full unlock did not round-trip a wide PNG at its original size and precision");
+  {
+    // Enough byte capacity for the fixture: only the unchanged default libpng
+    // instance dimension guard should reject it in finite mode.
+    const ScopedMemoryPolicy finite{MemoryPolicy{16u * 1024 * 1024, false, false}};
+    const auto rejected = awj::PngImageEncoder{}.encode(image, settings);
+    check(!rejected && rejected.error() == "PNG 编码失败。",
+          "Finite PNG writer bypassed its default instance dimension guard");
+    const auto rejected_read = awj::PngImageDecoder{}.decode_memory(
+        encoded.encoded.bytes, "memory-finite-wide-strip.png");
+    check(!rejected_read && rejected_read.error().starts_with("PNG 解码失败:"),
+          "Finite PNG reader bypassed its default instance dimension guard");
+  }
+  check(memory_limits_unlocked() && effective_max_input_file_bytes() == UINT64_MAX,
+        "PNG finite dimension rejection did not restore the full-unlock scope");
+  const auto recovered = require(awj::PngImageDecoder{}.decode_memory(
+      encoded.encoded.bytes, "memory-restored-wide-strip.png"));
+  check(recovered.image.width == width && recovered.image.height == 1 &&
+      recovered.image.bit_depth == 8 && recovered.image.planes[0].stride == width * 4 &&
+      recovered.image.planes[0].bytes == image.planes[0].bytes,
+      "PNG finite dimension rejection damaged the following unlocked decode");
+}
+
+void check_error_recovery() {
+  using namespace awj::encoding_defaults;
+  const MemoryPolicy baseline_policy{16u * 1024 * 1024, false, false};
+  const ScopedMemoryPolicy baseline{baseline_policy};
+  // Four pixel bytes suffice to reach read_info, read_image/read_end and all
+  // writer output stages. No allocation failure or giant image is simulated.
+  awj::ImageBuffer image{.width = 1, .height = 1,
+      .pixel_format = awj::PixelFormat::rgba, .alpha_mode = awj::AlphaMode::straight, .bit_depth = 8};
+  image.planes.push_back({.bytes = {std::byte{1}, std::byte{2}, std::byte{3}, std::byte{4}}, .stride = 4});
+  const awj::NativeEncodeSettings settings{
+      .output_format = awj::OutputFormat::png, .quality = 100, .bit_depth = 8};
+  const auto base = require(awj::PngImageEncoder{}.encode(image, settings)).encoded.bytes;
+  check(base.size() > 45 && awj::png_detail::chunk_type_is(std::span{base}.last(12).first(8), "IEND"),
+        "PNG recovery fixture is missing pixel data or IEND");
+
+  auto bad_header = base;
+  bad_header[29] ^= std::byte{1}; // Critical IHDR CRC: read_info must fail.
+  std::vector<std::byte> bad_idat(base.begin(), base.begin() + 33);
+  const std::array<std::byte, 2> invalid_zlib{std::byte{0}, std::byte{0}};
+  awj::png_detail::append_png_chunk(bad_idat, "IDAT", invalid_zlib);
+  awj::png_detail::append_png_chunk(bad_idat, "IEND", {});
+  auto bad_end = base;
+  bad_end.pop_back(); // 截断 IEND 的 CRC，确保 read_end 触发读取错误。
+  auto warning_end = base;
+  warning_end.back() ^= std::byte{1};
+  // 锁定 libpng 对完整 IEND 的 CRC 错误仅告警；保持现有容错策略。
+  const auto warning_image = require(awj::PngImageDecoder{}.decode_memory(warning_end, "iend-crc-warning.png"));
+  check(warning_image.image.width == 1 && warning_image.image.height == 1 &&
+      warning_image.image.planes[0].bytes == image.planes[0].bytes,
+      "PNG IEND warning changed existing decode tolerance or pixel data");
+  const std::array<std::span<const std::byte>, 5> damaged{
+      std::span{base}.first(8), bad_header, bad_idat,
+      std::span{base}.first(base.size() - 12), bad_end};
+
+  const auto check_recovered = [&] {
+    check(current_memory_policy() == baseline_policy,
+          "PNG error return leaked a nested memory-policy scope");
+    const auto encoded = require(awj::PngImageEncoder{}.encode(image, settings));
+    const auto decoded = require(awj::PngImageDecoder{}.decode_memory(
+        encoded.encoded.bytes, "error-boundary-recovered.png"));
+    check(encoded.lossless && decoded.image.width == 1 && decoded.image.height == 1 &&
+        decoded.image.bit_depth == 8 && decoded.image.planes[0].stride == 4 &&
+        decoded.image.planes[0].bytes == image.planes[0].bytes,
+        "PNG error return corrupted the next successful RGBA round trip");
+  };
+  // Signature rejection, first IDAT output, and IEND output respectively. Each
+  // cap still permits the four input pixel bytes, so the callback must reject.
+  const std::array<std::uint64_t, 3> output_limits{4, 33, base.size() - 1};
+  for (int repeat = 0; repeat < 3; ++repeat) {
+    for (const auto input : damaged) {
+      const auto rejected = awj::PngImageDecoder{}.decode_memory(input, "error-boundary-rejected.png");
+      check(!rejected && rejected.error().starts_with("PNG 解码失败:"),
+            "PNG damaged/truncated input did not return a libpng decoding error");
+      check_recovered();
+    }
+    check(write_with_captured_limit(UINT64_MAX, 1), "PNG callback did not keep its captured full unlock");
+    check_recovered();
+    check(!write_with_captured_limit(3, UINT64_MAX), "PNG callback discarded its captured finite limit");
+    check_recovered();
+    for (const auto limit : output_limits) {
+      {
+        const ScopedMemoryPolicy finite{MemoryPolicy{limit, false, false}};
+        const auto rejected = awj::PngImageEncoder{}.encode(image, settings);
+        check(!rejected && rejected.error() == "PNG 编码失败。",
+              "PNG finite output callback did not return an encoding error");
+      }
+      check_recovered();
+    }
+  }
+}
+
+void check_memory_policy() {
+  using namespace awj::encoding_defaults;
+  check_wide_image_memory_policy();
+  check_error_recovery();
+#ifdef PNG_SET_USER_LIMITS_SUPPORTED
+  awj::png_detail::PngReadPtr png{png_create_read_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)};
+  check(png != nullptr, "PNG reader creation failed");
+  png_set_chunk_malloc_max(png.get(), 7);
+  {
+    const ScopedMemoryPolicy finite{MemoryPolicy{8, false, false}};
+    awj::png_detail::clamp_chunk_limits(png.get());
+    check(png_get_chunk_malloc_max(png.get()) == 7, "PNG finite mode relaxed the library's smaller quota");
+  }
+  const ScopedMemoryPolicy full{MemoryPolicy{UINT64_MAX, true, true}};
+  awj::png_detail::clamp_chunk_limits(png.get());
+  check(png_get_chunk_malloc_max(png.get()) == std::numeric_limits<png_alloc_size_t>::max(),
+        "PNG full unlock retained a default malloc byte limit");
+  check(png_get_chunk_cache_max(png.get()) == png_max_cached_metadata_chunks,
+        "PNG full unlock disabled structural metadata count validation");
+  check(png_get_user_width_max(png.get()) == PNG_UINT_31_MAX &&
+        png_get_user_height_max(png.get()) == PNG_UINT_31_MAX,
+        "PNG full unlock retained an allocation guard below the format's dimension range");
+#endif
+}
+
 int main(int argc, char** argv) try {
   if (argc == 4 && std::string_view{argv[1]} == "--benchmark") return benchmark(argv[2], argv[3]);
+  check_memory_policy();
+  if (argc == 2 && std::string_view{argv[1]} == "--memory-policy-only") return 0;
   // CTest's working directory is the project's build tree; do not scatter
   // task-owned fixtures in the user's global temporary directory.
   const auto directory = fs::current_path() /

@@ -12,6 +12,7 @@ import awj.core;
 import awj.native_backend;
 import awj.resource_planner;
 import awj.pixel_conversion;
+import awj.encoding_defaults;
 
 namespace awj_sdk {
 namespace {
@@ -148,6 +149,9 @@ awj_status import_image(const awj_frame& frame, const awj_encode_options& option
 uint64_t native_capabilities() noexcept { return AWJ_CAP_NATIVE_CODECS; }
 awj_status native_encode(awj_context& context, const awj_frame& frame,
                          const awj_encode_options& options, awj_result& output) {
+  // Public SDK contracts are independent of any Studio/caller thread scope.
+  const awj::encoding_defaults::MemoryPolicy sdk_policy{context.options.memory_budget_bytes, false, false};
+  const awj::encoding_defaults::ScopedMemoryPolicy memory_scope{sdk_policy};
   if (options.lossless && options.codec == AWJ_CODEC_JPEGLI)
     return fail(AWJ_UNSUPPORTED, "JPEGli 不提供像素无损编码，不能把 quality=100 当作无损。");
   if (options.copy_policy == AWJ_COPY_REQUIRE_BORROWED &&
@@ -188,6 +192,7 @@ awj_status native_encode(awj_context& context, const awj_frame& frame,
   config.allow_wic_fallback = false;
   config.max_jobs = static_cast<int>(context.options.max_threads);
   config.memory_limit_bytes = context.options.memory_budget_bytes;
+  config.runtime_memory_policy = sdk_policy;
   config.write_log = false;
   config.write_summary = false;
   awj::ResourcePlan resources{.file_parallelism = 1,

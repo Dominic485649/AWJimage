@@ -1292,8 +1292,8 @@ awj::compat::expected<void, std::string> file_hash_token(const fs::path& path,
       stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
-      if (hashed_bytes >
-          encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
+      if (!encoding_defaults::byte_sum_fits(hashed_bytes, chunk_bytes,
+                                            encoding_defaults::effective_max_input_file_bytes())) {
         return awj::compat::unexpected{awj::compat::format(
             "用于 {{hash}}/{{hash8}} 的输入文件超过当前输入上限: {}。",
             display_path_for_user(path))};
@@ -1517,8 +1517,8 @@ awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& 
       stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
-      if (hashed_bytes >
-          encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
+      if (!encoding_defaults::byte_sum_fits(hashed_bytes, chunk_bytes,
+                                            encoding_defaults::effective_max_input_file_bytes())) {
         return awj::compat::unexpected{
             awj::compat::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                         display_path_for_user(path))};
@@ -1555,7 +1555,8 @@ awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& 
       stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
-      if (hashed_bytes > encoding_defaults::effective_max_input_file_bytes() - chunk_bytes) {
+      if (!encoding_defaults::byte_sum_fits(hashed_bytes, chunk_bytes,
+                                           encoding_defaults::effective_max_input_file_bytes())) {
         return awj::compat::unexpected{
             awj::compat::format("用于 SHA-256 的文件超过当前输入上限: {}。",
                         display_path_for_user(path))};

@@ -15,7 +15,7 @@ namespace awj::studio {
 void apply_import_result(AwjStudio& app, UiState& state,
                          awj::ui_import::Request request,
                          awj::ui_import::Result result);
-bool enqueue_import(const std::shared_ptr<UiState>& state,
+bool enqueue_import(AwjStudio& app, const std::shared_ptr<UiState>& state,
                     awj::ui_import::Request request);
 void start_import_dispatcher(slint::ComponentWeakHandle<AwjStudio> weak,
                              const std::shared_ptr<UiState>& state);

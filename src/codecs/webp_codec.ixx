@@ -79,6 +79,7 @@ struct WebPVectorWriter {
   std::vector<std::byte> bytes;
   const char* error{};
   awj::compat::stop_token* stop_token{};
+  const std::uint64_t byte_limit{encoding_defaults::effective_max_input_file_bytes()};
 };
 
 int write_webp_bytes(const std::uint8_t* data,
@@ -104,7 +105,7 @@ int write_webp_bytes(const std::uint8_t* data,
     writer->error = "WebP encoder 输出过大。";
     return 0;
   }
-  if (old_size + data_size > encoding_defaults::effective_max_input_file_bytes()) {
+  if (!encoding_defaults::byte_sum_fits(old_size, data_size, writer->byte_limit)) {
     writer->error = "WebP encoder 输出超过当前运行时上限。";
     return 0;
   }
@@ -279,8 +280,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_metadata_payload
   if (payload.empty()) {
     return std::vector<std::byte>{};
   }
-  if (payload.size() > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{awj::compat::format("{} 超过 64 MiB 上限。", context)};
+  if (payload.size() > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{awj::compat::format("{} 超过 当前运行时上限。", context)};
   }
   auto bytes = decoder_common::make_byte_buffer(payload.size(), context);
   if (!bytes) {
@@ -316,8 +317,8 @@ awj::compat::expected<void, std::string> copy_metadata(ImageBuffer& image,
     const auto chunk_index = metadata_chunk_index(encoded.subspan(offset, 4));
     if (chunk_index < std::size(webp_metadata_chunks)) {
       const auto& chunk = webp_metadata_chunks[chunk_index];
-      if (payload_size > encoding_defaults::codec_metadata_max_bytes) {
-        return awj::compat::unexpected{awj::compat::format("WebP {} metadata 超过 64 MiB 上限。", chunk.name)};
+      if (payload_size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+        return awj::compat::unexpected{awj::compat::format("WebP {} metadata 超过 当前运行时上限。", chunk.name)};
       }
       if (!seen_metadata[chunk_index]) {
         seen_metadata[chunk_index] = true;
@@ -363,8 +364,8 @@ awj::compat::expected<void, std::string> set_metadata_chunk(WebPMux* mux,
   if (metadata == nullptr) {
     return {};
   }
-  if (metadata->bytes.size() > encoding_defaults::codec_metadata_max_bytes) {
-    return awj::compat::unexpected{awj::compat::format("WebP {} metadata 超过 64 MiB 上限。", chunk.name)};
+  if (metadata->bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes()) {
+    return awj::compat::unexpected{awj::compat::format("WebP {} metadata 超过 当前运行时上限。", chunk.name)};
   }
   WebPData chunk_data{.bytes = reinterpret_cast<const std::uint8_t*>(metadata->bytes.data()),
                       .size = metadata->bytes.size()};
@@ -396,7 +397,7 @@ awj::compat::expected<std::vector<std::byte>, std::string> mux_metadata(
   }
   const auto mux_guard = std::unique_ptr<WebPMux, decltype(&WebPMuxDelete)>{mux, &WebPMuxDelete};
   if (essential_icc) {
-    if (essential_icc->bytes.size() > encoding_defaults::codec_metadata_max_bytes)
+    if (essential_icc->bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes())
       return awj::compat::unexpected{"WebP essential ICC 超过元数据上限。"};
     const WebPData icc{reinterpret_cast<const std::uint8_t*>(essential_icc->bytes.data()), essential_icc->bytes.size()};
     if (WebPMuxSetChunk(mux, "ICCP", &icc, 1) != WEBP_MUX_OK)

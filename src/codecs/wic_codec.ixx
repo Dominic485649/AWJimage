@@ -340,8 +340,8 @@ awj::compat::expected<std::vector<std::byte>, std::string> copy_icc_profile(
     if (FAILED(hr) || profile_size == 0) {
       continue;
     }
-    if (profile_size > encoding_defaults::codec_metadata_max_bytes) {
-      return awj::compat::unexpected{"WIC ICC profile 超过 64 MiB 上限。"};
+    if (profile_size > encoding_defaults::effective_codec_metadata_max_bytes()) {
+      return awj::compat::unexpected{"WIC ICC profile 超过 当前运行时上限。"};
     }
     auto bytes = decoder_common::make_byte_buffer(profile_size, "WIC ICC profile");
     if (!bytes) {

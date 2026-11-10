@@ -189,6 +189,7 @@ struct Dispatcher::Impl {
         generation = cancel_generation.load();
       }
       auto scan_options = options_provider ? options_provider() : Options{};
+      if (request.maximum_file_bytes) scan_options.maximum_file_bytes = *request.maximum_file_bytes;
       scan_options.stop_requested = [this, token, generation, previous = std::move(scan_options.stop_requested)] {
         return token.stop_requested() || cancel_generation.load() != generation || (previous && previous());
       };

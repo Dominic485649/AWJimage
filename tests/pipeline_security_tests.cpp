@@ -30,6 +30,8 @@
 #endif
 
 import awj.codec;
+import awj.decoder_registry;
+import awj.encoding_defaults;
 import awj.config;
 import awj.core;
 import awj.image;
@@ -768,7 +770,9 @@ int main(int argc, char** argv) {
     }
     return checked;
   }
-  if (const auto checked = queue_core_contract(root)) return checked;
+  if (!(argc == 2 && std::string_view{argv[1]} == "--memory-policy-only")) {
+    if (const auto checked = queue_core_contract(root)) return checked;
+  }
   if (argc == 2 && std::string_view{argv[1]} == "--queue-contract-only") {
     std::filesystem::remove_all(root, ec);
     return ec ? fail("Could not clean dedicated queue test files.") : 0;
@@ -776,7 +780,9 @@ int main(int argc, char** argv) {
   {
     const auto input = root / "memory-unlock.webp";
     if (auto written = write_webp(input); !written) return fail(written.error());
-    for (const auto configured : {0ull, 64ull * 1024 * 1024}) {
+    const awj::encoding_defaults::MemoryPolicy outer_policy{1, false, false};
+    const awj::encoding_defaults::ScopedMemoryPolicy outer_scope{outer_policy};
+    for (const auto configured : {0ull, 1ull, 64ull * 1024 * 1024}) {
       auto cfg = awj::default_app_config();
       cfg.input_path = input;
       cfg.output_dir = root / std::format("memory-unlock-{}", configured);
@@ -790,7 +796,9 @@ int main(int argc, char** argv) {
       auto summary = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
         if (event.kind == awj::BatchEventKind::item_finished) {
           const auto& result = event.result;
-          traced = result.ok && result.memory_budget_bytes == 0 &&
+          traced = awj::encoding_defaults::effective_max_input_file_bytes() == UINT64_MAX &&
+              awj::encoding_defaults::memory_limits_unlocked() &&
+              result.ok && result.memory_budget_bytes == 0 &&
               result.memory_budget_mode == "unlocked" && result.memory_budget_source == "session_unlock" &&
               result.estimated_working_set_bytes > 0 && !result.memory_estimate_profile.empty() &&
               result.memory_source_width == 2 && result.memory_source_height == 2 &&
@@ -799,6 +807,7 @@ int main(int argc, char** argv) {
       });
       const auto csv = read_text(cfg.output_dir / "log" / "summery.csv");
       if (!summary || summary->ok_count != 1 || !traced ||
+          awj::encoding_defaults::current_memory_policy() != outer_policy ||
           csv.find("memory_budget_bytes,memory_budget_mode,memory_budget_source,estimated_working_set_bytes") == std::string::npos ||
           csv.find(",0,unlocked,session_unlock,") == std::string::npos)
         return fail("Successful session-unlocked work lost zero budget, mode/source or estimate CSV diagnostics.");
@@ -818,9 +827,121 @@ int main(int argc, char** argv) {
         }
       }, cancel.get_token());
       if (!manual || !manual->canceled || !manual_traced ||
+          awj::encoding_defaults::current_memory_policy() != outer_policy ||
           read_text(cfg.output_dir / "log" / "summery.csv").find(",0,unlocked,session_unlock,") == std::string::npos)
         return fail("Manual Grid worker reinterpreted unlocked zero as automatic or fabricated unstarted measurements.");
     }
+    auto cfg = awj::default_app_config();
+    cfg.output_format = awj::OutputFormat::png;
+    cfg.quality = 100;
+    cfg.memory_limit_bytes = 1;
+    cfg.unlock_memory_limit = true;
+    cfg.unlock_max_input_file_bytes = false;
+    awj::FileLogger logger{root, false};
+    bool reserved = false;
+    const auto reject_reservation = [&](std::uint64_t) { reserved = true; return false; };
+    const awj::ResourcePlan stale{.memory_limit_bytes = 1};
+    awj::NativeBackend direct{cfg, logger, stale, reject_reservation};
+    auto encoded = direct.encode_memory(awj::ImageDecodeResult{.image = make_test_image()});
+    if (!encoded || encoded->encoded.bytes.empty() || encoded->diagnostics.memory_budget_bytes != 0 || reserved ||
+        awj::encoding_defaults::current_memory_policy() != outer_policy || cfg.memory_limit_bytes != 1)
+      return fail(encoded ? "Direct backend retained a stale budget/callback or leaked its scope." : encoded.error());
+    std::stop_source stopped;
+    stopped.request_stop();
+    if (direct.encode_memory(awj::ImageDecodeResult{.image = make_test_image()}, stopped.get_token()))
+      return fail("Direct backend full unlock disabled cancellation.");
+    for (const bool legacy_input_only : {false, true}) {
+      auto limited_cfg = cfg;
+      limited_cfg.unlock_memory_limit = false;
+      limited_cfg.unlock_max_input_file_bytes = legacy_input_only;
+      awj::NativeBackend limited{limited_cfg, logger, stale};
+      if (limited.encode_memory(awj::ImageDecodeResult{.image = make_test_image()}))
+        return fail("Direct finite/input-only backend discarded its working-set budget.");
+      // A zero ResourcePlan is not permission to discard an explicit manual
+      // budget. Carry a finite input snapshot so this check needs no OS query.
+      limited_cfg.runtime_memory_policy = awj::encoding_defaults::MemoryPolicy{
+          16u * 1024 * 1024, legacy_input_only, false};
+      awj::NativeBackend unresolved_manual{limited_cfg, logger, awj::ResourcePlan{}};
+      if (unresolved_manual.encode_memory(awj::ImageDecodeResult{.image = make_test_image()}))
+        return fail("An unresolved direct-backend plan silently discarded a manual working-set budget.");
+    }
+    constexpr auto declared_size = 513ull * 1024 * 1024 * 1024;
+    const std::vector<awj::ImageFile> records{{.index = 0, .path = input, .bytes = declared_size}};
+    const auto manifest_path = root / "unlocked-numeric-size.awjq";
+    if (awj::WebPImageDecoder{}.probe_dimensions(input) ||
+        awj::probe_image_dimensions_for_path(input, {.allow_wic_fallback = false}) ||
+        awj::check_scanned_input_file_size(input, declared_size))
+      return fail("Finite probe/scan ignored the submitting operation's input cap.");
+    {
+      const awj::encoding_defaults::ScopedMemoryPolicy full{
+          awj::encoding_defaults::MemoryPolicy{UINT64_MAX, true, true}};
+      if (!awj::WebPImageDecoder{}.probe_dimensions(input) ||
+          !awj::probe_image_dimensions_for_path(input, {.allow_wic_fallback = false}) ||
+          !awj::check_scanned_input_file_size(input, declared_size))
+        return fail("Unlocked probe/scan retained an ambient or legacy input cap.");
+      if (awj::probe_image_dimensions_for_path(input,
+          {.allow_wic_fallback = false, .stop_token = stopped.get_token()}))
+        return fail("Unlocked registry probe ignored explicit cancellation.");
+      if (auto written = awj::write_studio_queue_manifest(manifest_path, records); !written) return fail(written.error());
+      const auto read = awj::read_studio_queue_manifest(manifest_path);
+      if (!read || read->files.size() != 1 || read->files.front().bytes != declared_size ||
+          std::filesystem::file_size(manifest_path) >= 4096)
+        return fail("A tiny manifest could not preserve an unlocked numeric size above 512 GiB.");
+    }
+    if (awj::read_studio_queue_manifest(manifest_path) ||
+        awj::write_studio_queue_manifest(root / "finite-numeric-size.awjq", records))
+      return fail("Finite manifest I/O ignored its restored input policy.");
+  }
+  {
+    // 约 16 MiB 的长条图触发真实 AVIF Grid，无需耗尽物理内存。
+    auto wide = make_test_image();
+    wide.width = 65537; wide.height = 64;
+    wide.planes[0].stride = wide.width * 4;
+    wide.planes[0].bytes.assign(wide.planes[0].stride * wide.height, std::byte{255});
+    auto png = awj::PngImageEncoder{}.encode(wide, {.quality = 100});
+    if (!png) return fail(png.error());
+    const auto input = root / "memory-unlocked-grid.png";
+    {
+      std::ofstream stream{input, std::ios::binary};
+      stream.write(reinterpret_cast<const char*>(png->encoded.bytes.data()), png->encoded.bytes.size());
+      if (!stream) return fail("Could not write the bounded unlocked Grid fixture.");
+    }
+    const awj::encoding_defaults::MemoryPolicy outer_policy{1, false, false};
+    const awj::encoding_defaults::ScopedMemoryPolicy outer_scope{outer_policy};
+    for (const bool manual_worker : {false, true}) {
+      auto cfg = awj::default_app_config();
+      cfg.input_path = input;
+      cfg.output_dir = root / (manual_worker ? "unlocked-manual-grid" : "unlocked-auto-grid");
+      cfg.output_format = awj::OutputFormat::avif;
+      cfg.image_size_limit.mode = awj::ImageSizeLimitMode::none;
+      cfg.chroma_mode = awj::ChromaMode::yuv444;
+      cfg.quality = 50; cfg.speed = 10; cfg.max_jobs = 2;
+      cfg.memory_limit_bytes = 1; cfg.unlock_memory_limit = true;
+      cfg.unlock_max_input_file_bytes = false;
+      cfg.studio_large_action = manual_worker ? L"grid" : L"";
+      cfg.write_summary = true;
+      bool traced = false;
+      const auto summary = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
+        if (event.kind == awj::BatchEventKind::item_finished)
+          traced = event.result.ok && event.result.memory_budget_bytes == 0 &&
+              event.result.memory_budget_mode == "unlocked" &&
+              event.result.memory_budget_source == "session_unlock" &&
+              event.result.memory_estimate_profile.starts_with("v2-avif-grid");
+      });
+      if (!summary || summary->ok_count != 1 || !traced ||
+          awj::encoding_defaults::current_memory_policy() != outer_policy ||
+          read_text(cfg.output_dir / "log" / "summery.csv").find(",0,unlocked,session_unlock,") == std::string::npos)
+        return fail(summary ? "Actual automatic/manual Grid retained a budget or leaked its policy." : summary.error());
+      const awj::encoding_defaults::ScopedMemoryPolicy decode_scope{
+          awj::encoding_defaults::MemoryPolicy{UINT64_MAX, true, true}};
+      const auto decoded = awj::make_avif_image_decoder(1)->decode(cfg.output_dir / "memory-unlocked-grid.avif");
+      if (!decoded || decoded->image.width != wide.width || decoded->image.height != wide.height)
+        return fail(decoded ? "Actual unlocked Grid changed original dimensions." : decoded.error());
+    }
+  }
+  if (argc == 2 && std::string_view{argv[1]} == "--memory-policy-only") {
+    std::filesystem::remove_all(root, ec);
+    return ec ? fail("Could not clean dedicated memory-policy test files.") : 0;
   }
   {
     const auto source = make_test_image();

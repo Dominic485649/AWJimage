@@ -2,6 +2,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cwctype>
 #include <filesystem>
 #include <fstream>
@@ -190,6 +191,33 @@ int main() {
   }
   dispatcher.request_stop();
   dispatcher.join();
+
+  // A queued operation keeps the toggle's value at submission, even when the
+  // provider is sampled after a later UI change. Use a nine-byte file, not RAM.
+  {
+    std::promise<void> scanned;
+    auto scan_done = scanned.get_future();
+    std::atomic<int> mask{}, count{}, sampled{};
+    awj::ui_import::Dispatcher snapshots([&] {
+          auto later_options = options;
+          later_options.maximum_file_bytes = ++sampled == 1 ? UINT64_MAX : 1;
+          return later_options;
+        },
+        [&](awj::ui_import::Request request, awj::ui_import::Result imported) {
+          if (request.epoch == 1 && imported.files.empty() && imported.unsupported_count == 1) mask.fetch_or(1);
+          if (request.epoch == 2 && imported.files.size() == 1) mask.fetch_or(2);
+          if (++count == 2) scanned.set_value();
+        });
+    const bool finite = snapshots.enqueue({.roots = {{.path = root / "too-large.png"}},
+        .epoch = 1, .maximum_file_bytes = 8});
+    const bool unlimited = snapshots.enqueue({.roots = {{.path = root / "too-large.png"}},
+        .epoch = 2, .maximum_file_bytes = UINT64_MAX});
+    if (!finite || !unlimited || scan_done.wait_for(std::chrono::seconds{5}) != std::future_status::ready)
+      return fail("Per-request import memory snapshots were not dispatched.");
+    snapshots.request_stop();
+    snapshots.join();
+    if (mask != 3) return fail("Import worker replaced its queued memory snapshot with a later/default policy.");
+  }
 
   std::promise<void> entered, release_scan, after_clear;
   auto entered_future = entered.get_future();

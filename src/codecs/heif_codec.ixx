@@ -23,7 +23,9 @@ module;
 #include <libheif/heif_items.h>
 #include <libheif/heif_properties.h>
 #include <libheif/heif_tiling.h>
+#include <libheif/heif_security.h>
 #include "heif_gain_map_adapter.h"
+#include "library_memory_policy.h"
 
 export module awj.heif_codec;
 
@@ -63,6 +65,16 @@ using HandlePtr = std::unique_ptr<heif_image_handle, HandleDeleter>;
 using ImagePtr = std::unique_ptr<heif_image, ImageDeleter>;
 using NclxPtr = std::unique_ptr<heif_color_profile_nclx, NclxDeleter>;
 using DecodingOptionsPtr = std::unique_ptr<heif_decoding_options, DecodingOptionsDeleter>;
+
+ContextPtr make_context() {
+  ContextPtr context{heif_context_alloc()};
+  if (context) {
+    auto* limits = heif_context_get_security_limits(context.get());
+    if (!limits) return {};
+    library_memory_policy::apply_heif(*limits, encoding_defaults::memory_limits_unlocked());
+  }
+  return context;
+}
 
 std::string error_text(const heif_error& error) {
   return awj::compat::format("{} (code={}, subcode={})", error.message,
@@ -198,8 +210,8 @@ awj::compat::expected<void, std::string> append_metadata(ImageBuffer& image, Met
   if (bytes.empty()) {
     return {};
   }
-  if (bytes.size() > encoding_defaults::codec_metadata_max_bytes ||
-      total_bytes > encoding_defaults::codec_metadata_max_bytes - bytes.size()) {
+  if (bytes.size() > encoding_defaults::effective_codec_metadata_max_bytes() ||
+      total_bytes > encoding_defaults::effective_codec_metadata_max_bytes() - bytes.size()) {
     return awj::compat::unexpected{awj::compat::format("HEIC {} metadata 超过运行时上限。", label)};
   }
   auto owned = decoder_common::make_byte_buffer(bytes.size(), "HEIC metadata");
@@ -245,7 +257,7 @@ awj::compat::expected<void, std::string> copy_metadata(ImageBuffer& image,
 
   const auto icc_size = heif_image_handle_get_raw_color_profile_size(handle);
   if (icc_size > 0) {
-    if (icc_size > encoding_defaults::codec_metadata_max_bytes) {
+    if (icc_size > encoding_defaults::effective_codec_metadata_max_bytes()) {
       return awj::compat::unexpected{"HEIC ICC metadata 超过运行时上限。"};
     }
     auto icc = decoder_common::make_byte_buffer(icc_size, "HEIC ICC metadata");
@@ -300,8 +312,8 @@ awj::compat::expected<void, std::string> copy_metadata(ImageBuffer& image,
     if (size == 0) {
       continue;
     }
-    if (size > encoding_defaults::codec_metadata_max_bytes ||
-        total_bytes > encoding_defaults::codec_metadata_max_bytes - size) {
+    if (size > encoding_defaults::effective_codec_metadata_max_bytes() ||
+        total_bytes > encoding_defaults::effective_codec_metadata_max_bytes() - size) {
       return awj::compat::unexpected{"HEIC metadata payload 超过运行时上限。"};
     }
     auto payload = decoder_common::make_byte_buffer(size, "HEIC metadata payload");
@@ -784,7 +796,7 @@ awj::compat::expected<GainMapSelection, std::string> select_gain_map(
   uint8_t* raw_data = nullptr; std::size_t size{};
   auto error = heif_item_get_item_data(context, *selected.tmap_id, nullptr, &raw_data, &size);
   struct Data { heif_context* ctx; uint8_t** data; ~Data() { heif_release_item_data(ctx, data); } } guard{context, &raw_data};
-  if (error.code != heif_error_Ok || !raw_data || size > encoding_defaults::codec_metadata_max_bytes)
+  if (error.code != heif_error_Ok || !raw_data || size > encoding_defaults::effective_codec_metadata_max_bytes())
     return awj::compat::unexpected{"Gain Map: ISO 21496-1: HEIF metadata 缺失或过大。"};
   selected.metadata.reset(avifGainMapCreate());
   if (!selected.metadata) return awj::compat::unexpected{"Gain Map: ISO 21496-1: 无法分配 metadata。"};
@@ -869,7 +881,7 @@ awj::compat::expected<ImageDecodeResult, std::string> decode_bytes(std::span<con
     bool native_pixels = false, GainMapDecodeMode gain_map_mode = GainMapDecodeMode::hdr_only,
     DecodeDiagnostics* diagnostics = nullptr) {
   if (diagnostics) diagnostics->stage = "heif.metadata";
-  ContextPtr context{heif_context_alloc()};
+  auto context = make_context();
   if (!context) return awj::compat::unexpected{"无法创建 libheif context。"};
   heif_context_set_max_decoding_threads(context.get(), 0);
   auto primary = open_primary_image(context.get(), bytes, source_name);
@@ -996,7 +1008,7 @@ class HeifImageDecoder final : public ImageDecoder {
       if (!bytes) {
         return awj::compat::unexpected{bytes.error()};
       }
-      heif_detail::ContextPtr context{heif_context_alloc()};
+      auto context = heif_detail::make_context();
       if (!context) {
         return awj::compat::unexpected{"无法创建 libheif context。"};
       }
