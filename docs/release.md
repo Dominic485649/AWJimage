@@ -38,7 +38,7 @@
 
 正式 Windows／Linux 从同一干净源码提交构建，保留 AVX2／x86-64-v3、IPO/LTO、既定运行库和完整许可证。Linux 正式包要求匹配版本 tag；本地候选不能通过 `SkipManifests` 混入正式入口。
 
-正式 `scripts/package-release.ps1` 仍需渠道、递增 manifest sequence、受信密钥环、发布委派 key ID、公钥、仓库外 seed 与到期时间。验证签名及归档后，才由明确授权的发布步骤创建 tag／GitHub Release，复核公开下载，再提交与实际资产匹配的更新清单及签名。
+正式 `scripts/package-release.ps1` 仍需渠道、递增 manifest sequence、受信密钥环、发布委派 key ID、公钥、仓库外 seed 与到期时间。验证签名及本地归档后，才由明确授权的发布步骤创建 tag／GitHub Release；上传后以本地最终产物哈希与已认证的平台附件清单、大小、状态及可用摘要核对，不下载已上传附件或匿名流式读取附件作验证，未执行的下载或匿名可访问性检查保持未执行。最后提交与实际资产匹配的更新清单及签名。
 
 Windows 应用与 SDK 均使用真正的 MSVC `cl.exe`，不以 clang-cl 或 MSVC ABI 兼容替代。应用入口 `release.ps1 -Generator Ninja -BuildTests -SkipUpdateManifest` 自动定位 MSVC；默认 VS 2026 生成器同样保留。SDK 使用 `scripts/build-sdk.ps1`。两者启用完整 Release 优化、`/GL` 和最终 `/LTCG`；应用保持 AVX2，SDK 保留 x64 部署基线。更换编译器须隔离旧 Clang 的 BMI/对象/构建树；只复用身份和编译条件匹配的源码及依赖。正式入口继续要求干净 tag、静态运行库与实际 MSVC/优化证据。
 

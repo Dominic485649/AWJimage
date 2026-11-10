@@ -20,11 +20,6 @@
 - Scale default input/buffer protection to 80% of physical memory and apply the selected policy consistently to import, probing and encoding.
 - Match visual-quality description colors to other parameter hints, show **Unlimited** for unrestricted dimensions, and simplify chroma guidance.
 
-### AVIF parameter validation
-
-- Add real encode/decode regression coverage for IQ and intra-prediction tools, including high bit depths, sampling and alpha; retain the existing IQ, quality and speed defaults.
-- See the [technical report (Chinese)](docs/libaom-intra-tools.md) for measurements of intra tools and the automatic disabling mechanism.
-
 This version has not been formally released. Platform build and validation records accompany local candidates.
 
 ## 1.3.4 - 2026-11-07

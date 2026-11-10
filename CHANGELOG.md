@@ -20,11 +20,6 @@
 - 默认输入/缓冲保护随物理总内存按 80% 调整，导入、探测和编码使用一致的运行策略。
 - 视觉质量说明正文跟随统一主题色，尺寸无限制时显示对应提示，并精简色度采样说明。
 
-### AVIF 参数验证
-
-- 补充 IQ 与帧内预测工具的实际编解码回归，覆盖高位深、采样和透明图；保留现有 IQ、质量与速度默认值。
-- 帧内工具与自动关闭机制的量化研究见 [技术报告](docs/libaom-intra-tools.md)。
-
 本版本尚未正式发布，平台构建与验收记录随本地候选交付。
 
 ## 1.3.4 - 2026-11-07
@@ -496,7 +491,7 @@ Windows/Linux 应用与 SDK 正式交付；HMOS ARM64/API26 SDK 为交叉构建�
 
 - 修正默认质量策略：AVIF 默认 q70，JXL 默认 q85，WebP 默认 speed4，AVIF/JXL 默认 speed6。
 - 调整 JXL speed 到 effort 的映射为 `speed0 => effort10`、`speed6 => effort4`、`speed10 => effort1`，覆盖 libjxl 当前 effort 1..10 范围。
-- 明确 AOM/AVIF 默认路径：不设置不存在的 `--good`，保留 libavif/AOM 自身 still image / all-intra / speed 逻辑；AVIF auto 文案同步为默认 AOM。
+- 明确 AOM/AVIF 默认路径：不设置不存在的 `--good`，保留 libavif/AOM 自身默认编码逻辑；AVIF auto 文案同步为默认 AOM。
 - 显式选择 SVT-AV1-HDR 编码 AVIF 时，对 lossless/q100、需要保留 alpha、显式 444/422 和 >10-bit 等不支持场景直接报错，避免隐式降级。
 - JXL 对 JPEG 输入默认优先使用 JPEG bitstream 无损转封装；遇到 strip metadata 或色彩/HDR 元数据冲突时回退普通 JXL 有损编码。
 - Studio 输出格式下拉移除 PNG，PNG 保留 CLI 与右键菜单支持；Studio 的 speed 输入仅对 AVIF/WebP/JXL 显示和传入。
