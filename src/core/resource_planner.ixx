@@ -1,5 +1,6 @@
 module;
 #include "../compat/stdlib_compat.h"
+#include "hdr_cost.h"
 
 #include <algorithm>
 #include <cstdint>
@@ -34,13 +35,50 @@ struct ResourcePlan {
   int global_thread_budget{1};
   std::uint64_t memory_limit_bytes{};
   int memory_file_parallelism{1};
+  // 批处理 ticket 是每文件预约，不是 memory_limit_bytes / file_parallelism。
+  // 0 表示未提供 ticket，绝不授权无限制分配。
+  std::uint64_t memory_reservation_bytes{};
+  // 传入几何操作的图像之外，仍存活的存储与工作区。
+  std::uint64_t geometry_retained_bytes{};
 };
+
+int per_file_thread_budget(const ResourcePlan& plan) noexcept {
+  return std::max(1, std::min(plan.encoder_threads_per_file,
+      std::max(1, plan.global_thread_budget / std::max(1, plan.file_parallelism))));
+}
+
+// UINT64_MAX 是内部无限制哨兵；有限预算除法得到 0 时仍表示耗尽，
+// 不能变成 ResourcePlan 中表示无限制的 0。
+std::uint64_t resource_memory_budget(const ResourcePlan& plan) noexcept {
+  if (!plan.memory_limit_bytes) return UINT64_MAX;
+  return plan.memory_reservation_bytes
+      ? std::min(plan.memory_limit_bytes, plan.memory_reservation_bytes)
+      : plan.memory_limit_bytes / static_cast<std::uint64_t>(std::max(1, plan.file_parallelism));
+}
+
+std::uint64_t regular_memory_fixed_bytes(int workers) noexcept {
+  return hdr_cost::add(16ull * 1024 * 1024,
+      hdr_cost::multiply(static_cast<std::uint64_t>(std::max(1, workers)), 256 * 1024));
+}
+
+// 预检与手动 AVIF 预览几何共用预约模型；编码工作区余量不是分配器/RSS 硬上限。
+std::uint64_t avif_codec_workspace_bytes(std::uint64_t padded_pixels,
+    std::uint64_t padded_planes, int workers, int depth, bool hdr,
+    bool slow_or_lossless, int layer_count = 1) noexcept {
+  const auto block = !hdr && depth <= 10 ? (depth > 8 ? 48u : 32u) : 64u;
+  auto bytes = hdr_cost::add(hdr_cost::multiply(padded_pixels, block), hdr_cost::multiply(padded_planes, 3));
+  if (slow_or_lossless) bytes = hdr_cost::add(bytes, hdr_cost::multiply(padded_pixels, 8));
+  bytes = hdr_cost::add(bytes, hdr_cost::multiply(static_cast<std::uint64_t>(std::max(1, workers) - 1), 1024 * 1024));
+  return hdr_cost::add(bytes, hdr_cost::multiply(padded_pixels,
+      24ull * static_cast<std::uint64_t>(std::max(1, layer_count) - 1)));
+}
 
 // Direct backend/WGC callers may supply a previously finite resource plan.
 // The session opt-out wins there too; it must not be reinterpreted as auto.
 ResourcePlan normalize_memory_policy_resources(const AppConfig& cfg, ResourcePlan plan) noexcept {
   if (cfg.unlock_memory_limit) {
     plan.memory_limit_bytes = 0;
+    plan.memory_reservation_bytes = 0;
     plan.memory_file_parallelism = std::max(1, plan.file_parallelism);
   }
   return plan;

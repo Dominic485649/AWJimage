@@ -337,21 +337,31 @@ void begin_queue_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
             if (auto queue_index =
                     queue_index_for_run_index(*state, detail.index)) {
               auto& item = state->queue_items[*queue_index];
-              const auto seconds = [](std::int64_t value) {
-                return value < 0 ? -1.0
-                                 : static_cast<double>(value) /
-                                       1'000'000.0;
-              };
               item.encoder_id = std::move(detail.encoder_id);
               item.encoder_threads = detail.encoder_threads;
-              item.decode_seconds = seconds(detail.decode_microseconds);
-              item.prepare_seconds = seconds(detail.prepare_microseconds);
-              item.encode_seconds = seconds(detail.encode_microseconds);
-              item.write_seconds = seconds(detail.write_microseconds);
+              item.decode_seconds = studio_worker_seconds(detail.decode_microseconds);
+              item.prepare_seconds = studio_worker_seconds(detail.prepare_microseconds);
+              item.encode_seconds = studio_worker_seconds(detail.encode_microseconds);
+              item.write_seconds = studio_worker_seconds(detail.write_microseconds);
               awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
                                         make_queue_task_row(item, *queue_index));
             }
           });
+          return;
+        }
+        if (is_studio_worker_resize_event_line(line)) {
+          if (auto resize = parse_studio_worker_resize_event(line)) {
+            post_to_ui(weak, [state, run_id, resize = *resize](AwjStudio& app) {
+              std::scoped_lock lock{state->mutex};
+              if (const auto queue_index =
+                      apply_queue_worker_resize(*state, run_id, resize)) {
+                const auto& item = state->queue_items[*queue_index];
+                awj::ui::replace_queue_row(app, state->task_rows, *queue_index,
+                                          make_queue_task_row(item, *queue_index));
+              }
+            });
+          }
+          // 畸形或越界协议行不是结果日志，不能消耗待配对 ITEM 的可读结果行。
           return;
         }
         if (pending_item) {
@@ -884,7 +894,41 @@ void begin_child_conversion_run(slint::ComponentWeakHandle<AwjStudio> weak,
           });
           return;
         }
-        if (parse_studio_worker_item_event(line) || parse_studio_worker_detail_event(line) ||
+        if (auto detail = parse_studio_worker_detail_event(line)) {
+          post_to_ui(weak, [state, run_id, queue_item_id,
+                           detail = std::move(*detail)](AwjStudio& app) {
+            std::scoped_lock lock{state->mutex};
+            if (state->run_id != run_id || !queue_item_id || detail.index != 0) return;
+            if (const auto index = queue_index_for_id(*state, *queue_item_id)) {
+              auto& item = state->queue_items[*index];
+              item.encoder_id = std::move(detail.encoder_id);
+              item.encoder_threads = detail.encoder_threads;
+              item.decode_seconds = studio_worker_seconds(detail.decode_microseconds);
+              item.prepare_seconds = studio_worker_seconds(detail.prepare_microseconds);
+              item.encode_seconds = studio_worker_seconds(detail.encode_microseconds);
+              item.write_seconds = studio_worker_seconds(detail.write_microseconds);
+              awj::ui::replace_queue_row(app, state->task_rows, *index,
+                                        make_queue_task_row(item, *index));
+            }
+          });
+          return;
+        }
+        if (is_studio_worker_resize_event_line(line)) {
+          if (auto resize = parse_studio_worker_resize_event(line)) {
+            post_to_ui(weak, [state, run_id, queue_item_id, resize = *resize](AwjStudio& app) {
+              std::scoped_lock lock{state->mutex};
+              if (!queue_item_id) return;
+              if (const auto index =
+                      apply_queue_worker_resize(*state, run_id, resize, queue_item_id)) {
+                const auto& item = state->queue_items[*index];
+                awj::ui::replace_queue_row(app, state->task_rows, *index,
+                                          make_queue_task_row(item, *index));
+              }
+            });
+          }
+          return;
+        }
+        if (parse_studio_worker_item_event(line) ||
             parse_studio_worker_frame_event(line)) return;
         post_to_ui(weak, [state, run_id, queue_item_id, line = std::move(line)](AwjStudio& app) {
           std::scoped_lock lock{state->mutex};
@@ -1148,7 +1192,8 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
                                 : slint::SharedString{},
                  .stage_timings = to_shared(stage_timings_text(
                      result.decode_seconds, result.prepare_seconds,
-                     result.encode_seconds, result.write_seconds))};
+                     result.encode_seconds, result.write_seconds,
+                     result.resize_seconds, result.resize_workers))};
 }
 
 TaskRow pending_shell_task_row(const awj::AppConfig& cfg, const awj::ImageFile& image) {

@@ -2,6 +2,7 @@
 #include "../src/ui/studio_config.h"
 #include "../src/ui/studio_json.h"
 #include "../src/ui/studio_queue_format.h"
+#include "../src/ui/studio_worker_events.h"
 #include "../src/ui/studio_queue_import.h"
 #include "../src/ui/queue_preset_selection.h"
 #include <psapi.h>
@@ -91,6 +92,100 @@ void queue_output_size_check() {
   check(make_queue_task_row(item, 0).output_size == to_shared("-"),
         "reset output size retained a previous completion");
 }
+void queue_resize_event_guard_check() {
+  using namespace awj::studio;
+  UiState state;
+  state.run_id = 10;
+  state.queue_items = {QueueImageItem{.id = 41, .run_index = 0},
+                       QueueImageItem{.id = 42, .run_index = 1}};
+  state.queue_run_indices = {{0, 0}, {1, 1}};
+  state.queue_id_indices = {{41, 0}, {42, 1}};
+  state.queue_items[0].encoder_threads = 1;
+  const StudioWorkerResizeEvent completed{0, 125000, 8};
+  check(apply_queue_worker_resize(state, 10, completed) == 0 &&
+        state.queue_items[0].resize_seconds == 0.125 &&
+        state.queue_items[0].resize_workers == 8 &&
+        state.queue_items[0].encoder_threads == 1,
+        "缩放事件未按运行索引合并，或覆盖了编码器线程数");
+
+  // 取消后立即重试：旧事件即使索引相同，也不能污染新一轮。
+  ++state.run_id;
+  reset_queue_item_execution(state.queue_items[0]);
+  state.queue_items[0].run_index = 0;
+  check(!apply_queue_worker_resize(state, 10, completed) &&
+        state.queue_items[0].resize_seconds == -1.0 &&
+        state.queue_items[0].resize_workers == 0,
+        "重试后仍接受了旧 run_id 的延迟缩放事件");
+  check(!apply_queue_worker_resize(state, 11, {99, 1, 1}),
+        "不存在的 worker 索引被接受");
+  state.queue_run_indices[99] = state.queue_items.size();
+  check(!apply_queue_worker_resize(state, 11, {99, 1, 1}),
+        "越界映射访问了队列元素");
+  state.queue_run_indices[99] = 0;
+  check(!apply_queue_worker_resize(state, 11, {99, 1, 1}),
+        "陈旧映射覆盖了不同运行索引的队列项");
+  state.queue_items[0].status = QueueItemStatus::canceled;
+  check(apply_queue_worker_resize(state, 11, {0, 75000, 0}) == 0 &&
+        state.queue_items[0].resize_seconds == 0.075 &&
+        state.queue_items[0].resize_workers == 0,
+        "同轮取消结果丢失了已发生的缩放时间");
+
+  // 大图子任务绑定稳定 ID，而不是主队列的行位置或 run_index。
+  std::swap(state.queue_items[0], state.queue_items[1]);
+  state.queue_id_indices = {{42, 0}, {41, 1}};
+  check(apply_queue_worker_resize(state, 11, completed, 41) == 1 &&
+        state.queue_items[1].resize_seconds == 0.125,
+        "重排后大图缩放事件没有更新稳定 ID 对应的条目");
+  check(!apply_queue_worker_resize(state, 10, completed, 41) &&
+        !apply_queue_worker_resize(state, 11, {1, 500000, 4}, 41) &&
+        !apply_queue_worker_resize(state, 11, completed, 999),
+        "大图子任务接受了旧运行、非零 worker 索引或未知 ID");
+  state.queue_id_indices[41] = 0;
+  check(!apply_queue_worker_resize(state, 11, completed, 41) &&
+        state.queue_items[0].resize_seconds == -1.0,
+        "陈旧稳定 ID 映射污染了其他队列项");
+}
+
+void queue_stage_timings_check() {
+  using namespace awj::studio;
+  QueueImageItem item{.path = L"C:\\queue-fixture\\timing.png"};
+  check(item.resize_seconds == -1.0 && item.resize_workers == 0 &&
+        make_queue_task_row(item, 0).stage_timings.empty(),
+        "new queue item must not claim that resize has run");
+  check(stage_timings_text(-1, -1, -1, -1).empty(),
+        "all-unknown stage timings should stay absent");
+  check(stage_timings_text(0.010, 0.002, 1.250, 0.004) ==
+            "decode 0.010s · resize - · prepare 0.002s · encode 1.250s · write 0.004s",
+        "legacy formatter call synthesized a zero resize or changed stage order");
+  check(stage_timings_text(-1, -1, -1, -1, 0.0, 0) ==
+            "decode - · resize 0.000s (workers 0) · prepare - · encode - · write -",
+        "confirmed no-transform was displayed as unknown");
+  check(stage_timings_text(-1, -1, -1, -1, 0.125, 0) ==
+            "decode - · resize 0.125s (workers 0) · prepare - · encode - · write -",
+        "failed/canceled transform lost its partial timing");
+  item.encoder_id = "aom";
+  item.encoder_threads = 2;
+  item.decode_seconds = 0.010;
+  item.prepare_seconds = 0.002;
+  item.encode_seconds = 1.250;
+  item.write_seconds = 0.004;
+  item.resize_seconds = 0.125;
+  item.resize_workers = 8;
+  item.status = QueueItemStatus::failed;
+  item.run_index = 3;
+  const auto completed = make_queue_task_row(item, 0);
+  check(completed.threads == to_shared("2") && completed.stage_timings == to_shared(
+            "decode 0.010s · resize 0.125s (workers 8) · prepare 0.002s · encode 1.250s · write 0.004s"),
+        "resize workers replaced encoder threads or were not independently displayed");
+  reset_queue_item_execution(item);
+  const auto retried = make_queue_task_row(item, 0);
+  check(item.resize_seconds == -1.0 && item.resize_workers == 0 &&
+        item.decode_seconds == -1.0 && item.prepare_seconds == -1.0 &&
+        item.encode_seconds == -1.0 && item.write_seconds == -1.0 &&
+        item.run_index == std::numeric_limits<std::size_t>::max() &&
+        item.encoder_threads == 0 && retried.threads.empty() && retried.stage_timings.empty(),
+        "retry retained a previous run's resize timing or workers");
+}
 void queue_open_target_check() {
   using namespace awj::studio;
   QueueImageItem item{.path = L"C:\\queue-fixture\\source.png",
@@ -125,7 +220,8 @@ void queue_reimport_check() {
         .run_index = static_cast<std::size_t>(id - 1), .locked_output_path = root / L"old.avif",
         .status_text = "完成", .log_text = "上轮日志", .encoder_id = "old-encoder",
         .encoder_threads = 4, .decode_seconds = 1, .prepare_seconds = 2,
-        .encode_seconds = 3, .write_seconds = 4, .warning = true};
+        .encode_seconds = 3, .write_seconds = 4, .resize_seconds = 0.5,
+        .resize_workers = 3, .warning = true};
     state.queue_items.push_back(std::move(item));
   }
   std::vector<awj::ui_import::File> incoming{
@@ -140,6 +236,7 @@ void queue_reimport_check() {
         "未保留完成项或末次导入顺序/稳定 ID 错误");
   const auto& old = state.queue_items[0];
   check(old.status == QueueItemStatus::done && old.output_bytes == 80 &&
+        old.resize_seconds == 0.5 && old.resize_workers == 3 &&
         old.log_text == to_shared("上轮日志") && old.warning &&
         queue_image_open_target(old) == old.locked_output_path,
         "未重导入的完成项被重置");
@@ -148,7 +245,8 @@ void queue_reimport_check() {
         again.bytes == 200 && !again.output_bytes && again.locked_output_path.empty() &&
         again.log_text.empty() && again.encoder_id.empty() && !again.encoder_threads &&
         again.decode_seconds == -1 && again.prepare_seconds == -1 &&
-        again.encode_seconds == -1 && again.write_seconds == -1 && !again.warning &&
+        again.encode_seconds == -1 && again.write_seconds == -1 &&
+        again.resize_seconds == -1 && again.resize_workers == 0 && !again.warning &&
         again.run_index == std::numeric_limits<std::size_t>::max() &&
         queue_image_open_target(again) == again.path,
         "重导入未清除上轮执行字段");
@@ -345,8 +443,9 @@ void config_check() {
 int main(int argc, char** argv) try {
   if (argc == 4 && std::string_view{argv[1]} == "--queue-benchmark") {
     queue_check(std::stoull(argv[2]), std::string_view{argv[3]} == "legacy");
-  } else { queue_check(10, false); queue_output_size_check(); queue_open_target_check();
-    queue_reimport_check(); queue_config_migration_check(); config_check(); }
+  } else { queue_check(10, false); queue_output_size_check(); queue_stage_timings_check();
+    queue_resize_event_guard_check();
+    queue_open_target_check(); queue_reimport_check(); queue_config_migration_check(); config_check(); }
   return 0;
 } catch (const std::exception& error) {
   std::fprintf(stderr, "%s\n", error.what());

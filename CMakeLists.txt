@@ -1197,6 +1197,33 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_library_memory_policy_tests)
     target_link_libraries(awj_library_memory_policy_tests PRIVATE awj_native_codecs)
 
+    add_executable(awj_studio_worker_events_tests
+        tests/studio_worker_events_tests.cpp
+        src/ui/studio_worker_events.cpp)
+    avif_enable_common_options(awj_studio_worker_events_tests)
+    target_link_libraries(awj_studio_worker_events_tests PRIVATE scn::scn)
+    awj_set_runtime_directory(awj_studio_worker_events_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME studio_worker_events_core COMMAND awj_studio_worker_events_tests)
+
+    # 性能测量仅按需构建，不进入默认构建或 CTest 的耗时断言。
+    if(AWJ_JPEGLI_AVAILABLE)
+        add_executable(awj_resize_benchmark EXCLUDE_FROM_ALL tests/resize_benchmark.cpp)
+        avif_enable_common_options(awj_resize_benchmark)
+        target_link_libraries(awj_resize_benchmark PRIVATE awj_native_backend)
+        if(WIN32)
+            target_link_libraries(awj_resize_benchmark PRIVATE psapi)
+        endif()
+        awj_set_runtime_directory(awj_resize_benchmark "${CMAKE_CURRENT_BINARY_DIR}/benchmarks")
+    endif()
+
+    add_executable(awj_spline36_worker_tests tests/spline36_worker_tests.cpp)
+    avif_enable_common_options(awj_spline36_worker_tests)
+    if(NOT WIN32)
+        target_link_libraries(awj_spline36_worker_tests PRIVATE Threads::Threads)
+    endif()
+    awj_set_runtime_directory(awj_spline36_worker_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME spline36_worker_core COMMAND awj_spline36_worker_tests)
+
     add_executable(awj_spline36_geometry_tests tests/spline36_geometry_tests.cpp)
     avif_enable_common_options(awj_spline36_geometry_tests)
     target_link_libraries(awj_spline36_geometry_tests PRIVATE awj_native_codecs)
@@ -1336,6 +1363,15 @@ if(BUILD_TESTING)
     add_executable(awj_pipeline_security_tests tests/pipeline_security_tests.cpp)
     avif_enable_common_options(awj_pipeline_security_tests)
     target_link_libraries(awj_pipeline_security_tests PRIVATE awj_pipeline awj_native_codecs)
+
+    add_executable(awj_resize_admission_tests tests/resize_admission_tests.cpp)
+    avif_enable_common_options(awj_resize_admission_tests)
+    target_link_libraries(awj_resize_admission_tests PRIVATE awj_pipeline awj_native_codecs)
+    target_compile_definitions(awj_resize_admission_tests PRIVATE
+        AWJ_TEST_RESULTS_ROOT="${CMAKE_CURRENT_BINARY_DIR}/results")
+    awj_set_runtime_directory(awj_resize_admission_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME resize_admission_core COMMAND awj_resize_admission_tests)
+    set_tests_properties(resize_admission_core PROPERTIES TIMEOUT 180)
 
     add_executable(awj_memory_cancel_tests tests/memory_cancel_tests.cpp)
     avif_enable_common_options(awj_memory_cancel_tests)
@@ -1481,8 +1517,14 @@ if(BUILD_TESTING)
     add_test(NAME heif_backend_contract COMMAND awj_heif_backend_tests)
     if(WIN32)
         add_test(NAME native_pipeline_core COMMAND awj_native_pipeline_tests)
+        add_test(NAME native_stage_timing_core
+            COMMAND awj_native_pipeline_tests --stage-timing-only)
+        set_tests_properties(native_stage_timing_core PROPERTIES TIMEOUT 120)
     endif()
     add_test(NAME pipeline_security_core COMMAND awj_pipeline_security_tests)
+    add_test(NAME pipeline_stage_timing_core
+        COMMAND awj_pipeline_security_tests --stage-timing-only)
+    set_tests_properties(pipeline_stage_timing_core PROPERTIES TIMEOUT 120)
     add_test(NAME queue_core_contract COMMAND awj_pipeline_security_tests --queue-contract-only)
     add_test(NAME queue_recycle_system COMMAND awj_pipeline_security_tests --queue-recycle-only)
     set_tests_properties(queue_core_contract queue_recycle_system PROPERTIES TIMEOUT 90)
@@ -1834,6 +1876,8 @@ if(BUILD_TESTING)
     avif_add_slint_sources(awj_ui_smoke_tests ui/awj_studio.slint
         DEBUG_INFO
         OUTPUT_SUFFIX _ui_smoke)
+    avif_add_slint_sources(awj_ui_smoke_tests ui/shell_convert_window.slint
+        DEBUG_INFO OUTPUT_SUFFIX _ui_shell_smoke CPP_NAMESPACE awj_shell_timing_test)
     avif_add_slint_sources(awj_ui_smoke_tests tests/focus_reentrancy.slint DEBUG_INFO CPP_NAMESPACE awj_focus_test)
     avif_add_slint_sources(awj_ui_smoke_tests tests/font_combo_hover.slint DEBUG_INFO CPP_NAMESPACE awj_font_hover_test)
     target_include_directories(awj_ui_smoke_tests PRIVATE
@@ -1881,6 +1925,8 @@ if(BUILD_TESTING)
     set_tests_properties(ui_fixed_size_inputs PROPERTIES TIMEOUT 120)
     add_test(NAME ui_queue_options COMMAND awj_ui_smoke_tests --queue-options)
     set_tests_properties(ui_queue_options PROPERTIES TIMEOUT 120)
+    add_test(NAME ui_stage_timing_core COMMAND awj_ui_smoke_tests --stage-timing-only)
+    set_tests_properties(ui_stage_timing_core PROPERTIES TIMEOUT 120)
     add_test(NAME ui_smoke COMMAND awj_ui_smoke_tests)
     add_test(NAME ui_queue_stress COMMAND awj_ui_smoke_tests --queue-stress)
     set_tests_properties(ui_queue_stress PROPERTIES TIMEOUT 120)

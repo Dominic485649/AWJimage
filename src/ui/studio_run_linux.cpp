@@ -1155,13 +1155,20 @@ std::string stage_seconds_text(double seconds) {
 }
 
 std::string stage_timings_text(double decode_seconds, double prepare_seconds,
-                               double encode_seconds, double write_seconds) {
-  if (decode_seconds < 0.0 && prepare_seconds < 0.0 &&
-      encode_seconds < 0.0 && write_seconds < 0.0) {
+                               double encode_seconds, double write_seconds,
+                               double resize_seconds = -1.0,
+                               int resize_workers = 0) {
+  if (decode_seconds < 0.0 && resize_seconds < 0.0 &&
+      prepare_seconds < 0.0 && encode_seconds < 0.0 && write_seconds < 0.0) {
     return {};
   }
-  return awj::compat::format("decode {} · prepare {} · encode {} · write {}",
-                     stage_seconds_text(decode_seconds),
+  const auto resize = resize_seconds < 0.0
+                          ? std::string{"-"}
+                          : awj::compat::format("{} (workers {})",
+                                               stage_seconds_text(resize_seconds),
+                                               resize_workers);
+  return awj::compat::format("decode {} · resize {} · prepare {} · encode {} · write {}",
+                     stage_seconds_text(decode_seconds), resize,
                      stage_seconds_text(prepare_seconds),
                      stage_seconds_text(encode_seconds),
                      stage_seconds_text(write_seconds));
@@ -1203,7 +1210,8 @@ TaskRow task_row_from_result(const awj::EncodeResult& result) {
                                 : slint::SharedString{},
                  .stage_timings = to_shared(stage_timings_text(
                      result.decode_seconds, result.prepare_seconds,
-                     result.encode_seconds, result.write_seconds))};
+                     result.encode_seconds, result.write_seconds,
+                     result.resize_seconds, result.resize_workers))};
 }
 
 std::optional<std::size_t> linux_task_row_index_for_path(

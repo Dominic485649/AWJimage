@@ -66,6 +66,48 @@ struct StudioWorkerDetailEvent {
   std::int64_t write_microseconds{-1};
 };
 
+// 独立于 DETAIL；连接旧 worker 而未收到此事件时，resize 仍为未知。
+struct StudioWorkerResizeEvent {
+  std::size_t index{};
+  std::int64_t resize_microseconds{-1};
+  int resize_workers{};
+};
+
+inline bool is_studio_worker_resize_event_line(std::string_view line) noexcept {
+  constexpr std::string_view marker = "@AWJ-STUDIO/1 RESIZE";
+  return line == marker ||
+         (line.starts_with(marker) && line.size() > marker.size() &&
+          line[marker.size()] == ' ');
+}
+
+inline double studio_worker_seconds(std::int64_t microseconds) noexcept {
+  return microseconds < 0 ? -1.0
+                          : static_cast<double>(microseconds) / 1'000'000.0;
+}
+
+// TaskRow 仅保存显示字符串；右键窗口另外保留原始计时，
+// 合并互不重叠的事件时，不反解析或再次舍入 UI 文本。
+struct StudioWorkerStageTimings {
+  double decode_seconds{-1.0};
+  double prepare_seconds{-1.0};
+  double encode_seconds{-1.0};
+  double write_seconds{-1.0};
+  double resize_seconds{-1.0};
+  int resize_workers{};
+
+  void apply(const StudioWorkerDetailEvent& event) noexcept {
+    decode_seconds = studio_worker_seconds(event.decode_microseconds);
+    prepare_seconds = studio_worker_seconds(event.prepare_microseconds);
+    encode_seconds = studio_worker_seconds(event.encode_microseconds);
+    write_seconds = studio_worker_seconds(event.write_microseconds);
+  }
+
+  void apply(const StudioWorkerResizeEvent& event) noexcept {
+    resize_seconds = studio_worker_seconds(event.resize_microseconds);
+    resize_workers = event.resize_workers;
+  }
+};
+
 struct StudioWorkerFrameEvent {
   std::size_t index{}, completed{}, total{};
 };
@@ -74,6 +116,8 @@ std::optional<StudioWorkerFrameEvent> parse_studio_worker_frame_event(std::strin
 std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
     std::string_view line);
 std::optional<StudioWorkerDetailEvent> parse_studio_worker_detail_event(
+    std::string_view line);
+std::optional<StudioWorkerResizeEvent> parse_studio_worker_resize_event(
     std::string_view line);
 
 }  // namespace awj::studio

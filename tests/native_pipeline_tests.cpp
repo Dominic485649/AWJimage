@@ -2,6 +2,7 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +15,8 @@
 #include <iterator>
 #include <memory>
 #include <span>
+#include <stdexcept>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -75,6 +78,117 @@ awj::ImageBuffer make_test_image() {
                           .bit_depth = 8};
   image.planes.push_back(std::move(plane));
   return image;
+}
+
+bool valid_stage_times(const awj::EncodeResult& result, double outer_seconds) {
+  double sum{};
+  for (const auto seconds : {result.decode_seconds, result.resize_seconds, result.prepare_seconds,
+                             result.encode_seconds, result.write_seconds}) {
+    if (!std::isfinite(seconds) || (seconds < 0.0 && seconds != -1.0)) return false;
+    sum += std::max(0.0, seconds);
+  }
+  return std::isfinite(result.seconds) && result.seconds >= 0 &&
+         sum <= result.seconds + 0.000001 && result.seconds <= outer_seconds + 0.000001;
+}
+
+int native_stage_timing_contract(const std::filesystem::path& root, const std::filesystem::path& input,
+                                 awj::FileLogger& logger) {
+  const awj::ResourcePlan resources{.file_parallelism = 1, .encoder_threads_per_file = 1,
+      .global_thread_budget = 1, .memory_limit_bytes = 64 * 1024 * 1024};
+  const awj::ImageFile image{.path = input, .bytes = std::filesystem::file_size(input)};
+  awj::AppConfig cfg;
+  cfg.input_path = input;
+  cfg.output_format = awj::OutputFormat::png;
+  cfg.quality = 100;
+  cfg.max_jobs = 1;
+  const auto elapsed = [](auto started) {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+  };
+  for (const int percent : {0, 100, 50}) {
+    auto branch = cfg;
+    branch.output_dir = root / ("timing-static-" + std::to_string(percent));
+    if (percent) branch.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = percent};
+    awj::NativeBackend backend{branch, logger, resources};
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = backend.encode(image);
+    const auto wall = elapsed(started);
+    const bool changed = percent == 50;
+    if (!result.ok || !valid_stage_times(result, wall) || result.decode_seconds < 0 ||
+        result.prepare_seconds < 0 || result.encode_seconds < 0 || result.write_seconds < 0 ||
+        result.resize_seconds < 0 || (!changed && result.resize_seconds != 0.0) ||
+        result.resize_workers != (changed ? 1 : 0))
+      return fail("Static decode/resize/prepare/encode/write timing is inconsistent or a no-op was reported as work.");
+    auto restored = awj::PngImageDecoder{}.decode(result.output_path);
+    if (!restored || restored->image.width != (changed ? 1u : 2u) || restored->image.height != (changed ? 1u : 2u))
+      return fail("Separating static resize timing changed output geometry.");
+    auto memory = backend.encode_memory(awj::ImageDecodeResult{.image = make_test_image(), .decoder_id = "predecoded"});
+    if (!memory || memory->diagnostics.timing.decode_seconds != -1.0 || memory->diagnostics.timing.write_seconds != -1.0 ||
+        memory->diagnostics.timing.prepare_seconds < 0 || memory->diagnostics.timing.encode_seconds < 0 ||
+        memory->diagnostics.timing.resize_seconds < 0 || (!changed && memory->diagnostics.timing.resize_seconds != 0.0) ||
+        memory->diagnostics.timing.resize_workers != (changed ? 1 : 0))
+      return fail("Memory encoding fabricated decode/write timing or lost resize/prepare stages.");
+    const auto memory_pixels = awj::PngImageDecoder{}.decode_memory(memory->encoded.bytes, ".png");
+    if (!memory_pixels || memory_pixels->image.width != restored->image.width ||
+        memory_pixels->image.height != restored->image.height ||
+        memory_pixels->image.planes[0].bytes != restored->image.planes[0].bytes)
+      return fail("File and memory entry points produced different resized geometry pixels.");
+  }
+  auto resized = cfg;
+  resized.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = 50};
+  resized.output_dir = root / "timing-failed-prepare";
+  resized.bit_depth = 7;
+  awj::NativeBackend unsupported{resized, logger, resources};
+  const auto failed_started = std::chrono::steady_clock::now();
+  const auto failed = unsupported.encode(image);
+  if (failed.ok || !failed.processed || failed.canceled || !valid_stage_times(failed, elapsed(failed_started)) ||
+      failed.decode_seconds < 0 || failed.resize_seconds < 0 || failed.resize_workers != 0 ||
+      failed.prepare_seconds < 0 || failed.encode_seconds != -1.0 || failed.write_seconds != -1.0 ||
+      std::filesystem::exists(failed.output_path) || unsupported.encode_memory(awj::ImageDecodeResult{.image = make_test_image()}))
+    return fail("A prepare failure discarded completed decode/resize time or fabricated later stages.");
+  resized.bit_depth.reset();
+  for (const bool during_resize : {true, false}) for (const bool throws : {false, true}) {
+    resized.output_dir = root / (std::string{during_resize ? "timing-geometry-" : "timing-encoding-"} +
+                                  (throws ? "throw" : "cancel"));
+    auto held = resources;
+    // 带足量 ticket 时几何无需再次预约，故障在编码精化回调触发；
+    // 不带 ticket 时则覆盖缩放准入回调，编码阶段尚未开始。
+    if (!during_resize) held.memory_reservation_bytes = held.memory_limit_bytes;
+    awj::compat::stop_source stop;
+    awj::NativeBackend partial{resized, logger, held, [&](std::uint64_t) {
+      if (throws) throw std::length_error{"injected admission exception"};
+      stop.request_stop();
+      return true;
+    }};
+    const auto started = std::chrono::steady_clock::now();
+    const auto result = partial.encode(image, stop.get_token());
+    if (result.ok || !result.processed || result.canceled == throws || !valid_stage_times(result, elapsed(started)) ||
+        result.decode_seconds < 0 || result.resize_seconds < 0 || result.resize_workers != 0 ||
+        result.prepare_seconds < 0 || result.write_seconds != -1.0 ||
+        ((throws || during_resize) ? result.encode_seconds != -1.0 : result.encode_seconds < 0.0) ||
+        std::filesystem::exists(result.output_path)) {
+      std::fprintf(stderr, "partial timing during_resize=%d throws=%d decode=%g resize=%g prepare=%g encode=%g write=%g workers=%d canceled=%d\n",
+          during_resize, throws, result.decode_seconds, result.resize_seconds, result.prepare_seconds,
+          result.encode_seconds, result.write_seconds, result.resize_workers, result.canceled);
+      return fail("Cancellation/exception lost partial native timing or reported success/stale workers.");
+    }
+  }
+  awj::compat::stop_source stop;
+  stop.request_stop();
+  cfg.output_dir = root / "timing-pre-canceled";
+  awj::NativeBackend backend{cfg, logger, resources};
+  const auto before_start = backend.encode(image, stop.get_token());
+  if (!before_start.canceled || before_start.decode_seconds != -1.0 || before_start.resize_seconds != -1.0 ||
+      before_start.resize_workers != 0 || before_start.prepare_seconds != -1.0 || before_start.encode_seconds != -1.0 ||
+      before_start.write_seconds != -1.0 || backend.encode_memory(awj::ImageDecodeResult{.image = make_test_image()}, stop.get_token()))
+    return fail("An unstarted native or memory operation fabricated completed stage timings.");
+  cfg.output_dir = root / "timing-static-0";
+  cfg.collision_mode = awj::CollisionMode::skip;
+  awj::NativeBackend skip{cfg, logger, resources};
+  const auto skipped = skip.encode(image);
+  if (!skipped.ok || !skipped.skipped || skipped.resize_seconds != -1.0 || skipped.resize_workers != 0 ||
+      skipped.decode_seconds != -1.0 || skipped.prepare_seconds != -1.0 || skipped.encode_seconds != -1.0)
+    return fail("A skipped output invented decode/resize/prepare/encode work.");
+  return 0;
 }
 
 awj::ImageBuffer make_alpha_test_image() {
@@ -581,7 +695,7 @@ int poster_pipeline(const std::filesystem::path& root, const std::filesystem::pa
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   const auto root = std::filesystem::path{AWJ_TEST_RESULTS_ROOT} /
       ("native-pipeline-" + std::to_string(awj::current_process_id()));
   const auto input = root / "input.webp";
@@ -618,11 +732,15 @@ int main() {
   cfg.max_jobs = 1;
 
   awj::FileLogger logger{output, false};
-  if (const auto checked = explicit_fp16_color(root, output, logger)) return checked;
-  if (const auto checked = explicit_fp16_color(root, output, logger, 32)) return checked;
-  if (const auto checked = existing_sdr_targets(root, output, logger)) return checked;
-  if (const auto checked = hdr_color_policy(root, output, logger)) return checked;
-  if (const auto checked = poster_pipeline(root, output, logger)) return checked;
+  const bool stage_timing_only = argc == 2 && std::string_view{argv[1]} == "--stage-timing-only";
+  if (const auto checked = native_stage_timing_contract(root, input, logger)) return checked;
+  if (!stage_timing_only) {
+    if (const auto checked = explicit_fp16_color(root, output, logger)) return checked;
+    if (const auto checked = explicit_fp16_color(root, output, logger, 32)) return checked;
+    if (const auto checked = existing_sdr_targets(root, output, logger)) return checked;
+    if (const auto checked = hdr_color_policy(root, output, logger)) return checked;
+    if (const auto checked = poster_pipeline(root, output, logger)) return checked;
+  }
   {
     // Two one-pixel GIF frames: automatic animation must survive the normal preset path.
     constexpr unsigned char header[]{'G', 'I', 'F', '8', '9', 'a', 1, 0, 1, 0, 0x80, 0, 0,
@@ -644,8 +762,13 @@ int main() {
     awj::NativeBackend animated{automatic, logger, awj::ResourcePlan{
         .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
         .memory_limit_bytes = 64 * 1024 * 1024}};
+    const auto converted_started = std::chrono::steady_clock::now();
     auto converted = animated.encode(awj::ImageFile{.index = 0, .path = gif,
         .bytes = std::filesystem::file_size(gif)});
+    const auto converted_wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - converted_started).count();
+    if (!valid_stage_times(converted, converted_wall) || converted.resize_seconds != 0.0 ||
+        converted.resize_workers != 0 || converted.prepare_seconds < 0 || converted.encode_seconds < 0)
+      return fail("Unchanged AVIF animation omitted stages or double-counted frame decode as encode.");
     if (!converted.ok || converted.integration_mode != "libavif-sequence" ||
         converted.applied_bit_depth != 10 || converted.applied_chroma != "444" ||
         converted.final_encoder_quality != awj::encoding_defaults::default_avif_quality)
@@ -656,13 +779,62 @@ int main() {
         avifDecoderSetIOMemory(decoder.get(), reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()) != AVIF_RESULT_OK ||
         avifDecoderParse(decoder.get()) != AVIF_RESULT_OK || decoder->imageCount != 2)
       return fail("Automatic animation conversion produced a single-frame AVIF.");
+    // 真实多帧 AVIF：用户缩放、有限 ticket 增长及取消/异常都走同一 reader。
+    for (int mode = 0; mode < 4; ++mode) {
+      auto resized_avif = automatic;
+      resized_avif.output_dir = output / ("timing-resized-avif-" + std::to_string(mode));
+      resized_avif.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .scale_percent = 200};
+      resized_avif.speed = 10;
+      awj::compat::stop_source stop;
+      bool first_frame_encoded{};
+      resized_avif.frame_progress = [&](std::size_t, std::size_t completed, std::size_t) {
+        if (completed != 1) return;
+        first_frame_encoded = true;
+        if (mode == 2) throw std::length_error{"injected AVIF frame-progress exception"};
+        if (mode == 1) stop.request_stop();
+      };
+      constexpr std::uint64_t budget = 64ull * 1024 * 1024;
+      constexpr std::uint64_t initial = 1024ull * 1024;
+      std::uint64_t held = initial, peak = initial;
+      std::size_t requests{};
+      bool declined{};
+      awj::NativeBackend checked{resized_avif, logger,
+          {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
+           .memory_limit_bytes = budget, .memory_reservation_bytes = initial},
+          [&](std::uint64_t bytes) {
+            ++requests;
+            if (bytes > budget || (mode == 3 && first_frame_encoded && bytes > held)) { declined = true; return false; }
+            held = bytes; peak = std::max(peak, bytes); return true;
+          }};
+      const auto started = std::chrono::steady_clock::now();
+      const auto result = checked.encode(awj::ImageFile{.path = gif, .bytes = std::filesystem::file_size(gif)}, stop.get_token());
+      const auto wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+      if (!valid_stage_times(result, wall) || result.decode_seconds < 0 || result.resize_seconds < 0 ||
+          result.prepare_seconds < 0 || result.encode_seconds < 0 || !requests || peak <= initial || peak > budget)
+        return fail("Resized finite-ticket AVIF lost exclusive stage timing or reservation growth.");
+      if (mode == 0) {
+        auto sequence = awj::open_animation(result.output_path, 0);
+        if (!result.ok || result.resize_workers != 1 || !sequence || !*sequence ||
+            (*sequence)->info().width != 2 || (*sequence)->info().height != 2 || (*sequence)->info().durations.size() != 2)
+          return fail(result.ok ? "Resized AVIF did not preserve both frames and geometry." : result.message);
+      } else if (result.ok || !result.processed || result.resize_workers != 0 ||
+                 result.write_seconds != -1.0 || std::filesystem::exists(result.output_path) ||
+                 result.canceled != (mode == 1) || (mode == 3 && !declined)) {
+        return fail("Resized AVIF cancellation/exception/denied growth published partial output or stale workers.");
+      }
+    }
     automatic.output_format = awj::OutputFormat::webp; automatic.quality = 100;
     automatic.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .max_width = 8, .max_height = 4};
     awj::NativeBackend webp_animation{automatic, logger, awj::ResourcePlan{
         .file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1,
         .memory_limit_bytes = 64 * 1024 * 1024}};
+    const auto webp_started = std::chrono::steady_clock::now();
     auto webp = webp_animation.encode(awj::ImageFile{.index = 0, .path = gif,
         .bytes = std::filesystem::file_size(gif)});
+    const auto webp_wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - webp_started).count();
+    if (!valid_stage_times(webp, webp_wall) || webp.resize_seconds < 0 || webp.resize_workers != 1 ||
+        webp.prepare_seconds < 0 || webp.encode_seconds < 0)
+      return fail("Resized WebP animation lost prepare/resize timing or double-counted later frame reads.");
     if (!webp.ok || webp.integration_mode != "libwebp-sequence" || webp.output_path.extension() != ".webp")
       return fail(webp.ok ? "WebP 选择没有保留动画。" : webp.message);
     auto sequence = awj::open_animation(webp.output_path, 0);
@@ -705,6 +877,58 @@ int main() {
       if (!next || !*next || (*doubled_reader)->frame().planes[0].bytes[3] != std::byte{255})
         return fail("比例缩放错误地生成了透明补边。");
     }
+    const auto single_gif = root / "single-frame.gif";
+    {
+      std::ofstream stream{single_gif, std::ios::binary};
+      stream.write(reinterpret_cast<const char*>(header), sizeof(header));
+      stream.write(reinterpret_cast<const char*>(frame), sizeof(frame));
+      stream.put('\x3b');
+    }
+    auto single_cfg = automatic;
+    single_cfg.output_dir = output / "timing-single-frame";
+    single_cfg.image_size_limit = {.mode = awj::ImageSizeLimitMode::fixed, .scale_percent = 200};
+    awj::NativeBackend single_backend{single_cfg, logger,
+        {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+    const auto single_started = std::chrono::steady_clock::now();
+    const auto single = single_backend.encode(awj::ImageFile{.path = single_gif, .bytes = std::filesystem::file_size(single_gif)});
+    const auto single_wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - single_started).count();
+    const auto single_pixels = awj::WebPImageDecoder{}.decode(single.output_path);
+    if (!single.ok || !valid_stage_times(single, single_wall) || single.decode_seconds < 0 ||
+        single.resize_seconds < 0 || single.resize_workers != 1 || single.prepare_seconds < 0 ||
+        single.encode_seconds < 0 || single.write_seconds < 0 || !single_pixels ||
+        single_pixels->image.width != 2 || single_pixels->image.height != 2) {
+      std::fprintf(stderr, "single timing ok=%d decode=%g resize=%g prepare=%g encode=%g write=%g total=%g wall=%g workers=%d pixels=%zux%zu message=%s\n",
+          single.ok, single.decode_seconds, single.resize_seconds, single.prepare_seconds,
+          single.encode_seconds, single.write_seconds, single.seconds, single_wall, single.resize_workers,
+          single_pixels ? single_pixels->image.width : 0, single_pixels ? single_pixels->image.height : 0,
+          single.message.c_str());
+      return fail("A single-frame animation omitted first-frame resize or prepare timing.");
+    }
+    for (const bool throws : {false, true}) {
+      awj::compat::stop_source stop;
+      auto partial_cfg = automatic;
+      partial_cfg.output_dir = output / (throws ? "timing-animation-throw" : "timing-animation-cancel");
+      partial_cfg.frame_progress = [&](std::size_t, std::size_t completed, std::size_t) {
+        if (completed != 1) return;
+        if (throws) throw std::length_error{"injected frame-progress exception"};
+        stop.request_stop();
+      };
+      awj::NativeBackend partial_backend{partial_cfg, logger,
+          {.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1}};
+      const auto partial_started = std::chrono::steady_clock::now();
+      const auto partial = partial_backend.encode(awj::ImageFile{.path = gif, .bytes = std::filesystem::file_size(gif)}, stop.get_token());
+      const auto partial_wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - partial_started).count();
+      if (partial.ok || !partial.processed || partial.canceled == throws || !valid_stage_times(partial, partial_wall) ||
+          partial.decode_seconds < 0 || partial.resize_seconds < 0 || partial.resize_workers != 0 ||
+          partial.prepare_seconds < 0 || partial.encode_seconds < 0 || partial.write_seconds != -1.0 ||
+          std::filesystem::exists(partial.output_path))
+        return fail("Failed/canceled animation encoding lost partial stages or produced output/stale workers.");
+    }
+  }
+  if (stage_timing_only) {
+    std::filesystem::remove_all(root, ec);
+    if (ec) return fail("Could not clean dedicated native stage timing test files.");
+    terminate_test_process(0);
   }
   for (const auto format : {awj::OutputFormat::avif, awj::OutputFormat::png, awj::OutputFormat::webp,
       awj::OutputFormat::jxl, awj::OutputFormat::jpgli}) {
@@ -968,7 +1192,8 @@ int main() {
       awj::ImageFile{.index = 0, .path = jpeg_input, .bytes = jpeg_bytes});
   if (!jxl_jpeg_result.ok ||
       jxl_jpeg_result.integration_mode != "jxl-jpeg-bitstream-transcode" ||
-      !jxl_jpeg_result.lossless ||
+      !jxl_jpeg_result.lossless || jxl_jpeg_result.resize_seconds != 0.0 ||
+      jxl_jpeg_result.resize_workers != 0 || !valid_stage_times(jxl_jpeg_result, jxl_jpeg_result.seconds) ||
       jxl_jpeg_result.final_encoder_quality != 100) {
     return fail("native backend JPEG->JXL did not use bitstream transcode.");
   }
@@ -1307,6 +1532,8 @@ int main() {
       .bytes = passthrough_seed_result.output_bytes});
   if (!passthrough_result.ok ||
       passthrough_result.integration_mode != "avif-lossless-passthrough" ||
+      passthrough_result.resize_seconds != 0.0 || passthrough_result.resize_workers != 0 ||
+      !valid_stage_times(passthrough_result, passthrough_result.seconds) ||
       passthrough_result.applied_color_representation != "yuv") {
     return fail(passthrough_result.message.empty()
                     ? "eligible YUV AVIF did not keep lossless bitstream passthrough."

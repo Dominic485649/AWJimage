@@ -4,18 +4,28 @@
 // 从 main.cpp 拆出，不依赖 UI 句柄，便于单独测试。
 
 #include <cstddef>
+#include <cstdint>
+#include <optional>
 #include <string>
 
 #include "studio_state.h"
 
 namespace awj::studio {
 
+struct StudioWorkerResizeEvent;
+// 调用方须持有 state.mutex；大图子任务通过稳定队列 ID 绑定，仅接受 worker 索引 0。
+std::optional<std::size_t> apply_queue_worker_resize(
+    UiState& state, std::uint64_t run_id, const StudioWorkerResizeEvent& event,
+    std::optional<std::uint64_t> queue_item_id = std::nullopt) noexcept;
+
 TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order);
 std::string queue_status_label(QueueItemStatus status);
 int queue_status_code(QueueItemStatus status) noexcept;
 std::string stage_seconds_text(double seconds);
 std::string stage_timings_text(double decode_seconds, double prepare_seconds,
-                               double encode_seconds, double write_seconds);
+                               double encode_seconds, double write_seconds,
+                               double resize_seconds = -1.0,
+                               int resize_workers = 0);
 
 const std::filesystem::path& queue_image_open_target(
     const QueueImageItem& item) noexcept;

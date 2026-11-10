@@ -3,6 +3,7 @@
 #include <array>
 #include <atomic>
 #include <cstddef>
+#include <cmath>
 #include <cstdint>
 #include <cstring>
 #include <cstdio>
@@ -14,11 +15,14 @@
 #include <format>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <span>
+#include <stdexcept>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 #include <utility>
 #ifdef _WIN32
@@ -29,6 +33,7 @@
 #include <wrl/client.h>
 #endif
 
+import awj.animation;
 import awj.codec;
 import awj.decoder_registry;
 import awj.encoding_defaults;
@@ -96,6 +101,198 @@ std::expected<void, std::string> write_webp(const std::filesystem::path& path,
 std::string read_text(const std::filesystem::path& path) {
   std::ifstream stream{path, std::ios::binary};
   return std::string{std::istreambuf_iterator<char>{stream}, {}};
+}
+
+bool valid_stage_sum(const awj::EncodeResult& result) {
+  double sum{};
+  for (const auto value : {result.decode_seconds, result.resize_seconds, result.prepare_seconds,
+                           result.encode_seconds, result.write_seconds}) {
+    if (!std::isfinite(value) || (value < 0.0 && value != -1.0)) return false;
+    if (value >= 0.0) sum += value;
+  }
+  return std::isfinite(result.seconds) && sum <= result.seconds + 0.000001;
+}
+
+struct AnimationReadObservation {
+  double seconds{};
+  std::size_t calls{};
+};
+
+class ObservedAnimationReader final : public awj::AnimationReader {
+ public:
+  ObservedAnimationReader(std::size_t frames, AnimationReadObservation& observed, int fault = 0)
+      : observed_{observed}, fault_{fault}, image_{make_test_image()} {
+    info_.width = image_.width;
+    info_.height = image_.height;
+    info_.durations.assign(frames, awj::FrameDuration{1, 10});
+    info_.decoder_id = "observed-test-reader";
+  }
+  const awj::AnimationInfo& info() const noexcept override { return info_; }
+  const awj::ImageBuffer& frame() const noexcept override { return image_; }
+  std::uint64_t memory_usage_bytes() const noexcept override { return image_.planes[0].bytes.capacity(); }
+  awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop = {}) override {
+    const auto started = std::chrono::steady_clock::now();
+    // 短暂等待仅让漏计/重复计入帧解码可被观察，不是性能断言，也不制造编码或系统负载。
+    std::this_thread::sleep_for(std::chrono::milliseconds{2});
+    observed_.seconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    ++observed_.calls;
+    if (stop.stop_requested()) return awj::compat::unexpected{"test reader canceled"};
+    if (observed_.calls == 2 && fault_ == 1) return awj::compat::unexpected{"test reader failure"};
+    if (observed_.calls == 2 && fault_ == 2) throw std::length_error{"test reader exception"};
+    return observed_.calls <= info_.durations.size();
+  }
+ private:
+  AnimationReadObservation& observed_;
+  int fault_{};
+  awj::ImageBuffer image_;
+  awj::AnimationInfo info_;
+};
+
+int animation_stage_timing_contract() {
+  const awj::ResourcePlan resources{.file_parallelism = 1, .encoder_threads_per_file = 1,
+      .global_thread_budget = 1, .memory_limit_bytes = 64 * 1024 * 1024};
+  for (const auto frames : {std::size_t{1}, std::size_t{3}}) {
+    for (const bool resize : {false, true}) {
+      awj::AppConfig cfg;
+      cfg.output_format = awj::OutputFormat::webp;
+      if (resize) cfg.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = 50};
+      AnimationReadObservation observed;
+      awj::EncodeResult timing;
+      const auto started = std::chrono::steady_clock::now();
+      awj::native_backend_detail::GeometryAnimationReader reader{
+          std::make_unique<ObservedAnimationReader>(frames, observed), cfg, resources, timing};
+      auto first = reader.next();
+      const auto first_decode = timing.decode_seconds;
+      const auto dimension = resize ? 1u : 2u;
+      if (!first || !*first || reader.frame().width != dimension || reader.frame().height != dimension ||
+          first_decode < observed.seconds || timing.resize_seconds < 0 ||
+          timing.resize_workers != (resize ? 1 : 0))
+        return fail("The first animation frame omitted decode/resize timing or geometry diagnostics.");
+      {
+        auto timer = reader.time_encode(timing.encode_seconds);
+        for (std::size_t i = 1; i < frames; ++i) {
+          auto next = reader.next();
+          if (!next || !*next || reader.frame().width != dimension || reader.frame().height != dimension)
+            return fail("Later animation geometry was not applied to each frame.");
+        }
+        auto end = reader.next();
+        if (!end || *end) return fail("Observed animation reader did not reach EOF.");
+      }
+      timing.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+      if (observed.calls != frames + 1 || timing.decode_seconds < observed.seconds ||
+          timing.decode_seconds <= first_decode || !valid_stage_sum(timing) ||
+          timing.resize_workers != (resize ? 1 : 0) || (!resize && timing.resize_seconds != 0.0) ||
+          reader.read_seconds() + 0.000001 < timing.decode_seconds + timing.resize_seconds)
+        return fail("Animation decode/resize was omitted, double-counted as encode, or workers were summed across frames.");
+    }
+  }
+  for (const int fault : {1, 2, 3}) {
+    awj::AppConfig cfg;
+    cfg.output_format = awj::OutputFormat::webp;
+    cfg.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = 50};
+    AnimationReadObservation observed;
+    awj::EncodeResult timing;
+    const auto started = std::chrono::steady_clock::now();
+    awj::native_backend_detail::GeometryAnimationReader reader{
+        std::make_unique<ObservedAnimationReader>(3, observed, fault), cfg, resources, timing};
+    const auto first = reader.next();
+    if (!first || !*first) return fail("Cannot read first frame for partial animation timing.");
+    const auto first_decode = timing.decode_seconds;
+    const auto first_resize = timing.resize_seconds;
+    awj::compat::stop_source stop;
+    if (fault == 3) stop.request_stop();
+    bool rejected{};
+    try {
+      auto timer = reader.time_encode(timing.encode_seconds);
+      const auto next = reader.next(stop.get_token());
+      rejected = !next;
+    } catch (const std::length_error&) {
+      rejected = fault == 2;
+    }
+    timing.seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count();
+    if (!rejected || timing.decode_seconds <= first_decode || timing.decode_seconds < observed.seconds ||
+        timing.resize_seconds < first_resize || timing.resize_workers != 0 ||
+        timing.encode_seconds < 0 || !valid_stage_sum(timing))
+      return fail("Failed/canceled/throwing animation read lost partial timing or left a successful worker count.");
+  }
+  awj::AppConfig cfg;
+  cfg.image_size_limit = {.mode = awj::ImageSizeLimitMode::manual, .scale_percent = 50};
+  awj::ImageDecodeResult paired{.image = make_test_image(),
+      .gain_map_alternative = awj::GainMapAlternative{.image = make_test_image()}};
+  awj::EncodeResult timing;
+  if (auto resized = awj::native_backend_detail::apply_image_size_limit(paired, cfg, {}, resources, timing);
+      !resized || paired.image.width != 1 || paired.gain_map_alternative->image.width != 1 ||
+      timing.resize_seconds < 0 || timing.resize_workers != 1)
+    return fail("Paired renditions did not accumulate resize time with a maximum worker count.");
+  awj::ImageDecodeResult broken_pair{.image = make_test_image(),
+      .gain_map_alternative = awj::GainMapAlternative{.image = make_test_image()}};
+  broken_pair.gain_map_alternative->image.planes.clear();
+  awj::EncodeResult partial;
+  if (awj::native_backend_detail::apply_image_size_limit(broken_pair, cfg, {}, resources, partial) ||
+      broken_pair.image.width != 1 || partial.resize_seconds < 0 || partial.resize_workers != 0)
+    return fail("A failed second rendition discarded first-layer resize time or left successful workers.");
+  auto tight = resources;
+  tight.memory_limit_bytes = 1;
+  AnimationReadObservation observed;
+  awj::EncodeResult failed;
+  awj::native_backend_detail::GeometryAnimationReader reader{
+      std::make_unique<ObservedAnimationReader>(1, observed), cfg, tight, failed};
+  if (reader.next() || failed.decode_seconds < observed.seconds || failed.resize_seconds < 0 || failed.resize_workers != 0)
+    return fail("Rejected animation geometry lost measured time or reported successful workers.");
+  return 0;
+}
+
+int resize_csv_contract(const std::filesystem::path& root) {
+  awj::EncodeResult measured;
+  measured.resize_seconds = 0.25;
+  measured.resize_workers = 3;
+  awj::NativeEncodeResult native;
+  awj::native_backend_detail::merge_stage_timing(native, measured);
+  awj::EncodeResult copied;
+  awj::native_backend_detail::copy_native_result(native, copied);
+  if (copied.resize_seconds != 0.25 || copied.resize_workers != 3)
+    return fail("Native timing merge/copy lost resize diagnostics.");
+  awj::native_backend_detail::merge_stage_timing(native, awj::EncodeResult{});
+  awj::native_backend_detail::copy_native_result(native, copied);
+  if (copied.resize_seconds != -1.0 || copied.resize_workers != 0)
+    return fail("An unobserved attempt retained stale native resize diagnostics.");
+  std::array<awj::EncodeResult, 3> results;
+  if (results[0].resize_seconds != -1.0 || results[0].resize_workers != 0 ||
+      awj::EncodeTimingDiagnostics{}.resize_seconds != -1.0 || awj::EncodeTimingDiagnostics{}.resize_workers != 0)
+    return fail("Unobserved resize diagnostics do not default to unknown.");
+  results[1].resize_seconds = 0.0;
+  results[2].resize_seconds = 0.12345678;
+  results[2].resize_workers = 2;
+  const auto output = root / "resize-csv";
+  if (auto written = awj::write_csv(output, results); !written) return fail(written.error());
+  const auto path = output / "log" / "summery.csv";
+  const auto csv = read_text(path);
+  const auto header_end = csv.find('\n');
+  if (header_end == std::string::npos || !std::string_view{csv}.substr(0, header_end).ends_with(
+          "memory_target_alpha,awj_version,resize_seconds,resize_workers"))
+    return fail("Resize CSV fields were not appended after the complete legacy schema.");
+  std::size_t start = header_end + 1;
+  const auto columns = std::count(csv.begin(), csv.begin() + header_end, ',');
+  const std::array<std::string_view, 3> tails{",,0", ",0.000000,0", ",0.123457,2"};
+  for (const auto tail : tails) {
+    const auto end = csv.find('\n', start);
+    if (end == std::string::npos) return fail("Resize CSV row is missing.");
+    const auto row = std::string_view{csv}.substr(start, end - start);
+    if (!row.ends_with(tail) || std::count(row.begin(), row.end(), ',') != columns)
+      return fail("Resize CSV row lost unknown/zero/worker values or shifted old columns.");
+    start = end + 1;
+  }
+  if (start != csv.size()) return fail("Resize CSV wrote unexpected extra rows.");
+  if (auto written = awj::write_csv(output, results); !written) return fail("Current resize CSV was not replaceable.");
+  const auto legacy = csv.substr(0, header_end - std::string_view{",resize_seconds,resize_workers"}.size()) + '\n';
+  { std::ofstream stream{path, std::ios::binary | std::ios::trunc}; stream << legacy; }
+  if (auto written = awj::write_csv(output, results); !written)
+    return fail("The exact legacy AWJ CSV schema was not recognized after appending resize fields.");
+  const auto foreign = legacy.substr(0, legacy.size() - 1) + ",foreign_column\n";
+  { std::ofstream stream{path, std::ios::binary | std::ios::trunc}; stream << foreign; }
+  if (awj::write_csv(output, results) || read_text(path) != foreign)
+    return fail("Appending resize fields weakened CSV ownership checks for an unknown schema.");
+  return 0;
 }
 
 int queue_path_component_contract(const std::filesystem::path& root) {
@@ -770,6 +967,15 @@ int main(int argc, char** argv) {
     }
     return checked;
   }
+  const bool stage_timing_only = argc == 2 && std::string_view{argv[1]} == "--stage-timing-only";
+  if (argc == 1 || stage_timing_only) {
+    if (const auto checked = animation_stage_timing_contract()) return checked;
+    if (const auto checked = resize_csv_contract(root)) return checked;
+    if (stage_timing_only) {
+      std::filesystem::remove_all(root, ec);
+      return ec ? fail("Could not clean dedicated stage timing test files.") : 0;
+    }
+  }
   if (!(argc == 2 && std::string_view{argv[1]} == "--memory-policy-only")) {
     if (const auto checked = queue_core_contract(root)) return checked;
   }
@@ -823,7 +1029,8 @@ int main(int argc, char** argv) {
           manual_traced = result.canceled && result.memory_budget_bytes == 0 &&
               result.memory_budget_mode == "unlocked" && result.memory_budget_source == "session_unlock" &&
               result.estimated_working_set_bytes > 0 && result.encoder_threads == 0 &&
-              result.seconds == 0 && result.decode_seconds == 0 && result.encode_seconds == 0;
+              result.seconds == 0 && result.decode_seconds == 0 && result.encode_seconds == 0 &&
+              result.resize_seconds == -1.0 && result.resize_workers == 0;
         }
       }, cancel.get_token());
       if (!manual || !manual->canceled || !manual_traced ||
@@ -1042,7 +1249,8 @@ int main(int argc, char** argv) {
         result.estimated_working_set_bytes <= result.memory_budget_bytes ||
         result.memory_source_width != 65537 || result.memory_source_height != 4096 ||
         result.encoder_threads != 0 || result.seconds != 0 || result.decode_seconds != 0 ||
-        result.prepare_seconds != 0 || result.encode_seconds != 0 || result.write_seconds != 0)
+        result.prepare_seconds != 0 || result.encode_seconds != 0 || result.write_seconds != 0 ||
+        result.resize_seconds != -1.0 || result.resize_workers != 0)
       return fail("Grid preflight failed to record its actual budget/estimate or fabricated encoder work");
     if (auto csv = awj::write_csv(cfg.output_dir, std::span<const awj::EncodeResult>{&result, 1}); !csv)
       return fail(csv.error());
@@ -1086,7 +1294,8 @@ int main(int argc, char** argv) {
             result.estimated_working_set_bytes > result.memory_budget_bytes &&
             result.memory_estimate_profile.starts_with("v2-avif-grid") &&
             result.memory_source_width == 65537 && result.memory_source_height == 64 &&
-            result.encoder_threads == 0 && result.decode_seconds == 0 && result.encode_seconds == 0;
+            result.encoder_threads == 0 && result.decode_seconds == 0 && result.encode_seconds == 0 &&
+            result.resize_seconds == -1.0 && result.resize_workers == 0;
       }
     });
     if (!rejected_summary || rejected_summary->failed_count != 1 || !rejected_before_start || rejected_started ||
@@ -1382,14 +1591,15 @@ int main(int argc, char** argv) {
       invalid_batch_csv.find("failed") == std::string::npos ||
       invalid_batch_csv.find("decode_stage,source_metadata_available,selected_rendition,rendition_origin") == std::string::npos ||
       invalid_batch_csv.find("heif_tile_parallelism,heif_codec_thread_budget,avif_layer_count,avif_layer_trace,") == std::string::npos ||
-      invalid_batch_csv.find("memory_target_bit_depth,memory_target_chroma,memory_target_alpha,awj_version\n") == std::string::npos) {
+      invalid_batch_csv.find("memory_target_bit_depth,memory_target_chroma,memory_target_alpha,awj_version,resize_seconds,resize_workers\n") == std::string::npos) {
     return fail("invalid AVIF batch input was not recorded with its diagnostic columns.");
   }
   if (!saw_invalid_decode || invalid_decode_result.ok || !invalid_decode_result.processed ||
       invalid_decode_result.decode_stage.empty() || invalid_decode_result.source_metadata_available ||
       invalid_decode_result.seconds <= 0 || invalid_decode_result.decode_seconds < 0 ||
       invalid_decode_result.encoder_threads != 0 || invalid_decode_result.output_bytes != 0 ||
-      invalid_decode_result.encode_seconds >= 0) {
+      invalid_decode_result.encode_seconds >= 0 || invalid_decode_result.resize_seconds != -1.0 ||
+      invalid_decode_result.resize_workers != 0 || !valid_stage_sum(invalid_decode_result)) {
     return fail("解码失败丢失执行阶段/真实耗时，或冒填尚未开始的编码与源元数据。");
   }
   const auto invalid_batch_log = read_text(invalid_batch_output / "log" / "awj.log");

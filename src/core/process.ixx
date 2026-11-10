@@ -215,6 +215,8 @@ struct EncodeResult {
   MemoryPlanDiagnostics memory_plan{};
   double seconds{};
   double decode_seconds{-1.0};
+  double resize_seconds{-1.0};
+  int resize_workers{};
   double prepare_seconds{-1.0};
   double encode_seconds{-1.0};
   double avif_rgb_to_yuv_seconds{-1.0};
@@ -2716,7 +2718,7 @@ awj::compat::expected<void, std::string> write_csv(
   SummaryCsvWriter csv{std::move(*created), report_path};
 
   csv << "\xEF\xBB\xBF";
-  constexpr std::string_view header =
+  constexpr std::string_view legacy_header =
          "index,input,output,format,encoder_id,input_sha256,output_sha256,original_bytes,output_"
          "bytes,ratio,quality,speed,"
          "requested_visual_quality,visual_score,raw_gmsd,raw_ms_ssim,"
@@ -2763,18 +2765,22 @@ awj::compat::expected<void, std::string> write_csv(
          "memory_mandatory_bytes,memory_conversion_bytes,memory_codec_workspace_bytes,memory_output_capacity_bytes,"
          "memory_layer_retained_bytes,memory_decode_phase_bytes,memory_prepare_phase_bytes,memory_encode_phase_bytes,"
          "memory_metric_phase_bytes,memory_output_phase_bytes,memory_target_bit_depth,memory_target_chroma,memory_target_alpha,awj_version\n";
+  const auto header = std::string{legacy_header.substr(0, legacy_header.size() - 1)} +
+                      ",resize_seconds,resize_workers\n";
   csv << header;
-  // Only replace a complete report produced by this schema. An unrelated CSV
-  // at the opt-in path is user data, not a report to truncate.
+  // 只替换已知 schema 生成的完整报告；显式目标路径上的其他 CSV 属于用户数据，不能截断。
   const auto recognizable_report = [&]() -> bool {
     if (!core_detail::safe_unlinked_path(report_path, false)) return false;
     std::error_code ec;
     if (!fs::exists(report_path, ec)) return !ec;
     std::ifstream existing{report_path, std::ios::binary};
     std::string prefix(header.size() + 3, '\0');
-    if (!existing.read(prefix.data(), static_cast<std::streamsize>(prefix.size())) ||
-        !prefix.starts_with("\xEF\xBB\xBF") || std::string_view{prefix}.substr(3) != header)
-      return false;
+    existing.read(prefix.data(), static_cast<std::streamsize>(prefix.size()));
+    prefix.resize(static_cast<std::size_t>(existing.gcount()));
+    if (!prefix.starts_with("\xEF\xBB\xBF")) return false;
+    const auto schema = std::string_view{prefix}.substr(3);
+    // 同样识别新增 resize 前的精确表头，让升级可替换自己的旧报告，而不接受任意 CSV。
+    if (!schema.starts_with(header) && !schema.starts_with(legacy_header)) return false;
     existing.clear();
     existing.seekg(-1, std::ios::end);
     return existing.get() == '\n';
@@ -2965,7 +2971,8 @@ awj::compat::expected<void, std::string> write_csv(
         << result.memory_plan.metric_bytes << ',' << result.memory_plan.output_bytes << ','
         << result.memory_plan.target_bit_depth << ',' << core_detail::csv_escape(result.memory_plan.target_chroma) << ','
         << (result.memory_plan.target_alpha ? "true" : "false") << ','
-        << kAwjVersion << '\n';
+        << kAwjVersion << ',' << duration(result.resize_seconds) << ','
+        << result.resize_workers << '\n';
   }
 
   if (auto closed = csv.close(); !closed) {

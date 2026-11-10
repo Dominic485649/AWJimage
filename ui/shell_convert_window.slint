@@ -103,9 +103,11 @@ export component ShellConvertWindow inherits Window {
 
                     if root.task-rows.length > 0: ListView {
                         for row[i] in root.task-rows: Rectangle {
-                            height: 64px;
+                            height: row.stage-timings.is-empty ? 64px : 90px + stage-line.preferred-height;
                             background: i / 2 * 2 == i ? root.row-bg : root.panel-bg;
                             HorizontalLayout {
+                                y: 0px;
+                                height: 64px;
                                 padding-left: 14px;
                                 padding-right: 14px;
                                 spacing: 12px;
@@ -125,6 +127,28 @@ export component ShellConvertWindow inherits Window {
                                     Text { text: row.status; color: row.warning ? root.warning-color : root.text-body; font-size: 12px; overflow: elide; horizontal-alignment: left; }
                                     Text { text: row.output.is-empty ? row.log : row.output; color: root.text-muted; font-size: 10px; overflow: elide; horizontal-alignment: left; }
                                 }
+                            }
+                            Text {
+                                visible: !row.stage-timings.is-empty;
+                                x: 58px;
+                                y: 64px;
+                                width: parent.width - 72px;
+                                height: 18px;
+                                text: @tr("编码器：") + (row.encoder.is-empty ? @tr("尚未确定") : row.encoder) + @tr("  ·  线程：") + (row.threads.is-empty ? "-" : row.threads);
+                                color: root.text-body;
+                                font-size: 11px;
+                                overflow: elide;
+                            }
+                            stage-line := Text {
+                                visible: !row.stage-timings.is-empty;
+                                x: 58px;
+                                y: 84px;
+                                width: parent.width - 72px;
+                                height: self.preferred-height;
+                                text: @tr("阶段：") + row.stage-timings;
+                                color: root.text-muted;
+                                font-size: 10px;
+                                wrap: word-wrap;
                             }
                             Rectangle {
                                 y: parent.height - 1px;

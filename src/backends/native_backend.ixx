@@ -1,5 +1,6 @@
 module;
 #include "../compat/stdlib_compat.h"
+#include "../core/hdr_cost.h"
 
 #include <algorithm>
 #include <atomic>
@@ -66,6 +67,27 @@ double elapsed_seconds(Clock::time_point started) {
   return std::chrono::duration<double>(Clock::now() - started).count();
 }
 
+// 同步且不重叠的阶段区间；错误/取消时也在作用域退出记录已发生的工作。
+// 可选嵌套计数器用于扣除动画编码外层墙钟内发生的 reader 工作。
+class ScopedStageTimer {
+ public:
+  explicit ScopedStageTimer(double& seconds, const double* nested_seconds = nullptr) noexcept
+      : seconds_{seconds}, nested_seconds_{nested_seconds},
+        nested_started_{nested_seconds ? *nested_seconds : 0.0}, started_{Clock::now()} {}
+  ScopedStageTimer(const ScopedStageTimer&) = delete;
+  ScopedStageTimer& operator=(const ScopedStageTimer&) = delete;
+  ~ScopedStageTimer() noexcept {
+    const auto nested = nested_seconds_ ? std::max(0.0, *nested_seconds_ - nested_started_) : 0.0;
+    seconds_ = std::max(0.0, seconds_) + std::max(0.0, elapsed_seconds(started_) - nested);
+  }
+
+ private:
+  double& seconds_;
+  const double* nested_seconds_;
+  double nested_started_;
+  Clock::time_point started_;
+};
+
 std::string format_timing_seconds(double seconds) {
   return seconds >= 0.0 ? awj::compat::format("{:.3f}", seconds) : std::string{""};
 }
@@ -87,6 +109,9 @@ void merge_stage_timing(NativeEncodeResult& native, const EncodeResult& result) 
   if (result.decode_seconds >= 0.0) {
     timing.decode_seconds = result.decode_seconds;
   }
+  // 用户几何计时只由 backend 管理；未观察到的尝试必须清除复用/内部编码结果的旧值。
+  timing.resize_seconds = result.resize_seconds;
+  timing.resize_workers = result.resize_seconds >= 0.0 ? result.resize_workers : 0;
   if (result.prepare_seconds >= 0.0) {
     timing.prepare_seconds = result.prepare_seconds;
   }
@@ -699,27 +724,62 @@ bool geometry_keeps_alpha(const AppConfig& cfg) noexcept {
 }
 
 awj::compat::expected<void, std::string> apply_image_size_limit(ImageDecodeResult& decoded,
-    const AppConfig& cfg, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
-  const auto transform = [&](ImageBuffer& image) -> awj::compat::expected<void, std::string> {
+    const AppConfig& cfg, awj::compat::stop_token stop, const ResourcePlan& resources,
+    EncodeResult& timing, const std::function<bool(std::uint64_t)>& reserve_memory = {}) {
+  // 所有呈现成功后才提交 worker 最大值；错误或异常保留已耗时长，但不发布成功 worker 数。
+  timing.resize_workers = 0;
+  int workers{};
+  auto held_resources = resources;
+  const auto transform = [&](ImageBuffer& image, const ImageBuffer* other) -> awj::compat::expected<void, std::string> {
     auto plan = plan_image_geometry(image.width, image.height, cfg);
     if (!plan) return awj::compat::unexpected{plan.error()};
-    if (!plan->changes()) return {};
-    auto transformed = apply_image_geometry(image, *plan, geometry_keeps_alpha(cfg), stop, resources);
+    if (!plan->changes()) {
+      if (timing.resize_seconds < 0.0) timing.resize_seconds = 0.0;
+      return {};
+    }
+    ScopedStageTimer timer{timing.resize_seconds};
+    auto layer_resources = held_resources;
+    if (other) layer_resources.geometry_retained_bytes = hdr_cost::add(
+        layer_resources.geometry_retained_bytes, resident_image_bytes(*other));
+    const auto reserve = reserve_memory ? std::function<bool(std::uint64_t)>{[&](std::uint64_t bytes) {
+      if (!reserve_memory(bytes)) return false;
+      timing.memory_plan.reserved_peak_bytes = std::max(timing.memory_plan.reserved_peak_bytes, bytes);
+      return true;
+    }} : std::function<bool(std::uint64_t)>{};
+    auto admitted = admit_image_geometry(image, *plan, layer_resources, reserve);
+    if (!admitted) return awj::compat::unexpected{admitted.error()};
+    held_resources.memory_reservation_bytes = admitted->memory_limit_bytes;
+    GeometryTransformDiagnostics diagnostics{};
+    auto transformed = apply_image_geometry(image, *plan, geometry_keeps_alpha(cfg), stop, *admitted, &diagnostics);
     if (!transformed) return awj::compat::unexpected{transformed.error()};
     image = std::move(*transformed);
+    workers = std::max(workers, diagnostics.workers);
     return {};
   };
-  if (auto result = transform(decoded.image); !result) return result;
+  if (auto result = transform(decoded.image, decoded.gain_map_alternative ? &decoded.gain_map_alternative->image : nullptr); !result) return result;
   if (decoded.gain_map_alternative) {
-    if (auto result = transform(decoded.gain_map_alternative->image); !result) return result;
+    if (auto result = transform(decoded.gain_map_alternative->image, &decoded.image); !result) return result;
   }
+  timing.resize_workers = workers;
   return {};
 }
 
 class GeometryAnimationReader final : public AnimationReader {
  public:
-  GeometryAnimationReader(std::unique_ptr<AnimationReader> reader, const AppConfig& cfg, ResourcePlan resources)
-      : reader_{std::move(reader)}, cfg_{cfg}, info_{reader_->info()}, resources_{resources} {
+  // 读取与编码均为同步；调用方在编码器返回前持有计时与 cfg，计数器和借用帧不逃逸。
+  GeometryAnimationReader(std::unique_ptr<AnimationReader> reader, const AppConfig& cfg,
+                          ResourcePlan resources, EncodeResult& timing,
+                          std::function<bool(std::uint64_t)> reserve_memory = {})
+      : reader_{std::move(reader)}, cfg_{cfg}, info_{reader_->info()}, resources_{normalize_memory_policy_resources(cfg, resources)}, timing_{timing},
+        reserve_memory_{std::move(reserve_memory)} {
+    const auto threads = per_file_thread_budget(resources_);
+    if (resources_.memory_limit_bytes && !resources_.memory_reservation_bytes && !reserve_memory_) {
+      const auto budget = resource_memory_budget(resources_);
+      if (!budget) error_ = "动画每文件内存预算不足。";
+      else resources_.memory_limit_bytes = budget;
+    }
+    resources_.encoder_threads_per_file = threads;
+    resources_.file_parallelism = 1;
     auto plan = plan_image_geometry(info_.width, info_.height, cfg_);
     if (!plan) error_ = plan.error();
     else {
@@ -730,38 +790,96 @@ class GeometryAnimationReader final : public AnimationReader {
   const AnimationInfo& info() const noexcept override { return info_; }
   const ImageBuffer& frame() const noexcept override { return transformed_ ? *transformed_ : reader_->frame(); }
   std::uint64_t memory_usage_bytes() const noexcept override {
-    return reader_->memory_usage_bytes() + (transformed_ ? transformed_->planes.front().bytes.capacity() : 0);
+    return hdr_cost::add(underlying_memory_bytes(), transformed_ ? resident_image_bytes(*transformed_) : 0);
+  }
+  // 编码器在 next() 前已预约 reader、编码工作区及保留流；嵌套读取/缩放期间，
+  // 继续保留已接受额度中的非 reader 部分，几何增长必须先取得新增字节。
+  void bind_encoding_memory(NativeEncodeSettings& settings) {
+    reserve_memory_ = settings.memory_reservation;
+    note_encoding_reservation(settings.memory_base_reservation);
+    settings.memory_reservation = [this, reserve = reserve_memory_](std::uint64_t bytes) {
+      if (reserve && !reserve(bytes)) return false;
+      note_encoding_reservation(bytes);
+      return true;
+    };
+  }
+  double read_seconds() const noexcept { return read_seconds_; }
+  [[nodiscard]] ScopedStageTimer time_encode(double& seconds) const noexcept {
+    return ScopedStageTimer{seconds, &read_seconds_};
   }
   awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop = {}) override {
+    ScopedStageTimer read_timer{read_seconds_};
+    const auto previous_workers = std::exchange(timing_.resize_workers, 0);
     if (!error_.empty()) return awj::compat::unexpected{error_};
-    transformed_.reset();
-    auto next = reader_->next(stop);
-    if (!next || !*next) return next;
+    if (transformed_) {
+      ScopedStageTimer timer{timing_.resize_seconds};
+      transformed_.reset();
+    }
+    auto next = [&] {
+      ScopedStageTimer timer{timing_.decode_seconds};
+      return reader_->next(stop);
+    }();
+    if (!next) return next;
+    if (!*next) {
+      timing_.resize_workers = previous_workers;
+      return false;
+    }
     if (plan_->changes()) {
+      ScopedStageTimer timer{timing_.resize_seconds};
       auto transform_resources = resources_;
-      if (transform_resources.memory_limit_bytes) {
-        const auto budget = transform_resources.memory_limit_bytes / static_cast<std::uint64_t>(std::max(1, transform_resources.file_parallelism));
-        std::uint64_t frame_bytes{};
-        for (const auto& plane : reader_->frame().planes) frame_bytes += plane.bytes.capacity();
-        const auto other = reader_->memory_usage_bytes() > frame_bytes ? reader_->memory_usage_bytes() - frame_bytes : 0;
-        if (other >= budget) return awj::compat::unexpected{"动画阅读器与 Spline36 工作区超过内存预算。"};
-        transform_resources.memory_limit_bytes = budget - other;
-        transform_resources.file_parallelism = 1;
-      }
-      auto result = apply_image_geometry(reader_->frame(), *plan_, geometry_keeps_alpha(cfg_), stop, transform_resources);
+      std::uint64_t frame_bytes{};
+      for (const auto& plane : reader_->frame().planes)
+        frame_bytes = hdr_cost::add(frame_bytes, hdr_cost::add(plane.bytes.capacity(), plane.borrowed.size()));
+      const auto underlying = underlying_memory_bytes();
+      const auto other = underlying > frame_bytes ? underlying - frame_bytes : 0;
+      transform_resources.geometry_retained_bytes = hdr_cost::add(transform_resources.geometry_retained_bytes,
+          hdr_cost::add(other, encoder_retained_bytes_));
+      auto admitted = admit_image_geometry(reader_->frame(), *plan_, transform_resources, reserve_memory_);
+      if (!admitted) return awj::compat::unexpected{admitted.error()};
+      resources_.memory_reservation_bytes = admitted->memory_limit_bytes;
+      if (reserve_memory_ && admitted->memory_limit_bytes)
+        timing_.memory_plan.reserved_peak_bytes = std::max(timing_.memory_plan.reserved_peak_bytes, admitted->memory_limit_bytes);
+      GeometryTransformDiagnostics diagnostics{};
+      auto result = apply_image_geometry(reader_->frame(), *plan_, geometry_keeps_alpha(cfg_), stop, *admitted, &diagnostics);
       if (!result) return awj::compat::unexpected{result.error()};
       transformed_ = std::move(*result);
+      timing_.resize_workers = std::max(previous_workers, diagnostics.workers);
+    } else {
+      const auto required = hdr_cost::add(memory_usage_bytes(), hdr_cost::add(encoder_retained_bytes_, resources_.geometry_retained_bytes));
+      if (required == UINT64_MAX) return awj::compat::unexpected{"动画阅读器工作集尺寸溢出。"};
+      if (!encoding_defaults::current_memory_policy().unrestricted_memory && required > resource_memory_budget(resources_)) {
+        if (!reserve_memory_ || required > resources_.memory_limit_bytes || !reserve_memory_(required))
+          return awj::compat::unexpected{"动画阅读器无法取得工作集预约。"};
+        resources_.memory_reservation_bytes = required;
+      }
+      if (timing_.resize_seconds < 0.0) timing_.resize_seconds = 0.0;
+      timing_.resize_workers = previous_workers;
     }
     return true;
   }
  private:
+  std::uint64_t underlying_memory_bytes() const noexcept {
+    // info_ 复制 reader 索引；reader 的字节报告若已含平面/容器元数据，
+    // 几何估算仍保守地再次计入这些描述数据。
+    return hdr_cost::add(std::max(reader_->memory_usage_bytes(), resident_image_bytes(reader_->frame())), hdr_cost::add(
+        hdr_cost::multiply(info_.durations.capacity(), sizeof(FrameDuration)), hdr_cost::add(info_.decoder_id.capacity(), 1)));
+  }
+  void note_encoding_reservation(std::uint64_t bytes) noexcept {
+    const auto reader_bytes = memory_usage_bytes();
+    encoder_retained_bytes_ = bytes > reader_bytes ? bytes - reader_bytes : 0;
+    resources_.memory_reservation_bytes = resources_.memory_limit_bytes ? bytes : 0;
+  }
   std::unique_ptr<AnimationReader> reader_;
   const AppConfig& cfg_;
   AnimationInfo info_;
   ResourcePlan resources_;
+  EncodeResult& timing_;
   std::optional<ImageGeometryPlan> plan_;
   std::optional<ImageBuffer> transformed_;
   std::string error_;
+  double read_seconds_{};
+  std::function<bool(std::uint64_t)> reserve_memory_;
+  std::uint64_t encoder_retained_bytes_{};
 };
 
 std::string chroma_name_from_pixel_format(PixelFormat pixel_format) {
@@ -1540,6 +1658,8 @@ void copy_native_result(const NativeEncodeResult& native, EncodeResult& result) 
   result.gain_map_compute_workers = native.diagnostics.timing.gain_map_compute_workers;
   result.color_convert_seconds = native.diagnostics.timing.color_convert_seconds;
   result.decode_seconds = native.diagnostics.timing.decode_seconds;
+  result.resize_seconds = native.diagnostics.timing.resize_seconds;
+  result.resize_workers = native.diagnostics.timing.resize_workers;
   result.prepare_seconds = native.diagnostics.timing.prepare_seconds;
   result.encode_seconds = native.diagnostics.timing.encode_seconds;
   result.avif_rgb_to_yuv_seconds =
@@ -1731,6 +1851,7 @@ class NativeBackend final {
     const auto checked = checked_memory_policy_resources(cfg, resources_);
     if (checked) resources_ = *checked;
     else resource_plan_error_ = checked.error();
+    resources_.encoder_threads_per_file = per_file_thread_budget(resources_);
   }
 
   EncodeResult encode(const ImageFile& image,
@@ -1754,19 +1875,34 @@ class NativeBackend final {
     if (resource_plan_error_) return awj::compat::unexpected{*resource_plan_error_};
     const encoding_defaults::ScopedMemoryPolicy memory_scope{*memory_policy_};
     if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-    if (auto selected = native_backend_detail::select_output_rendition(decoded, cfg_, stop_token); !selected)
-      return awj::compat::unexpected{selected.error()};
-    if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_, stop_token, resources_); !limited)
+    // 像素已经解码；decode/write 保持未知，不伪造为 0。
+    EncodeResult memory_result{};
+    {
+      native_backend_detail::ScopedStageTimer timer{memory_result.prepare_seconds};
+      if (auto selected = native_backend_detail::select_output_rendition(decoded, cfg_, stop_token); !selected)
+        return awj::compat::unexpected{selected.error()};
+    }
+    if (auto limited = native_backend_detail::apply_image_size_limit(decoded, cfg_, stop_token, resources_, memory_result, reserve_memory_); !limited)
       return awj::compat::unexpected{limited.error()};
     const ImageFile source{};
-    auto prepared = prepare_encoding(source, decoded, {});
+    auto prepared = [&] {
+      native_backend_detail::ScopedStageTimer timer{memory_result.prepare_seconds};
+      return prepare_encoding(source, decoded, {});
+    }();
     if (!prepared) return awj::compat::unexpected{prepared.error().message};
-    EncodeResult memory_result{};
-    if (!admit_encoding_memory(memory_result, decoded, prepared->settings, 0))
-      return awj::compat::unexpected{memory_result.message};
+    {
+      native_backend_detail::ScopedStageTimer timer{memory_result.prepare_seconds};
+      if (!admit_encoding_memory(memory_result, decoded, prepared->settings, 0))
+        return awj::compat::unexpected{memory_result.message};
+    }
     // 路径形参在候选搜索中仅用作输出码流的格式提示，不是输入或候选文件。
     const auto format_hint = fs::path{std::wstring{L"memory"} + output_extension_for(cfg_)};
-    return execute_encode(decoded, prepared->encoder.get(), prepared->settings, format_hint, stop_token);
+    auto encoded = [&] {
+      native_backend_detail::ScopedStageTimer timer{memory_result.encode_seconds};
+      return execute_encode(decoded, prepared->encoder.get(), prepared->settings, format_hint, stop_token, memory_result, 0);
+    }();
+    if (encoded) native_backend_detail::merge_stage_timing(*encoded, memory_result);
+    return encoded;
   }
 
  private:
@@ -1829,6 +1965,9 @@ class NativeBackend final {
 
   static void mark_failed(EncodeResult& result, std::string message) {
     result.processed = true;
+    result.ok = false;
+    result.skipped = false;
+    result.resize_workers = 0;
     result.message = std::move(message);
   }
 
@@ -1838,6 +1977,9 @@ class NativeBackend final {
     }
     result.canceled = true;
     result.processed = true;
+    result.ok = false;
+    result.skipped = false;
+    result.resize_workers = 0;
     result.message = "任务已取消。";
     return true;
   }
@@ -1899,15 +2041,17 @@ class NativeBackend final {
 
   [[nodiscard]] std::optional<EncodeResult> try_avif_lossless_passthrough(
       const ImageFile& image,
-      const EncodeResult& base_result,
+      EncodeResult& result,
       EncodeStartedAt started,
       awj::compat::stop_token stop_token) const {
     if (!native_backend_detail::avif_lossless_passthrough_allowed(cfg_, image.path)) {
       return std::nullopt;
     }
 
-    auto result = base_result;
-    auto container_info = parse_avif_container_info(image.path);
+    auto container_info = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
+      return parse_avif_container_info(image.path);
+    }();
     if (!container_info) {
       return std::nullopt;
     }
@@ -1925,11 +2069,15 @@ class NativeBackend final {
     if (cancel_if_requested(result, stop_token)) {
       return result;
     }
-    const auto write_started = native_backend_detail::Clock::now();
-    auto copied = native_backend_detail::copy_file_to_output(
-        image.path, result.output_path, cfg_.collision_mode == CollisionMode::overwrite,
-        stop_token);
-    result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+    result.decode_stage = "avif.parse";
+    result.resize_seconds = 0.0;
+    result.resize_workers = 0;
+    result.encode_seconds = 0.0;  // Confirmed bitstream copy; no encoder was run.
+    auto copied = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.write_seconds};
+      return native_backend_detail::copy_file_to_output(
+          image.path, result.output_path, cfg_.collision_mode == CollisionMode::overwrite, stop_token);
+    }();
     if (!copied) {
       if (stop_token.stop_requested()) {
         cancel_if_requested(result, stop_token);
@@ -1943,10 +2091,13 @@ class NativeBackend final {
     result.final_encoder_quality = 100;
     result.search_attempt_count = 1;
     result.lossless = true;
-    native_backend_detail::populate_avif_passthrough_diagnostics(*container_info,
-                                                                 cfg_.avif_encoder,
-                                                                 cfg_.avif_color_representation,
-                                                                 result);
+    {
+      native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+      native_backend_detail::populate_avif_passthrough_diagnostics(*container_info,
+                                                                   cfg_.avif_encoder,
+                                                                   cfg_.avif_color_representation,
+                                                                   result);
+    }
     result.decoder_id = "libavif-parse";
     result.encoder_id = "avif-passthrough";
     result.integration_mode = "avif-lossless-passthrough";
@@ -1967,36 +2118,33 @@ class NativeBackend final {
 
   [[nodiscard]] std::optional<EncodeResult> try_jxl_jpeg_bitstream_transcode(
       const ImageFile& image,
-      const EncodeResult& base_result,
+      EncodeResult& result,
       EncodeStartedAt started,
       awj::compat::stop_token stop_token) const {
     if (!native_backend_detail::jxl_jpeg_bitstream_transcode_allowed(cfg_, image.path)) {
       return std::nullopt;
     }
 
-    auto result = base_result;
-    result.decoder_id = "jpeg-bitstream";
-    result.encoder_id = "libjxl";
-    result.integration_mode = "jxl-jpeg-bitstream-transcode";
-    result.final_encoder_quality = 100;
-    result.lossless = true;
-    result.encoder_threads = 0;
-    result.memory_budget_bytes = resources_.memory_limit_bytes;
-
-    auto settings = native_backend_detail::settings_from_config(cfg_, resources_);
-    settings.jxl_jpeg_lossless_candidate = true;
-
-    auto bytes = decoder_common::read_file_bytes(image.path, "JPEG");
+    auto bytes = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
+      return decoder_common::read_file_bytes(image.path, "JPEG");
+    }();
     if (!bytes) {
       return std::nullopt;
     }
-    const auto source = native_backend_detail::inspect_jpeg_bitstream_source(*bytes);
+    const auto source = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
+      return native_backend_detail::inspect_jpeg_bitstream_source(*bytes);
+    }();
     if (source.has_mpf || source.width == 0 || source.height == 0 ||
         limited_dimensions(source.width, source.height, cfg_)) {
       return std::nullopt;
     }
     // HDR 和损坏的增益图必须经过常规解码入口，不能用 JPEG 位流转码绕过 ISO 校验。
-    const auto gain_map = probe_jpeg_gain_map_dimensions(std::span<const std::byte>{*bytes}, stop_token);
+    const auto gain_map = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
+      return probe_jpeg_gain_map_dimensions(std::span<const std::byte>{*bytes}, stop_token);
+    }();
     if (!gain_map || gain_map->has_value()) {
       return std::nullopt;
     }
@@ -2004,14 +2152,30 @@ class NativeBackend final {
       return result;
     }
 
-    native_backend_detail::populate_jxl_jpeg_bitstream_source_diagnostics(
-        settings, std::span<const std::byte>{*bytes}, cfg_);
+    result.decoder_id = "jpeg-bitstream";
+    result.decode_stage = "jpeg.bitstream";
+    result.encoder_id = "libjxl";
+    result.integration_mode = "jxl-jpeg-bitstream-transcode";
+    result.final_encoder_quality = 100;
+    result.lossless = true;
+    result.encoder_threads = 0;
+    result.memory_budget_bytes = resources_.memory_limit_bytes;
+    result.resize_seconds = 0.0;
+    result.resize_workers = 0;
+    auto settings = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+      auto settings = native_backend_detail::settings_from_config(cfg_, resources_);
+      settings.jxl_jpeg_lossless_candidate = true;
+      native_backend_detail::populate_jxl_jpeg_bitstream_source_diagnostics(
+          settings, std::span<const std::byte>{*bytes}, cfg_);
+      return settings;
+    }();
 
     auto encoder = JXLImageEncoder{};
-    const auto encode_started = native_backend_detail::Clock::now();
-    auto encoded = encoder.encode_jpeg_bitstream(std::span<const std::byte>{*bytes},
-                                                 settings, stop_token);
-    result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+    auto encoded = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.encode_seconds};
+      return encoder.encode_jpeg_bitstream(std::span<const std::byte>{*bytes}, settings, stop_token);
+    }();
     if (!encoded) {
       if (stop_token.stop_requested()) {
         cancel_if_requested(result, stop_token);
@@ -2028,12 +2192,13 @@ class NativeBackend final {
       return result;
     }
 
-    const auto write_started = native_backend_detail::Clock::now();
-    if (auto written = native_backend_detail::write_output_bytes(
-            result.output_path, std::span<const std::byte>{encoded->encoded.bytes},
-            cfg_.collision_mode == CollisionMode::overwrite, stop_token);
-        !written) {
-      result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+    auto written = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.write_seconds};
+      return native_backend_detail::write_output_bytes(
+          result.output_path, std::span<const std::byte>{encoded->encoded.bytes},
+          cfg_.collision_mode == CollisionMode::overwrite, stop_token);
+    }();
+    if (!written) {
       if (stop_token.stop_requested()) {
         cancel_if_requested(result, stop_token);
       } else {
@@ -2041,10 +2206,9 @@ class NativeBackend final {
       }
       return result;
     }
-    result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
 
     encoded->diagnostics.timing.encode_seconds = result.encode_seconds;
-    encoded->diagnostics.timing.write_seconds = result.write_seconds;
+    native_backend_detail::merge_stage_timing(*encoded, result);
     native_backend_detail::copy_native_result(*encoded, result);
     const auto finished = std::chrono::steady_clock::now();
     result.seconds = std::chrono::duration<double>(finished - started).count();
@@ -2073,12 +2237,6 @@ class NativeBackend final {
     }
 
     const bool decoder_used_fallback = decoded->used_fallback;
-    if (auto selected = native_backend_detail::select_output_rendition(*decoded, cfg_, stop_token); !selected) {
-      return awj::compat::unexpected{selected.error()};
-    }
-    if (auto limited = native_backend_detail::apply_image_size_limit(*decoded, cfg_, stop_token, resources_); !limited) {
-      return awj::compat::unexpected{limited.error()};
-    }
     return DecodedInput{.decoded = std::move(*decoded),
                         .decoder_used_fallback = decoder_used_fallback};
   }
@@ -2393,7 +2551,10 @@ class NativeBackend final {
       ImageEncoder* encoder,
       const NativeEncodeSettings& settings,
       const fs::path& output_path,
-      awj::compat::stop_token stop_token) const {
+      awj::compat::stop_token stop_token,
+      EncodeResult& memory_result,
+      std::uint64_t compressed_bytes,
+      std::uint64_t additional_resident_bytes = 0) const {
     const bool source_has_gain_map = decoded.image.source_info && decoded.image.source_info->source_has_gain_map;
     const auto encode_started = native_backend_detail::Clock::now();
     if (stop_token.stop_requested()) {
@@ -2443,7 +2604,8 @@ class NativeBackend final {
           if (!converted) return awj::compat::unexpected{converted.error()};
           rgb = std::move(*converted);
         } else if (decoded.image.geometry) {
-          auto transformed = resize_native_pixels(decoded.image, decoded.image.width, decoded.image.height, stop_token);
+          auto transformed = resize_native_pixels(decoded.image, decoded.image.width, decoded.image.height,
+                                                   stop_token, effective_settings.resources);
           if (!transformed) return awj::compat::unexpected{transformed.error()};
           rgb = std::move(*transformed);
         }
@@ -2490,7 +2652,7 @@ class NativeBackend final {
       effective_settings.encoder_fallback_reason = source_has_gain_map ? "Gain Map linear HDR -> BT.2020/PQ" : "scRGB -> BT.2020/PQ";
       effective_settings.color_reason = "线性 FP16 直接转换为目标 BT.2020/PQ 像素";
     }
-    // Visual search needs one stable RGB reference; candidates share its samples.
+    // 视觉搜索共享稳定 RGB 参考；独立物化时外层原图仍存活到所有候选结束。
     if (cfg_.visual_quality && (effective_settings.tone_map_to_sdr_pixels ||
         decoded.image.sample_representation == SampleRepresentation::ieee_half_float)) {
       auto converted = convert_image_pixels(decoded.image, PixelConversionRequest{.format = PixelFormat::rgba,
@@ -2500,6 +2662,13 @@ class NativeBackend final {
           stop_token, effective_settings.resources);
       if (!converted) return awj::compat::unexpected{converted.error()};
       search_reference = std::move(*converted); effective_image = &*search_reference;
+      // 初次准入已预留参考；现在用真实 capacity 精化，仍只在持有 ticket 内选缓存。
+      if (!admit_encoding_memory(memory_result, decoded, effective_settings, compressed_bytes,
+              additional_resident_bytes, &*search_reference))
+        return awj::compat::unexpected{memory_result.message};
+      // codec 几何已把稳定参考作为 source 计费；这里只补它看不到的原图，不能再加参考。
+      effective_settings.resources.geometry_retained_bytes = hdr_cost::add(
+          effective_settings.resources.geometry_retained_bytes, resident_image_bytes(decoded.image));
       effective_settings.tone_map_to_sdr_pixels = false;
     }
     if (cfg_.visual_quality) {
@@ -2532,27 +2701,27 @@ class NativeBackend final {
     return encoded;
   }
 
-  [[nodiscard]] EncodeResult finalize_result(EncodeResult result,
+  [[nodiscard]] EncodeResult finalize_result(EncodeResult& result,
                                              NativeEncodeResult encoded,
                                              const ImageDecodeResult& decoded,
                                              bool decoder_used_fallback,
                                              std::string avif_bit_depth_reason,
                                              EncodeStartedAt started,
                                              awj::compat::stop_token stop_token) const {
-    const auto write_started = native_backend_detail::Clock::now();
-    if (auto written = native_backend_detail::write_output_bytes(
-            result.output_path, std::span<const std::byte>{encoded.encoded.bytes},
-            cfg_.collision_mode == CollisionMode::overwrite, stop_token);
-        !written) {
-      result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
+    auto written = [&] {
+      native_backend_detail::ScopedStageTimer timer{result.write_seconds};
+      return native_backend_detail::write_output_bytes(
+          result.output_path, std::span<const std::byte>{encoded.encoded.bytes},
+          cfg_.collision_mode == CollisionMode::overwrite, stop_token);
+    }();
+    if (!written) {
       if (stop_token.stop_requested()) {
         cancel_if_requested(result, stop_token);
       } else {
         mark_failed(result, written.error());
       }
-      return result;
+      return std::move(result);
     }
-    result.write_seconds = native_backend_detail::elapsed_seconds(write_started);
 
     encoded.diagnostics.decoder_id = decoded.decoder_id;
     encoded.diagnostics.used_decoder_fallback = decoder_used_fallback;
@@ -2580,10 +2749,12 @@ class NativeBackend final {
     });
     native_backend_detail::log_info_noexcept(logger_, [&] {
       return awj::compat::format(
-          "native timing: item={:04} total={}s decode={}s prepare={}s encode={}s vq={}s metrics={}s write={}s",
+          "native timing: item={:04} total={}s decode={}s resize={}s resize_workers={} prepare={}s encode={}s vq={}s metrics={}s write={}s",
           result.index + 1,
           native_backend_detail::format_timing_seconds(result.seconds),
           native_backend_detail::format_timing_seconds(result.decode_seconds),
+          native_backend_detail::format_timing_seconds(result.resize_seconds),
+          result.resize_workers,
           native_backend_detail::format_timing_seconds(result.prepare_seconds),
           native_backend_detail::format_timing_seconds(result.encode_seconds),
           native_backend_detail::format_timing_seconds(result.visual_quality_search_seconds),
@@ -2634,7 +2805,7 @@ class NativeBackend final {
         });
       }
     }
-    return result;
+    return std::move(result);
   }
 
   EncodeResult encode_with_overrides(const ImageFile& image,
@@ -2649,9 +2820,19 @@ class NativeBackend final {
   EncodeResult encode_with_overrides_impl(const ImageFile& image,
                                           EncodeOverrides overrides,
                                           awj::compat::stop_token stop_token) const {
+    const auto started = native_backend_detail::Clock::now();
+    EncodeResult result{};
+    const auto failed = [&](std::string_view message) {
+      // 保留所有已观察阶段，包含栈展开时的作用域退出计时；
+      // 初始化自身可能在路径就绪前失败。
+      result.index = image.index;
+      if (result.input_path.empty()) result.input_path = image.path;
+      result.original_bytes = image.bytes;
+      if (!cancel_if_requested(result, stop_token)) mark_failed(result, std::string{message});
+      return std::move(result);
+    };
     try {
-      const auto started = std::chrono::steady_clock::now();
-      auto result = initialize_result(image);
+      result = initialize_result(image);
 
       if (cancel_if_requested(result, stop_token)) {
         return result;
@@ -2684,33 +2865,46 @@ class NativeBackend final {
           if (!cancel_if_requested(result, stop_token)) mark_failed(result, std::move(message));
           return std::move(result);
         };
-        const auto decode_started = native_backend_detail::Clock::now();
-        auto opened = open_animation(image.path,
-            resources_.memory_limit_bytes / std::max(1, resources_.file_parallelism), stop_token,
-            cfg_.output_format == OutputFormat::webp);
-        if (!opened) {
-          result.decode_stage = "animation.probe";
-          result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
-          return animation_failed(opened.error());
-        }
+        result.decode_stage = "animation.probe";
+        const auto reader_budget = resource_memory_budget(resources_);
+        if (!reader_budget) return animation_failed("动画每文件内存预算不足。");
+        auto opened = [&] {
+          native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
+          return open_animation(image.path,
+              resources_.memory_limit_bytes ? reader_budget : 0, stop_token,
+              cfg_.output_format == OutputFormat::webp);
+        }();
+        if (!opened) return animation_failed(opened.error());
         if (*opened) {
           if (cfg_.avif_layers.enabled() && (*opened)->info().durations.size() > 1)
             return animation_failed("AVIF 渐进式仅支持静态图，不能与多帧动画组合。");
           if (cfg_.visual_quality && *cfg_.visual_quality < 100 && (*opened)->info().durations.size() > 1) {
             return animation_failed("动画输出暂不支持视觉质量搜索；请使用编码质量预设。动画不会降为单图。");
           }
-          native_backend_detail::GeometryAnimationReader reader{std::move(*opened), cfg_, resources_};
+          auto reader = [&] {
+            native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+            return native_backend_detail::GeometryAnimationReader{std::move(*opened), cfg_, resources_, result, reserve_memory_};
+          }();
+          result.decode_stage = "animation.decode";
           auto next = reader.next(stop_token);
           if (!next || !*next) {
             return animation_failed(next ? "动画不包含帧。" : next.error());
           }
-          result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
-          ImageDecodeResult first{.image = reader.frame(), .decoder_id = reader.info().decoder_id};
-          auto prepared = prepare_encoding(image, first, {});
+          ImageDecodeResult first{};
+          auto prepared = [&] {
+            native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+            first = ImageDecodeResult{.image = reader.frame(), .decoder_id = reader.info().decoder_id};
+            return prepare_encoding(image, first, {});
+          }();
           // 单帧使用普通编码；多帧也先按真实首帧计划取得预约，再释放借用副本。
           if (!prepared) return animation_failed(prepared.error().message);
-          if (!admit_encoding_memory(result, first, prepared->settings, image.bytes)) return result;
+          const auto admitted = [&] {
+            native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+            return admit_encoding_memory(result, first, prepared->settings, image.bytes, reader.memory_usage_bytes());
+          }();
+          if (!admitted) return result;
           if (reader.info().durations.size() > 1) first.image.planes.clear();
+          reader.bind_encoding_memory(prepared->settings);
           if (prepared->settings.avif_grid_plan || overrides.avif_grid_plan) {
             mark_failed(result, "动画 AVIF 不能使用静态 Grid；请通过尺寸限制缩小画布。"); return result;
           }
@@ -2719,17 +2913,23 @@ class NativeBackend final {
               cfg_.frame_progress(image.index, completed, total);
             };
           }
-          const auto encode_started = native_backend_detail::Clock::now();
-          auto encoded = reader.info().durations.size() == 1
-              ? execute_encode(first, prepared->encoder.get(), prepared->settings, result.output_path, stop_token)
-              : cfg_.output_format == OutputFormat::webp
-                  ? encode_webp_animation(reader, prepared->settings, stop_token)
-                  : encode_avif_animation(reader, prepared->settings, stop_token);
-          result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+          auto encoded = [&] {
+            auto timer = reader.time_encode(result.encode_seconds);
+            return reader.info().durations.size() == 1
+                ? execute_encode(first, prepared->encoder.get(), prepared->settings, result.output_path, stop_token,
+                    result, image.bytes, reader.memory_usage_bytes())
+                : cfg_.output_format == OutputFormat::webp
+                    ? encode_webp_animation(reader, prepared->settings, stop_token)
+                    : encode_avif_animation(reader, prepared->settings, stop_token);
+          }();
           if (!encoded) return animation_failed(encoded.error());
+          if (reader.info().durations.size() > 1) {
+            // 编码外层墙钟包含同步 next()；只发布排除嵌套读取后的 encode 区间，避免重复计帧。
+            encoded->diagnostics.timing.encode_seconds = result.encode_seconds;
+          }
           if (reader.info().durations.size() == 1 && prepared->settings.frame_progress)
             prepared->settings.frame_progress(1, 1);
-          auto finished = finalize_result(std::move(result), std::move(*encoded), first, false,
+          auto finished = finalize_result(result, std::move(*encoded), first, false,
               {}, started, stop_token);
           if (finished.ok && reader.info().zero_delay_adjusted) {
             finished.message = "OK；零时长帧已按 GIF 10ms / APNG、WebP 1ms 编码。";
@@ -2749,22 +2949,36 @@ class NativeBackend final {
       }
 
       DecodeDiagnostics decode_diagnostics;
-      const auto decode_started = native_backend_detail::Clock::now();
-      auto decoded_input = decode_input(image, stop_token, decode_diagnostics);
-      result.decode_seconds = native_backend_detail::elapsed_seconds(decode_started);
+      auto decoded_input = [&] {
+        native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
+        return decode_input(image, stop_token, decode_diagnostics);
+      }();
       native_backend_detail::copy_decode_diagnostics(decode_diagnostics, result);
       if (!decoded_input) {
-        mark_failed(result, decoded_input.error());
+        if (!cancel_if_requested(result, stop_token)) mark_failed(result, decoded_input.error());
         return result;
       }
 
-      if (cancel_if_requested(result, stop_token)) {
+      if (cancel_if_requested(result, stop_token)) return result;
+
+      auto selected = [&] {
+        native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+        return native_backend_detail::select_output_rendition(decoded_input->decoded, cfg_, stop_token);
+      }();
+      if (!selected) {
+        if (!cancel_if_requested(result, stop_token)) mark_failed(result, selected.error());
+        return result;
+      }
+      if (auto limited = native_backend_detail::apply_image_size_limit(
+              decoded_input->decoded, cfg_, stop_token, resources_, result, reserve_memory_); !limited) {
+        if (!cancel_if_requested(result, stop_token)) mark_failed(result, limited.error());
         return result;
       }
 
-      const auto prepare_started = native_backend_detail::Clock::now();
-      auto prepared = prepare_encoding(image, decoded_input->decoded, std::move(overrides));
-      result.prepare_seconds = native_backend_detail::elapsed_seconds(prepare_started);
+      auto prepared = [&] {
+        native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+        return prepare_encoding(image, decoded_input->decoded, std::move(overrides));
+      }();
       if (!prepared) {
         native_backend_detail::copy_settings_diagnostics(prepared.error().settings, result);
         native_backend_detail::copy_decode_diagnostics(decode_diagnostics, result);
@@ -2776,11 +2990,19 @@ class NativeBackend final {
         return result;
       }
 
-      if (!admit_encoding_memory(result, decoded_input->decoded, prepared->settings, image.bytes)) return result;
-      const auto encode_started = native_backend_detail::Clock::now();
-      auto encoded = execute_encode(decoded_input->decoded, prepared->encoder.get(),
-                                    prepared->settings, result.output_path, stop_token);
-      result.encode_seconds = native_backend_detail::elapsed_seconds(encode_started);
+      const auto admitted = [&] {
+        native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
+        return admit_encoding_memory(result, decoded_input->decoded, prepared->settings, image.bytes);
+      }();
+      if (!admitted) return result;
+      const auto previous_encode_seconds = std::max(0.0, result.encode_seconds);
+      auto encoded = [&] {
+        native_backend_detail::ScopedStageTimer timer{result.encode_seconds};
+        return execute_encode(decoded_input->decoded, prepared->encoder.get(),
+                              prepared->settings, result.output_path, stop_token, result, image.bytes);
+      }();
+      if (encoded && encoded->diagnostics.timing.encode_seconds >= 0.0)
+        encoded->diagnostics.timing.encode_seconds += previous_encode_seconds;
       if (!encoded) {
         native_backend_detail::copy_settings_diagnostics(prepared->settings, result);
         native_backend_detail::copy_decode_diagnostics(decode_diagnostics, result);
@@ -2796,7 +3018,7 @@ class NativeBackend final {
         return result;
       }
 
-      auto finished = finalize_result(std::move(result), std::move(*encoded), decoded_input->decoded,
+      auto finished = finalize_result(result, std::move(*encoded), decoded_input->decoded,
                              decoded_input->decoder_used_fallback,
                              std::move(prepared->avif_bit_depth_reason), started, stop_token);
       native_backend_detail::copy_decode_diagnostics(decode_diagnostics, finished);
@@ -2809,22 +3031,31 @@ class NativeBackend final {
       }
       return finished;
     } catch (const std::bad_alloc&) {
-      return failed_encode_result(image, "native backend 单项转换内存不足。");
+      return failed("native backend 单项转换内存不足。");
     } catch (const std::length_error&) {
-      return failed_encode_result(image, "native backend 单项转换数据超过运行时限制。");
+      return failed("native backend 单项转换数据超过运行时限制。");
     } catch (const std::filesystem::filesystem_error&) {
-      return failed_encode_result(image, "native backend 单项转换文件系统访问失败。");
+      return failed("native backend 单项转换文件系统访问失败。");
+    } catch (...) {
+      return failed("native backend 单项转换发生未知异常。");
     }
   }
 
  private:
   bool admit_encoding_memory(EncodeResult& result, const ImageDecodeResult& decoded,
-                             NativeEncodeSettings& settings, std::uint64_t compressed) const {
-    const auto estimate = refined_regular_memory(decoded, settings, cfg_, compressed);
+                             NativeEncodeSettings& settings, std::uint64_t compressed,
+                             std::uint64_t additional_resident_bytes = 0,
+                             const ImageBuffer* visual_reference = nullptr) const {
+    const bool limited = !cfg_.unlock_memory_limit && resources_.memory_limit_bytes != 0;
+    const auto limit = limited ? (reserve_memory_ ? resources_.memory_limit_bytes : resource_memory_budget(resources_)) : 0;
+    // 参考物化后的再精化沿用已接受的每文件 ticket，不重取全局额度，也不再除文件并发。
+    const auto cache_budget = limited ? resource_memory_budget(settings.resources) : UINT64_MAX;
+    const auto estimate = refined_regular_memory(decoded, settings, cfg_, compressed, cache_budget,
+        additional_resident_bytes, visual_reference);
+    const auto previous_peak = result.memory_plan.reserved_peak_bytes;
     store_memory_estimate(result, estimate);
-    const auto limit = cfg_.unlock_memory_limit ? 0 : resources_.memory_limit_bytes /
-        static_cast<std::uint64_t>(reserve_memory_ ? 1 : std::max(1, resources_.file_parallelism));
-    if (estimate.bytes == UINT64_MAX || (limit && estimate.bytes > limit)) {
+    result.memory_plan.reserved_peak_bytes = previous_peak;
+    if (estimate.bytes == UINT64_MAX || (limited && estimate.bytes > limit)) {
       mark_failed(result, awj::compat::format("解码后精化预估工作集 {} 超过内存预算 {}，未启动编码。",
           format_size(estimate.bytes), format_size(limit)));
       return false;
@@ -2834,15 +3065,20 @@ class NativeBackend final {
       return false;
     }
     // 编码与候选搜索同步完成；result 和其预约 guard 均活到所有 codec 调用结束。
-    settings.memory_reservation = [reserve = reserve_memory_, limit, &result](std::uint64_t bytes) {
-      if (bytes == UINT64_MAX || (limit && bytes > limit) || (reserve && !reserve(bytes))) return false;
-      if (limit) result.memory_plan.reserved_peak_bytes = std::max(result.memory_plan.reserved_peak_bytes, bytes);
+    settings.memory_reservation = [reserve = reserve_memory_, limit, limited, &result](std::uint64_t bytes) {
+      if (bytes == UINT64_MAX || (limited && bytes > limit) || (reserve && !reserve(bytes))) return false;
+      if (limited) result.memory_plan.reserved_peak_bytes = std::max(result.memory_plan.reserved_peak_bytes, bytes);
       result.estimated_working_set_bytes = std::max(result.estimated_working_set_bytes, bytes);
       return true;
     };
-    result.memory_plan.reserved_peak_bytes = limit ? estimate.bytes : 0;
+    result.memory_plan.reserved_peak_bytes = limited ? std::max(previous_peak, estimate.bytes) : 0;
     settings.memory_base_reservation = estimate.bytes;
-    if (reserve_memory_) settings.resources.file_parallelism = 1;
+    settings.resources.encoder_threads_per_file = per_file_thread_budget(resources_);
+    settings.resources.file_parallelism = 1;
+    settings.resources.memory_limit_bytes = limit;
+    settings.resources.memory_reservation_bytes = limited ? estimate.bytes : 0;
+    settings.resources.geometry_retained_bytes = hdr_cost::add(
+        additional_resident_bytes, estimate.visual_encode_retained_bytes);
     native_backend_detail::log_info_noexcept(logger_, [&] {
       return awj::compat::format("内存计划 v2: prepared={} source={} conversion={} codec={} output-capacity={} layers={} depth={} chroma={} alpha={}",
           estimate.bytes, estimate.source_resident_bytes, estimate.conversion_bytes,

@@ -105,23 +105,40 @@ int main() {
   result.rendition.gain_map_bit_depth = 8;
   result.gain_map_compute_seconds = 1.25;
   result.gain_map_compute_workers = 3;
+  result.resize_seconds = 0.25;
+  result.resize_workers = 4;
   if (auto written = awj::write_csv(
           root / "csv", std::span<const awj::EncodeResult>{&result, 1});
       !written) {
     return fail(written.error());
   }
   const auto csv = read_file(root / "csv" / "log" / "summery.csv");
-  const auto version_cell = "," + std::string{awj::kAwjVersion} + "\n";
+  const auto version_cell = "," + std::string{awj::kAwjVersion} + ",0.250000,4\n";
   if (!csv.starts_with("\xEF\xBB\xBF" "index,input,") ||
       csv.find("visual_quality_search_trace,decode_stage,source_metadata_available,selected_rendition,rendition_origin,reference_chroma,reference_bit_depth,") ==
           std::string::npos ||
       csv.find("heif_tile_parallelism,heif_codec_thread_budget,") == std::string::npos ||
-      csv.find(",awj_version\n") == std::string::npos ||
+      csv.find(",awj_version,resize_seconds,resize_workers\n") == std::string::npos ||
       csv.find(",heif.gain-map.render,true,hdr,gain-map-reconstructed,444,16,false,false,true,1080,1440,8,") == std::string::npos ||
       csv.find("1.250000") == std::string::npos ||
       !csv.ends_with(version_cell)) {
     return fail("log/summery.csv did not record the CMake AWJ version.");
   }
+  // 只升级自己认识的旧 schema；新列追加不移动 awj_version 或其他既有列。
+  auto legacy_csv = csv;
+  const std::string_view new_header = ",resize_seconds,resize_workers";
+  const auto header_position = legacy_csv.find(new_header);
+  if (header_position == std::string::npos) return fail("CSV 新列不在预期表头位置。");
+  legacy_csv.erase(header_position, new_header.size());
+  const std::string_view resize_suffix = ",0.250000,4\n";
+  legacy_csv.resize(legacy_csv.size() - resize_suffix.size());
+  legacy_csv.push_back('\n');
+  const auto legacy_root = root / "csv-legacy";
+  fs::create_directories(legacy_root / "log", ec);
+  if (ec || !write_file(legacy_root / "log" / "summery.csv", legacy_csv) ||
+      !awj::write_csv(legacy_root, std::span<const awj::EncodeResult>{&result, 1}) ||
+      read_file(legacy_root / "log" / "summery.csv") != csv)
+    return fail("旧 CSV schema 未被安全升级到追加 resize 列的格式。");
 
   const auto log_root = root / "logger";
   const auto log_dir = log_root / "log";

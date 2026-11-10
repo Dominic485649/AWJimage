@@ -1299,7 +1299,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
   encoder->speed = encoder_speed;
   encoder->keyframeInterval = 1;
   const int total_encoder_threads = avif_aom_detail::codec_thread_count(
-      settings.resources.encoder_threads_per_file);
+      per_file_thread_budget(settings.resources));
   encoder->maxThreads = total_encoder_threads;
 
   const auto set_option = [&](std::string_view key, std::string_view value) -> awj::compat::expected<void, std::string> {
@@ -1356,10 +1356,42 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
       const ImageBuffer* samples = &image;
       if (!settings.avif_layers.automatic &&
           (layer.width != image.width || layer.height != image.height)) {
-        auto scaled = resize_native_pixels(source_image, layer.width, layer.height, stop_token);
+        auto layer_resources = settings.resources;
+        const auto workers = per_file_thread_budget(layer_resources);
+        const auto padded = hdr_cost::padded_pixels(image.width, image.height, 64);
+        const auto planes = pixel_detail::destination_pixel_bytes(image.width, image.height, conversion, source_image.alpha_mode);
+        const auto padded_planes = pixel_detail::destination_pixel_bytes((image.width + 63ull) & ~63ull,
+            (image.height + 63ull) & ~63ull, conversion, source_image.alpha_mode);
+        const auto hdr_signal = hdr::has_explicit_hdr_signal(source_image);
+        if (!hdr_signal) return awj::compat::unexpected{hdr_signal.error()};
+        const bool lossless_layer = std::any_of(layer_plan->begin(), layer_plan->end(),
+            [](const auto& entry) { return entry.quality >= 100 || entry.alpha_quality >= 100; });
+        const auto workspace = avif_codec_workspace_bytes(padded, padded_planes, workers, bit_depth,
+            *hdr_signal || settings.applied_transfer_characteristics == 16 || settings.applied_transfer_characteristics == 18,
+            encoder_speed <= 3 || lossless_layer, static_cast<int>(layer_plan->size()));
+        const auto streams = std::max(hdr_cost::multiply(hdr_cost::add(padded_planes, 64 * 1024), 3 * layer_plan->size()),
+            hdr_cost::multiply(awjAvifEncoderRetainedBytes(encoder.get()), 3));
+        auto retained = hdr_cost::add(regular_memory_fixed_bytes(workers), hdr_cost::add(workspace,
+            hdr_cost::add(streams, hdr_cost::multiply(planes, layer_plan->size() - 1))));
+        if (converted_pixels) retained = hdr_cost::add(retained, pixel_detail::resident_image_bytes(*converted_pixels));
+        // 预览后续的 YUV 转换结果与 RGBA 图像同时存活；
+        // 一并预约其存储，包含元数据和平面描述符。
+        retained = hdr_cost::add(retained, pixel_detail::destination_pixel_bytes(
+            layer.width, layer.height, conversion, source_image.alpha_mode));
+        retained = hdr_cost::add(retained, hdr_cost::multiply(4, sizeof(ImagePlane)));
+        retained = hdr_cost::add(retained, hdr_cost::multiply(source_image.metadata.size(), sizeof(MetadataBlock)));
+        for (const auto& block : source_image.metadata) retained = hdr_cost::add(retained, block.bytes.capacity());
+        if (source_image.source_info) retained = hdr_cost::add(retained,
+            hdr_cost::add(source_image.source_info->color_metadata_source.capacity(), 1));
+        layer_resources.geometry_retained_bytes = hdr_cost::add(layer_resources.geometry_retained_bytes, retained);
+        const ImageGeometryPlan geometry{.source_width = source_image.width, .source_height = source_image.height,
+            .content_width = layer.width, .content_height = layer.height, .canvas_width = layer.width, .canvas_height = layer.height};
+        auto admitted = admit_image_geometry(source_image, geometry, layer_resources, settings.memory_reservation);
+        if (!admitted) return awj::compat::unexpected{admitted.error()};
+        auto scaled = resize_native_pixels(source_image, layer.width, layer.height, stop_token, *admitted);
         if (!scaled) return awj::compat::unexpected{scaled.error()};
         resized = std::move(*scaled);
-        auto converted = convert_image_pixels(*resized, conversion, stop_token, settings.resources);
+        auto converted = convert_image_pixels(*resized, conversion, stop_token, *admitted);
         if (!converted) return awj::compat::unexpected{converted.error()};
         converted_layer = std::move(*converted);
         samples = &*converted_layer;
@@ -1641,7 +1673,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_avif_animation(
   encoder->quality = lossless ? AVIF_QUALITY_LOSSLESS : std::clamp(settings.quality, 1, 100);
   encoder->qualityAlpha = encoder->quality;
   encoder->speed = std::clamp(settings.speed, 0, 10);
-  encoder->maxThreads = avif_aom_detail::codec_thread_count(settings.resources.encoder_threads_per_file);
+  encoder->maxThreads = avif_aom_detail::codec_thread_count(per_file_thread_budget(settings.resources));
   encoder->keyframeInterval = settings.avif_animation_keyframe;
   encoder->timescale = animation_timescale(info.durations);
   encoder->repetitionCount = info.repetitions;
@@ -1650,7 +1682,10 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_avif_animation(
         settings.avif_animation_tune == AvifAnimationTune::ssim ? "ssim" : "psnr");
     if (option != AVIF_RESULT_OK) return awj::compat::unexpected{avif_aom_detail::avif_error(option, encoder.get())};
   }
-  const auto budget = settings.resources.memory_limit_bytes;
+  const bool limited = !encoding_defaults::current_memory_policy().unrestricted_memory && settings.resources.memory_limit_bytes != 0;
+  const auto budget = limited
+      ? (settings.memory_reservation ? settings.resources.memory_limit_bytes : resource_memory_budget(settings.resources)) : 0;
+  if (limited && !budget) return awj::compat::unexpected{"动画 AVIF 每文件内存预算不足。"};
   const auto raw_reserve = static_cast<std::uint64_t>(info.width) * info.height * 32;
   auto check_budget = [&](std::size_t frame_index) -> awj::compat::expected<void, std::string> {
     const auto retained = awjAvifEncoderRetainedBytes(encoder.get());

@@ -168,6 +168,10 @@ struct AvifEncoderSelection {
 
 struct EncodeTimingDiagnostics {
   double decode_seconds{-1.0};
+  // 仅计用户请求的几何变换；编码器内部预览层仍归属 encode。
+  // -1 表示未观察，0 表示已确认无变换；worker 数包含调用线程。
+  double resize_seconds{-1.0};
+  int resize_workers{};
   double prepare_seconds{-1.0};
   double encode_seconds{-1.0};
   double avif_rgb_to_yuv_seconds{-1.0};

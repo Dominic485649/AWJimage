@@ -1446,6 +1446,8 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
     const bool dark_mode = shell_window_dark_mode();
     app->set_dark_mode(dark_mode);
     auto rows = std::make_shared<slint::VectorModel<TaskRow>>();
+    // 仅本窗口/本轮的 UI 回调访问；不从舍入或本地化后的 TaskRow 文本重建。
+    auto timings = std::make_shared<std::vector<StudioWorkerStageTimings>>();
     app->set_task_rows(rows);
     app->set_status_text(to_shared("正在扫描队列..."));
     std::vector<awj::ImageFile> shell_files;
@@ -1456,6 +1458,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
         pending_rows.push_back(pending_shell_task_row(parsed->config, image));
       }
       rows->set_vector(std::move(pending_rows));
+      timings->resize(shell_files.size());
       app->set_status_text(to_shared(std::format("队列：{} 个文件。", shell_files.size())));
     } else {
       append_log_row(rows, scanned.error());
@@ -1482,7 +1485,7 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
       if (!output_dir.empty()) ShellExecuteW(nullptr, L"open", output_dir.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
     });
 
-    std::jthread worker{[weak, rows, child, close_on_finish = parsed->config.shell_close_on_finish, &running](std::stop_token token) {
+    std::jthread worker{[weak, rows, timings, child, close_on_finish = parsed->config.shell_close_on_finish, &running](std::stop_token token) {
       try {
       std::string pending;
       std::optional<std::size_t> pending_item;
@@ -1505,14 +1508,40 @@ int run_shell_convert_window(int argc, wchar_t* argv[]) {
           return;
         }
         if (auto detail = parse_studio_worker_detail_event(line)) {
-          slint::invoke_from_event_loop([weak, rows, detail = *detail] {
-            if (weak.lock()) if (auto row = rows->row_data(detail.index)) {
+          slint::invoke_from_event_loop([weak, rows, timings, detail = *detail] {
+            if (!weak.lock() || detail.index >= timings->size()) return;
+            if (auto row = rows->row_data(detail.index)) {
+              auto& timing = (*timings)[detail.index];
+              timing.apply(detail);
               row->encoder = to_shared(detail.encoder_id);
-              row->threads = to_shared(std::to_string(detail.encoder_threads));
-              row->stage_timings = to_shared(stage_timings_text(detail.decode_microseconds / 1e6, detail.prepare_microseconds / 1e6, detail.encode_microseconds / 1e6, detail.write_microseconds / 1e6));
+              row->threads = detail.encoder_threads > 0
+                                 ? to_shared(std::to_string(detail.encoder_threads))
+                                 : slint::SharedString{};
+              row->stage_timings = to_shared(stage_timings_text(
+                  timing.decode_seconds, timing.prepare_seconds,
+                  timing.encode_seconds, timing.write_seconds,
+                  timing.resize_seconds, timing.resize_workers));
               rows->set_row_data(detail.index, *row);
             }
           });
+          return;
+        }
+        if (is_studio_worker_resize_event_line(line)) {
+          if (auto resize = parse_studio_worker_resize_event(line)) {
+            slint::invoke_from_event_loop([weak, rows, timings, resize = *resize] {
+              if (!weak.lock() || resize.index >= timings->size()) return;
+              if (auto row = rows->row_data(resize.index)) {
+                auto& timing = (*timings)[resize.index];
+                timing.apply(resize);
+                row->stage_timings = to_shared(stage_timings_text(
+                    timing.decode_seconds, timing.prepare_seconds,
+                    timing.encode_seconds, timing.write_seconds,
+                    timing.resize_seconds, timing.resize_workers));
+                rows->set_row_data(resize.index, *row);
+              }
+            });
+          }
+          // 即使协议帧被拒绝，也不能覆盖 ITEM 的可读日志。
           return;
         }
         if (parse_studio_worker_frame_event(line)) return;

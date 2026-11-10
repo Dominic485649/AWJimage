@@ -30,6 +30,7 @@
 #endif
 
 #include "awj_studio_ui_smoke.h"
+#include "shell_convert_window_ui_shell_smoke.h"
 #include "focus_reentrancy.h"
 #include "font_combo_hover.h"
 #include "../src/ui/queue_model.h"
@@ -292,8 +293,9 @@ void send_text_key(const slint::ComponentHandle<AwjStudio>& app,
   app->window().dispatch_key_release_event(text);
 }
 
+template<class App>
 std::optional<slint::testing::ElementHandle> find_one(
-    const slint::ComponentHandle<AwjStudio>& app, std::string_view label,
+    const slint::ComponentHandle<App>& app, std::string_view label,
     std::optional<slint::language::AccessibleRole> role = std::nullopt) {
   auto elements =
       slint::testing::ElementHandle::find_by_accessible_label(app, label);
@@ -932,7 +934,7 @@ std::shared_ptr<slint::VectorModel<TaskRow>> task_rows() {
       .encoder = "aom",
       .threads = "1",
       .stage_timings =
-          "decode 0.010s · prepare 0.002s · encode 1.250s · write 0.004s"});
+          "decode 0.010s · resize 0.125s (workers 4) · prepare 0.002s · encode 1.250s · write 0.004s"});
   rows.push_back(TaskRow{.order = "2",
                          .filename = "completed.png",
                          .folder = "C:\\smoke\\input",
@@ -949,8 +951,77 @@ std::shared_ptr<slint::VectorModel<TaskRow>> task_rows() {
                          .encoder = "aom",
                          .threads = "1",
                          .stage_timings =
-                             "decode 0.008s · prepare 0.001s · encode 0.900s · write 0.003s"});
+                             "decode 0.008s · resize 0.000s (workers 0) · prepare 0.001s · encode 0.900s · write 0.003s"});
   return std::make_shared<slint::VectorModel<TaskRow>>(std::move(rows));
+}
+
+int verify_queue_stage_detail(const slint::ComponentHandle<AwjStudio>& app,
+                              float window_width, bool english) {
+  using Role = slint::language::AccessibleRole;
+  for (const int index : {0, 1}) {
+    app->set_selected_queue_index(index);
+    slint::private_api::testing::mock_elapsed_time(250);
+    const auto row = app->get_task_rows()->row_data(static_cast<std::size_t>(index));
+    if (!row) return fail("queue timing fixture is missing");
+    const auto stage_label = std::string{english ? "Stages: " : "阶段："} +
+                             row->stage_timings.data();
+    const auto timing = find_one(app, stage_label, Role::Text);
+    const auto encoder = find_one(app, english ? "Encoder: aom  ·  Threads: 1"
+                                              : "编码器：aom  ·  线程：1", Role::Text);
+    if (!timing || !encoder)
+      return fail("resize stage or separate encoder thread label disappeared after translation");
+    const auto position = timing->absolute_position();
+    const auto size = timing->size();
+    if (position.x < 0 || size.width <= 0 || size.height <= 0 ||
+        position.x + size.width > window_width + 1.0f)
+      return fail("five-stage queue timing text escaped its wrapping layout");
+  }
+  app->set_selected_queue_index(0);
+  return 0;
+}
+
+int verify_shell_stage_detail(float scale, bool dark, bool english) {
+  auto app = awj_shell_timing_test::ShellConvertWindow::create();
+  if (!slint::select_bundled_translation(english ? "en" : ""))
+    return fail("右键阶段计时布局测试无法切换语言");
+  app->set_dark_mode(dark);
+  app->window().window_handle().set_const_scale_factor(scale);
+  const std::array<std::string_view, 3> values{
+      "decode 1234.567s · resize 9876.543s (workers 8) · prepare 2345.678s · encode 8765.432s · write 123.456s",
+      "decode 0.010s · resize 0.000s (workers 0) · prepare 0.002s · encode 1.250s · write 0.004s",
+      "decode 0.010s · resize - · prepare 0.002s · encode 1.250s · write 0.004s"};
+  app->show();
+  for (const auto text : values) {
+    auto rows = std::make_shared<slint::VectorModel<awj_shell_timing_test::TaskRow>>(
+        std::vector<awj_shell_timing_test::TaskRow>{{.order = "1", .filename = "timing.png",
+          .folder = "C:/timing", .size = "1 MiB", .status = "成功", .output = "timing.jpg",
+          .encoder = "jpegli", .threads = "1", .stage_timings = slint::SharedString{text}}});
+    app->set_task_rows(rows);
+    for (const float width : {680.0f, 840.0f, 1171.0f}) {
+      app->window().set_size(slint::LogicalSize({width, 560.0f}));
+      slint::private_api::testing::mock_elapsed_time(250);
+      const auto stage = find_one(app, std::string{english ? "Stages: " : "阶段："} + std::string{text},
+                                  slint::language::AccessibleRole::Text);
+      const auto encoder = find_one(app, english ? "Encoder: jpegli  ·  Threads: 1" : "编码器：jpegli  ·  线程：1",
+                                    slint::language::AccessibleRole::Text);
+      if (!stage || !encoder) return fail("右键窗口未展示独立编码器信息与五阶段耗时");
+      for (const auto label : {"timing.png", "C:/timing", "成功", "timing.jpg"}) {
+        const auto original = find_one(app, label, slint::language::AccessibleRole::Text);
+        if (!original || original->size().height <= 0 ||
+            original->absolute_position().y + original->size().height >
+                encoder->absolute_position().y + 0.5f)
+          return fail("右键窗口原文件信息与新增编码器行重叠");
+      }
+      const auto position = stage->absolute_position();
+      const auto size = stage->size();
+      if (size.width <= 0 || size.height <= 0 || position.x < 0 ||
+          position.x + size.width > width + 1.0f || position.y + size.height > 560.5f ||
+          position.y < encoder->absolute_position().y + encoder->size().height - 0.5f)
+        return fail("右键阶段文本换行越界或与编码器信息重叠");
+    }
+  }
+  app->hide();
+  return 0;
 }
 
 std::shared_ptr<slint::VectorModel<UpdateHistoryRow>> update_history_rows() {
@@ -2408,6 +2479,8 @@ int run_scale(const slint::ComponentHandle<AwjStudio>& app,
     for (const float width : {747.0f, 1171.0f, 1800.0f}) {
       if (const int result = verify_template_token_layout(app, width, language == 1);
           result != 0) return result;
+      if (const int result = verify_queue_stage_detail(app, width, language == 1);
+          result != 0) return result;
       const auto selector = find_one(app, language ? "Queue preset" : "队列预设",
                                      slint::language::AccessibleRole::Combobox);
       if (!selector) return fail("queue preset selector disappeared after resize");
@@ -2661,6 +2734,33 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view{argv[1]} == "--stage-timing-only") {
+    slint::testing::init();
+    for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
+      for (const int theme : {1, 2}) for (const bool english : {false, true}) {
+        auto app = AwjStudio::create();
+        if (!slint::select_bundled_translation(english ? "en" : ""))
+          return fail("阶段计时布局测试无法切换语言");
+        app->set_selected_page(1);
+        app->set_theme_index(theme);
+        app->set_language_index(english ? 1 : 0);
+        app->window().window_handle().set_const_scale_factor(scale);
+        awj::ui::bind_queue_model(*app, task_rows());
+        app->show();
+        for (const float width : {747.0f, 1171.0f, 1800.0f}) {
+          app->window().set_size(slint::LogicalSize({width, 720.0f}));
+          if (const int result = verify_queue_stage_detail(app, width, english))
+            return result;
+        }
+        if (const int result = verify_shell_stage_detail(scale, theme == 2, english))
+          return result;
+        app->hide();
+        std::printf("stage-timing scale=%.2f theme=%d language=%s widths=3 result=passed\n",
+                    double(scale), theme, english ? "en" : "zh");
+      }
+    }
+    return 0;
+  }
   if (argc >= 2 && std::string_view{argv[1]} == "--queue-options") {
     if (argc != 2) return fail("queue options regression does not accept extra arguments");
     slint::testing::init();

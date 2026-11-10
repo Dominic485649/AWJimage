@@ -112,6 +112,9 @@ struct QueueImageItem {
   double prepare_seconds{-1.0};
   double encode_seconds{-1.0};
   double write_seconds{-1.0};
+  double resize_seconds{-1.0};
+  // 几何处理的实际参与者数量，不是编码器线程预算。
+  int resize_workers{};
   bool warning{};
 };
 

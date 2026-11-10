@@ -102,21 +102,29 @@ int main() {
   for (const auto dimensions : {std::array<unsigned, 2>{7, 5}, {1, 13}, {13, 1}, {31, 29}}) {
     const auto source = fixture(dimensions[0], dimensions[1]);
     for (const auto size : {std::array<std::size_t, 2>{3, 2}, {11, 8}, {1, 1}, {9, 1}, {1, 9}, {2, 3}}) {
-      auto converted = awj::resize_native_pixels(source, size[0], size[1]);
-      if (!converted) return fail(converted.error().c_str());
-      for (std::size_t y = 0; y < size[1]; ++y) for (std::size_t x = 0; x < size[0]; ++x) {
-        const auto expected = reference(source, size[0], size[1], x, y);
-        for (std::size_t c = 0; c < 4; ++c) {
-          const auto actual = std::to_integer<int>(converted->planes[0].bytes[y * converted->planes[0].stride + x * 4 + c]);
-          if (std::abs(actual - expected[c]) > 1) return fail("Spline36 与独立二维参考不一致。");
+      for (const int budget : {1, 2, 8}) {
+        const awj::ResourcePlan resources{.encoder_threads_per_file = budget, .global_thread_budget = budget};
+        awj::GeometryTransformDiagnostics diagnostics;
+        auto converted = awj::resize_native_pixels(source, size[0], size[1], {}, resources, &diagnostics);
+        if (!converted) return fail(converted.error().c_str());
+        if (diagnostics.workers != 1 || diagnostics.scratch_bytes > awj::spline36_detail::scratch_bytes(
+            source.width, source.height, size[0], size[1], budget)) return fail("小图 worker/scratch 诊断错误。");
+        for (std::size_t y = 0; y < size[1]; ++y) for (std::size_t x = 0; x < size[0]; ++x) {
+          const auto expected = reference(source, size[0], size[1], x, y);
+          for (std::size_t c = 0; c < 4; ++c) {
+            const auto actual = std::to_integer<int>(converted->planes[0].bytes[y * converted->planes[0].stride + x * 4 + c]);
+            if (std::abs(actual - expected[c]) > 1) return fail("Spline36 与独立二维参考不一致。");
+          }
         }
       }
     }
   }
   const auto source = fixture();
-  auto unchanged = awj::resize_native_pixels(source, 7, 5);
-  if (!unchanged || unchanged->planes[0].bytes != source.planes[0].bytes)
-    return fail("无缩放路径没有精确复制像素。");
+  awj::GeometryTransformDiagnostics unchanged_diagnostics{42, 99};
+  auto unchanged = awj::resize_native_pixels(source, 7, 5, {}, {}, &unchanged_diagnostics);
+  if (!unchanged || unchanged->planes[0].bytes != source.planes[0].bytes ||
+      unchanged_diagnostics.workers != 0 || unchanged_diagnostics.scratch_bytes != 0)
+    return fail("无缩放路径没有精确复制像素或清空诊断。");
   auto constant = source;
   for (std::size_t p = 0; p < constant.planes[0].bytes.size(); p += 4) {
     constant.planes[0].bytes[p] = std::byte{127}; constant.planes[0].bytes[p + 1] = std::byte{63};

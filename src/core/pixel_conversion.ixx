@@ -9,6 +9,7 @@ module;
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <limits>
 #include <new>
 #include <optional>
@@ -32,6 +33,12 @@ import awj.image;
 import awj.resource_planner;
 
 export namespace awj {
+
+struct GeometryTransformDiagnostics {
+  int workers{};
+  std::uint64_t scratch_bytes{};
+  std::uint64_t working_set_bytes{}; // 包含调用方仍持有的存储，不是实测 RSS。
+};
 
 struct PixelConversionRequest {
   PixelFormat format{PixelFormat::rgba};
@@ -62,6 +69,32 @@ bool pixels_match(const ImageBuffer& image, const PixelConversionRequest& reques
 }
 
 namespace pixel_detail {
+
+// 几何准入与常规内存估算共用；bytes 为空时仍计入借用存储。
+// 平面同时拥有及借用存储时保守计入两者，因为 lease 可能对应另一块分配。
+std::uint64_t resident_image_bytes(const ImageBuffer& image) noexcept {
+  auto bytes = hdr_cost::add(hdr_cost::multiply(image.planes.capacity(), sizeof(ImagePlane)),
+      hdr_cost::multiply(image.metadata.capacity(), sizeof(MetadataBlock)));
+  for (const auto& plane : image.planes) {
+    bytes = hdr_cost::add(bytes, plane.bytes.capacity());
+    bytes = hdr_cost::add(bytes, plane.borrowed.size());
+  }
+  for (const auto& block : image.metadata) bytes = hdr_cost::add(bytes, block.bytes.capacity());
+  if (image.source_info) bytes = hdr_cost::add(bytes, hdr_cost::add(image.source_info->color_metadata_source.capacity(), 1));
+  return bytes;
+}
+
+std::uint64_t geometry_resident_bytes(const ImageBuffer& image, std::uint64_t output_bytes) noexcept {
+  auto bytes = hdr_cost::add(resident_image_bytes(image), hdr_cost::add(output_bytes, sizeof(ImagePlane)));
+  bytes = hdr_cost::add(bytes, hdr_cost::multiply(image.metadata.size(), sizeof(MetadataBlock)));
+  for (const auto& block : image.metadata) bytes = hdr_cost::add(bytes, block.bytes.capacity());
+  if (image.source_info) bytes = hdr_cost::add(bytes, hdr_cost::add(image.source_info->color_metadata_source.capacity(), 1));
+  return bytes;
+}
+
+int geometry_worker_budget(const ResourcePlan& resources) noexcept {
+  return per_file_thread_budget(resources);
+}
 
 avifPixelFormat avif_format(PixelFormat format) noexcept {
   switch (format) {
@@ -319,14 +352,76 @@ void write_sample(ImageBuffer& output, std::size_t c, std::size_t x, std::size_t
 
 } // namespace pixel_detail
 
-awj::compat::expected<void, std::string> validate_image_pixels(const ImageBuffer& image) {
-  return pixel_detail::validate(image);
-}
-
 std::array<std::size_t, 2> image_logical_dimensions(const ImageBuffer& image) noexcept {
   if (!image.geometry) return {image.width, image.height};
   const auto& g = *image.geometry;
   return g.rotation % 2 ? std::array{g.crop_height, g.crop_width} : std::array{g.crop_width, g.crop_height};
+}
+
+struct GeometryScratchRequirements {
+  std::uint64_t minimum_bytes{UINT64_MAX};
+  std::uint64_t preferred_bytes{UINT64_MAX};
+  std::uint64_t selected_bytes{UINT64_MAX};
+  int workers{};
+};
+
+GeometryScratchRequirements geometry_scratch_requirements(std::size_t width, std::size_t height,
+    std::size_t target_width, std::size_t target_height, int workers,
+    std::uint64_t available = UINT64_MAX) noexcept {
+  using namespace spline36_detail;
+  if (!valid_axis(width, target_width) || !valid_axis(height, target_height)) return {};
+  const auto minimum = hdr_cost::add(hdr_cost::add(axis_bytes(width, target_width), axis_bytes(height, target_height)),
+      hdr_cost::add(shared_control_bytes, worker_bytes(width, target_width, 1, false)));
+  const auto preferred = scratch_bytes(width, height, target_width, target_height, workers);
+  const auto selected = make_plan(width, height, target_width, target_height, workers, available);
+  // 最低需求超预算时仍向准入暴露真实数值，不用零计划隐藏不足，也不因可选满缓存而拒绝。
+  return {minimum, preferred, selected.workers ? selected.bytes : minimum, selected.workers};
+}
+
+// 返回每文件计划，不得让 scratch 超过 ticket；只有必要增长才非阻塞地扩大已有预约。
+// 未带 ticket 的直接调用先预约预算内合适的首选/最低计划。
+awj::compat::expected<ResourcePlan, std::string> admit_image_geometry(const ImageBuffer& source,
+    const ImageGeometryPlan& geometry, ResourcePlan resources,
+    const std::function<bool(std::uint64_t)>& reserve = {}) {
+  const auto workers = per_file_thread_budget(resources);
+  const auto output = hdr_cost::multiply(hdr_cost::multiply(geometry.canvas_width, geometry.canvas_height),
+      source.bit_depth > 8 ? 8u : 4u);
+  const auto resident = hdr_cost::add(pixel_detail::geometry_resident_bytes(source, output), resources.geometry_retained_bytes);
+  const auto logical = image_logical_dimensions(source);
+  const auto scratch = geometry.resamples()
+      ? geometry_scratch_requirements(logical[0], logical[1], geometry.content_width, geometry.content_height, workers)
+      : GeometryScratchRequirements{0, 0, 0, 1};
+  const auto minimum = hdr_cost::add(resident, scratch.minimum_bytes);
+  if (minimum == UINT64_MAX) return awj::compat::unexpected{"Spline36 工作集尺寸溢出。"};
+  const bool limited = !encoding_defaults::current_memory_policy().unrestricted_memory && resources.memory_limit_bytes;
+  auto budget = limited ? resource_memory_budget(resources) : UINT64_MAX;
+  const auto ceiling = limited && reserve ? resources.memory_limit_bytes : budget;
+  if (minimum > ceiling) return awj::compat::unexpected{"Spline36 必要工作区超过内存预算。"};
+  if (limited && reserve && (!resources.memory_reservation_bytes || minimum > budget)) {
+    auto requested = minimum;
+    if (!resources.memory_reservation_bytes && geometry.resamples()) {
+      const auto selected = geometry_scratch_requirements(logical[0], logical[1], geometry.content_width,
+          geometry.content_height, workers, ceiling - resident);
+      requested = hdr_cost::add(resident, selected.selected_bytes);
+    }
+    if (!reserve(requested)) {
+      if (requested == minimum || !reserve(minimum))
+        return awj::compat::unexpected{"Spline36 必要工作区无法取得预约；未持有像素阻塞等待。"};
+      requested = minimum;
+    }
+    budget = requested;
+  }
+  if (minimum > budget) return awj::compat::unexpected{"Spline36 必要工作区超过持有预约。"};
+  // 将字节计划归一为本文件之前，先保留原始 global/files CPU 配额。
+  resources.encoder_threads_per_file = workers;
+  resources.file_parallelism = 1;
+  resources.memory_limit_bytes = limited ? budget : 0;
+  resources.memory_reservation_bytes = 0;
+  return resources;
+}
+
+awj::compat::expected<void, std::string> validate_image_pixels(const ImageBuffer& image) {
+  return pixel_detail::validate(image);
 }
 
 std::uint16_t geometry_binary16(float value) noexcept {
@@ -346,9 +441,14 @@ std::uint16_t geometry_binary16(float value) noexcept {
 }
 
 awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const ImageBuffer& source,
-    const ImageGeometryPlan& plan, bool keep_alpha, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
+    const ImageGeometryPlan& plan, bool keep_alpha, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {},
+    GeometryTransformDiagnostics* diagnostics = nullptr) {
+  if (diagnostics) *diagnostics = {};
+  GeometryTransformDiagnostics completed;
   try {
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    // 调用线程只捕获一次；新 worker 继承该精确策略，不重新解析默认值或恢复过时的有限预算。
+    const auto policy = encoding_defaults::current_memory_policy();
     if (auto valid = pixel_detail::validate(source); !valid) return awj::compat::unexpected{valid.error()};
     const auto logical = image_logical_dimensions(source);
     if (logical[0] != plan.source_width || logical[1] != plan.source_height ||
@@ -362,15 +462,20 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
     const auto stride = plan.canvas_width * 4 * sample_bytes;
     auto count = decoder_common::checked_image_bytes(stride, plan.canvas_height, "Spline36");
     if (!count) return awj::compat::unexpected{count.error()};
-    auto needed = static_cast<std::uint64_t>(*count);
-    for (const auto& plane : source.planes) needed = hdr_cost::add(needed, plane.bytes.capacity());
-    for (const auto& block : source.metadata) needed = hdr_cost::add(needed, hdr_cost::multiply(block.bytes.capacity(), 2));
-    if (plan.resamples()) needed = hdr_cost::add(needed,
-        spline36_detail::scratch_bytes(logical[0], logical[1], plan.content_width, plan.content_height));
-    const auto budget = resources.memory_limit_bytes / static_cast<std::uint64_t>(std::max(1, resources.file_parallelism));
-    if (needed == UINT64_MAX || (budget && needed > budget)) return awj::compat::unexpected{"Spline36 工作区超过内存预算。"};
+    auto needed = hdr_cost::add(pixel_detail::geometry_resident_bytes(source, *count), resources.geometry_retained_bytes);
+    const bool limited = !policy.unrestricted_memory && resources.memory_limit_bytes != 0;
+    const auto budget = resource_memory_budget(resources);
+    if (needed == UINT64_MAX || (limited && needed > budget)) return awj::compat::unexpected{"Spline36 工作区超过内存预算。"};
+    const auto workers = pixel_detail::geometry_worker_budget(resources);
+    auto available = (limited ? budget : UINT64_MAX) - needed;
+    if (plan.resamples() && !spline36_detail::make_plan(logical[0], logical[1], plan.content_width,
+        plan.content_height, workers, available).workers)
+      return awj::compat::unexpected{"Spline36 必要工作区超过内存预算。"};
     auto bytes = decoder_common::make_byte_buffer(*count, "Spline36");
     if (!bytes) return awj::compat::unexpected{bytes.error()};
+    needed = hdr_cost::add(pixel_detail::geometry_resident_bytes(source, bytes->capacity()), resources.geometry_retained_bytes);
+    if (needed == UINT64_MAX || (limited && needed > budget)) return awj::compat::unexpected{"Spline36 工作区超过内存预算。"};
+    available = (limited ? budget : UINT64_MAX) - needed;
     const bool alpha = keep_alpha && (source.alpha_mode != AlphaMode::none || plan.pads());
     const bool floating = source.sample_representation == SampleRepresentation::ieee_half_float;
     const auto opaque = floating ? std::uint16_t{0x3c00} : static_cast<std::uint16_t>((1u << source.bit_depth) - 1);
@@ -406,9 +511,12 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
       return {};
     };
     if (plan.resamples()) {
+      spline36_detail::FilterDiagnostics filtered_diagnostics;
       auto filtered = spline36_detail::filter(logical[0], logical[1], plan.content_width, plan.content_height,
-          [&](std::size_t x, std::size_t y) { return reader(x, y); }, write, stop);
+          [&](std::size_t x, std::size_t y) { return reader(x, y); }, write, stop,
+          {.worker_budget = workers, .scratch_limit_bytes = available, .policy = policy}, &filtered_diagnostics);
       if (!filtered) return awj::compat::unexpected{filtered.error()};
+      completed = {filtered_diagnostics.workers, filtered_diagnostics.scratch_bytes};
     } else if (!source.geometry && source.pixel_format == PixelFormat::rgba &&
         source.alpha_mode != AlphaMode::premultiplied && (keep_alpha || source.alpha_mode == AlphaMode::none) &&
         !(alpha && source.alpha_mode == AlphaMode::none)) {
@@ -431,17 +539,23 @@ awj::compat::expected<ImageBuffer, std::string> apply_image_geometry(const Image
         .significant_bits = plan.resamples() ? std::nullopt : source.significant_bits, .metadata = source.metadata};
     if (output.source_info) { output.source_info->matrix_coefficients = 0; output.source_info->color_range = 1; }
     output.planes.push_back({.bytes = std::move(*bytes), .stride = stride});
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (!plan.resamples()) completed.workers = plan.changes() || source.geometry ? 1 : 0;
+    completed.working_set_bytes = hdr_cost::add(needed, completed.scratch_bytes);
+    if (diagnostics) *diagnostics = completed;
     return output;
   } catch (const std::bad_alloc&) { return awj::compat::unexpected{"Spline36 工作区内存不足。"}; }
     catch (const std::length_error&) { return awj::compat::unexpected{"Spline36 工作区超过限制。"}; }
+    catch (const std::exception&) { return awj::compat::unexpected{"Spline36 几何处理失败。"}; }
 }
 
 awj::compat::expected<ImageBuffer, std::string> resize_native_pixels(
-    const ImageBuffer& source, std::size_t width, std::size_t height, awj::compat::stop_token stop = {}) {
+    const ImageBuffer& source, std::size_t width, std::size_t height, awj::compat::stop_token stop = {},
+    const ResourcePlan& resources = {}, GeometryTransformDiagnostics* diagnostics = nullptr) {
   const auto logical = image_logical_dimensions(source);
   const ImageGeometryPlan plan{.source_width = logical[0], .source_height = logical[1],
       .content_width = width, .content_height = height, .canvas_width = width, .canvas_height = height};
-  return apply_image_geometry(source, plan, true, stop);
+  return apply_image_geometry(source, plan, true, stop, resources, diagnostics);
 }
 
 awj::compat::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& image) {

@@ -26,6 +26,7 @@ module;
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstdio>
 #include <cstdint>
@@ -209,6 +210,9 @@ bool avif_capability_available_for_large_mode(
 }
 
 void clear_unstarted_execution_metrics(EncodeResult& result) noexcept {
+  // 未启动的条目尚未做几何变换判定。
+  result.resize_seconds = -1.0;
+  result.resize_workers = 0;
   result.encoder_threads = 0;
   result.gain_map_render_workers = result.gain_map_compute_workers = 0;
   result.heif_tile_parallelism = result.heif_codec_thread_budget = 0;
@@ -239,9 +243,11 @@ void inherit_memory_diagnostics(EncodeResult& result, EncodeResult& pending) {
   result.memory_budget_source = std::move(pending.memory_budget_source);
   // 保留后端真实像素计划的精化值，不能被解码前旧快照再次覆盖。
   if (!result.memory_plan.refined) {
+    const auto reserved_peak = std::max(result.memory_plan.reserved_peak_bytes, pending.memory_plan.reserved_peak_bytes);
     result.estimated_working_set_bytes = pending.estimated_working_set_bytes;
     result.memory_estimate_profile = std::move(pending.memory_estimate_profile);
     result.memory_plan = std::move(pending.memory_plan);
+    result.memory_plan.reserved_peak_bytes = reserved_peak;
   } else {
     result.memory_plan.initial_bytes = pending.memory_plan.initial_bytes;
     result.memory_plan.exclusive_refinement = pending.memory_plan.exclusive_refinement;
@@ -278,7 +284,7 @@ awj::compat::expected<ClassifiedWork, std::string> classify_work_for_avif(
                 probe_image_dimensions_for_path(image.path, decoder_options)) {
           candidate.dimensions = *dimensions;
           candidate.estimated_bytes =
-              estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes);
+              estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes, memory_limit);
         }
         classified.ordinary.push_back(std::move(candidate));
       }
@@ -316,7 +322,7 @@ awj::compat::expected<ClassifiedWork, std::string> classify_work_for_avif(
           classified.ordinary.push_back(ClassifiedImageFile{
               .file = image,
               .estimated_bytes =
-                  estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes),
+                  estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes, memory_limit),
               .dimensions = *dimensions});
           break;
         case LargeImageClass::large_mode_required:
@@ -362,7 +368,7 @@ std::uint64_t typical_decoded_bytes_per_file(
 }
 
 std::uint64_t estimated_large_working_set_bytes(
-    const BatchLargeImageItem& item, const AppConfig& cfg) noexcept;
+    const BatchLargeImageItem& item, const AppConfig& cfg, std::uint64_t memory_budget) noexcept;
 
 awj::compat::expected<void, std::string> reject_over_memory_budget(
     ClassifiedWork& classified, std::uint64_t memory_limit, const AppConfig& cfg) {
@@ -383,7 +389,7 @@ awj::compat::expected<void, std::string> reject_over_memory_budget(
       retained.reserve(source.size());
       for (auto& image : source) {
         if (image.estimated_bytes > memory_limit) {
-          const auto plan = estimated_regular_memory(image.dimensions, cfg, image.file.bytes);
+          const auto plan = estimated_regular_memory(image.dimensions, cfg, image.file.bytes, false, nullptr, memory_limit);
           if (!image.grid && plan.bytes != UINT64_MAX && plan.decode_bytes &&
               plan.decode_bytes <= memory_limit && plan.prepare_bytes <= memory_limit &&
               plan.mandatory_bytes <= memory_limit) {
@@ -410,7 +416,7 @@ awj::compat::expected<void, std::string> reject_over_memory_budget(
     std::vector<BatchLargeImageItem> retained;
     retained.reserve(classified.large_mode.size());
     for (auto& image : classified.large_mode) {
-      const auto estimate = estimated_large_working_set_bytes(image, cfg);
+      const auto estimate = estimated_large_working_set_bytes(image, cfg, memory_limit);
       if (estimate > memory_limit)
         classified.memory_rejected.push_back({.file = std::move(image.file),
                                                .estimated_bytes = estimate,
@@ -467,21 +473,21 @@ awj::compat::expected<std::vector<WorkGroup>, std::string> build_work_groups(
 }
 
 std::uint64_t estimated_large_working_set_bytes(
-    const BatchLargeImageItem& item, const AppConfig& cfg) noexcept {
-  return estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true).bytes;
+    const BatchLargeImageItem& item, const AppConfig& cfg, std::uint64_t memory_budget) noexcept {
+  return estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true, nullptr, memory_budget).bytes;
 }
 
 std::uint64_t largest_large_mode_working_set(
-    const std::vector<BatchLargeImageItem>& items, const AppConfig& cfg) noexcept {
+    const std::vector<BatchLargeImageItem>& items, const AppConfig& cfg, std::uint64_t memory_budget) noexcept {
   std::uint64_t estimate = 1;
   for (const auto& item : items) {
-    estimate = std::max(estimate, estimated_large_working_set_bytes(item, cfg));
+    estimate = std::max(estimate, estimated_large_working_set_bytes(item, cfg, memory_budget));
   }
   return estimate;
 }
 
 awj::compat::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
-    const AppConfig& cfg, const std::vector<BatchLargeImageItem>& items) {
+    const AppConfig& cfg, const std::vector<BatchLargeImageItem>& items, std::uint64_t memory_budget) {
   std::vector<LargeWorkGroup> groups;
   std::unordered_map<PathText, std::size_t> index_by_output;
 
@@ -499,7 +505,7 @@ awj::compat::expected<std::vector<LargeWorkGroup>, std::string> build_large_work
       auto& group = groups[it->second];
       group.weight = saturated_add_uintmax(group.weight, item.file.bytes);
       group.estimated_bytes =
-          std::max(group.estimated_bytes, estimated_large_working_set_bytes(item, cfg));
+          std::max(group.estimated_bytes, estimated_large_working_set_bytes(item, cfg, memory_budget));
       group.items.push_back(item);
     }
   } catch (const std::bad_alloc&) {
@@ -1162,7 +1168,9 @@ WorkExecutionResult encode_work_groups(
             const auto& group = work[ticket->index];
             MemoryAdmissionGuard reservation{admission, ticket->bytes};
             const auto group_floor = group.files.size() > 1 ? ticket->bytes : 0;
-            NativeBackend native_backend{effective_cfg, logger, resource_plan,
+            auto file_resources = resource_plan;
+            file_resources.memory_reservation_bytes = ticket->bytes;
+            NativeBackend native_backend{effective_cfg, logger, file_resources,
                 [&](std::uint64_t bytes) { return reservation.try_resize(std::max(bytes, group_floor)); }};
             if (stop_token.stop_requested()) {
               break;
@@ -1268,8 +1276,9 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
                                     const BatchLargeImageItem& item,
                                     ResourcePlan resource_plan,
                                     awj::compat::stop_token stop_token) {
-  if (cfg.unlock_memory_limit) resource_plan.memory_limit_bytes = 0;
-  const auto estimate = estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true);
+  resource_plan = normalize_memory_policy_resources(cfg, resource_plan);
+  const auto estimate = estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true, nullptr,
+      resource_memory_budget(resource_plan));
   EncodeResult failed{
       .index = item.file.index,
       .input_path = item.file.path,
@@ -1450,8 +1459,11 @@ WorkExecutionResult encode_large_work_groups(
                                   .large_image = item,
                                   .text = large_image_action_text(item)});
               });
+              auto file_resources = resource_plan;
+              file_resources.memory_reservation_bytes = ticket->bytes;
+              results[item.file.index].memory_plan.reserved_peak_bytes = ticket->bytes;
               auto result = encode_large_mode_item(
-                  effective_cfg, logger, item, resource_plan, stop_token);
+                  effective_cfg, logger, item, file_resources, stop_token);
               const auto result_index = result.index;
               inherit_memory_diagnostics(result, results[result_index]);
               results[result_index] = std::move(result);
@@ -1645,7 +1657,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
                                     .text = pipeline_detail::large_image_action_text(item)});
       });
       const auto estimate = estimated_regular_memory(
-          item.dimensions, cfg, item.file.bytes, true);
+          item.dimensions, cfg, item.file.bytes, true, nullptr, configured_memory_limit);
       const auto large_resource_plan = plan_large_mode_resources(
           plan_resources(ResourcePlanRequest{
               .automatic_thread_budget = cfg.max_jobs,
@@ -1789,7 +1801,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       return awj::compat::unexpected{ordinary_work.error()};
     }
     auto large_work =
-        pipeline_detail::build_large_work_groups(cfg, classified->large_mode);
+        pipeline_detail::build_large_work_groups(cfg, classified->large_mode, configured_memory_limit);
     if (!large_work) {
       return awj::compat::unexpected{large_work.error()};
     }
@@ -1805,7 +1817,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
         .memory_limit_bytes = configured_memory_limit,
         .estimated_bytes_per_file = ordinary_estimated_bytes_per_file});
     const auto large_largest_working_set =
-        pipeline_detail::largest_large_mode_working_set(classified->large_mode, cfg);
+        pipeline_detail::largest_large_mode_working_set(classified->large_mode, cfg, configured_memory_limit);
     const auto large_base_resource_plan = plan_resources(ResourcePlanRequest{
         .automatic_thread_budget = cfg.max_jobs,
         .file_count = pipeline_detail::count_to_int_saturated(
@@ -1879,7 +1891,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     }
     const auto record_classified = [&](const pipeline_detail::ClassifiedImageFile& image) {
       auto estimate = image.dimensions.width && image.dimensions.height
-          ? estimated_regular_memory(image.dimensions, cfg, image.file.bytes, image.grid)
+          ? estimated_regular_memory(image.dimensions, cfg, image.file.bytes, image.grid, nullptr, configured_memory_limit)
           : ImageMemoryEstimate{};
       estimate.bytes = image.estimated_bytes;
       results[image.file.index].memory_plan.exclusive_refinement = image.exclusive_refinement;
@@ -1892,7 +1904,7 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     for (const auto& item : classified->large_mode) {
       auto& result = results[item.file.index];
       pipeline_detail::record_memory_diagnostics(result, cfg, memory_status, configured_memory_limit,
-          estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true));
+          estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true, nullptr, configured_memory_limit));
       result.processed = false;
       result.message = pipeline_detail::large_image_report_message(item);
     }
@@ -2145,10 +2157,11 @@ int run_pipeline(const AppConfig& cfg,
                                  event.total));
           if (event.kind == BatchEventKind::item_finished) {
             const auto microseconds = [](double seconds) -> std::int64_t {
-              return seconds < 0.0
-                         ? -1
-                         : static_cast<std::int64_t>(seconds * 1'000'000.0 +
-                                                     0.5);
+              if (!std::isfinite(seconds) || seconds < 0.0) return -1;
+              const auto rounded = std::round(seconds * 1'000'000.0);
+              if (rounded >= static_cast<double>(std::numeric_limits<std::int64_t>::max()))
+                return std::numeric_limits<std::int64_t>::max();
+              return static_cast<std::int64_t>(rounded);
             };
             print_line(awj::compat::format(
                 "@AWJ-STUDIO/1 DETAIL {} {} {} {} {} {} {}",
@@ -2159,6 +2172,11 @@ int run_pipeline(const AppConfig& cfg,
                 microseconds(event.result.prepare_seconds),
                 microseconds(event.result.encode_seconds),
                 microseconds(event.result.write_seconds)));
+            const auto resize_microseconds = microseconds(event.result.resize_seconds);
+            print_line(awj::compat::format(
+                "@AWJ-STUDIO/1 RESIZE {} {} {}", event.result.index,
+                resize_microseconds,
+                resize_microseconds < 0 ? 0 : std::max(0, event.result.resize_workers)));
           }
         }
         if (event.kind == BatchEventKind::summary) {

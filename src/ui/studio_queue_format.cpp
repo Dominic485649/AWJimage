@@ -1,4 +1,5 @@
 #include "studio_queue_format.h"
+#include "studio_worker_events.h"
 
 #include <algorithm>
 #include <random>
@@ -47,16 +48,44 @@ std::string stage_seconds_text(double seconds) {
 }
 
 std::string stage_timings_text(double decode_seconds, double prepare_seconds,
-                               double encode_seconds, double write_seconds) {
-  if (decode_seconds < 0.0 && prepare_seconds < 0.0 &&
-      encode_seconds < 0.0 && write_seconds < 0.0) {
+                               double encode_seconds, double write_seconds,
+                               double resize_seconds, int resize_workers) {
+  if (decode_seconds < 0.0 && resize_seconds < 0.0 &&
+      prepare_seconds < 0.0 && encode_seconds < 0.0 && write_seconds < 0.0) {
     return {};
   }
-  return std::format("decode {} · prepare {} · encode {} · write {}",
-                     stage_seconds_text(decode_seconds),
+  const auto resize = resize_seconds < 0.0
+                          ? std::string{"-"}
+                          : std::format("{} (workers {})",
+                                        stage_seconds_text(resize_seconds),
+                                        resize_workers);
+  return std::format("decode {} · resize {} · prepare {} · encode {} · write {}",
+                     stage_seconds_text(decode_seconds), resize,
                      stage_seconds_text(prepare_seconds),
                      stage_seconds_text(encode_seconds),
                      stage_seconds_text(write_seconds));
+}
+
+std::optional<std::size_t> apply_queue_worker_resize(
+    UiState& state, std::uint64_t run_id, const StudioWorkerResizeEvent& event,
+    std::optional<std::uint64_t> queue_item_id) noexcept {
+  if (state.run_id != run_id) return std::nullopt;
+  std::optional<std::size_t> index;
+  if (queue_item_id) {
+    if (event.index != 0) return std::nullopt;
+    const auto found = state.queue_id_indices.find(*queue_item_id);
+    if (found != state.queue_id_indices.end()) index = found->second;
+  } else {
+    const auto found = state.queue_run_indices.find(event.index);
+    if (found != state.queue_run_indices.end()) index = found->second;
+  }
+  if (!index || *index >= state.queue_items.size()) return std::nullopt;
+  auto& item = state.queue_items[*index];
+  if (queue_item_id ? item.id != *queue_item_id : item.run_index != event.index)
+    return std::nullopt;
+  item.resize_seconds = studio_worker_seconds(event.resize_microseconds);
+  item.resize_workers = event.resize_workers;
+  return index;
 }
 
 TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
@@ -91,7 +120,8 @@ TaskRow make_queue_task_row(const QueueImageItem& item, std::size_t order) {
                                 : slint::SharedString{},
                  .stage_timings = to_shared(stage_timings_text(
                      item.decode_seconds, item.prepare_seconds,
-                     item.encode_seconds, item.write_seconds))};
+                     item.encode_seconds, item.write_seconds,
+                     item.resize_seconds, item.resize_workers))};
 }
 
 const std::filesystem::path& queue_image_open_target(
@@ -113,6 +143,8 @@ void reset_queue_item_execution(QueueImageItem& item) {
   item.prepare_seconds = -1.0;
   item.encode_seconds = -1.0;
   item.write_seconds = -1.0;
+  item.resize_seconds = -1.0;
+  item.resize_workers = 0;
   item.warning = false;
 }
 

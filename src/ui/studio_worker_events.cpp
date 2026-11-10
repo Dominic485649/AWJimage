@@ -77,6 +77,36 @@ std::optional<StudioWorkerItemEvent> parse_studio_worker_item_event(
                                .total = *total};
 }
 
+std::optional<StudioWorkerResizeEvent> parse_studio_worker_resize_event(
+    std::string_view line) {
+  constexpr std::string_view prefix = "@AWJ-STUDIO/1 RESIZE ";
+  if (!line.starts_with(prefix)) return std::nullopt;
+  line.remove_prefix(prefix.size());
+  std::array<std::string_view, 3> fields{};
+  for (std::size_t i = 0; i < fields.size(); ++i) {
+    const auto end = i + 1 == fields.size() ? line.size() : line.find(' ');
+    if (end == std::string_view::npos || end == 0) return std::nullopt;
+    fields[i] = line.substr(0, end);
+    line.remove_prefix(end + (i + 1 == fields.size() ? 0 : 1));
+  }
+  StudioWorkerResizeEvent event;
+  const auto index = std::from_chars(
+      fields[0].data(), fields[0].data() + fields[0].size(), event.index);
+  const auto elapsed = std::from_chars(
+      fields[1].data(), fields[1].data() + fields[1].size(), event.resize_microseconds);
+  const auto workers = std::from_chars(
+      fields[2].data(), fields[2].data() + fields[2].size(), event.resize_workers);
+  if (index.ec != std::errc{} || index.ptr != fields[0].data() + fields[0].size() ||
+      elapsed.ec != std::errc{} || elapsed.ptr != fields[1].data() + fields[1].size() ||
+      workers.ec != std::errc{} || workers.ptr != fields[2].data() + fields[2].size() ||
+      event.resize_microseconds < -1 || event.resize_workers < 0 ||
+      (event.resize_microseconds == -1 && event.resize_workers != 0)) {
+    return std::nullopt;
+  }
+  // 正耗时可能舍入为 0 微秒；失败/取消也可能保留耗时但 worker 为 0，二者均合法。
+  return event;
+}
+
 std::optional<StudioWorkerDetailEvent> parse_studio_worker_detail_event(
     std::string_view line) {
   constexpr std::string_view prefix = "@AWJ-STUDIO/1 DETAIL ";

@@ -12,7 +12,9 @@
 #include <vector>
 
 #include <avif/avif.h>
+#include <avif/internal.h>
 #include "codec_color_fixture.h"
+#include "spline36_legacy_reference.h"
 
 import awj.image;
 import awj.pixel_conversion;
@@ -485,9 +487,168 @@ int check_icc_native_yuv_conversion() {
   return 0;
 }
 
+awj::compat::expected<awj::ImageBuffer, std::string> legacy_geometry(
+    const awj::ImageBuffer& source, const awj::ImageGeometryPlan& plan, bool keep_alpha) {
+  awj::pixel_detail::Reader reader{source};
+  if (awj::is_yuv_format(source.pixel_format)) {
+    const auto description = awj::pixel_detail::description(source);
+    if (!avifGetYUVColorSpaceInfo(&description, &reader.color)) return awj::compat::unexpected{"Legacy YUV fixture matrix failed"};
+  }
+  const bool floating = source.sample_representation == awj::SampleRepresentation::ieee_half_float;
+  const bool alpha = keep_alpha && (source.alpha_mode != awj::AlphaMode::none || plan.pads());
+  const auto sample_bytes = source.bit_depth > 8 ? 2u : 1u;
+  const auto maximum = static_cast<std::uint16_t>((1u << source.bit_depth) - 1);
+  const auto opaque = floating ? std::uint16_t{0x3c00} : maximum;
+  awj::ImageBuffer output{.width = plan.canvas_width, .height = plan.canvas_height, .pixel_format = awj::PixelFormat::rgba,
+      .alpha_mode = alpha ? awj::AlphaMode::straight : awj::AlphaMode::none, .bit_depth = source.bit_depth,
+      .sample_representation = source.sample_representation};
+  const auto stride = plan.canvas_width * 4 * sample_bytes;
+  output.planes.push_back({std::vector<std::byte>(stride * plan.canvas_height), stride});
+  if (!alpha) for (std::size_t y = 0; y < plan.canvas_height; ++y) for (std::size_t x = 0; x < plan.canvas_width; ++x) {
+    auto* at = output.planes[0].bytes.data() + y * stride + (x * 4 + 3) * sample_bytes;
+    if (sample_bytes == 1) *at = std::byte{255}; else std::memcpy(at, &opaque, 2);
+  }
+  auto filtered = awj::test::legacy_spline36(plan.source_width, plan.source_height, plan.content_width, plan.content_height,
+      [&](std::size_t x, std::size_t y) { return reader(x, y); },
+      [&](std::size_t x, std::size_t y, std::array<double, 4> rgba) -> awj::compat::expected<void, std::string> {
+        for (std::size_t c = 0; c < 4; ++c) {
+          const auto value = c == 3 ? (alpha ? rgba[3] : 1.0) : rgba[c] * (keep_alpha ? 1.0 : rgba[3]);
+          if (!std::isfinite(value) || (floating && std::abs(value) > 65504)) return awj::compat::unexpected{"Legacy non-finite output"};
+          // 与旧实现共用最终量化器，仅替换重采样路径；独立二维多项式参考不共用其数学实现。
+          const auto encoded = floating ? awj::geometry_binary16(static_cast<float>(value)) :
+              static_cast<std::uint16_t>(std::floor(std::clamp(value, 0.0, 1.0) * maximum + 0.5));
+          auto* at = output.planes[0].bytes.data() + (y + plan.offset_y) * stride + ((x + plan.offset_x) * 4 + c) * sample_bytes;
+          if (sample_bytes == 1) *at = std::byte{static_cast<unsigned char>(encoded)};
+          else std::memcpy(at, &encoded, 2);
+        }
+        return {};
+      });
+  if (!filtered) return awj::compat::unexpected{filtered.error()};
+  return output;
+}
+
+awj::compat::expected<awj::ImageBuffer, std::string> resize_fixture(awj::PixelFormat format, int depth,
+    awj::AlphaMode alpha, std::size_t width, std::size_t height, int range = 1) {
+  const bool rgb = format == awj::PixelFormat::rgb;
+  const auto channels = rgb ? 3u : 4u;
+  const auto sample_bytes = depth > 8 ? 2u : 1u;
+  const auto maximum = (1u << depth) - 1;
+  awj::ImageBuffer source{.width = width, .height = height,
+      .pixel_format = rgb ? awj::PixelFormat::rgb : awj::PixelFormat::rgba,
+      .alpha_mode = rgb ? awj::AlphaMode::none : alpha, .bit_depth = depth};
+  const auto stride = width * channels * sample_bytes + 8;
+  source.planes.push_back({std::vector<std::byte>(stride * height, std::byte{0xa5}), stride});
+  source.metadata.push_back({awj::MetadataKind::xmp, std::vector<std::byte>(17, std::byte{0x41})});
+  for (std::size_t y = 0; y < height; ++y) for (std::size_t x = 0; x < width; ++x) {
+    const auto a = alpha == awj::AlphaMode::none ? maximum : ((x * 13 + y * 37) % 257) * maximum / 256;
+    for (std::size_t c = 0; c < channels; ++c) {
+      auto value = c == 3 ? a : ((x * 197 + y * 71 + c * 47 + 17) % 1024) * maximum / 1023;
+      if (c < 3 && alpha == awj::AlphaMode::premultiplied) value = value * a / maximum;
+      const auto code = static_cast<std::uint16_t>(value);
+      auto* at = source.planes[0].bytes.data() + y * stride + (x * channels + c) * sample_bytes;
+      if (sample_bytes == 1) *at = std::byte{static_cast<unsigned char>(code)}; else std::memcpy(at, &code, 2);
+    }
+  }
+  if (!awj::is_yuv_format(format)) return source;
+  return awj::convert_image_pixels(source, {.format = format, .bit_depth = depth, .matrix_coefficients = 6, .color_range = range});
+}
+
+int compare_resize(const awj::ImageBuffer& source, std::size_t width, std::size_t height, bool padding, bool keep_alpha) {
+  const auto logical = awj::image_logical_dimensions(source);
+  const awj::ImageGeometryPlan plan{.source_width = logical[0], .source_height = logical[1],
+      .content_width = width, .content_height = height, .canvas_width = width + (padding ? 3 : 0),
+      .canvas_height = height + (padding ? 2 : 0), .offset_x = padding ? 1u : 0u, .offset_y = padding ? 1u : 0u};
+  auto reference = legacy_geometry(source, plan, keep_alpha);
+  if (!reference) return fail(reference.error().c_str());
+  for (const int budget : {1, 2, 8}) {
+    const awj::ResourcePlan resources{.encoder_threads_per_file = budget, .global_thread_budget = budget};
+    awj::GeometryTransformDiagnostics diagnostics;
+    auto result = awj::apply_image_geometry(source, plan, keep_alpha, {}, resources, &diagnostics);
+    if (!result || !same_planes(*result, *reference) || result->alpha_mode != reference->alpha_mode ||
+        result->sample_representation != source.sample_representation || result->bit_depth != source.bit_depth || result->geometry)
+      return fail(result ? "Cached/parallel native resampling differs from the old serial per-pixel path." : result.error().c_str());
+    const auto wanted = awj::spline36_detail::worker_limit(logical[0], logical[1], width, height, budget);
+    if (diagnostics.workers != wanted || diagnostics.scratch_bytes > awj::spline36_detail::scratch_bytes(logical[0], logical[1], width, height, budget))
+      return fail("Native resize worker/scratch diagnostics do not match the budget.");
+    if (result->metadata.size() != source.metadata.size() ||
+        (!source.metadata.empty() && result->metadata[0].bytes != source.metadata[0].bytes)) return fail("Geometry lost metadata.");
+  }
+  return 0;
+}
+
+int check_cached_native_resizes() {
+  const std::array layouts{awj::PixelFormat::rgb, awj::PixelFormat::rgba, awj::PixelFormat::yuv444,
+      awj::PixelFormat::yuv422, awj::PixelFormat::yuv420, awj::PixelFormat::gray};
+  unsigned geometry_case{};
+  for (const auto layout : layouts) for (const int depth : {8, 10, 12, 16}) {
+    if (!awj::is_yuv_format(layout) && depth != 8 && depth != 16) continue;
+    for (const auto alpha : {awj::AlphaMode::none, awj::AlphaMode::straight}) {
+      if (layout == awj::PixelFormat::rgb && alpha != awj::AlphaMode::none) continue;
+      auto source = resize_fixture(layout, depth, alpha, 17, 13, static_cast<int>(geometry_case % 2));
+      if (!source) return fail(source.error().c_str());
+      if (awj::is_yuv_format(layout)) source->source_info->chroma_location = 1 + static_cast<int>(geometry_case % 6);
+      const auto rotation = geometry_case % 4;
+      const auto mirror = static_cast<int>((geometry_case / 4) % 3) - 1;
+      ++geometry_case;
+      source->geometry = awj::ImageGeometry{.stored_width = 17, .stored_height = 13,
+          .crop_x = 1, .crop_y = 2, .crop_width = 14, .crop_height = 9, .rotation = rotation, .mirror_axis = mirror};
+      source->width = rotation % 2 ? 9 : 14; source->height = rotation % 2 ? 14 : 9;
+      for (const auto size : {std::array<std::size_t, 2>{7, 5}, {4, 3}, {23, 19}, {1, 9}, {11, 1}, {1, 1}})
+        for (const bool keep : {false, true})
+          if (const auto result = compare_resize(*source, size[0], size[1], true, keep)) return result;
+    }
+    if (depth == 8 || depth == 16) {
+      auto large = resize_fixture(layout, depth, layout == awj::PixelFormat::rgb ? awj::AlphaMode::none : awj::AlphaMode::straight, 512, 256);
+      if (!large) return fail(large.error().c_str());
+      if (const auto result = compare_resize(*large, 257, 129, false, true)) return result;
+    }
+  }
+  for (const int depth : {8, 16}) {
+    auto premultiplied = resize_fixture(awj::PixelFormat::rgba, depth, awj::AlphaMode::premultiplied, 512, 256);
+    if (!premultiplied) return fail(premultiplied.error().c_str());
+    for (const auto size : {std::array<std::size_t, 2>{256, 128}, {128, 64}, {713, 371}})
+      if (const auto result = compare_resize(*premultiplied, size[0], size[1], false, true)) return result;
+  }
+  for (const auto alpha : {awj::AlphaMode::straight, awj::AlphaMode::premultiplied}) {
+    auto half = scrgb();
+    half.width = 512; half.height = 256; half.alpha_mode = alpha;
+    half.planes[0].stride = half.width * 8;
+    half.planes[0].bytes.resize(half.planes[0].stride * half.height);
+    for (std::size_t y = 0; y < half.height; ++y) for (std::size_t x = 0; x < half.width; ++x) {
+      const float a = (x + y) % 3 == 0 ? 0.0F : (x + y) % 3 == 1 ? 0.5F : 1.0F;
+      for (std::size_t c = 0; c < 4; ++c) {
+        auto value = c == 3 ? a : (static_cast<int>((x * 3 + y * 7 + c * 5) % 33) - 8) * 0.125F;
+        if (c < 3 && alpha == awj::AlphaMode::premultiplied) value *= a;
+        const auto code = dyadic_half(value);
+        std::memcpy(half.planes[0].bytes.data() + y * half.planes[0].stride + (x * 4 + c) * 2, &code, 2);
+      }
+    }
+    if (const auto result = compare_resize(half, 257, 129, true, true)) return result;
+    const std::uint16_t nan = 0x7e00, zero = 0;
+    std::memcpy(half.planes[0].bytes.data(), &nan, 2);
+    std::memcpy(half.planes[0].bytes.data() + 6, &zero, 2);
+    awj::GeometryTransformDiagnostics diagnostics{8, 1};
+    const awj::ResourcePlan resources{.encoder_threads_per_file = 8, .global_thread_budget = 8};
+    if (awj::resize_native_pixels(half, 257, 129, {}, resources, &diagnostics) || diagnostics.workers)
+      return fail("Parallel FP16 resampling hid a non-finite transparent component or reported workers on failure.");
+  }
+  for (unsigned rotation = 0; rotation < 4; ++rotation) for (int mirror = -1; mirror <= 1; ++mirror)
+    for (const bool crop : {false, true}) {
+      auto view = premultiplied_scrgb();
+      view.geometry = awj::ImageGeometry{.stored_width = 3, .stored_height = 2,
+          .crop_x = crop ? 1u : 0u, .crop_width = crop ? 2u : 3u, .crop_height = 2,
+          .rotation = rotation, .mirror_axis = mirror};
+      view.width = rotation % 2 ? 2 : view.geometry->crop_width;
+      view.height = rotation % 2 ? view.geometry->crop_width : 2;
+      if (const auto result = compare_resize(view, 5, 7, true, true)) return result;
+    }
+  return 0;
+}
+
 } // namespace
 
 int main() {
+  if (const auto result = check_cached_native_resizes()) return result;
   if (const auto result = check_requested_color_conversion()) return result;
   if (const auto result = check_hlg_and_tone_color_boundaries()) return result;
   if (const auto result = check_icc_native_yuv_conversion()) return result;
