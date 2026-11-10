@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <chrono>
@@ -254,10 +255,34 @@ int queue_core_contract(const std::filesystem::path& root) {
   {
     const auto output_identity = awj::pipeline_detail::recycle_file_identity(output);
     if (!output_identity || !plan->entries.front().identity) return fail("Missing recycle identity fixture.");
+    const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
+    struct ComScope { HRESULT value; ~ComScope() { if (SUCCEEDED(value)) CoUninitialize(); } } com{initialized};
+    if (FAILED(initialized)) return fail("Could not initialize the read-only Shell parsing probe.");
+    auto shell_source = source;
+    shell_source.make_preferred();
+    auto slash_source = shell_source.native();
+    std::replace(slash_source.begin(), slash_source.end(), L'\\', L'/');
+    Microsoft::WRL::ComPtr<IShellItem> raw_item, item;
+    const HRESULT raw_hr = SHCreateItemFromParsingName(slash_source.c_str(), nullptr, IID_PPV_ARGS(&raw_item));
+    const HRESULT shell_hr = SHCreateItemFromParsingName(shell_source.c_str(), nullptr, IID_PPV_ARGS(&item));
+    std::fprintf(stdout, "Read-only Shell path probe: slash=0x%08X, preferred=0x%08X.\n",
+        static_cast<unsigned int>(raw_hr), static_cast<unsigned int>(shell_hr));
+    if (FAILED(shell_hr)) return fail("The Shell could not parse the preferred-separator fixture path.");
     awj::pipeline_detail::RecycleOnlySink sink{source, *plan->entries.front().identity,
         output, *output_identity, {}};
-    if (sink.PreDeleteItem(TSF_NORMAL, nullptr) != E_ABORT || sink.permitted)
-      return fail("The Shell sink did not veto a permanent-delete notification.");
+    if (sink.PreDeleteItem(TSF_NORMAL, item.Get()) != E_ABORT || sink.permitted ||
+        sink.rejection != "permanent-delete notification")
+      return fail("The Shell sink did not veto/diagnose a permanent-delete notification.");
+    awj::pipeline_detail::RecycleOnlySink valid{source, *plan->entries.front().identity,
+        output, *output_identity, {}};
+    if (valid.PreDeleteItem(TSF_DELETE_RECYCLE_IF_POSSIBLE, item.Get()) != S_OK || !valid.permitted)
+      return fail("Separator adaptation changed the original validated source identity.");
+    auto different = *plan->entries.front().identity;
+    ++different.changed;
+    awj::pipeline_detail::RecycleOnlySink changed{source, different, output, *output_identity, {}};
+    if (changed.PreDeleteItem(TSF_DELETE_RECYCLE_IF_POSSIBLE, item.Get()) != E_ABORT || changed.permitted ||
+        changed.rejection != "source identity changed")
+      return fail("Shell path adaptation weakened/obscured stable source identity validation.");
   }
 #endif
   const awj::EncodeResult committed{.index = 0, .input_path = source, .output_path = output,
@@ -383,7 +408,8 @@ bool restore_generated_recycle_item(const std::wstring& recycled,
   if (FAILED(initialized) || recycled.empty() || std::filesystem::exists(original)) return false;
   Microsoft::WRL::ComPtr<IFileOperation> operation;
   Microsoft::WRL::ComPtr<IShellItem> item, parent;
-  const auto directory = original.parent_path();
+  auto directory = original.parent_path();
+  directory.make_preferred();
   const auto filename = original.filename().native();
   HRESULT hr = CoCreateInstance(__uuidof(FileOperation), nullptr, CLSCTX_INPROC_SERVER, IID_PPV_ARGS(&operation));
   if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(
@@ -395,6 +421,50 @@ bool restore_generated_recycle_item(const std::wstring& recycled,
   BOOL aborted = TRUE;
   if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
   return SUCCEEDED(hr) && !aborted && std::filesystem::exists(original);
+}
+
+bool cleanup_generated_recycle_metadata(const std::filesystem::path& recycled,
+    const std::filesystem::path& original, std::uint64_t original_bytes) {
+  namespace fs = std::filesystem;
+  auto info_name = recycled.filename().native();
+  if (!info_name.starts_with(L"$R")) return false;
+  std::error_code ec;
+  if (fs::exists(recycled, ec) || ec) return false;
+  info_name[1] = L'I';
+  const auto metadata = recycled.parent_path() / info_name;
+  if (!fs::exists(metadata, ec)) return !ec;
+  // Parsing a returned $R path can restore the data as a filesystem item while
+  // leaving $I bookkeeping. Remove only that exact orphan, after the restored
+  // source hash is verified and the bounded record names this generated input.
+  const auto identity = awj::pipeline_detail::recycle_file_identity(metadata);
+  if (!identity || identity->links != 1 || identity->bytes < 24 || identity->bytes > 65564) return false;
+  std::string record(static_cast<std::size_t>(identity->bytes), '\0');
+  {
+    std::ifstream stream{metadata, std::ios::binary};
+    stream.read(record.data(), static_cast<std::streamsize>(record.size()));
+    if (!stream || stream.peek() != std::char_traits<char>::eof()) return false;
+  }
+  std::uint64_t version{}, bytes{};
+  std::memcpy(&version, record.data(), sizeof(version));
+  std::memcpy(&bytes, record.data() + 8, sizeof(bytes));
+  std::size_t offset = 24;
+  std::uint32_t chars = 260;
+  if (version == 2) {
+    if (record.size() < 28) return false;
+    std::memcpy(&chars, record.data() + 24, sizeof(chars));
+    offset = 28;
+  } else if (version != 1) return false;
+  if (!chars || chars > 32768 || bytes != original_bytes ||
+      record.size() != offset + chars * sizeof(wchar_t)) return false;
+  std::wstring recorded_path(chars, L'\0');
+  std::memcpy(recorded_path.data(), record.data() + offset, chars * sizeof(wchar_t));
+  const auto terminator = recorded_path.find(L'\0');
+  if (terminator == std::wstring::npos) return false;
+  recorded_path.resize(terminator);
+  if (awj::normalized_lower_path_key(fs::path{recorded_path}) != awj::normalized_lower_path_key(original)) return false;
+  const auto unchanged = awj::pipeline_detail::recycle_file_identity(metadata);
+  if (!unchanged || *unchanged != *identity) return false;
+  return fs::remove(metadata, ec) && !ec;
 }
 #endif
 
@@ -432,64 +502,79 @@ int queue_recycle_system_contract(const std::filesystem::path& root) {
   cfg.output_format = awj::OutputFormat::png;
   cfg.quality = 100;
   cfg.max_jobs = 1;
+  // Share one output group so its scan order is serialized. Separate groups
+  // are scheduled by memory admission, not filename/weight order: the invalid
+  // input's whole-budget reservation may otherwise run before the valid one.
+  cfg.output_template = L"serial";
+  cfg.collision_mode = awj::CollisionMode::overwrite;
   cfg.delete_source = true;
   cfg.write_log = true;
   awj::EncodeResult successful;
-  bool immediate = false, before_next_item = false;
+  bool immediate = false, next_item_started = false, before_next_item = false;
   const auto converted = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
     if (event.kind == awj::BatchEventKind::item_finished && event.result.input_path == source) {
       successful = event.result;
       immediate = !fs::exists(source);
     }
-    if (event.kind == awj::BatchEventKind::item_started && event.result.input_path == failed_input)
+    if (event.kind == awj::BatchEventKind::item_started && event.result.input_path == failed_input) {
+      next_item_started = true;
       before_next_item = !fs::exists(source);
+    }
   });
-  if (!converted || converted->ok_count != 1 || converted->failed_count != 1 ||
-      !successful.ok || successful.skipped || !fs::exists(failed_input) ||
-      !fs::exists(successful.output_path))
+  const bool queue_valid = converted && converted->ok_count == 1 && converted->failed_count == 1 &&
+      successful.ok && !successful.skipped && fs::exists(failed_input) && fs::exists(successful.output_path);
+  const bool source_recycled = !fs::exists(source);
+  const bool snapshot_valid = successful.input_sha256_snapshot &&
+      *successful.input_sha256_snapshot == *original_hash;
+  const bool csv_valid = read_text(cfg.output_dir / "log" / "summery.csv").find(*original_hash) != std::string::npos;
+  std::fprintf(stdout,
+      "Recycle observations: immediate=%d, next_item_started=%d, before_next_item=%d, source_sha=%d, csv_sha=%d; message=%s\n",
+      immediate, next_item_started, before_next_item, snapshot_valid, csv_valid, successful.message.c_str());
+  // Restore the exact generated entry before reporting any queue/timing/SHA
+  // failure. A failed assertion must not strand a file in the system trash.
+  if (source_recycled) {
+#ifdef _WIN32
+    // Use only the exact item returned by PostDeleteItem; never enumerate or
+    // empty the Recycle Bin. Check its corresponding bookkeeping separately.
+    if (!restore_generated_recycle_item(successful.recycled_source_shell_item, source))
+      return fail("UNRESTORED generated Shell recycle item; original=" + awj::path_to_utf8(source) +
+          "; item=" + awj::utf8_from_wide(successful.recycled_source_shell_item));
+#else
+    const auto recycled = xdg / "Trash" / "files" / source.filename();
+    const auto metadata = xdg / "Trash" / "info" / (source.filename().native() + ".trashinfo");
+    const auto trashed_hash = awj::file_sha256_hex(recycled);
+    if (!trashed_hash || *trashed_hash != *original_hash ||
+        !read_text(metadata).starts_with("[Trash Info]\n"))
+      return fail("UNRESTORED generated GIO entry failed recovery validation: " + awj::path_to_utf8(recycled));
+    fs::rename(recycled, source, ec);
+    if (ec || !fs::remove(metadata, ec) || ec)
+      return fail("Could not restore/clean the generated isolated trash entry: " + awj::path_to_utf8(metadata));
+#endif
+    const auto restored_hash = awj::file_sha256_hex(source);
+    if (!restored_hash || *restored_hash != *original_hash)
+      return fail("Restoring the generated recycle item changed its content.");
+#ifdef _WIN32
+    if (!cleanup_generated_recycle_metadata(successful.recycled_source_path, source, successful.original_bytes))
+      return fail("Generated Shell entry bookkeeping could not be safely cleaned: " +
+          awj::path_to_utf8(successful.recycled_source_path));
+#endif
+    std::fputs("Generated recycle entry restored and cleaned before assertion reporting.\n", stdout);
+  }
+  if (!queue_valid)
     return fail(converted ? "System-recycle queue did not retain its failed input or commit the successful output." : converted.error());
-  if (fs::exists(source)) {
+  if (!source_recycled) {
     const auto retained_hash = awj::file_sha256_hex(source);
     if (!retained_hash || *retained_hash != *original_hash || successful.message.find("回收") == std::string::npos)
       return fail("Unavailable recycling did not preserve the source and produce a warning.");
     std::fprintf(stdout, "System recycle success NOT COVERED; source safely retained: %s\n", successful.message.c_str());
     return 77;
   }
-  if (!immediate || !before_next_item || !successful.input_sha256_snapshot ||
-      *successful.input_sha256_snapshot != *original_hash ||
-      read_text(cfg.output_dir / "log" / "summery.csv").find(*original_hash) == std::string::npos)
-    return fail("Successful recycling was deferred or lost the pre-recycle source SHA-256.");
-#ifdef _WIN32
-  // Use only the exact item returned by PostDeleteItem. Shell MoveItem restores
-  // its own bookkeeping; no Recycle Bin enumeration or blanket empty operation.
-  if (!restore_generated_recycle_item(successful.recycled_source_shell_item, source))
-    return fail("Could not restore this generated Shell recycle item: " +
-        awj::utf8_from_wide(successful.recycled_source_shell_item));
-  if (!successful.recycled_source_path.empty()) {
-    auto info_name = successful.recycled_source_path.filename().native();
-    if (fs::exists(successful.recycled_source_path))
-      return fail("The exact generated recycle data entry remained after Shell restoration.");
-    if (info_name.starts_with(L"$R")) {
-      info_name[1] = L'I';
-      if (fs::exists(successful.recycled_source_path.parent_path() / info_name))
-        return fail("The exact generated recycle metadata entry remained after Shell restoration.");
-    }
-  }
-#else
-  const auto recycled = xdg / "Trash" / "files" / source.filename();
-  const auto metadata = xdg / "Trash" / "info" / (source.filename().native() + ".trashinfo");
-  const auto trashed_hash = awj::file_sha256_hex(recycled);
-  if (!trashed_hash || *trashed_hash != *original_hash ||
-      !read_text(metadata).starts_with("[Trash Info]\n"))
-    return fail("GIO did not produce the expected recoverable entry in the isolated desktop trash.");
-  fs::rename(recycled, source, ec);
-  if (ec || !fs::remove(metadata, ec) || ec)
-    return fail("Could not restore and remove the generated isolated trash entry.");
-#endif
-  const auto restored_hash = awj::file_sha256_hex(source);
-  if (!restored_hash || *restored_hash != *original_hash)
-    return fail("Restoring the generated recycle item changed its content.");
-  std::fputs("Real system recycling verified before the next item; generated entry restored and cleaned.\n", stdout);
+  if (!immediate) return fail("Source was not recycled before its item_finished event.");
+  if (!next_item_started) return fail("The serialized follow-up item did not emit item_started.");
+  if (!before_next_item) return fail("Source was not recycled before the serialized next item started.");
+  if (!snapshot_valid) return fail("The pre-recycle source SHA-256 snapshot is missing or incorrect.");
+  if (!csv_valid) return fail("The CSV lost the pre-recycle source SHA-256.");
+  std::fputs("Real system recycling verified before the next item; source SHA-256 and CSV verified.\n", stdout);
   return 0;
 }
 

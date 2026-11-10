@@ -730,8 +730,12 @@ class RecycleOnlySink final : public IFileOperationProgressSink {
   }
   ULONG STDMETHODCALLTYPE AddRef() override { return ++refs_; }
   ULONG STDMETHODCALLTYPE Release() override { return --refs_; } // stack-owned for this synchronous call
-  HRESULT STDMETHODCALLTYPE StartOperations() override { return S_OK; }
-  HRESULT STDMETHODCALLTYPE FinishOperations(HRESULT) override { return S_OK; }
+  HRESULT STDMETHODCALLTYPE StartOperations() override { started = true; return S_OK; }
+  HRESULT STDMETHODCALLTYPE FinishOperations(HRESULT result) override {
+    finished = true;
+    finish_result = result;
+    return S_OK;
+  }
   HRESULT STDMETHODCALLTYPE PreRenameItem(DWORD, IShellItem*, LPCWSTR) override { return E_ABORT; }
   HRESULT STDMETHODCALLTYPE PostRenameItem(DWORD, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PreMoveItem(DWORD, IShellItem*, IShellItem*, LPCWSTR) override { return E_ABORT; }
@@ -739,21 +743,40 @@ class RecycleOnlySink final : public IFileOperationProgressSink {
   HRESULT STDMETHODCALLTYPE PreCopyItem(DWORD, IShellItem*, IShellItem*, LPCWSTR) override { return E_ABORT; }
   HRESULT STDMETHODCALLTYPE PostCopyItem(DWORD, IShellItem*, IShellItem*, LPCWSTR, HRESULT, IShellItem*) override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PreDeleteItem(DWORD flags, IShellItem* item) override {
-    if (!(flags & TSF_DELETE_RECYCLE_IF_POSSIBLE) || stop_.stop_requested()) return E_ABORT;
+    pre_delete_seen = true;
+    pre_delete_flags = flags;
+    const auto reject = [&](std::string_view reason) noexcept {
+      rejection = reason;
+      pre_delete_result = E_ABORT;
+      return E_ABORT;
+    };
+    if (!(flags & TSF_DELETE_RECYCLE_IF_POSSIBLE)) return reject("permanent-delete notification");
+    if (stop_.stop_requested()) return reject("canceled");
     try {
+      if (!item) return reject("missing Shell item");
       PWSTR raw{};
-      if (!item || FAILED(item->GetDisplayName(SIGDN_FILESYSPATH, &raw))) return E_ABORT;
+      pre_name_result = item->GetDisplayName(SIGDN_FILESYSPATH, &raw);
       struct FreeName { PWSTR value; ~FreeName() { CoTaskMemFree(value); } } name{raw};
+      if (FAILED(pre_name_result) || !raw) return reject("source path unavailable");
       const fs::path actual{raw};
-      if (normalized_lower_path_key(actual) != normalized_lower_path_key(source_)) return E_ABORT;
+      if (normalized_lower_path_key(actual) != normalized_lower_path_key(source_))
+        return reject("source path mismatch");
       const auto current = recycle_file_identity(source_);
       const auto output = recycle_file_identity(output_);
-      if (!current || *current != identity_ || !output || *output != output_identity_) return E_ABORT;
+      if (!current) return reject("source identity unavailable");
+      if (*current != identity_) return reject("source identity changed");
+      if (!output) return reject("output identity unavailable");
+      if (*output != output_identity_) return reject("output identity changed");
       permitted = true;
+      pre_delete_result = S_OK;
       return S_OK;
-    } catch (...) { return E_ABORT; }
+    } catch (...) { return reject("validation exception"); }
   }
-  HRESULT STDMETHODCALLTYPE PostDeleteItem(DWORD, IShellItem*, HRESULT result, IShellItem* recycled) override {
+  HRESULT STDMETHODCALLTYPE PostDeleteItem(DWORD flags, IShellItem*, HRESULT result, IShellItem* recycled) override {
+    post_delete_seen = true;
+    post_delete_flags = flags;
+    post_delete_result = result;
+    recycled_item_returned = recycled != nullptr;
     confirmed = permitted && SUCCEEDED(result) && recycled != nullptr;
     if (confirmed) {
       try {
@@ -777,7 +800,12 @@ class RecycleOnlySink final : public IFileOperationProgressSink {
   HRESULT STDMETHODCALLTYPE ResetTimer() override { return S_OK; }
   HRESULT STDMETHODCALLTYPE PauseTimer() override { return S_OK; }
   HRESULT STDMETHODCALLTYPE ResumeTimer() override { return S_OK; }
-  bool permitted{}, confirmed{};
+  bool started{}, finished{}, pre_delete_seen{}, post_delete_seen{};
+  bool permitted{}, confirmed{}, recycled_item_returned{};
+  DWORD pre_delete_flags{}, post_delete_flags{};
+  HRESULT finish_result{E_PENDING}, pre_delete_result{E_PENDING},
+      pre_name_result{E_PENDING}, post_delete_result{E_PENDING};
+  std::string_view rejection{"none"};
   fs::path recycled_path{};
   std::wstring recycled_shell_item{};
  private:
@@ -856,24 +884,56 @@ awj::compat::expected<void, std::string> recycle_successful_source(
     const HRESULT initialized = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
     struct ComScope { HRESULT result; ~ComScope() { if (SUCCEEDED(result)) CoUninitialize(); } } com{initialized};
     if (FAILED(initialized))
-      return awj::compat::unexpected{"系统回收站 STA 初始化失败。"};
+      return awj::compat::unexpected{awj::compat::format(
+          "系统回收站 STA 初始化失败：HRESULT=0x{:08X}。", static_cast<unsigned int>(initialized))};
     RecycleOnlySink sink{entry.source, *current, output_path, *output, stop_token};
     Microsoft::WRL::ComPtr<IFileOperation> operation;
     Microsoft::WRL::ComPtr<IShellItem> item;
+    std::string_view stage = "CoCreateInstance";
     HRESULT hr = CoCreateInstance(__uuidof(FileOperation), nullptr, CLSCTX_INPROC_SERVER,
                                  IID_PPV_ARGS(&operation));
-    if (SUCCEEDED(hr)) hr = operation->SetOperationFlags(
-        FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE | FOFX_NOCOPYHOOKS |
-        FOF_NOERRORUI | FOF_SILENT | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NORECURSION);
-    if (SUCCEEDED(hr)) hr = SHCreateItemFromParsingName(entry.source.c_str(), nullptr, IID_PPV_ARGS(&item));
-    if (SUCCEEDED(hr)) hr = operation->DeleteItem(item.Get(), &sink);
-    if (SUCCEEDED(hr)) hr = operation->PerformOperations();
+    if (SUCCEEDED(hr)) {
+      stage = "SetOperationFlags";
+      hr = operation->SetOperationFlags(
+          FOFX_RECYCLEONDELETE | FOFX_EARLYFAILURE | FOFX_NOCOPYHOOKS |
+          FOF_NOERRORUI | FOF_SILENT | FOF_NOCONFIRMATION | FOF_NO_CONNECTED_ELEMENTS | FOF_NORECURSION);
+    }
+    if (SUCCEEDED(hr)) {
+      stage = "SHCreateItemFromParsingName";
+      // Win32 file I/O accepts '/', but the Shell parser can reject it with
+      // E_INVALIDARG. Change separators only; never collapse raw link/.. parts.
+      auto shell_source = entry.source;
+      shell_source.make_preferred();
+      hr = SHCreateItemFromParsingName(shell_source.c_str(), nullptr, IID_PPV_ARGS(&item));
+    }
+    if (SUCCEEDED(hr)) {
+      stage = "DeleteItem";
+      hr = operation->DeleteItem(item.Get(), &sink);
+    }
+    if (SUCCEEDED(hr)) {
+      stage = "PerformOperations";
+      hr = operation->PerformOperations();
+    }
     BOOL aborted = TRUE;
-    if (SUCCEEDED(hr)) hr = operation->GetAnyOperationsAborted(&aborted);
-    if (FAILED(hr) || aborted || !sink.confirmed)
-      return awj::compat::unexpected{"系统回收未完成或未确认，请检查源文件与系统回收站；不会降级永久删除。"};
+    if (SUCCEEDED(hr)) {
+      stage = "GetAnyOperationsAborted";
+      hr = operation->GetAnyOperationsAborted(&aborted);
+    }
+    // Preserve any exact recovery reference even if a later operation check
+    // fails, so diagnostics/tests can restore this item without bin enumeration.
     result.recycled_source_path = std::move(sink.recycled_path);
     result.recycled_source_shell_item = std::move(sink.recycled_shell_item);
+    if (FAILED(hr) || aborted || !sink.confirmed)
+      return awj::compat::unexpected{awj::compat::format(
+          "系统回收未完成或未确认，不会降级永久删除：stage={}, HRESULT=0x{:08X}, aborted={}, "
+          "Start={}, Finish={} (0x{:08X}), Pre={} (flags=0x{:08X}, HRESULT=0x{:08X}, name=0x{:08X}, reject={}), "
+          "Post={} (flags=0x{:08X}, HRESULT=0x{:08X}, recycled_item={})。",
+          stage, static_cast<unsigned int>(hr), aborted != FALSE,
+          sink.started, sink.finished, static_cast<unsigned int>(sink.finish_result),
+          sink.pre_delete_seen, static_cast<unsigned int>(sink.pre_delete_flags),
+          static_cast<unsigned int>(sink.pre_delete_result), static_cast<unsigned int>(sink.pre_name_result), sink.rejection,
+          sink.post_delete_seen, static_cast<unsigned int>(sink.post_delete_flags),
+          static_cast<unsigned int>(sink.post_delete_result), sink.recycled_item_returned)};
     return {};
   };
   // WIC workers use MTA. Shell file operations require STA; use a short-lived,
