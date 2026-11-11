@@ -471,6 +471,10 @@ function(awj_sdk_hmos_generate_build_manifest)
     if(NOT sysroot STREQUAL expected_sysroot)
         message(FATAL_ERROR "HMOS 实际 sysroot 与 Native 输入不同")
     endif()
+    # LLD 的 --dependency-file 只能保留最后一个输出；CMake 4.x 自动追加的 link.d
+    # 会覆盖发行证明路径。仅关闭当前 SDK 目录的自动链接 depfile，编译依赖不变；
+    # 八个最终目标继续通过下方显式参数保留真实链接输入，其他目录保持原配置。
+    set(CMAKE_LINK_DEPENDS_USE_LINKER FALSE PARENT_SCOPE)
     set(header "${CMAKE_BINARY_DIR}/awj-hmos-build-run.h")
     file(CONFIGURE OUTPUT "${header}" CONTENT "/* 私有构建输入依赖，不改变公共 ABI。 */\n#define AWJ_HMOS_BUILD_RUN \"${AWJ_HMOS_RECORD_NONCE}\"\n" @ONLY)
     set(manifest "{\"schema\":1,\"kind\":\"cmake-hmos-target-manifest\",\"targets\":{}}")
