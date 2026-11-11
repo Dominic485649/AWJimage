@@ -1,26 +1,35 @@
 # Changelog
 
-## 1.3.5 - Local candidate
+## 1.3.5 - 2026-11-11
 
-### Visual-quality analysis
+### Feature enhancements and performance improvements
 
-- Use the CPU for luma, GMSD and MS-SSIM, retaining reference/pyramid caches, quality search and cancellation.
-- Simplify related settings and diagnostics while retaining existing configuration and preset compatibility; the interface still supports hardware-accelerated and software rendering.
+#### Resizing and stage timings
 
-### Encoding queue
+- Optimize Spline36 resizing with cache reuse and multithreading while preserving the original filter and precision. Automatically reduce concurrency and cache use when memory limits require it.
+- Show separate decode, resize, preparation, encode and write times in the encoding queue and context-menu conversion window, with actual resize worker counts listed separately. CSV records the same details, and elapsed times remain available when a task is canceled or fails.
 
-- Merge CSV and run-log controls, writing `log/summery.csv` and `log/awj.log` together.
-- Add **Append number** as the default collision policy, preserving existing outputs with `(1)`, `(2)` and subsequent suffixes.
-- Add an opt-in **Delete source files** control that recycles each source only after successful output; retain the source if recycling fails.
+#### Encoding queue
+
+- Combine CSV and run-log controls into a single switch for easier log management.
+- Make **Append number** the default collision policy, preserving existing outputs with `(1)`, `(2)` and subsequent suffixes.
+- Add **Delete source files**, disabled by default. Move each source to the system trash only after its output has been successfully written; retain it if recycling fails.
 - Double-click queue images to open their sources before encoding and their actual outputs after success.
 
-### Memory controls and parameter hints
+#### Visual-quality analysis
 
-- Unify session memory unlocking under the existing working-set control, with linked input/buffer protection and preserved manual values.
-- Scale default input/buffer protection to 80% of physical memory and apply the selected policy consistently to import, probing and encoding.
-- Match visual-quality description colors to other parameter hints, show **Unlimited** for unrestricted dimensions, and simplify chroma guidance.
+- Use the CPU for luma, GMSD and MS-SSIM analysis while retaining quality search and compatibility with existing configurations and presets. The interface continues to support hardware-accelerated and software rendering.
 
-This version has not been formally released. Platform build and validation records accompany local candidates.
+#### Memory controls and parameter hints
+
+- Link input and buffer protection to the memory-limit unlock switch while preserving manual limits. The unlocked state applies only to the current session, and default protection limits scale with physical memory.
+- Unify visual-quality description colors, clarify the **Unlimited** dimension hint, and streamline chroma-sampling guidance.
+
+### Bug fixes
+
+- Correct resize work being included in decode timings and avoid double-counting nested animation-stage work for more accurate stage timings.
+- Correct timing-state updates after cancellation or failed-task retries, preventing stale task events from overwriting current results.
+- Fix source-file recycling path handling on Windows and refine memory estimates for certain resizing and multilayer tasks.
 
 ## 1.3.4 - 2026-11-07
 
