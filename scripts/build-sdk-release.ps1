@@ -548,6 +548,7 @@ if(NOT required_tests STREQUAL EXPECTED_REQUIRED_TESTS)
 endif()
 awj_sdk_validate_junit("${TEST_REPORT}" "${required_tests}")
 awj_sdk_check_install("${INSTALL_DIRECTORY}" profile)
+message(STATUS "AWJ_SDK_BUILD_AUDIT_PASSED")
 '@, [Text.UTF8Encoding]::new($false))
     & $cmake.path "-DSOURCE_ROOT=$($root.Replace('\','/'))" "-DTEST_REPORT=$($junit.Replace('\','/'))" `
         "-DINSTALL_DIRECTORY=$($install.Replace('\','/'))" "-DEXPECTED_REQUIRED_TESTS=$($requiredTests -join ';')" -P $auditPath *>&1 |

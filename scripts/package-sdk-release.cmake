@@ -381,6 +381,8 @@ if(AWJ_HMOS_PROFILE)
     target_compile_features(awj-sdk-profile-probe PRIVATE cxx_std_11)
 endif()
 if(AWJ_HMOS_CROSS_BUILD)
+    # 保留显式审计 .d；CMake 的额外 --dependency-file 会覆盖 LLD 的同名选项。
+    set(CMAKE_LINK_DEPENDS_USE_LINKER FALSE)
     # 让父目录的生成器表达式可见安装示例 find_package 导入的真实目标。
     set(CMAKE_FIND_PACKAGE_TARGETS_GLOBAL TRUE)
 endif()

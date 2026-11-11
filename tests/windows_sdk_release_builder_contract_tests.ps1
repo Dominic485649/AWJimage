@@ -1,6 +1,7 @@
-param([string]$OutputDirectory = '')
+param([string]$OutputDirectory = '', [string]$CMakePath = 'cmake')
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$PSNativeCommandUseErrorActionPreference = $false
 $Project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Import-Module (Join-Path $Project 'scripts/release-safety.psm1') -Force -DisableNameChecking
 Import-Module (Join-Path $Project 'scripts/windows-msvc.psm1') -Force
@@ -262,7 +263,90 @@ Must-Reject { Get-SdkReleaseSourceState } 'cannot-retag-old-library-source'
 $savedEnvironment=[Environment]::GetEnvironmentVariable('CL','Process')
 try { $env:CL='/Od'; Must-Reject { Assert-SdkReleaseEnvironment } 'implicit-cl-flags-rejected' }
 finally { [Environment]::SetEnvironmentVariable('CL',$savedEnvironment,'Process') }
+# 执行生产生成语句、真实 CMake 审核、原样 Tee 管道/退出守卫和证据采集。
+# 安装树/JUnit 仍是合成夹具，不编译/执行 SDK，不签发来源证明。
+$releaseEntry=$ast.Find({param($n) $n -is [Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq 'Invoke-SdkReleaseBuild'}, $true)
+$statements=@($releaseEntry.Body.EndBlock.Statements)
+$auditIndex=-1
+for ($index=0; $index -lt $statements.Count; ++$index) {
+    if ($statements[$index].Extent.Text.StartsWith('[IO.File]::WriteAllText($auditPath,', [StringComparison]::Ordinal)) { $auditIndex=$index; break }
+}
+if ($auditIndex -lt 0 -or $auditIndex + 3 -ge $statements.Count -or
+    $statements[$auditIndex + 1] -isnot [Management.Automation.Language.PipelineAst] -or
+    $statements[$auditIndex + 2] -isnot [Management.Automation.Language.IfStatementAst] -or
+    $statements[$auditIndex + 3] -isnot [Management.Automation.Language.AssignmentStatementAst] -or
+    $statements[$auditIndex + 3].Left.Extent.Text -cne '$evidenceInputs') { throw '无法提取连续的生产审核/退出守卫/封存边界。' }
+$auditText=($statements[$auditIndex..($auditIndex + 3)] | ForEach-Object { $_.Extent.Text }) -join "`n"
+$auditScript=[scriptblock]::Create($auditText)
+$auditRoot=Join-Path $output 'native-cmake-audit-fixtures'
+Save-Text (Join-Path $auditRoot 'production-audit-fragment.ps1') $auditText
+$realCMake=Resolve-SdkReleaseTool $CMakePath
+$fileReader=(Get-Command Get-SdkReleaseFile).ScriptBlock
+function Invoke-AuditFixture([string]$Case, [scriptblock]$FileReader) {
+    $root=$Project
+    $output=Join-Path $auditRoot $Case
+    $build=Join-Path $output 'build'; $dependencies=Join-Path $output 'dependencies'
+    $junit=Join-Path $output 'sdk-tests.xml'; $preTestPath=Join-Path $output 'pre-test-snapshot.json'
+    $install=Join-Path $output 'install'; $auditPath=Join-Path $output 'audit-sdk-build.cmake'
+    $cmake=$realCMake; $requiredTests=@(Get-SdkReleaseRequiredTests)
+    foreach ($relative in @('CMakeCache.txt','compile_commands.json','.ninja_log','build.ninja','CMakeFiles/rules.ninja',
+            'sdk-validation-targets.dot','sdk-validation-commands.txt','sdk-ctest-plan.json','awj-msvc-awj_sdk-Release.txt','msvc-build-profile.json')) {
+        Save-Text (Join-Path $build $relative) "metadata-fixture-only:$relative"
+    }
+    foreach ($relative in @('pre-test-snapshot.json','ffmpeg-header-inputs.json','vcpkg-script-inputs.json','dependency-metadata.json',
+            'dependencies/installed/vcpkg/status','build-and-tests.log','install.log')) {
+        Save-Text (Join-Path $output $relative) "metadata-fixture-only:$relative"
+    }
+    foreach ($relative in @('bin/awj_sdk.dll','bin/awj-stream.exe','include/awj/awj.h','include/awj/awj_shm.h','include/awj/awj_ffmpeg.h','include/awj/awj_d3d11.h',
+            'lib/cmake/AWJimage/AWJimageConfig.cmake','share/AWJimage/LICENSE','share/AWJimage/THIRD_PARTY_NOTICES.txt',
+            'share/AWJimage/sdk.md','share/AWJimage/examples/basic/CMakeLists.txt')) {
+        if ($Case -ceq 'install-missing-header' -and $relative -ceq 'include/awj/awj_d3d11.h') { continue }
+        Save-Text (Join-Path $install $relative) "metadata-fixture-only-never-execute:$relative"
+    }
+    $xml="<testsuite name=`"FIXTURE_ONLY`" tests=`"$($requiredTests.Count)`" failures=`"0`" disabled=`"0`" skipped=`"0`">`n"
+    foreach ($name in $requiredTests) {
+        $content=if ($Case -ceq 'junit-hidden-skip' -and $name -ceq $requiredTests[0]) { '<skipped/>' } else { '<system-out>fixture only</system-out>' }
+        $xml+="<testcase name=`"$name`" status=`"run`">$content</testcase>`n"
+    }
+    Save-Text $junit ($xml + '</testsuite>')
+    $log=Join-Path $output 'audit-sdk-build.log'
+    Check (-not (Test-Path -LiteralPath $log)) "$Case-audit-log-starts-absent"
+    $capture=@{evidence_calls=0;inputs=@()}
+    # 只观察真实采集函数是否被调用；所有普通文件/摘要校验仍由生产函数完成。
+    function Get-SdkReleaseFile([string]$Path) { ++$capture.evidence_calls; & $FileReader $Path }
+    $failure=''
+    try { . $auditScript; $capture.inputs=@($evidenceInputs) } catch { $failure=$_.Exception.Message }
+    $nativeExit=$LASTEXITCODE
+    Check (Test-Path -LiteralPath $log -PathType Leaf) "$Case-real-cmake-tee-creates-log"
+    $logText=[IO.File]::ReadAllText($log)
+    $markers=@([regex]::Matches($logText, '(?m)^-- AWJ_SDK_BUILD_AUDIT_PASSED\r?$')).Count
+    if ($Case -ceq 'success') {
+        Check ($nativeExit -eq 0 -and -not $failure) 'production-audit-and-exit-guard-succeed'
+        Check ($markers -eq 1) 'success-marker-after-both-real-cmake-validators'
+        $collected=@($capture.inputs | Where-Object path -ceq $log)
+        Check ($capture.evidence_calls -gt 0 -and $collected.Count -eq 1 -and $collected[0].size -gt 0 -and
+            $collected[0].sha256 -ceq (Hash $log)) 'production-sealing-collects-nonempty-audit-log'
+    } else {
+        Check ($nativeExit -ne 0 -and $failure -ceq '正式 SDK JUnit 或安装树未通过既有正式规则。') "$Case-production-native-exit-guard-rejects"
+        Check ($markers -eq 0) "$Case-no-success-marker"
+        Check ($capture.evidence_calls -eq 0 -and $capture.inputs.Count -eq 0) "$Case-never-enters-production-sealing"
+        if ($Case -ceq 'junit-hidden-skip') {
+            Check ($logText -match 'SDK JUnit' -and $logText -match '跳过') 'junit-fails-in-real-validator'
+        } else {
+            Check ($logText -match '完整 SDK 安装缺少' -and $logText -match 'awj_d3d11.h') 'install-fails-in-real-validator'
+        }
+    }
+    Check (-not (Test-Path -LiteralPath (Join-Path $output 'build-evidence.json'))) "$Case-no-sdk-proof-issued"
+    Save-Json ([ordered]@{fixture_only=$true;case=$Case;native_exit=$nativeExit;guard_error=$failure;success_markers=$markers
+        evidence_calls=$capture.evidence_calls;audit_log=(& $FileReader $log);target_execution='not-run';proof='not-issued'}) (Join-Path $output 'case-checks.json')
+}
+foreach ($case in @('success','junit-hidden-skip','install-missing-header')) { Invoke-AuditFixture $case $fileReader }
+$sourceHashes=[ordered]@{}
+foreach ($relative in @('scripts/build-sdk-release.ps1','tests/windows_sdk_release_builder_contract_tests.ps1','cmake/sdk-release-profiles.cmake','VERSION')) {
+    $sourceHashes[$relative]=Hash (Join-Path $Project $relative)
+}
 [ordered]@{fixture_only=$true;fixture_root=$output;scope='windows-fresh-sdk-builder-contract';checks=$script:checks.ToArray()
+    native_cmake=$realCMake;powershell_version=$PSVersionTable.PSVersion.ToString();source_sha256=$sourceHashes
     native_build='not-run';sdk_tests='not-run';packaging='not-run';source_clone='not-created';git_commit='not-run';git_tag='not-run'} |
     ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $output 'summary.json') -Encoding utf8
-"$($script:checks.Count) 个 Windows builder 元数据契约检查通过；未运行真实编译、SDK 测试、打包或 tag。结果：$output/summary.json"
+"$($script:checks.Count) 个 Windows builder 契约检查通过（含真实 CMake 审核/管道）；未运行真实编译、SDK 测试、打包或 tag。结果：$output/summary.json"
