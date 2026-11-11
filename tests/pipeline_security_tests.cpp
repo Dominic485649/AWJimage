@@ -1022,21 +1022,18 @@ int main(int argc, char** argv) {
       cfg.output_dir = root / std::format("manual-memory-unlock-{}", configured);
       std::stop_source cancel;
       cancel.request_stop();
-      bool manual_traced = false;
+      int manual_items = 0;
+      bool manual_summary = false;
       auto manual = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
-        if (event.kind == awj::BatchEventKind::item_finished) {
-          const auto& result = event.result;
-          manual_traced = result.canceled && result.memory_budget_bytes == 0 &&
-              result.memory_budget_mode == "unlocked" && result.memory_budget_source == "session_unlock" &&
-              result.estimated_working_set_bytes > 0 && result.encoder_threads == 0 &&
-              result.seconds == 0 && result.decode_seconds == 0 && result.encode_seconds == 0 &&
-              result.resize_seconds == -1.0 && result.resize_workers == 0;
-        }
+        if (event.kind == awj::BatchEventKind::item_finished) ++manual_items;
+        if (event.kind == awj::BatchEventKind::summary)
+          manual_summary = event.summary.canceled && event.summary.exit_code == 130;
       }, cancel.get_token());
-      if (!manual || !manual->canceled || !manual_traced ||
+      if (!manual || !manual->canceled || manual->canceled_count != 1 ||
+          manual->exit_code != 130 || manual_items != 0 || !manual_summary ||
           awj::encoding_defaults::current_memory_policy() != outer_policy ||
-          read_text(cfg.output_dir / "log" / "summery.csv").find(",0,unlocked,session_unlock,") == std::string::npos)
-        return fail("Manual Grid worker reinterpreted unlocked zero as automatic or fabricated unstarted measurements.");
+          std::filesystem::exists(cfg.output_dir))
+        return fail("Pre-canceled Grid work probed inputs, wrote outputs or fabricated execution diagnostics.");
     }
     auto cfg = awj::default_app_config();
     cfg.output_format = awj::OutputFormat::png;
@@ -1221,6 +1218,29 @@ int main(int argc, char** argv) {
       if (!work || work->ordinary.size() != 1 || work->ordinary.front().estimated_bytes != budget)
         return fail("Unknown dimensions used compressed size instead of exclusive admission");
     }
+    const std::vector<awj::ImageFile> oversized_probe{{.path = root / "unread-large.heic", .bytes = budget}};
+    auto refused = awj::pipeline_detail::classify_work_for_avif(cfg, oversized_probe, budget);
+    if (!refused || !refused->ordinary.empty() || refused->memory_rejected.size() != 1 ||
+        !refused->memory_rejected.front().preflight_error.starts_with("尺寸探测工作集 "))
+      return fail("Whole-input dimension probing was started without an adequate byte reservation.");
+    cfg.output_format = awj::OutputFormat::avif;
+    const auto shared_output = root / "mixed-output.avif";
+    const std::vector<awj::pipeline_detail::ClassifiedImageFile> ordinary{
+        {.file = {.index = 2, .path = root / "small.png", .resolved_output_path = shared_output,
+                  .output_path_resolved = true}, .estimated_bytes = 32 * 1024 * 1024}};
+    const std::vector<awj::BatchLargeImageItem> large{
+        {.file = {.index = 0, .path = root / "wide.png", .resolved_output_path = shared_output,
+                  .output_path_resolved = true},
+         .dimensions = awj::make_image_dimensions(65537, 1), .decision = {.available_grid = true}}};
+    auto mixed = awj::pipeline_detail::build_work_groups(cfg, ordinary, large, budget);
+    if (!mixed || mixed->size() != 1 || mixed->front().files.size() != 2 ||
+        mixed->front().files[0].index != 0 || mixed->front().files[1].index != 2 ||
+        mixed->front().large_items.size() != 1)
+      return fail("Ordinary/Grid output conflicts were not joined in original input order.");
+    std::stop_source stopped;
+    stopped.request_stop();
+    if (awj::pipeline_detail::classify_work_for_avif(cfg, unknown, budget, stopped.get_token()))
+      return fail("Pre-canceled image analysis started a probe.");
   }
   {
     auto cfg = awj::default_app_config();

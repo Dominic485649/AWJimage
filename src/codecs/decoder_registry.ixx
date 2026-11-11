@@ -3,7 +3,9 @@ module;
 
 #include <algorithm>
 #include <concepts>
+#include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <memory>
 #include <new>
 #include <stdexcept>
@@ -20,6 +22,7 @@ import awj.bmp_codec;
 import awj.codec;
 import awj.config;
 import awj.core;
+import awj.decoder_common;
 import awj.gif_codec;
 import awj.gain_map;
 import awj.heif_codec;
@@ -53,7 +56,21 @@ struct DecoderRegistryOptions {
   bool native_pixels{};
   GainMapDecodeMode gain_map_mode{GainMapDecodeMode::hdr_only};
   DecodeDiagnostics* diagnostics{};
+  // 0 表示调用方没有单独提供尺寸预检预约，不改变既有直接调用语义。
+  std::uint64_t probe_memory_reservation_bytes{};
 };
+
+inline constexpr std::uint64_t dimension_probe_fixed_bytes = 8ull * 1024 * 1024;
+inline constexpr std::uint64_t dimension_probe_input_copies = 4;
+
+std::uint64_t dimension_probe_working_set_bytes(const fs::path&,
+                                               std::uint64_t input_bytes) {
+  // 内容嗅探可跨后缀进入 Gain Map。包含应用输入、库内整包、主/增益 JPEG 和 metadata 副本；
+  // capacity=1 的探测重开先销毁旧 decoder，不把两套库内载荷叠在同一预约上。
+  return input_bytes > (std::numeric_limits<std::uint64_t>::max() - dimension_probe_fixed_bytes) / dimension_probe_input_copies
+      ? std::numeric_limits<std::uint64_t>::max()
+      : dimension_probe_fixed_bytes + input_bytes * dimension_probe_input_copies;
+}
 
 struct DecoderSelection {
   std::unique_ptr<ImageDecoder> decoder{};
@@ -295,18 +312,32 @@ awj::compat::expected<ImageDimensions, std::string> probe_image_dimensions_for_p
         "读取待探测输入文件大小失败: {}；系统错误：{}。", display_path_for_user(path), size_error.message())};
     if (auto within_limit = check_scanned_input_file_size(path, input_bytes); !within_limit)
       return awj::compat::unexpected{within_limit.error()};
+    const auto probe_bytes = dimension_probe_working_set_bytes(path, input_bytes);
+    if (options.probe_memory_reservation_bytes && probe_bytes > options.probe_memory_reservation_bytes)
+      return awj::compat::unexpected{awj::compat::format(
+          "尺寸探测工作集 {} 超过预检预约 {}，未读取完整输入。",
+          format_size(probe_bytes), format_size(options.probe_memory_reservation_bytes))};
+    const auto file_read_limit = !options.probe_memory_reservation_bytes ? UINT64_MAX
+        : options.probe_memory_reservation_bytes > dimension_probe_fixed_bytes
+            ? (options.probe_memory_reservation_bytes - dimension_probe_fixed_bytes) / dimension_probe_input_copies : 0;
+    const decoder_common::ScopedProbeFileReadLimit read_scope{file_read_limit};
     auto enhanced = probe_jpeg_gain_map_dimensions(path, options.stop_token);
     if (!enhanced) return awj::compat::unexpected{enhanced.error()};
+    if (options.stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (*enhanced) return **enhanced;
     auto selected = select_decoder_for_path(path, options);
     if (!selected) {
       return awj::compat::unexpected{selected.error()};
     }
 
-    auto dimensions = selected->decoder->probe_dimensions(path);
+    auto dimensions = selected->decoder->id() == "libpng"
+        ? PngImageDecoder{}.probe_dimensions(path, options.probe_memory_reservation_bytes, options.stop_token)
+        : selected->decoder->probe_dimensions(path);
     if (dimensions) {
       return dimensions;
     }
+    if (dimensions.error().starts_with("尺寸探测工作集 ") || dimensions.error().starts_with("PNG ICC "))
+      return awj::compat::unexpected{dimensions.error()};
 
     if (!options.allow_wic_fallback || selected->fallback) {
       return awj::compat::unexpected{dimensions.error()};

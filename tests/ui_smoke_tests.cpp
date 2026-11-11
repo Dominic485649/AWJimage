@@ -38,6 +38,10 @@
 #include "../src/ui/slint_string_util.h"
 #include "../src/ui/queue_ui_policy.h"
 
+import awj.update_model;
+
+#include "../src/ui/changelog_view.h"
+
 namespace {
 
 int fail(std::string_view message) {
@@ -1021,6 +1025,185 @@ int verify_shell_stage_detail(float scale, bool dark, bool english) {
     }
   }
   app->hide();
+  return 0;
+}
+
+int verify_changelog_models() {
+  using awj::ui::changelog_block_rows;
+  const auto matches_markdown = [](const ChangelogBlockRow& row, std::string_view expected) {
+    const auto parsed = slint::StyledText::from_markdown(expected);
+    return parsed && row.text == *parsed;
+  };
+  const auto inline_code = changelog_block_rows("```literal```");
+  if (inline_code->row_count() != 1 || inline_code->row_data(0)->kind != 0 ||
+      !matches_markdown(*inline_code->row_data(0), "```literal```"))
+    return fail("行内反引号被错误识别为围栏");
+  const auto headings = changelog_block_rows(
+      "# **粗体** [Docs][ref]\n\n## Two\n### Three\n#### Four\n##### Five\n###### Six\n\n"
+      "[ref]: https://example.com/\n");
+  if (headings->row_count() != 6 ||
+      !matches_markdown(*headings->row_data(0), "[ref]: https://example.com/\n\n**粗体** [Docs][ref]"))
+    return fail("标题行内样式或跨标题引用式链接没有进入真实 StyledText 模型");
+  for (std::size_t i = 0; i < 6; ++i) {
+    if (headings->row_data(i)->kind != static_cast<int>(i + 1))
+      return fail("标题层级丢失");
+  }
+  constexpr std::string_view references = "[Docs][ref]\n\n[ref]: https://example.com/";
+  const auto same_block = changelog_block_rows(references);
+  if (same_block->row_count() != 1 || !matches_markdown(*same_block->row_data(0), references))
+    return fail("空行断开了引用式链接与定义");
+  const auto first_definition = changelog_block_rows(
+      "[ref]: https://first.example/\n\n# [Docs][ref]\n\n[ref]: https://second.example/\n");
+  if (first_definition->row_count() != 1 || !matches_markdown(*first_definition->row_data(0),
+          "[ref]: https://first.example/\n\n[Docs][ref]"))
+    return fail("跨标题重复引用定义没有遵守首次定义优先");
+  const auto adjacent_definition = changelog_block_rows(
+      "# [Docs][ref]\n\n[ref]:\n  <https://example.com/>\nAdjacent prose\n");
+  if (adjacent_definition->row_count() != 2 ||
+      !matches_markdown(*adjacent_definition->row_data(0),
+                        "[Docs](https://example.com/)"))
+    return fail("多行引用定义与邻接正文不能同时保留");
+  const auto fenced = changelog_block_rows("```md\n# literal <u>x</u>\n[ref]: https://fake.example/\n```\n\n# [Docs][ref]");
+  if (fenced->row_count() != 2 || fenced->row_data(0)->kind != 7 ||
+      std::string_view{fenced->row_data(0)->font_family}.empty() ||
+      !(fenced->row_data(0)->text == slint::StyledText::from_plain_text(
+          "# literal <u>x</u>\n[ref]: https://fake.example/")) ||
+      !matches_markdown(*fenced->row_data(1), "[Docs][ref]"))
+    return fail("代码块不再是纯文本，或伪引用定义泄漏到标题");
+  const auto comparison = changelog_block_rows(
+      "- **Compare** a < b and `a < b`\n\n<u>literal</u>\n\n![image](https://example.com/a)");
+  if (comparison->row_count() != 1 || !matches_markdown(*comparison->row_data(0),
+          "- **Compare** a \\< b and `a < b`\n\n\\<u>literal\\</u>\n\n\\!\\[image](https://example.com/a)"))
+    return fail("安全转义破坏了列表、比较符或行内代码");
+  const auto reference_image = changelog_block_rows(
+      "- **List**\n\n![image][ref]\n\n[ref]: https://example.com/image\n");
+  if (reference_image->row_count() != 1 || !matches_markdown(*reference_image->row_data(0),
+          "- **List**\n\n\\!\\[image\\]\\[ref\\]\n\n[ref]: https://example.com/image\n"))
+    return fail("引用式图片被加载或退化成隐藏原文的链接");
+  for (const auto literal : {"1. item\n---", "> quote\n---", "`open\n\n<u>x</u>\n\n`",
+      "[x](https://example.com/ \"`title\") <font color=\"#00000000\">HIDDEN</font> `",
+      "[x](https://example.com/ \"a) `title\") <u>visible</u> `"}) {
+    const auto fallback = changelog_block_rows(literal);
+    if (fallback->row_count() != 1 || fallback->row_data(0)->kind != 0 ||
+        !(fallback->row_data(0)->text == slint::StyledText::from_plain_text(literal)))
+      return fail("不支持的块上下文回退时丢失原文");
+  }
+
+  for (const unsigned count : {0u, 1u, 10u, 11u}) {
+    awj::update::Manifest manifest;
+    for (unsigned i = 0; i < count; ++i) {
+      manifest.entries.push_back({.version = {99, 0, i}, .changelog = {.zh_cn = "完整历史"}});
+    }
+    const auto rows = awj::ui::changelog_history_rows(manifest, {});
+    if (rows.size() != std::min<unsigned>(count, 10) || manifest.entries.size() != count ||
+        (!rows.empty() && std::string_view{rows.front().version} !=
+                            awj::update::to_string(awj::update::Version{99, 0, count - 1})))
+      return fail("真实历史模型的 0/1/10/11 展示边界或语义版本排序错误");
+  }
+  awj::update::Manifest manifest;
+  const std::string complete = std::string(20000, 'x') + "完整末行";
+  manifest.entries = {
+      {.version = {99, 0, 9}, .channel = awj::update::Channel::prerelease,
+       .published_at = "2026-11-11", .changelog = {.zh_cn = complete}},
+      {.version = {99, 0, 10}, .changelog = {.en = "English only"}}};
+  const auto rows = awj::ui::changelog_history_rows(manifest,
+      {{.version = "99.0.9", .changelog_zh_cn = "embedded"},
+       {.version = "99.0.9", .changelog_zh_cn = "duplicate"},
+       {.version = "legacy", .changelog_zh_cn = "旧历史"}});
+  if (rows.size() != 3 || std::string_view{rows[0].version} != "99.0.10" ||
+      std::string_view{rows[1].version} != "99.0.9" ||
+      std::string_view{rows[1].channel} != "prerelease" ||
+      std::string_view{rows[1].published_at} != "2026-11-11" ||
+      std::string_view{rows[1].changelog_zh_cn} != complete ||
+      std::string_view{rows[1].changelog_en} != complete ||
+      std::string_view{rows[0].changelog_zh_cn} != "English only" ||
+      std::string_view{rows[0].changelog_en} != "English only" ||
+      rows[1].blocks_zh_cn->row_count() != 1 ||
+      std::string_view{rows[1].blocks_zh_cn->row_data(0)->plain_text} != complete ||
+      manifest.entries[0].changelog.zh_cn != complete)
+    return fail("历史去重、验签覆盖、双向语言回退或完整正文保留失败");
+  return 0;
+}
+
+int verify_changelog_layout(float scale, int theme, bool english) {
+  auto app = AwjStudio::create();
+  if (!slint::select_bundled_translation(english ? "en" : ""))
+    return fail("日志测试无法切换界面语言");
+  app->set_language_index(english ? 1 : 0);
+  app->set_theme_index(theme);
+  app->set_selected_page(4);
+  app->set_show_update_changelog(true);
+  app->window().window_handle().set_const_scale_factor(scale);
+  const std::string source = "# **更新标题**\n\n[Docs][ref]\n\n"
+      "- **粗体 / Bold** a < b and `x < y`\n\n" + std::string(300, 'W') +
+      "\n\n```txt\n" + std::string(400, 'M') +
+      "\nWWW iii 中文等宽代码\n```\n\n[ref]: https://example.com/docs\n";
+  const auto english_source = std::string{"# **Release heading**"} + source.substr(source.find('\n'));
+  awj::update::Manifest manifest;
+  for (unsigned i = 0; i < 11; ++i) {
+    manifest.entries.push_back({.version = {99, 0, i},
+                                .changelog = {.zh_cn = source, .en = english_source}});
+  }
+  auto rows = awj::ui::changelog_history_rows(manifest, {});
+  if (rows.size() != 10) return fail("日志布局输入没有限制为最近十个版本卡片");
+  app->set_update_history(std::make_shared<slint::VectorModel<UpdateHistoryRow>>(std::move(rows)));
+  int clicks = 0;
+  std::string clicked_url;
+  app->on_changelog_link_clicked([&](slint::SharedString url) {
+    ++clicks;
+    clicked_url = std::string{std::string_view{url}};
+  });
+  app->show();
+  for (const float width : {820.0f, 1171.0f}) {
+    app->window().set_size(slint::LogicalSize({width, 720.0f}));
+    const auto scrolls = slint::testing::ElementHandle::find_by_element_id(app, "AwjStudio::changelog-scroll");
+    if (scrolls.size() != 1) return fail("日志缺少独立滚动区域");
+    const auto scroll_position = scrolls[0].absolute_position();
+    const auto scroll_size = scrolls[0].size();
+    const slint::LogicalPosition point{{scroll_position.x + scroll_size.width / 2,
+                                        scroll_position.y + scroll_size.height / 2}};
+    app->window().dispatch_pointer_scroll_event(point, 0, 100000);
+    slint::private_api::testing::mock_elapsed_time(300);
+    const auto text = slint::testing::ElementHandle::find_by_element_id(app, "AwjStudio::changelog-block-text");
+    const auto code = slint::testing::ElementHandle::find_by_element_id(app, "AwjStudio::changelog-code-text");
+    if (text.empty() || code.empty()) return fail("日志没有使用真实 StyledText 与独立等宽代码文本");
+    for (const auto& elements : {text, code}) for (const auto& element : elements) {
+      const auto position = element.absolute_position();
+      const auto size = element.size();
+      if (!std::isfinite(size.width) || !std::isfinite(size.height) || size.width <= 0 || size.height <= 0 ||
+          position.x < scroll_position.x || position.x + size.width > scroll_position.x + scroll_size.width + 1)
+        return fail("日志长行换行、代码块尺寸或水平边界无效");
+    }
+    if (code[0].size().height < 3 * 13.0f)
+      return fail("代码长行没有换行，或高度被截断");
+    std::optional<slint::testing::ElementHandle> link;
+    bool correct_language = false;
+    for (const auto& element : text) {
+      const auto label = element.accessible_label();
+      if (!label) continue;
+      if (std::string_view{*label} == (english ? "**Release heading**" : "**更新标题**"))
+        correct_language = true;
+      if (!link && std::string_view{*label}.starts_with("[Docs][ref]")) link = element;
+    }
+    if (!correct_language) return fail("日志没有选择当前语言的真实 Markdown 模型");
+    if (!link) return fail("引用式链接正文没有出现在日志展示中");
+    const auto position = link->absolute_position();
+    if (width == 820.0f && clicks != 0) return fail("日志链接在用户点击前被主动打开");
+    const int before = clicks;
+    const slint::LogicalPosition link_point{{position.x + 5, position.y + 6}};
+    app->window().dispatch_pointer_press_event(link_point, slint::PointerEventButton::Left);
+    app->window().dispatch_pointer_release_event(link_point, slint::PointerEventButton::Left);
+    if (clicks != before + 1 || clicked_url != "https://example.com/docs")
+      return fail("主动点击日志链接没有触发独立回调");
+    const auto top_before_scroll = text[0].absolute_position().y;
+    app->window().dispatch_pointer_scroll_event(point, 0, -300);
+    slint::private_api::testing::mock_elapsed_time(300);
+    if (!text[0].is_valid() || text[0].absolute_position().y >= top_before_scroll - 10)
+      return fail("日志滚动没有移动完整历史内容");
+  }
+  app->hide();
+  std::printf("changelog scale=%.2f theme=%d language=%s widths=2 result=passed\n",
+              double(scale), theme, english ? "en" : "zh");
   return 0;
 }
 
@@ -2734,6 +2917,17 @@ int verify_queue_menu_animation(const slint::ComponentHandle<AwjStudio>& app,
 }  // namespace
 
 int main(int argc, char** argv) {
+  if (argc >= 2 && std::string_view{argv[1]} == "--changelog-only") {
+    if (argc != 2) return fail("日志定向回归不接受额外参数");
+    slint::testing::init();
+    if (const int result = verify_changelog_models()) return result;
+    for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {
+      for (const int theme : {1, 2}) for (const bool english : {false, true}) {
+        if (const int result = verify_changelog_layout(scale, theme, english)) return result;
+      }
+    }
+    return 0;
+  }
   if (argc == 2 && std::string_view{argv[1]} == "--stage-timing-only") {
     slint::testing::init();
     for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) {

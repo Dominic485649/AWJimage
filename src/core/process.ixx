@@ -1261,8 +1261,10 @@ awj::compat::expected<void, std::string> check_scanned_input_file_size(
 }
 
 awj::compat::expected<void, std::string> file_hash_token(const fs::path& path,
-                                                 std::wstring& out) {
+                                                 std::wstring& out,
+                                                 awj::compat::stop_token stop = {}) {
   try {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     constexpr std::uint64_t offset = 14695981039346656037ull;
     constexpr std::uint64_t prime = 1099511628211ull;
     std::uint64_t hash = offset;
@@ -1291,6 +1293,7 @@ awj::compat::expected<void, std::string> file_hash_token(const fs::path& path,
 
     std::array<char, 64 * 1024> buffer{};
     while (stream) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
@@ -1441,8 +1444,10 @@ std::array<unsigned char, 32> sha256_final(Sha256State& state) noexcept {
 }  // namespace core_detail
 #endif
 
-awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& path) {
+awj::compat::expected<std::string, std::string> file_sha256_hex(
+    const fs::path& path, awj::compat::stop_token stop = {}) {
   try {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     std::error_code ec;
     if (!fs::is_regular_file(path, ec) || ec) {
       return awj::compat::unexpected{
@@ -1516,6 +1521,7 @@ awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& 
     std::array<char, 64 * 1024> buffer{};
     std::uint64_t hashed_bytes = 0;
     while (stream) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
@@ -1554,6 +1560,7 @@ awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& 
     std::array<char, 64 * 1024> buffer{};
     std::uint64_t hashed_bytes = 0;
     while (stream) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       stream.read(buffer.data(), static_cast<std::streamsize>(buffer.size()));
       const auto read = stream.gcount();
       const auto chunk_bytes = static_cast<std::uint64_t>(read);
@@ -1593,9 +1600,10 @@ awj::compat::expected<std::string, std::string> file_sha256_hex(const fs::path& 
 }
 
 awj::compat::expected<void, std::string> file_sha256_token(const fs::path& path,
-                                                   std::wstring& out) {
+                                                   std::wstring& out,
+                                                   awj::compat::stop_token stop = {}) {
   out.clear();
-  auto digest = file_sha256_hex(path);
+  auto digest = file_sha256_hex(path, stop);
   if (!digest) {
     return awj::compat::unexpected{digest.error()};
   }
@@ -1645,19 +1653,23 @@ fs::path planned_output_path_for(const AppConfig& cfg, const ImageFile& image) {
 }
 
 awj::compat::expected<void, std::string> apply_source_extension_disambiguation(
-    const AppConfig& cfg, std::vector<ImageFile>& files) {
+    const AppConfig& cfg, std::vector<ImageFile>& files,
+    awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   // 例如 1.jpg 和 1.bmp 都套用 {name}<输出扩展名>
   // 时会同名；保留源扩展避免互相覆盖。
   std::unordered_map<PathText, std::vector<std::size_t>> by_output;
   try {
     by_output.reserve(files.size());
     for (std::size_t i = 0, count = files.size(); i < count; ++i) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       by_output[normalized_lower_path_key(
                     planned_output_path_for(cfg, files[i]))]
           .push_back(i);
     }
 
     for (const auto& [_, indices] : by_output) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       if (indices.size() < 2) {
         continue;
       }
@@ -1905,7 +1917,9 @@ awj::compat::expected<fs::path, std::string> resolve_collision_output_path(
 }
 
 awj::compat::expected<void, std::string> resolve_batch_output_paths(
-    const AppConfig& cfg, std::vector<ImageFile>& files) {
+    const AppConfig& cfg, std::vector<ImageFile>& files,
+    awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (cfg.collision_mode != CollisionMode::suffix_time &&
       cfg.collision_mode != CollisionMode::suffix_random &&
       cfg.collision_mode != CollisionMode::suffix_number) {
@@ -1918,12 +1932,14 @@ awj::compat::expected<void, std::string> resolve_batch_output_paths(
     // Reserve every input before selecting any output, including inputs that
     // disappear after scanning and path aliases through an existing parent.
     for (const auto& image : files) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       std::error_code ec;
       const auto input = fs::weakly_canonical(image.path, ec);
       if (ec) return awj::compat::unexpected{"无法规范化输入保护路径。"};
       reserved_outputs.try_emplace(normalized_lower_path_key(input), 0);
     }
     for (auto& image : files) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       auto output = resolve_collision_output_path(
           output_path_for(cfg, image), cfg.collision_mode, &reserved_outputs,
           output_extension_for(cfg));
@@ -1944,7 +1960,9 @@ awj::compat::expected<void, std::string> resolve_batch_output_paths(
 }
 
 awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
-                                             std::vector<ImageFile>& files) {
+                                             std::vector<ImageFile>& files,
+                                             awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   // 输入可以是单张图片或一个目录。这里不再抛异常，而是把失败原因、路径和建议
   // 作为 awj::compat::expected 的 error 返回给 CLI/UI，避免用户只看到“未知异常”。
   std::error_code ec;
@@ -1981,7 +1999,7 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
     if (!template_needs_hash) {
       return {};
     }
-    return file_hash_token(path, out);
+    return file_hash_token(path, out, stop);
   };
   const auto build_sha256 =
       [&](const fs::path& path,
@@ -1990,7 +2008,7 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
     if (!template_needs_sha256) {
       return {};
     }
-    return file_sha256_token(path, out);
+    return file_sha256_token(path, out, stop);
   };
 
   if (fs::is_regular_file(input_path, ec) && !ec) {
@@ -2025,11 +2043,11 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
     } catch (const std::length_error&) {
       return awj::compat::unexpected{"文件列表数量超过运行时限制。"};
     }
-    if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
+    if (auto disambiguated = apply_source_extension_disambiguation(cfg, files, stop);
         !disambiguated) {
       return awj::compat::unexpected{disambiguated.error()};
     }
-    if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
+    if (auto resolved = resolve_batch_output_paths(cfg, files, stop); !resolved) {
       return awj::compat::unexpected{resolved.error()};
     }
     return {};
@@ -2063,6 +2081,7 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
                                        ec.message())};
   }
   for (fs::recursive_directory_iterator end; it != end; it.increment(ec)) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (ec) {
       ++skipped_access;
       ec.clear();
@@ -2134,6 +2153,7 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
         skipped_access)};
   }
 
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   awj::compat::ranges::sort(files, [](const ImageFile& left, const ImageFile& right) {
     return normalized_lower_path_key(left.path) <
            normalized_lower_path_key(right.path);
@@ -2141,11 +2161,11 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
   for (std::size_t i = 0, count = files.size(); i < count; ++i) {
     files[i].index = i;
   }
-  if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
+  if (auto disambiguated = apply_source_extension_disambiguation(cfg, files, stop);
       !disambiguated) {
     return awj::compat::unexpected{disambiguated.error()};
   }
-  if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
+  if (auto resolved = resolve_batch_output_paths(cfg, files, stop); !resolved) {
     return awj::compat::unexpected{resolved.error()};
   }
   return {};
@@ -2154,14 +2174,16 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
 
 awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
                                              std::span<const fs::path> input_paths,
-                                             std::vector<ImageFile>& files) {
+                                             std::vector<ImageFile>& files,
+                                             awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (input_paths.empty()) {
-    return scan_images(cfg, files);
+    return scan_images(cfg, files, stop);
   }
   if (input_paths.size() == 1) {
     auto one = cfg;
     one.input_path = input_paths.front();
-    return scan_images(one, files);
+    return scan_images(one, files, stop);
   }
 
   files.clear();
@@ -2169,16 +2191,18 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
   try {
     seen.reserve(input_paths.size());
     for (const auto& raw_input : input_paths) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       auto one_cfg = cfg;
       one_cfg.input_path = raw_input;
       std::vector<ImageFile> batch;
-      if (auto scanned = scan_images(one_cfg, batch); !scanned) {
+      if (auto scanned = scan_images(one_cfg, batch, stop); !scanned) {
         return awj::compat::unexpected{scanned.error()};
       }
       const auto input_path = long_existing_path_or_self(raw_input);
       std::error_code type_ec;
       const bool input_is_file = fs::is_regular_file(input_path, type_ec) && !type_ec;
       for (auto& image : batch) {
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         const auto key = normalized_lower_path_key(image.path);
         if (!key.empty() && !seen.insert(key).second) {
           continue;
@@ -2206,11 +2230,11 @@ awj::compat::expected<void, std::string> scan_images(const AppConfig& cfg,
     for (std::size_t i = 0, count = files.size(); i < count; ++i) {
       files[i].index = i;
     }
-    if (auto disambiguated = apply_source_extension_disambiguation(cfg, files);
+    if (auto disambiguated = apply_source_extension_disambiguation(cfg, files, stop);
         !disambiguated) {
       return awj::compat::unexpected{disambiguated.error()};
     }
-    if (auto resolved = resolve_batch_output_paths(cfg, files); !resolved) {
+    if (auto resolved = resolve_batch_output_paths(cfg, files, stop); !resolved) {
       return awj::compat::unexpected{resolved.error()};
     }
     return {};

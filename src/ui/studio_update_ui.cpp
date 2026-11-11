@@ -21,6 +21,8 @@ import awj.update_runtime;
 import awj.update_security_state;
 import awj.update_windows;
 
+#include "changelog_view.h"
+
 namespace awj::studio {
 
 UpdatePersistentState capture_update_state(const UiState& state) {
@@ -146,41 +148,7 @@ void sync_update_history(
     const awj::update::Manifest& manifest) {
   if (!rows) return;
   rows->set_loader([manifest] {
-  auto merged_history = awj::ui::embedded_changelog_history();
-  for (const auto& entry : manifest.entries) {
-    const auto version = awj::update::to_string(entry.version);
-    const auto signed_entry = awj::ui::ChangelogHistoryEntry{
-        .version = version,
-        .channel = std::string{awj::update::channel_name(entry.channel)},
-        .published_at = entry.published_at,
-        .release_url = entry.release_url,
-        .changelog_zh_cn = entry.changelog.zh_cn,
-        .changelog_en = entry.changelog.en};
-    const auto existing = std::ranges::find_if(
-        merged_history, [&](const auto& item) { return item.version == version; });
-    if (existing == merged_history.end()) {
-      merged_history.push_back(signed_entry);
-    } else {
-      *existing = signed_entry;
-    }
-  }
-  std::ranges::sort(merged_history, [](const auto& lhs, const auto& rhs) {
-    const auto left = awj::update::parse_version(lhs.version);
-    const auto right = awj::update::parse_version(rhs.version);
-    return left && right ? *left > *right : lhs.version > rhs.version;
-  });
-  std::vector<UpdateHistoryRow> history_rows;
-  history_rows.reserve(merged_history.size());
-  for (const auto& entry : merged_history) {
-    history_rows.push_back(UpdateHistoryRow{
-        .version = to_shared(entry.version),
-        .channel = to_shared(entry.channel),
-        .published_at = to_shared(entry.published_at),
-        .release_url = to_shared(entry.release_url),
-        .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
-        .changelog_en = to_shared(entry.changelog_en)});
-  }
-  return history_rows;
+    return awj::ui::changelog_history_rows(manifest);
   });
 }
 

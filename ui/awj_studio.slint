@@ -5,10 +5,10 @@ import { SettingsPage } from "settings_page.slint";
 import { PresetEditor } from "preset_editor.slint";
 export { ShellConvertWindow } from "shell_convert_window.slint";
 import { Button, CheckBox, LineEdit, Palette, ScrollView, ListView, TextEdit } from "std-widgets.slint";
-import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption, SoftComboBox, SoftButton, NavItem, QueueMenuItem, MenuCheckBox, ParamHint } from "studio_components.slint";
+import { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ChangelogBlockRow, ComboOption, SoftComboBox, SoftButton, NavItem, QueueMenuItem, MenuCheckBox, ParamHint } from "studio_components.slint";
 import { StudioTheme } from "studio_theme.slint";
 // 保持原 awj_studio.slint 的 C++ 公共类型名不变；组件实现已拆到独立文件。
-export { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ComboOption }
+export { DropRegion, TaskRow, LargeImageRow, UpdateHistoryRow, ChangelogBlockRow, ComboOption }
 
 export component AwjStudio inherits Window {
     title: "AWJ";
@@ -328,6 +328,7 @@ export component AwjStudio inherits Window {
     callback update-channel-selection-requested(int);
     callback check-update-requested();
     callback open-url(string);
+    callback changelog-link-clicked(string);
     callback show-update-changelog-requested(bool);
     callback only-show-changelog-after-update-requested(bool);
     callback version-clicked();
@@ -861,7 +862,7 @@ export component AwjStudio inherits Window {
                     background: root.panel-bg;
                     border-color: root.panel-border;
                     border-width: 1px;
-                    ScrollView {
+                    changelog-scroll := ScrollView {
                         viewport-width: self.width;
                         changelog-content := VerticalLayout {
                             padding: 24px;
@@ -877,7 +878,7 @@ export component AwjStudio inherits Window {
                                 }
 
                             }
-                            for entry in root.update-history: Rectangle {
+                            for entry in root.update-history: changelog-card := Rectangle {
                                 border-radius: 8px;
                                 background: root.panel-bg-soft;
                                 border-color: transparent;
@@ -892,15 +893,48 @@ export component AwjStudio inherits Window {
                                         if !entry.channel.is-empty: Text { text: entry.channel; color: entry.channel == "prerelease" ? root.warning : root.success; font-size: 12px; font-weight: 800; vertical-alignment: center; }
                                         Text { text: entry.published-at; color: root.text-muted; font-size: 12px; horizontal-stretch: 1; horizontal-alignment: right; vertical-alignment: center; }
                                     }
-                                    Text {
+                                    if (root.language-index == 1 ? entry.blocks-en.length : entry.blocks-zh-cn.length) == 0: Text {
                                         text: root.language-index == 1 ? entry.changelog-en : entry.changelog-zh-cn;
                                         color: root.text-body;
                                         font-size: 13px;
                                         wrap: word-wrap;
                                         min-width: 0px;
-                                        width: 100%;
                                         horizontal-stretch: 1;
                                         height: self.preferred-height;
+                                    }
+                                    for block in (root.language-index == 1 ? entry.blocks-en : entry.blocks-zh-cn): Rectangle {
+                                        horizontal-stretch: 1;
+                                        min-width: 0px;
+                                        height: self.preferred-height;
+                                        border-radius: 5px;
+                                        background: block.kind == 7 ? root.panel-bg : transparent;
+                                        VerticalLayout {
+                                            padding: block.kind == 7 ? 8px : 0px;
+                                            spacing: 0px;
+                                            if block.kind == 7: changelog-code-text := Text {
+                                                text: block.plain-text;
+                                                color: root.text-body;
+                                                font-family: block.font-family;
+                                                font-size: 13px;
+                                                wrap: char-wrap;
+                                                min-width: 0px;
+                                                horizontal-stretch: 1;
+                                                height: self.preferred-height;
+                                            }
+                                            if block.kind != 7: changelog-block-text := StyledText {
+                                                text: block.text;
+                                                min-width: 0px;
+                                                horizontal-stretch: 1;
+                                                height: self.preferred-height;
+                                                default-color: block.kind > 0 ? root.text-strong : root.text-body;
+                                                default-font-size: block.kind == 1 ? 20px : block.kind == 2 ? 18px : block.kind == 3 ? 16px : block.kind == 4 ? 15px : block.kind == 5 ? 14px : 13px;
+                                                max-lines: 0;
+                                                link-color: root.dark-mode ? #65b8ef : #1267a4;
+                                                accessible-role: text;
+                                                accessible-label: block.plain-text;
+                                                link-clicked(link) => { root.changelog-link-clicked(link); }
+                                            }
+                                        }
                                     }
                                 }
                             }

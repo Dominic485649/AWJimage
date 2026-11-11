@@ -24,6 +24,7 @@ module;
 #include <libplacebo/gamut_mapping.h>
 #include <libplacebo/tone_mapping.h>
 #include "hdr_cost.h"
+#include "parallel_rows.h"
 
 export module awj.hdr_tonemap;
 
@@ -315,30 +316,63 @@ struct LuminanceStats {
   float average{};
 };
 
+parallel_rows_detail::RunOptions control_options(const ResourcePlan& resources,
+                                                 std::uint64_t resident) noexcept {
+  // HDR admission is a whole-file plan. An explicit ticket is a hard ceiling
+  // for new control storage; absent one, preserve the existing whole-plan API.
+  auto limit = resources.memory_limit_bytes ? resources.memory_limit_bytes : UINT64_MAX;
+  if (resources.memory_reservation_bytes) limit = std::min(limit, resources.memory_reservation_bytes);
+  if (encoding_defaults::memory_limits_unlocked()) limit = UINT64_MAX;
+  return {.worker_budget = per_file_thread_budget(resources),
+      .scratch_limit_bytes = resident < limit ? limit - resident : 0};
+}
+
+std::uint64_t source_storage_bytes(const ImageBuffer& image) noexcept {
+  auto bytes = hdr_cost::add(hdr_cost::multiply(image.planes.capacity(), sizeof(ImagePlane)),
+      hdr_cost::multiply(image.metadata.capacity(), sizeof(MetadataBlock)));
+  for (const auto& plane : image.planes) {
+    bytes = hdr_cost::add(bytes, plane.bytes.capacity());
+    bytes = hdr_cost::add(bytes, plane.borrowed.size());
+  }
+  for (const auto& block : image.metadata) bytes = hdr_cost::add(bytes, block.bytes.capacity());
+  if (image.source_info) bytes = hdr_cost::add(bytes, hdr_cost::add(image.source_info->color_metadata_source.capacity(), 1));
+  return bytes;
+}
+
 // Raw, scanned CIE Y only. Metadata and the tone mapper's 100-nit floor must
 // never overwrite these measurements (in particular, not for JPEG capacity).
 awj::compat::expected<LuminanceStats, std::string> luminance_stats(
     const ImageBuffer& image, const SourceTransform& transform,
-    const pl_matrix3x3& luma_matrix, awj::compat::stop_token stop = {}, const RgbaPixelReader& reader = {}) {
-  float peak{};
-  double sum{};
-  for (std::size_t y = 0; y < image.height; ++y) {
-    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-    for (std::size_t x = 0; x < image.width; ++x) {
-      if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-      const auto rgba = read_source_rgba(image, reader, x, y);
-      auto rgb = linear_nits({rgba[0], rgba[1], rgba[2]}, transform);
-      if (!rgb) return awj::compat::unexpected{rgb.error()};
-      const auto luma = luma_nits(*rgb, luma_matrix);
-      if (!std::isfinite(luma)) return awj::compat::unexpected{"HDR 亮度矩阵产生了非有限值。"};
-      if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"HDR 输入包含非有限 alpha 浮点值。"};
-      peak = std::max(peak, luma);
-      sum += luma;
-    }
-  }
-  const auto average = static_cast<float>(sum / (image.width * image.height));
+    const pl_matrix3x3& luma_matrix, awj::compat::stop_token stop = {},
+    const RgbaPixelReader& reader = {}, const ResourcePlan& resources = {}) {
+  if (!image.width || !image.height || image.width > SIZE_MAX / image.height)
+    return awj::compat::unexpected{"HDR 亮度统计尺寸无效。"};
+  struct Partial { double sum{}; float peak{}; };
+  const auto count = image.width * image.height;
+  const auto options = control_options(resources, source_storage_bytes(image));
+  auto stats = parallel_rows_detail::reduce<Partial>(count, options, stop,
+      [&](std::size_t first, std::size_t end, Partial& state) -> awj::compat::expected<void, std::string> {
+        for (auto position = first; position < end; ++position) {
+          if (position % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested())
+            return awj::compat::unexpected{"任务已取消。"};
+          const auto rgba = read_source_rgba(image, reader, position % image.width, position / image.width);
+          auto rgb = linear_nits({rgba[0], rgba[1], rgba[2]}, transform);
+          if (!rgb) return awj::compat::unexpected{rgb.error()};
+          const auto luma = luma_nits(*rgb, luma_matrix);
+          if (!std::isfinite(luma)) return awj::compat::unexpected{"HDR 亮度矩阵产生了非有限值。"};
+          if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"HDR 输入包含非有限 alpha 浮点值。"};
+          state.peak = std::max(state.peak, luma);
+          state.sum += luma;
+        }
+        return {};
+      }, [](Partial& total, const Partial& block) noexcept {
+        total.peak = std::max(total.peak, block.peak);
+        total.sum += block.sum;
+      });
+  if (!stats) return awj::compat::unexpected{stats.error()};
+  const auto average = static_cast<float>(stats->sum / static_cast<double>(count));
   if (!std::isfinite(average)) return awj::compat::unexpected{"HDR 平均亮度统计产生了非有限值。"};
-  return LuminanceStats{.peak = peak, .average = average};
+  return LuminanceStats{.peak = stats->peak, .average = average};
 }
 
 LuminanceStats effective_tone_stats(const ImageBuffer& image, LuminanceStats scanned) noexcept {
@@ -398,7 +432,8 @@ bool matches_source(const PreparedToneMap& context, const ImageBuffer& image) no
 }
 
 awj::compat::expected<PreparedToneMap, std::string> prepare_tone_context(
-    const ImageBuffer& image, awj::compat::stop_token stop, RgbaPixelReader reader = {}) {
+    const ImageBuffer& image, awj::compat::stop_token stop, RgbaPixelReader reader = {},
+    const ResourcePlan& resources = {}) {
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (!reader.read) {
     if (auto valid = validate_rgba(image, "HDR -> SDR"); !valid) return awj::compat::unexpected{valid.error()};
@@ -432,7 +467,7 @@ awj::compat::expected<PreparedToneMap, std::string> prepare_tone_context(
   if (!finite_matrix(context.source_to_xyz) || !finite_matrix(context.source_to_lms) ||
       !finite_matrix(context.output_lms_to_rgb) || !finite_matrix(context.source_to_bt2020) ||
       !finite_matrix(context.canonical_to_xyz)) return awj::compat::unexpected{"HDR 色彩矩阵包含非有限值。"};
-  auto stats = luminance_stats(image, *transform, context.source_to_xyz, stop, reader);
+  auto stats = luminance_stats(image, *transform, context.source_to_xyz, stop, reader, resources);
   if (!stats) return awj::compat::unexpected{stats.error()};
   context.scanned_y = *stats;
   context.effective_tone = effective_tone_stats(image, *stats);
@@ -664,9 +699,7 @@ awj::compat::expected<void, std::string> copy_non_color_metadata(ImageBuffer& de
 }
 
 int tone_worker_budget(const ResourcePlan& resources) noexcept {
-  const auto global = std::max(1, resources.global_thread_budget);
-  const auto per_file = std::max(1, global / std::max(1, resources.file_parallelism));
-  return std::max(1, std::min(resources.encoder_threads_per_file, per_file));
+  return per_file_thread_budget(resources);
 }
 
 struct ToneRunOptions {
@@ -866,9 +899,9 @@ awj::compat::expected<bool, std::string> has_explicit_hdr_signal(const ImageBuff
 }
 
 awj::compat::expected<PreparedToneMap, std::string> prepare_tone_map(
-    const ImageBuffer& image, awj::compat::stop_token stop = {}) {
+    const ImageBuffer& image, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
   try {
-    return hdr_detail::prepare_tone_context(image, stop);
+    return hdr_detail::prepare_tone_context(image, stop, {}, resources);
   } catch (const std::bad_alloc&) { return awj::compat::unexpected{"HDR prepared context 内存不足。"}; }
     catch (const std::length_error&) { return awj::compat::unexpected{"HDR prepared context 数据超过运行时限制。"}; }
 }
@@ -887,13 +920,13 @@ awj::compat::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const Image
 awj::compat::expected<ImageBuffer, std::string> tone_map_to_sdr_srgb(const ImageBuffer& image,
     int output_depth = 8, awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
   if (output_depth != 8 && output_depth != 16) return awj::compat::unexpected{"SDR 输出位深必须为 8 或 16。"};
-  auto context = prepare_tone_map(image, stop);
+  auto context = prepare_tone_map(image, stop, resources);
   if (!context) return awj::compat::unexpected{context.error()};
   return tone_map_to_sdr_srgb(image, *context, output_depth, stop, resources);
 }
 
 awj::compat::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(ImageBuffer&& image,
-    awj::compat::stop_token stop_token = {}) {
+    awj::compat::stop_token stop_token = {}, const ResourcePlan& resources = {}) {
   if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (auto valid = hdr_detail::validate_rgba(image, "scRGB -> HDR"); !valid) return awj::compat::unexpected{valid.error()};
   auto kind = hdr_detail::signal_kind(image);
@@ -914,27 +947,33 @@ awj::compat::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(Image
     if (!bytes) return awj::compat::unexpected{bytes.error()};
     transformed.emplace(std::move(*bytes));
   }
-  for (std::size_t y = 0; y < image.height; ++y) {
-    if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-    auto* row = transformed ? transformed->data() + y * image.width * 8
-        : image.planes.front().bytes.data() + y * image.planes.front().stride;
-    for (std::size_t x = 0; x < image.width; ++x) {
-      if (x % hdr_cost::gamut_block_pixels == 0 && stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-      const auto sample = x * 4;
-      const auto rgba = hdr_detail::read_source_rgba(image, {}, x, y);
-      auto rgb = hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, *transform);
-      if (!rgb) return awj::compat::unexpected{rgb.error()};
-      if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"scRGB 输入包含非有限 alpha 浮点值。"};
-      pl_matrix3x3_apply(&matrix, rgb->data());
-      if (!hdr_detail::finite_rgb(*rgb)) return awj::compat::unexpected{"scRGB -> HDR 色彩矩阵产生了非有限值。"};
-      for (std::size_t c = 0; c < 3; ++c) {
-        const auto pq = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, (*rgb)[c]);
-        if (!std::isfinite(pq)) return awj::compat::unexpected{"scRGB -> HDR PQ 编码产生了非有限值。"};
-        hdr_detail::write_unorm16(row, sample + c, pq);
-      }
-      hdr_detail::write_unorm16(row, sample + 3, rgba[3]);
-    }
-  }
+  const auto options = hdr_detail::control_options(resources, hdr_cost::add(
+      hdr_detail::source_storage_bytes(image), transformed ? transformed->capacity() : 0));
+  auto converted = parallel_rows_detail::for_each(image.height, image.width, options, stop_token,
+      [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+        // An owned, geometry-free input is converted in place. No other unit
+        // reads this row; geometry/borrowed inputs use the existing output copy.
+        auto* row = transformed ? transformed->data() + y * image.width * 8
+            : image.planes.front().bytes.data() + y * image.planes.front().stride;
+        for (std::size_t x = 0; x < image.width; ++x) {
+          if (x % hdr_cost::gamut_block_pixels == 0 && stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+          const auto sample = x * 4;
+          const auto rgba = hdr_detail::read_source_rgba(image, {}, x, y);
+          auto rgb = hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, *transform);
+          if (!rgb) return awj::compat::unexpected{rgb.error()};
+          if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"scRGB 输入包含非有限 alpha 浮点值。"};
+          pl_matrix3x3_apply(&matrix, rgb->data());
+          if (!hdr_detail::finite_rgb(*rgb)) return awj::compat::unexpected{"scRGB -> HDR 色彩矩阵产生了非有限值。"};
+          for (std::size_t c = 0; c < 3; ++c) {
+            const auto pq = pl_hdr_rescale(PL_HDR_NITS, PL_HDR_PQ, (*rgb)[c]);
+            if (!std::isfinite(pq)) return awj::compat::unexpected{"scRGB -> HDR PQ 编码产生了非有限值。"};
+            hdr_detail::write_unorm16(row, sample + c, pq);
+          }
+          hdr_detail::write_unorm16(row, sample + 3, rgba[3]);
+        }
+        return {};
+      });
+  if (!converted) return awj::compat::unexpected{converted.error()};
   if (transformed) {
     // The existing plane vector already has capacity for this single plane.
     image.planes.clear();
@@ -955,10 +994,22 @@ awj::compat::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(Image
 }
 
 awj::compat::expected<ImageBuffer, std::string> materialize_scrgb_as_hdr10(
-    const ImageBuffer& image, awj::compat::stop_token stop_token = {}) {
+    const ImageBuffer& image, awj::compat::stop_token stop_token = {}, const ResourcePlan& resources = {}) {
   if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   try {
-    return materialize_scrgb_as_hdr10(ImageBuffer{image}, stop_token);
+    auto owned = ImageBuffer{image};
+    auto delegated = resources;
+    if (!encoding_defaults::memory_limits_unlocked() &&
+        (resources.memory_limit_bytes || resources.memory_reservation_bytes)) {
+      // This compatible const overload retains its original source while the
+      // existing copy is converted. Do not lend that source's bytes to workers.
+      auto limit = resources.memory_limit_bytes ? resources.memory_limit_bytes : UINT64_MAX;
+      if (resources.memory_reservation_bytes) limit = std::min(limit, resources.memory_reservation_bytes);
+      const auto retained = hdr_detail::source_storage_bytes(image);
+      if (retained >= limit) delegated.encoder_threads_per_file = 1;
+      else delegated.memory_limit_bytes = delegated.memory_reservation_bytes = limit - retained;
+    }
+    return materialize_scrgb_as_hdr10(std::move(owned), stop_token, delegated);
   } catch (const std::bad_alloc&) {
     return awj::compat::unexpected{"scRGB -> HDR 输入复制内存不足。"};
   } catch (const std::length_error&) {

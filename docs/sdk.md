@@ -1,4 +1,4 @@
-# AWJimage 1.3.5 C ABI SDK
+# AWJimage 1.3.6 C ABI SDK
 
 本 SDK 接收其他软件主动提交的图像帧，直接处理 CPU 内存、Windows D3D11 纹理、共享内存槽位或二进制帧流。它不附带录屏选择器、WGC capture session、视频播放器或完整 FFmpeg 解码器，也不能无侵入读取任意软件的私有内存。“任何软件”指能够按平台 C ABI 和资源所有权契约集成 SDK 的软件，不等于支持未知像素布局或任意地址。
 

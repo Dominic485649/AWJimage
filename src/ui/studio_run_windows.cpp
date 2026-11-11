@@ -529,6 +529,18 @@ int run_studio_ui(const wchar_t* health_event,
           });
         });
 
+    app->on_changelog_link_clicked([weak](slint::SharedString url) {
+      run_ui_callback(weak, "打开日志链接失败", [&] {
+        auto app = weak.lock();
+        if (!app) return;
+        const auto text = shared_to_string(url);
+        if (!awj::ui::changelog_safe_link(text)) return;
+        const auto wide = awj::wide_from_utf8(text);
+        if (reinterpret_cast<INT_PTR>(ShellExecuteW(nullptr, L"open", wide.c_str(),
+                                                    nullptr, nullptr, SW_SHOWNORMAL)) <= 32)
+          (*app)->set_update_status(to_shared("无法打开日志链接。"));
+      });
+    });
     app->on_open_url([weak](slint::SharedString url) {
       if (auto app = weak.lock()) {
         const auto text = shared_to_string(url);

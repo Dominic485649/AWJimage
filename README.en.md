@@ -56,7 +56,7 @@ Use `AWJ.com` on Windows; replace it with `./AWJ` on Linux.
 .\AWJ.com --list-presets
 ```
 
-`--threads auto` reserves desktop capacity from the allowed logical CPUs. `--threads N` uses a total encoding thread budget of N (1–128) without that reservation; file concurrency and per-image encoder threads share this budget and remain subject to the memory budget. `--cpu-affinity` uses zero-based logical CPU IDs and can only narrow the currently allowed set. Windows IDs refer to the current processor group.
+`--threads auto` reserves desktop capacity from the allowed logical CPUs. `--threads N` uses a total compute-thread budget of N (1–128) without that reservation. File concurrency and per-image processing share the effective budget T and remain subject to memory admission. Batches redistribute integer remainders and idle tail capacity at safe decode, resize/conversion and encode boundaries; ordinary images and AVIF Grid share admission without changing priority. Synchronous codec calls cannot grow midway through a call. Single-image serial paths in JPEGli/libpng, WebP's internal threading switch, I/O and finite memory can still keep measured busy cores below T: configured threads are not measured CPU utilization. `--cpu-affinity` uses zero-based logical CPU IDs and can only narrow the currently allowed set. Windows IDs refer to the current processor group.
 
 Use `--avif-progressive` for automatic two-layer still AVIF, or configure 2–4 layers with per-layer dimensions and quality through the CLI. It remains off by default, without new UI controls. See [progressive AVIF and layer options](docs/avif-progressive.md).
 

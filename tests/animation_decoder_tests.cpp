@@ -1,5 +1,8 @@
 #include "../src/compat/stdlib_compat.h"
+#include <algorithm>
 #include <array>
+#include <chrono>
+#include <memory>
 #include <cstddef>
 #include <cstdio>
 #include <cstdlib>
@@ -13,6 +16,8 @@
 #include <string_view>
 #include <vector>
 #include <gif_lib.h>
+#include <webp/decode.h>
+#include <webp/demux.h>
 #include <webp/encode.h>
 #include <webp/mux.h>
 #include <zlib.h>
@@ -21,6 +26,7 @@ import awj.codec;
 import awj.config;
 import awj.image;
 import awj.png_codec;
+import awj.webp_codec;
 
 namespace {
 using Bytes = std::vector<std::byte>;
@@ -170,17 +176,175 @@ void webp(const std::filesystem::path& path) {
   const auto* p = reinterpret_cast<const std::byte*>(output.bytes); write(path, {p, p + output.size});
   WebPDataClear(&output); WebPMuxDelete(mux);
 }
+
+Bytes large_lossy_webp() {
+  std::unique_ptr<WebPMux, decltype(&WebPMuxDelete)> mux{WebPMuxNew(), WebPMuxDelete};
+  require(bool(mux), "large WebP mux allocation failed");
+  require(WebPMuxSetCanvasSize(mux.get(), 513, 131) == WEBP_MUX_OK, "large WebP canvas failed");
+  const WebPMuxAnimParams parameters{0, 5};
+  require(WebPMuxSetAnimationParams(mux.get(), &parameters) == WEBP_MUX_OK, "large WebP loop failed");
+  struct Spec { int width, height, x, y, duration; std::array<std::uint8_t, 4> color; bool blend, dispose; };
+  const std::array<Spec, 4> specs{{
+      {513, 131, 0, 0, 17, {240, 16, 24, 255}, false, false},
+      {257, 65, 64, 32, 31, {16, 240, 24, 128}, true, true},
+      {129, 33, 256, 64, 47, {16, 24, 240, 255}, false, false},
+      {65, 17, 0, 0, 59, {240, 240, 16, 255}, false, false}}};
+  for (const auto& spec : specs) {
+    std::vector<std::uint8_t> rgba(static_cast<std::size_t>(spec.width * spec.height * 4));
+    for (std::size_t p = 0; p < rgba.size(); p += 4) std::copy(spec.color.begin(), spec.color.end(), rgba.begin() + p);
+    std::uint8_t* encoded{};
+    const auto size = WebPEncodeRGBA(rgba.data(), spec.width, spec.height, spec.width * 4, 83.0f, &encoded);
+    std::unique_ptr<std::uint8_t, decltype(&WebPFree)> owned{encoded, WebPFree};
+    require(size != 0 && encoded, "large lossy WebP frame encoding failed");
+    WebPMuxFrameInfo frame{};
+    frame.bitstream = {encoded, size}; frame.id = WEBP_CHUNK_ANMF;
+    frame.x_offset = spec.x; frame.y_offset = spec.y; frame.duration = spec.duration;
+    frame.blend_method = spec.blend ? WEBP_MUX_BLEND : WEBP_MUX_NO_BLEND;
+    frame.dispose_method = spec.dispose ? WEBP_MUX_DISPOSE_BACKGROUND : WEBP_MUX_DISPOSE_NONE;
+    require(WebPMuxPushFrame(mux.get(), &frame, 1) == WEBP_MUX_OK, "large WebP frame mux failed");
+  }
+  constexpr std::array<std::uint8_t, 4> xmp{'<','a','/','>'};
+  const WebPData metadata{xmp.data(), xmp.size()};
+  require(WebPMuxSetChunk(mux.get(), "XMP ", &metadata, 1) == WEBP_MUX_OK, "large WebP metadata failed");
+  WebPData output{};
+  require(WebPMuxAssemble(mux.get(), &output) == WEBP_MUX_OK, "large WebP assemble failed");
+  const auto* begin = reinterpret_cast<const std::byte*>(output.bytes);
+  Bytes result{begin, begin + output.size}; WebPDataClear(&output);
+  return result;
+}
+
+void large_webp_thread_budget_checks(const std::filesystem::path& root) {
+  struct Directory {
+    std::filesystem::path path; bool owned{};
+    ~Directory() { if (owned) { std::error_code ec; std::filesystem::remove_all(path, ec); } }
+  } scratch{root / ("animation-budget-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+  scratch.owned = std::filesystem::create_directory(scratch.path);
+  require(scratch.owned, "animation budget fixture directory already exists");
+  const auto path = scratch.path / "large-lossy.webp";
+  const auto bytes = large_lossy_webp(); write(path, bytes);
+  std::array<Bytes, 4> expected;
+  {
+    const WebPData data{reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()};
+    WebPAnimDecoderOptions options{};
+    require(WebPAnimDecoderOptionsInit(&options), "WebP reference options failed");
+    options.color_mode = MODE_RGBA; options.use_threads = 0;
+    std::unique_ptr<WebPAnimDecoder, decltype(&WebPAnimDecoderDelete)> reference{
+        WebPAnimDecoderNew(&data, &options), WebPAnimDecoderDelete};
+    require(bool(reference), "large WebP reference decoder failed");
+    constexpr std::array timestamps{17, 48, 95, 154};
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      std::uint8_t* pixels{}; int timestamp{};
+      require(WebPAnimDecoderGetNext(reference.get(), &pixels, &timestamp) && pixels && timestamp == timestamps[i],
+          "large WebP reference order/timestamps failed");
+      const auto* begin = reinterpret_cast<const std::byte*>(pixels);
+      expected[i].assign(begin, begin + 513 * 131 * 4);
+    }
+  }
+  constexpr std::array durations{17u, 31u, 47u, 59u};
+  awj::compat::stop_source stop; stop.request_stop();
+  std::array<std::uint64_t, 3> resident{};
+  for (const std::uint64_t budget : {0ull, 128ull * 1024 * 1024}) for (const int threads : {1, 2, 8}) {
+    auto opened = awj::open_animation(path, budget, {}, false, threads);
+    require(opened && *opened, "large WebP open failed under thread budget");
+    auto& reader = **opened;
+    require(reader.info().width == 513 && reader.info().height == 131 && reader.info().durations.size() == 4 &&
+        reader.info().repetitions == 4 && reader.info().decoder_id == "libwebp-animation",
+        "large WebP canvas/frame count/loop metadata changed");
+    if (!budget) resident[threads == 1 ? 0 : threads == 2 ? 1 : 2] = reader.memory_usage_bytes();
+    require(!reader.next(stop.get_token()), "large WebP pre-frame cancellation ignored");
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      const auto duration = reader.info().durations[i];
+      require(duration.numerator == durations[i] && duration.denominator == 1000, "large WebP VFR durations changed");
+      if (i == 2) {
+        const auto before = reader.frame().planes[0].bytes;
+        require(!reader.next(stop.get_token()) && reader.frame().planes[0].bytes == before,
+            "cancelled WebP next advanced or discarded the last full canvas");
+      }
+      const auto next = reader.next(); require(next && *next, "large WebP next failed");
+      const auto& frame = reader.frame();
+      require(frame.width == 513 && frame.height == 131 && frame.bit_depth == 8 &&
+          frame.pixel_format == awj::PixelFormat::rgba && frame.planes.size() == 1 &&
+          frame.planes[0].bytes == expected[i], "large WebP sequential pixels/blend/disposal changed across budgets");
+      require(frame.metadata.size() == 1 && frame.metadata[0].kind == awj::MetadataKind::xmp &&
+          frame.metadata[0].bytes == Bytes({std::byte{'<'}, std::byte{'a'}, std::byte{'/'}, std::byte{'>'}}),
+          "large WebP reader metadata changed across budgets");
+      const auto channel = [&](std::size_t x, std::size_t y, std::size_t c) {
+        return std::to_integer<unsigned>(frame.planes[0].bytes[(y * 513 + x) * 4 + c]);
+      };
+      if (i == 1) require(channel(80, 48, 3) == 255 && channel(80, 48, 0) > 110 && channel(80, 48, 0) < 145 &&
+          channel(80, 48, 1) > 110 && channel(80, 48, 1) < 145, "large WebP partial-alpha OVER did not blend");
+      if (i >= 2) require(channel(80, 48, 3) == 0 && channel(280, 80, 2) > 220 && channel(280, 80, 3) == 255,
+          "large WebP BACKGROUND disposal or later blue rectangle failed");
+      if (i == 3) require(channel(8, 8, 0) > 220 && channel(8, 8, 1) > 220 && channel(500, 100, 0) > 220,
+          "large WebP NO_BLEND or retained full-canvas region failed");
+    }
+    const auto end = reader.next(); require(end && !*end, "large WebP end-of-sequence changed");
+    require(!awj::open_animation(path, budget, stop.get_token(), false, threads), "large WebP open cancellation ignored");
+    // Destroy an active dependent stream after its first frame, then reopen it.
+    auto partial = awj::open_animation(path, budget, {}, false, threads);
+    require(partial && *partial && (*partial)->next().value_or(false), "WebP partial lifecycle initialization failed");
+    partial->reset();
+  }
+  const auto increment = awj::webp_detail::decode_thread_workspace_bytes(2, 513);
+  require(resident[1] == resident[0] + increment && resident[2] == resident[1],
+      "WebP reader did not report its single optional worker reservation");
+  const auto serial_limit = static_cast<std::uint64_t>(bytes.size()) + 513ull * 131 * 64 + 64 * 1024;
+  auto serial = awj::open_animation(path, serial_limit, {}, false, 1);
+  require(serial && *serial, "finite WebP serial working-set admission failed"); serial->reset();
+  for (const int threads : {2, 8}) {
+    std::uint64_t required{};
+    auto rejected = awj::open_animation(path, serial_limit, {}, false, threads, &required);
+    require(!rejected && rejected.error().find("内存预算") != std::string::npos && required > serial_limit,
+        "WebP optional worker was not included in entry admission or required reservation");
+    std::uint64_t refined{};
+    auto retried = awj::open_animation(path, required, {}, false, threads, &refined);
+    if (!retried) {
+      require(refined > required && refined != UINT64_MAX,
+          "WebP metadata refinement did not return a larger bounded reservation");
+      retried = awj::open_animation(path, refined, {}, false, threads);
+    }
+    require(retried && *retried && (*retried)->next().value_or(false),
+        "WebP reader could not reopen after its working-set reservation was enlarged");
+  }
+  for (const int threads : {1, 2, 8}) {
+    require(!awj::open_animation(path, bytes.size(), {}, false, threads), "finite exhausted WebP budget became unlimited");
+    auto damaged = bytes; damaged.resize(damaged.size() / 2);
+    const auto broken_path = scratch.path / "truncated.webp"; write(broken_path, damaged);
+    for (int repeat = 0; repeat < 2; ++repeat) {
+      auto broken = awj::open_animation(broken_path, 0, {}, false, threads);
+      if (broken) {
+        require(bool(*broken), "damaged animation was mistaken for a static file");
+        bool rejected = false;
+        for (std::size_t i = 0; i < expected.size(); ++i) {
+          const auto next = (*broken)->next();
+          if (!next || !*next) { rejected = true; break; }
+        }
+        require(rejected, "truncated WebP animation fully decoded");
+        broken->reset();
+      }
+      auto recovered = awj::open_animation(path, 0, {}, false, threads);
+      require(recovered && *recovered && (*recovered)->next().value_or(false) &&
+          (*recovered)->frame().planes[0].bytes == expected[0], "WebP reader destruction/failure poisoned a later stream");
+    }
+  }
+}
 }
 int main(int argc, char** argv) {
-  const auto root = argc > 1 ? std::filesystem::path{argv[1]}
-      : std::filesystem::temp_directory_path() / "awj-animation-readers";
+  const bool budget_only = argc >= 2 && std::string_view{argv[1]} == "--thread-budget-only";
+  const auto root = budget_only ? (argc >= 3 ? std::filesystem::path{argv[2]}
+          : std::filesystem::current_path() / "results" / "codec-thread-budget")
+      : argc > 1 ? std::filesystem::path{argv[1]}
+          : std::filesystem::temp_directory_path() / "awj-animation-readers";
   std::filesystem::create_directories(root);
+  large_webp_thread_budget_checks(root);
+  if (budget_only) return 0;
   const auto gif_path = root / "disposal.gif", apng_path = root / "blend.png", webp_path = root / "blend.webp";
   gif(gif_path); write(apng_path, apng()); webp(webp_path);
   awj::compat::stop_source stop; stop.request_stop();
   for (const auto& path : {gif_path, apng_path, webp_path}) {
-    for (const std::uint64_t budget : {0ull, 128ull * 1024 * 1024}) {
-      auto opened = awj::open_animation(path, budget);
+    std::array<Bytes, 4> baseline{};
+    for (const std::uint64_t budget : {0ull, 128ull * 1024 * 1024}) for (const int threads : {1, 2, 8}) {
+      auto opened = awj::open_animation(path, budget, {}, false, threads);
       if (!opened) { std::fprintf(stderr, "%s\n", opened.error().c_str()); return 1; }
       require(bool(*opened) && (*opened)->info().durations.size() == 4, "frame count/unlimited budget failed");
       auto& reader = **opened;
@@ -190,13 +354,15 @@ int main(int argc, char** argv) {
         auto next = reader.next(); require(next && *next, "frame decode failed");
         const auto& f = reader.frame(); require(f.width == 3 && f.height == 1, "full canvas failed");
         const auto& p = f.planes[0].bytes;
+        if (baseline[i].empty()) baseline[i] = p;
+        else require(p == baseline[i], "CPU budget changed dependent-frame blend/disposal output");
         if (i == 0) require(p[0] == std::byte{255} && p[8] == std::byte{255}, "first full canvas failed");
         if (i == 2 && path != webp_path) require(p[0] == std::byte{0} && p[6] == std::byte{255}, "BACKGROUND disposal failed");
         if (i == 3 && path != webp_path) require(p[4] == std::byte{255} && p[6] == std::byte{0} && p[8] == std::byte{255}, "PREVIOUS disposal failed");
         if (i == 1 && path == apng_path) require(std::to_integer<int>(p[0]) >= 126 && std::to_integer<int>(p[1]) >= 127, "APNG OVER blend failed");
       }
       auto end = reader.next(); require(end && !*end, "end of animation failed");
-      require(!awj::open_animation(path, budget, stop.get_token()), "open cancellation ignored");
+      require(!awj::open_animation(path, budget, stop.get_token(), false, threads), "open cancellation ignored");
     }
     require(!awj::open_animation(path, 1), "memory budget ignored");
     require(!awj::open_animation(path, std::filesystem::file_size(path)), "exhausted finite input budget became unlimited");

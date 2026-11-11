@@ -12,9 +12,11 @@ int main() {
   {
     const std::array work{Group{20, true}, Group{3}, Group{2}};
     awj::WorkMemoryAdmission admission{10, work};
+    if (admission.runnable_count(16) != 2) return fail("可运行快照没有按真实内存容纳任务。");
     auto exclusive = admission.acquire({});
     if (!exclusive || exclusive->index != 0 || exclusive->bytes != 10 || work[0].estimated_bytes != 20)
       return fail("独占精化没有保留原估算与独占预算语义。");
+    if (admission.runnable_count(16) != 1) return fail("内存阻塞任务错误占用 CPU 可运行份额。");
     auto owned = exclusive->bytes;
     if (!admission.try_resize(owned, 6) || owned != 6) return fail("精化后预约无法缩小。");
     auto small = admission.acquire({});

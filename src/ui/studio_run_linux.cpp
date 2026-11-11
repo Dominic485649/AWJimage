@@ -53,7 +53,6 @@
 #include "queue_model.h"
 #include "queue_preset_selection.h"
 #include "deferred_model.h"
-#include "changelog_history.h"
 #include "import_service.h"
 #include "queue_merge.h"
 #include "queue_ui_policy.h"
@@ -71,6 +70,8 @@ import awj.update_manifest;
 import awj.update_manifest_v2;
 import awj.update_model;
 import awj.update_runtime;
+
+#include "changelog_view.h"
 
 extern char** environ;
 
@@ -575,41 +576,7 @@ void sync_linux_update_history(
     const awj::update::Manifest& manifest) {
   if (!rows) return;
   rows->set_loader([manifest] {
-  auto merged_history = awj::ui::embedded_changelog_history();
-  for (const auto& entry : manifest.entries) {
-    const auto version = awj::update::to_string(entry.version);
-    const auto signed_entry = awj::ui::ChangelogHistoryEntry{
-        .version = version,
-        .channel = std::string{awj::update::channel_name(entry.channel)},
-        .published_at = entry.published_at,
-        .release_url = entry.release_url,
-        .changelog_zh_cn = entry.changelog.zh_cn,
-        .changelog_en = entry.changelog.en};
-    const auto existing = awj::compat::ranges::find_if(
-        merged_history, [&](const auto& item) { return item.version == version; });
-    if (existing == merged_history.end()) {
-      merged_history.push_back(signed_entry);
-    } else {
-      *existing = signed_entry;
-    }
-  }
-  awj::compat::ranges::sort(merged_history, [](const auto& lhs, const auto& rhs) {
-    const auto left = awj::update::parse_version(lhs.version);
-    const auto right = awj::update::parse_version(rhs.version);
-    return left && right ? *left > *right : lhs.version > rhs.version;
-  });
-  std::vector<UpdateHistoryRow> history_rows;
-  history_rows.reserve(merged_history.size());
-  for (const auto& entry : merged_history) {
-    history_rows.push_back(UpdateHistoryRow{
-        .version = to_shared(entry.version),
-        .channel = to_shared(entry.channel),
-        .published_at = to_shared(entry.published_at),
-        .release_url = to_shared(entry.release_url),
-        .changelog_zh_cn = to_shared(entry.changelog_zh_cn),
-        .changelog_en = to_shared(entry.changelog_en)});
-  }
-  return history_rows;
+    return awj::ui::changelog_history_rows(manifest);
   });
 }
 
@@ -941,6 +908,16 @@ awj::update::ChannelPreference linux_update_preference(
 awj::compat::expected<void, std::string> open_linux_url(std::string url) {
   if (!awj::update::parse_allowed_https_url(url)) {
     return awj::compat::unexpected{"拒绝打开不受信任的更新 URL。"};
+  }
+  if (awj::ui_process::launch({"xdg-open", url}) ||
+      awj::ui_process::launch({"gio", "open", url})) return {};
+  return awj::compat::unexpected{"未找到可用的 URL 打开工具（xdg-open/gio）。"};
+}
+
+// 仅供日志中的主动点击使用；不替代更新 URL 的独立白名单。
+awj::compat::expected<void, std::string> open_linux_changelog_url(std::string url) {
+  if (!awj::ui::changelog_safe_link(url)) {
+    return awj::compat::unexpected{"拒绝打开不安全的日志链接。"};
   }
   if (awj::ui_process::launch({"xdg-open", url}) ||
       awj::ui_process::launch({"gio", "open", url})) return {};
@@ -3112,6 +3089,20 @@ int awj::studio::run_studio_ui() {
             sync_linux_update_ui(**app, *state);
           }
         });
+    app->on_changelog_link_clicked([weak, state](slint::SharedString url) {
+      if (auto app = weak.lock()) {
+        try {
+          const auto text = shared_to_string(url);
+          if (!awj::ui::changelog_safe_link(text)) return;
+          if (auto opened = open_linux_changelog_url(text); opened) return;
+        } catch (const std::exception&) {
+          // 外部启动器失败不能把异常传播到 Slint 回调边界。
+        }
+        state->update_status_zh = "无法打开日志链接。";
+        state->update_status_en = "Could not open the changelog link.";
+        sync_linux_update_ui(**app, *state);
+      }
+    });
     app->on_open_url([weak, state](slint::SharedString url) {
       if (auto app = weak.lock()) {
         const auto text = shared_to_string(url);

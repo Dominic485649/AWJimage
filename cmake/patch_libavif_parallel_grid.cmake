@@ -9,6 +9,14 @@ endif()
 
 file(READ "${WRITE_C}" CONTENT)
 
+# 仅规范本补丁生成块的两个接缝；完整源码仍由后续严格指纹门禁核对。
+function(awj_normalize_generated_boundaries OUT_VAR INPUT_TEXT)
+    string(REGEX REPLACE "[\r\n]+(// AWJ_PARALLEL_GRID_PATCH_BEGIN)" "\n\\1" TEXT "${INPUT_TEXT}")
+    string(REGEX REPLACE "(    // Encode AV1 OBUs)[\r\n]+(    // AWJ_PARALLEL_GRID_LOOP_PATCH_BEGIN)"
+        "\\1\n\n\\2" TEXT "${TEXT}")
+    set(${OUT_VAR} "${TEXT}" PARENT_SCOPE)
+endfunction()
+
 function(awj_remove_marked_block OUT_VAR INPUT_TEXT BEGIN_MARKER END_MARKER)
     set(TEXT "${INPUT_TEXT}")
     string(FIND "${TEXT}" "${BEGIN_MARKER}" BEGIN_POS)
@@ -77,7 +85,12 @@ if(CONTENT MATCHES "AWJ_PARALLEL_GRID_PATCH")
        CONTENT MATCHES "finalResult = AVIF_RESULT_NOT_IMPLEMENTED;" AND
        CONTENT MATCHES "avifGetErrorForItemCategory\\(avifItemCategory itemCategory\\);" AND
        CONTENT MATCHES "#define NOMINMAX" AND
-       CONTENT MATCHES "AWJ_PARALLEL_GRID_LOOP_PATCH_BEGIN")
+       CONTENT MATCHES "AWJ_PARALLEL_GRID_LOOP_PATCH_BEGIN" AND
+       CONTENT MATCHES "AWJ_PARALLEL_GRID_WAVE_BUDGET_V3")
+        awj_normalize_generated_boundaries(PATCHED "${CONTENT}")
+        if(NOT PATCHED STREQUAL CONTENT)
+            file(WRITE "${WRITE_C}" "${PATCHED}")
+        endif()
         return()
     endif()
 
@@ -274,6 +287,16 @@ static avifBool avifAWJJoinParallelGridEncodeThread(avifAWJParallelGridEncodeDat
 #endif
 }
 
+// AWJ_PARALLEL_GRID_WAVE_BUDGET_V3
+// workerCount is the number of encodable cells in this wave, including the
+// caller. Distribute the complete file budget, including tail waves/remainders.
+static int avifAWJGridWaveWorkerThreadBudget(const avifEncoder * encoder, uint32_t workerCount, uint32_t workerIndex)
+{
+    const int threadsPerWorker = encoder->maxThreads / (int)workerCount;
+    const uint32_t remainder = (uint32_t)encoder->maxThreads % workerCount;
+    return threadsPerWorker + (workerIndex < remainder ? 1 : 0);
+}
+
 static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
                                                   const avifImage * const * cellImages,
                                                   avifEncoderChanges encoderChanges,
@@ -295,7 +318,6 @@ static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
         return AVIF_RESULT_NOT_IMPLEMENTED;
     }
 
-    const int perTileThreads = AVIF_MAX(1, encoder->maxThreads / (int)tileParallelism);
     const size_t byteCount = sizeof(avifAWJParallelGridEncodeData) * tileParallelism;
     avifAWJParallelGridEncodeData * threadData = (avifAWJParallelGridEncodeData *)avifAlloc(byteCount);
     if (!threadData) {
@@ -305,6 +327,7 @@ static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
 
     uint32_t nextItemIndex = 0;
     avifResult finalResult = AVIF_RESULT_OK;
+    avifBool encodingStarted = AVIF_FALSE;
     while (nextItemIndex < encoder->data->items.count) {
         uint32_t workerCount = 0;
         for (; workerCount < tileParallelism && nextItemIndex < encoder->data->items.count; ++nextItemIndex) {
@@ -319,11 +342,13 @@ static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
             data->cellImage = cellImages[item->cellIndex];
             data->encoderChanges = encoderChanges;
             data->addImageFlags = addImageFlags;
-            data->perTileThreads = perTileThreads;
             data->quality = quality;
         }
         if (workerCount == 0) {
             continue;
+        }
+        for (uint32_t workerIndex = 0; workerIndex < workerCount; ++workerIndex) {
+            threadData[workerIndex].perTileThreads = avifAWJGridWaveWorkerThreadBudget(encoder, workerCount, workerIndex);
         }
 
         avifBool threadCreationFailed = AVIF_FALSE;
@@ -335,6 +360,7 @@ static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
                 break;
             }
             ++createdWorkerCount;
+            encodingStarted = AVIF_TRUE;
         }
 
         if (threadCreationFailed) {
@@ -343,7 +369,7 @@ static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
                     avifDiagnosticsPrintf(&encoder->diag, "AWJ parallel grid worker join failed after thread creation failure");
                 }
             }
-            if (createdWorkerCount == 1) {
+            if (createdWorkerCount == 1 && !encodingStarted) {
                 avifDiagnosticsPrintf(&encoder->diag, "AWJ parallel grid thread creation failed before encoding workers started");
                 finalResult = AVIF_RESULT_NOT_IMPLEMENTED;
             } else {
@@ -353,6 +379,7 @@ static avifResult avifAWJEncodeSimpleGridParallel(avifEncoder * encoder,
             break;
         }
 
+        encodingStarted = AVIF_TRUE;
         avifAWJParallelGridEncodeWorker(&threadData[0]);
         for (uint32_t workerIndex = 1; workerIndex < workerCount; ++workerIndex) {
             if (threadData[workerIndex].threadCreated && !avifAWJJoinParallelGridEncodeThread(&threadData[workerIndex])) {
@@ -426,4 +453,5 @@ awj_replace_after_anchor(
     "${LOOP_REPLACEMENT}"
     "Could not patch libavif AV1 OBU encode loop.")
 
+awj_normalize_generated_boundaries(PATCHED "${PATCHED}")
 file(WRITE "${WRITE_C}" "${PATCHED}")

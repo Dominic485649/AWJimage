@@ -495,6 +495,11 @@ int main() {
       grid_resources.file_parallelism * grid_resources.encoder_threads_per_file != 8) {
     return fail("AVIF grid 线程预算未拆分为 tile 并行与 per-tile 线程。");
   }
+  const auto shared_grid = awj::plan_grid_encode_resources(
+      {.file_parallelism = 2, .encoder_threads_per_file = 4, .global_thread_budget = 4}, 9);
+  if (shared_grid.global_thread_budget != 2 || shared_grid.file_parallelism != 2 ||
+      shared_grid.encoder_threads_per_file != 1)
+    return fail("Grid 准备计划绕过了调用方的每文件 CPU 配额。");
 
   const auto large_resources = awj::plan_large_mode_resources(
       awj::ResourcePlan{.file_parallelism = 3,

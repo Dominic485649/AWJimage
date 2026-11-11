@@ -1,6 +1,7 @@
 module;
 #include "../compat/stdlib_compat.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -13,8 +14,16 @@ import awj.codec;
 import awj.animation;
 import awj.config;
 import awj.image;
+import awj.resource_planner;
 
 export namespace awj {
+
+namespace avif_aom_detail {
+// Internal C++ budget policy, shared by the codec and its focused checks.
+int codec_thread_count(int requested_threads) noexcept;
+std::uint64_t sequence_decode_fixed_bytes(int decode_threads, bool has_alpha) noexcept;
+int grid_tile_prepare_thread_count(std::size_t tile_count, const ResourcePlan& resources) noexcept;
+}  // namespace avif_aom_detail
 
 bool avif_libavif_encoder_available(AvifEncoderMode mode);
 bool avif_dav1d_decoder_available() noexcept;
@@ -32,7 +41,8 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
 std::unique_ptr<ImageDecoder> make_avif_image_decoder(int decode_threads);
 awj::compat::expected<bool, std::string> avif_has_sequence(const std::filesystem::path& path);
 awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_avif_animation(
-    const std::filesystem::path& path, std::uint64_t budget, awj::compat::stop_token stop);
+    const std::filesystem::path& path, std::uint64_t budget, awj::compat::stop_token stop,
+    int decode_threads = 1, std::uint64_t* required_bytes = nullptr);
 awj::compat::expected<NativeEncodeResult, std::string> encode_avif_animation(
     AnimationReader& reader, const NativeEncodeSettings& settings,
     awj::compat::stop_token stop_token = {});

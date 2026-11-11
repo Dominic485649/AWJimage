@@ -421,9 +421,62 @@ int check_fixture(const awj::ImageBuffer& source) {
   return 0;
 }
 
+int check_threaded_hdr_statistics() {
+  const awj::ResourcePlan serial{.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1};
+  const awj::ResourcePlan parallel{.file_parallelism = 2, .encoder_threads_per_file = 7, .global_thread_budget = 8};
+  for (const int primaries : {1, 9, 12}) {
+    auto source = linear_fixture(primaries, 257, 257);
+    auto a = awj::hdr::prepare_tone_map(source, {}, serial);
+    auto b = awj::hdr::prepare_tone_map(source, {}, parallel);
+    if (!a || !b || a->scanned_y.peak != b->scanned_y.peak || a->scanned_y.average != b->scanned_y.average ||
+        a->tone_params.input_avg != b->tone_params.input_avg || a->tone_params.input_max != b->tone_params.input_max)
+      return fail("Fixed-block HDR luminance statistics changed with N.");
+    Oracle oracle(source);
+    if (std::abs(a->scanned_y.peak - oracle.scanned_peak) > 0.001F ||
+        std::abs(a->scanned_y.average - oracle.scanned_average) > 0.001F)
+      return fail("Threaded HDR statistics differ from the independent scalar oracle.");
+    auto tight = parallel; tight.memory_limit_bytes = source.planes[0].bytes.size();
+    tight.memory_reservation_bytes = tight.memory_limit_bytes;
+    auto bounded = awj::hdr::prepare_tone_map(source, {}, tight);
+    if (!bounded || bounded->scanned_y.average != a->scanned_y.average || bounded->scanned_y.peak != a->scanned_y.peak)
+      return fail("HDR statistics memory fallback changed its reduction order.");
+    auto first = source, second = source;
+    auto packed_serial = awj::hdr::materialize_scrgb_as_hdr10(std::move(first), {}, serial);
+    auto packed_parallel = awj::hdr::materialize_scrgb_as_hdr10(std::move(second), {}, parallel);
+    if (!packed_serial || !packed_parallel || packed_serial->planes[0].bytes != packed_parallel->planes[0].bytes ||
+        packed_parallel->source_info->linear_reference_white_nits != packed_serial->source_info->linear_reference_white_nits)
+      return fail("Threaded scRGB materialization changed FP16/color/alpha semantics.");
+  }
+  auto source = linear_fixture(9, 257, 257);
+  awj::compat::stop_source during;
+  struct Progress {
+    const awj::ImageBuffer* image;
+    awj::compat::stop_source* stop;
+    mutable std::atomic<unsigned> entered{}, completed{}, active{};
+  } progress{&source, &during};
+  const awj::hdr::hdr_detail::RgbaPixelReader reader{.context = &progress,
+      .read = [](const void* context, std::size_t x, std::size_t y) noexcept {
+        const auto& state = *static_cast<const Progress*>(context);
+        state.active.fetch_add(1); state.entered.fetch_add(1);
+        const auto rgba = awj::hdr::hdr_detail::read_source_rgba(*state.image, {}, x, y);
+        state.stop->request_stop();
+        state.completed.fetch_add(1); state.active.fetch_sub(1);
+        return rgba;
+      }};
+  auto interrupted = awj::hdr::hdr_detail::prepare_tone_context(source, during.get_token(), reader, parallel);
+  if (interrupted || !during.stop_requested() || !progress.entered.load() || progress.active.load() ||
+      progress.entered.load() != progress.completed.load())
+    return fail("HDR statistics returned before canceled borrowed-reader workers joined.");
+  auto invalid = source;
+  store16(invalid.planes[0].bytes.data() + (invalid.height - 1) * invalid.planes[0].stride + (invalid.width - 1) * 8 + 6, 0x7e00u);
+  if (awj::hdr::prepare_tone_map(invalid, {}, parallel)) return fail("Parallel HDR statistics missed non-finite tail alpha.");
+  return 0;
+}
+
 }  // namespace
 
 int main() {
+  if (const int result = check_threaded_hdr_statistics()) return result;
   auto hlg_white = transfer_fixture(18);
   auto hlg_transform = awj::hdr::hdr_detail::make_source_transform(hlg_white);
   if (!hlg_transform) return fail(hlg_transform.error());

@@ -1,6 +1,7 @@
 module;
 #include "../compat/stdlib_compat.h"
 #include "../core/work_memory_admission.h"
+#include "../core/work_cpu_admission.h"
 #include "../core/hdr_cost.h"
 #include "../core/spline36_resample.h"
 
@@ -85,12 +86,7 @@ struct WorkGroup {
   std::uint64_t estimated_bytes{1};
   bool exclusive_refinement{};
   std::vector<ImageFile> files{};
-};
-
-struct LargeWorkGroup {
-  std::uintmax_t weight{};
-  std::uint64_t estimated_bytes{1};
-  std::vector<BatchLargeImageItem> items{};
+  std::vector<BatchLargeImageItem> large_items{};
 };
 
 bool checked_add_uintmax(std::uintmax_t& value,
@@ -115,6 +111,7 @@ struct ClassifiedImageFile {
   ImageDimensions dimensions{};
   bool grid{};
   bool exclusive_refinement{};
+  std::string preflight_error{};
 };
 
 struct ClassifiedWork {
@@ -263,74 +260,160 @@ void inherit_memory_diagnostics(EncodeResult& result, EncodeResult& pending) {
 
 awj::compat::expected<ClassifiedWork, std::string> classify_work_for_avif(
     const AppConfig& cfg, const std::vector<ImageFile>& files,
-    std::uint64_t memory_limit) {
+    std::uint64_t memory_limit, awj::compat::stop_token stop = {}) {
   try {
-    WicFallbackComApartment com{cfg.allow_wic_fallback};
-    const bool allow_wic_fallback = cfg.allow_wic_fallback && com.usable();
-
-    ClassifiedWork classified{};
-    if (cfg.output_format != OutputFormat::avif) {
-      classified.ordinary.reserve(files.size());
-      DecoderRegistryOptions decoder_options{.allow_wic_fallback =
-                                                 allow_wic_fallback};
-      for (const auto& image : files) {
-        // Unknown decoded dimensions must not admit several compressed-small
-        // images together. Reserve the whole budget until decode completes.
-        ClassifiedImageFile candidate{
-            .file = image,
-            .estimated_bytes = std::max<std::uint64_t>(memory_limit,
-                std::max<std::uintmax_t>(1, image.bytes))};
-        if (auto dimensions =
-                probe_image_dimensions_for_path(image.path, decoder_options)) {
-          candidate.dimensions = *dimensions;
-          candidate.estimated_bytes =
-              estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes, memory_limit);
-        }
-        classified.ordinary.push_back(std::move(candidate));
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    struct ProbeResult {
+      std::optional<ImageDimensions> dimensions;
+      std::uint64_t reservation{};
+      bool memory_rejected{};
+      std::string error;
+    };
+    struct ProbeWork {
+      std::uint64_t estimated_bytes;
+      std::size_t file_index;
+    };
+    std::vector<ProbeResult> probed(files.size());
+    std::vector<ProbeWork> pending;
+    pending.reserve(files.size());
+    for (std::size_t i = 0; i < files.size(); ++i) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+      auto& result = probed[i];
+      result.reservation = dimension_probe_working_set_bytes(files[i].path, files[i].bytes);
+      if (memory_limit && result.reservation > memory_limit) {
+        result.memory_rejected = true;
+        result.error = awj::compat::format(
+            "尺寸探测工作集 {} 超过内存预算 {}，未读取完整输入。",
+            format_size(result.reservation), format_size(memory_limit));
+      } else {
+        pending.push_back({result.reservation, i});
       }
-      return classified;
+    }
+    WorkMemoryAdmission admission{memory_limit, pending};
+    std::atomic<bool> failed{};
+    std::mutex failure_mutex;
+    std::exception_ptr failure;
+    const auto run_probes = [&, policy = encoding_defaults::current_memory_policy()] {
+      const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
+      try {
+        WicFallbackComApartment com{cfg.allow_wic_fallback};
+        while (!failed.load() && !stop.stop_requested()) {
+          const auto ticket = admission.acquire(stop);
+          if (!ticket) break;
+          struct Reservation {
+            WorkMemoryAdmission& owner;
+            std::uint64_t bytes;
+            ~Reservation() { owner.release(bytes); }
+          } reservation{admission, ticket->bytes};
+          const auto index = pending[ticket->index].file_index;
+          auto& result = probed[index];
+          const DecoderRegistryOptions options{
+              .allow_wic_fallback = cfg.allow_wic_fallback && com.usable(),
+              .decode_threads = 1,
+              .stop_token = stop,
+              .probe_memory_reservation_bytes = memory_limit ? ticket->bytes : 0};
+          auto dimensions = probe_image_dimensions_for_path(files[index].path, options);
+          if (stop.stop_requested()) break;
+          if (dimensions) result.dimensions = std::move(*dimensions);
+          else {
+            result.error = std::move(dimensions.error());
+            result.memory_rejected = result.error.starts_with("尺寸探测工作集 ");
+          }
+        }
+      } catch (...) {
+        std::lock_guard lock{failure_mutex};
+        if (!failure) failure = std::current_exception();
+        failed.store(true);
+      }
+    };
+    const int jobs = std::min(std::clamp(cfg.max_jobs, 1,
+        encoding_defaults::max_automatic_thread_budget), count_to_int_saturated(pending.size()));
+    std::vector<awj::compat::scoped_worker> workers;
+    workers.reserve(static_cast<std::size_t>(std::max(0, jobs - 1)));
+    for (int i = 1; i < jobs; ++i) {
+      try { workers.emplace_back(run_probes); }
+      catch (const std::system_error&) { break; }
+      catch (const std::bad_alloc&) { break; }
+    }
+    run_probes();
+    workers.clear();
+    if (failure) std::rethrow_exception(failure);
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+
+    // 少数 ICC/输入增长只有读取过程中才能精化需求。并行预约均已释放后，
+    // 最多独占重试一次，不持有部分 metadata 等待其他探测释放内存。
+    if (memory_limit) {
+      WicFallbackComApartment com{cfg.allow_wic_fallback};
+      for (std::size_t i = 0; i < probed.size(); ++i) {
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+        auto& result = probed[i];
+        if (!result.memory_rejected || result.reservation >= memory_limit) continue;
+        auto dimensions = probe_image_dimensions_for_path(files[i].path,
+            DecoderRegistryOptions{.allow_wic_fallback = cfg.allow_wic_fallback && com.usable(),
+                .decode_threads = 1, .stop_token = stop,
+                .probe_memory_reservation_bytes = memory_limit});
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+        if (dimensions) {
+          result.dimensions = std::move(*dimensions);
+          result.memory_rejected = false;
+          result.error.clear();
+        } else {
+          result.error = std::move(dimensions.error());
+          result.memory_rejected = result.error.starts_with("尺寸探测工作集 ");
+        }
+      }
     }
 
+    ClassifiedWork classified{};
+    classified.ordinary.reserve(files.size());
     const auto capabilities = avif_encoder_capabilities_for_current_build();
-    const bool grid_available =
+    const bool grid_available = cfg.output_format == OutputFormat::avif &&
         awj::compat::ranges::any_of(capabilities, [](const auto& capability) {
           return capability.mode == AvifEncoderMode::aom &&
                  avif_capability_available_for_large_mode(capability) &&
                  capability.supports_avif_grid;
         });
-    DecoderRegistryOptions decoder_options{.allow_wic_fallback =
-                                               allow_wic_fallback};
-    for (const auto& image : files) {
-      auto dimensions =
-          probe_image_dimensions_for_path(image.path, decoder_options);
-      if (!dimensions) {
+    for (std::size_t i = 0; i < files.size(); ++i) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+      const auto& image = files[i];
+      auto& probe = probed[i];
+      if (probe.memory_rejected) {
+        classified.memory_rejected.push_back(ClassifiedImageFile{
+            .file = image, .estimated_bytes = probe.reservation,
+            .preflight_error = std::move(probe.error)});
+        continue;
+      }
+      // 未知画像独占精化，不能把压缩体积小误作低解码工作集。
+      if (!probe.dimensions) {
         classified.ordinary.push_back(ClassifiedImageFile{
             .file = image,
             .estimated_bytes = std::max<std::uint64_t>(memory_limit,
                 std::max<std::uintmax_t>(1, image.bytes))});
         continue;
       }
-      const auto target = target_dimensions_for_config(*dimensions, cfg);
+      const auto& dimensions = *probe.dimensions;
+      if (cfg.output_format != OutputFormat::avif) {
+        classified.ordinary.push_back(ClassifiedImageFile{
+            .file = image,
+            .estimated_bytes = estimated_regular_working_set_bytes(dimensions, cfg, image.bytes, memory_limit),
+            .dimensions = dimensions});
+        continue;
+      }
+      const auto target = target_dimensions_for_config(dimensions, cfg);
       auto decision = classify_large_image(target, grid_available);
       if (decision.klass == LargeImageClass::large_mode_required && grid_available) {
-        auto animated = input_uses_animation_reader(image.path);
+        auto animated = input_uses_animation_reader(image.path, stop);
         if (!animated) return awj::compat::unexpected{animated.error()};
         if (*animated) decision = classify_large_image(target, false);
       }
-      switch (decision.klass) {
-        case LargeImageClass::ordinary:
-          classified.ordinary.push_back(ClassifiedImageFile{
-              .file = image,
-              .estimated_bytes =
-                  estimated_regular_working_set_bytes(*dimensions, cfg, image.bytes, memory_limit),
-              .dimensions = *dimensions});
-          break;
-        case LargeImageClass::large_mode_required:
-          classified.large_mode.push_back(
-              BatchLargeImageItem{.file = image,
-                                  .dimensions = *dimensions,
-                                  .decision = std::move(decision)});
-          break;
+      if (decision.klass == LargeImageClass::large_mode_required) {
+        classified.large_mode.push_back(BatchLargeImageItem{
+            .file = image, .dimensions = dimensions, .decision = std::move(decision)});
+      } else {
+        classified.ordinary.push_back(ClassifiedImageFile{
+            .file = image,
+            .estimated_bytes = estimated_regular_working_set_bytes(dimensions, cfg, image.bytes, memory_limit),
+            .dimensions = dimensions});
       }
     }
     return classified;
@@ -338,6 +421,8 @@ awj::compat::expected<ClassifiedWork, std::string> classify_work_for_avif(
     return awj::compat::unexpected{"批处理分类列表内存不足。"};
   } catch (const std::length_error&) {
     return awj::compat::unexpected{"批处理分类列表数量超过运行时限制。"};
+  } catch (const std::exception&) {
+    return awj::compat::unexpected{"批处理尺寸探测发生异常。"};
   }
 }
 
@@ -434,30 +519,38 @@ awj::compat::expected<void, std::string> reject_over_memory_budget(
 }
 
 awj::compat::expected<std::vector<WorkGroup>, std::string> build_work_groups(
-    const AppConfig& cfg, const std::vector<ClassifiedImageFile>& classified) {
+    const AppConfig& cfg, const std::vector<ClassifiedImageFile>& classified,
+    std::span<const BatchLargeImageItem> large_items = {}, std::uint64_t memory_budget = 0) {
   std::vector<WorkGroup> groups;
   std::unordered_map<PathText, std::size_t> index_by_output;
 
   try {
-    // 同一输出路径的文件必须串行处理，避免并发覆盖；不同输出路径按总大小分组调度。
-    groups.reserve(classified.size());
-    index_by_output.reserve(classified.size());
-    for (const auto& entry : classified) {
-      const auto& image = entry.file;
-      const auto output = output_path_for(cfg, image);
-      auto key = normalized_lower_path_key(output);
-      const auto [it, inserted] = index_by_output.emplace(key, groups.size());
-      if (inserted) {
-        groups.push_back(WorkGroup{});
-      }
-
+    if (large_items.size() > groups.max_size() ||
+        classified.size() > groups.max_size() - large_items.size())
+      return awj::compat::unexpected{"批处理工作组数量超过运行时限制。"};
+    const auto count = classified.size() + large_items.size();
+    groups.reserve(count);
+    index_by_output.reserve(count);
+    const auto append = [&](const ImageFile& image, std::uint64_t estimate,
+                            bool exclusive, const BatchLargeImageItem* large) {
+      auto key = normalized_lower_path_key(output_path_for(cfg, image));
+      const auto [it, inserted] = index_by_output.emplace(std::move(key), groups.size());
+      if (inserted) groups.push_back(WorkGroup{});
       auto& group = groups[it->second];
       group.weight = saturated_add_uintmax(group.weight, image.bytes);
-      // 组内串行，峰值取组内最大估算；供运行时内存准入使用。
-      group.estimated_bytes =
-          std::max(group.estimated_bytes, entry.estimated_bytes);
-      group.exclusive_refinement = group.exclusive_refinement || entry.exclusive_refinement;
+      group.estimated_bytes = std::max(group.estimated_bytes, estimate);
+      group.exclusive_refinement = group.exclusive_refinement || exclusive;
       group.files.push_back(image);
+      if (large) group.large_items.push_back(*large);
+    };
+    for (const auto& entry : classified)
+      append(entry.file, entry.estimated_bytes, entry.exclusive_refinement, nullptr);
+    for (const auto& item : large_items)
+      append(item.file, estimated_large_working_set_bytes(item, cfg, memory_budget), false, &item);
+    // 跨普通/Grid 的同名输出仍严格依照原输入索引串行，不能按分类次序重排。
+    for (auto& group : groups) {
+      awj::compat::ranges::sort(group.files, [](const auto& a, const auto& b) { return a.index < b.index; });
+      awj::compat::ranges::sort(group.large_items, [](const auto& a, const auto& b) { return a.file.index < b.file.index; });
     }
   } catch (const std::bad_alloc&) {
     return awj::compat::unexpected{"批处理工作组内存不足。"};
@@ -465,7 +558,6 @@ awj::compat::expected<std::vector<WorkGroup>, std::string> build_work_groups(
     return awj::compat::unexpected{"批处理工作组数量超过运行时限制。"};
   }
 
-  // 不同输出路径之间按总大小调度；覆盖/跳过模式下同一路径保留扫描顺序。
   awj::compat::ranges::sort(groups, [](const WorkGroup& left, const WorkGroup& right) {
     return left.weight > right.weight;
   });
@@ -484,41 +576,6 @@ std::uint64_t largest_large_mode_working_set(
     estimate = std::max(estimate, estimated_large_working_set_bytes(item, cfg, memory_budget));
   }
   return estimate;
-}
-
-awj::compat::expected<std::vector<LargeWorkGroup>, std::string> build_large_work_groups(
-    const AppConfig& cfg, const std::vector<BatchLargeImageItem>& items, std::uint64_t memory_budget) {
-  std::vector<LargeWorkGroup> groups;
-  std::unordered_map<PathText, std::size_t> index_by_output;
-
-  try {
-    groups.reserve(items.size());
-    index_by_output.reserve(items.size());
-    for (const auto& item : items) {
-      const auto output = output_path_for(cfg, item.file);
-      auto key = normalized_lower_path_key(output);
-      const auto [it, inserted] = index_by_output.emplace(key, groups.size());
-      if (inserted) {
-        groups.push_back(LargeWorkGroup{});
-      }
-
-      auto& group = groups[it->second];
-      group.weight = saturated_add_uintmax(group.weight, item.file.bytes);
-      group.estimated_bytes =
-          std::max(group.estimated_bytes, estimated_large_working_set_bytes(item, cfg, memory_budget));
-      group.items.push_back(item);
-    }
-  } catch (const std::bad_alloc&) {
-    return awj::compat::unexpected{"大图工作组内存不足。"};
-  } catch (const std::length_error&) {
-    return awj::compat::unexpected{"大图工作组数量超过运行时限制。"};
-  }
-
-  awj::compat::ranges::sort(groups, [](const LargeWorkGroup& left,
-                               const LargeWorkGroup& right) {
-    return left.weight > right.weight;
-  });
-  return groups;
 }
 
 std::string format_result_line(const EncodeResult& result) {
@@ -664,7 +721,9 @@ struct SourceRecyclePlan {
 };
 
 awj::compat::expected<SourceRecyclePlan, std::string> make_source_recycle_plan(
-    const AppConfig& cfg, std::span<const ImageFile> files) {
+    const AppConfig& cfg, std::span<const ImageFile> files,
+    awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   SourceRecyclePlan plan;
   plan.entries.resize(files.size());
   std::unordered_map<PathText, std::size_t> inputs;
@@ -672,6 +731,7 @@ awj::compat::expected<SourceRecyclePlan, std::string> make_source_recycle_plan(
   std::vector<PathText> keys(files.size());
   std::vector<std::optional<RecycleObject>> dependency_objects(files.size());
   for (const auto& file : files) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (file.index >= files.size()) return awj::compat::unexpected{"输入序号无效。"};
     auto& entry = plan.entries[file.index];
     if (!entry.source.empty()) return awj::compat::unexpected{"输入序号重复。"};
@@ -699,6 +759,7 @@ awj::compat::expected<SourceRecyclePlan, std::string> make_source_recycle_plan(
   // Apply input protection for every mode, including explicit overwrite and
   // manifests. Hard-link aliases are not caught by a pathname-only comparison.
   for (const auto& file : files) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     std::error_code ec;
     const auto output = fs::weakly_canonical(output_path_for(cfg, file), ec);
     if (ec || inputs.contains(normalized_lower_path_key(output)))
@@ -707,6 +768,7 @@ awj::compat::expected<SourceRecyclePlan, std::string> make_source_recycle_plan(
       return awj::compat::unexpected{"输出路径是队列输入的硬链接，已保留所有源文件。"};
   }
   for (std::size_t i = 0; i < plan.entries.size(); ++i) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     auto& entry = plan.entries[i];
     if (inputs[keys[i]] > 1 || (dependency_objects[i] && objects[*dependency_objects[i]] > 1))
       entry.retain_reason = "重复源或其他输入仍依赖同一文件。";
@@ -1089,6 +1151,12 @@ struct MemoryAdmissionGuard {
   MemoryAdmissionGuard& operator=(const MemoryAdmissionGuard&) = delete;
 };
 
+EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
+    const BatchLargeImageItem& item, ResourcePlan resource_plan,
+    awj::compat::stop_token stop_token,
+    std::function<bool(std::uint64_t)> memory_reservation = {},
+    NativeBackend::CpuBudgetCallback cpu_budget = {});
+
 WorkExecutionResult encode_work_groups(
     const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
     const std::vector<WorkGroup>& work, const SourceRecyclePlan& recycle_plan,
@@ -1100,12 +1168,13 @@ WorkExecutionResult encode_work_groups(
     return execution;
   }
 
-  const int jobs =
-      std::max(1, std::min({resource_plan.file_parallelism,
-                            resource_plan.memory_file_parallelism,
-                            count_to_int_saturated(work.size())}));
+  const int jobs = std::max(1, std::min(resource_plan.global_thread_budget,
+                                       count_to_int_saturated(work.size())));
   std::atomic<int> worker_failures{0};
+  std::atomic<int> worker_capacity{jobs};
   WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
+  WorkCpuAdmission cpu{resource_plan.global_thread_budget,
+      static_cast<std::size_t>(admission.runnable_count(jobs))};
 
   std::vector<awj::compat::scoped_worker> workers;
   try {
@@ -1135,6 +1204,15 @@ WorkExecutionResult encode_work_groups(
   for (const int worker_index : std::views::iota(0, jobs)) {
     try {
       workers.emplace_back([&, policy = encoding_defaults::current_memory_policy()] {
+        struct WorkerCapacityGuard {
+          std::atomic<int>& capacity;
+          WorkMemoryAdmission& memory;
+          WorkCpuAdmission& cpu;
+          ~WorkerCapacityGuard() {
+            capacity.fetch_sub(1);
+            cpu.set_runnable_hint(static_cast<std::size_t>(memory.runnable_count(capacity.load())));
+          }
+        } capacity_guard{worker_capacity, admission, cpu};
         const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
         WicFallbackComApartment com{cfg.allow_wic_fallback};
         try {
@@ -1168,10 +1246,16 @@ WorkExecutionResult encode_work_groups(
             const auto& group = work[ticket->index];
             MemoryAdmissionGuard reservation{admission, ticket->bytes};
             const auto group_floor = group.files.size() > 1 ? ticket->bytes : 0;
-            auto file_resources = resource_plan;
-            file_resources.memory_reservation_bytes = ticket->bytes;
-            NativeBackend native_backend{effective_cfg, logger, file_resources,
-                [&](std::uint64_t bytes) { return reservation.try_resize(std::max(bytes, group_floor)); }};
+            const auto update_cpu_hint = [&] {
+              cpu.set_runnable_hint(static_cast<std::size_t>(
+                  admission.runnable_count(worker_capacity.load())));
+            };
+            const auto resize_memory = [&](std::uint64_t bytes) {
+              const bool resized = reservation.try_resize(std::max(bytes, group_floor));
+              if (resized) update_cpu_hint();
+              return resized;
+            };
+            update_cpu_hint();
             if (stop_token.stop_requested()) {
               break;
             }
@@ -1196,8 +1280,38 @@ WorkExecutionResult encode_work_groups(
               }
               emit_item_started_noexcept(cfg, image, completed.load(),
                                          progress_total, progress);
-              results[image.index].memory_plan.reserved_peak_bytes = ticket->bytes;
-              auto result = native_backend.encode(image, stop_token);
+              WorkCpuAdmission::Lease lease;
+              const NativeBackend::CpuBudgetCallback cpu_budget = [&](int demand) {
+                if (demand <= 0) { lease.reset(); update_cpu_hint(); return 0; }
+                update_cpu_hint();
+                if (!lease) {
+                  auto acquired = cpu.acquire(demand, stop_token);
+                  if (!acquired) return 0;
+                  lease = std::move(*acquired);
+                  return lease.threads();
+                }
+                return lease.try_resize(demand, stop_token);
+              };
+              auto file_resources = resource_plan;
+              file_resources.file_parallelism = 1;
+              file_resources.encoder_threads_per_file = 1;
+              file_resources.memory_reservation_bytes = reservation.amount;
+              results[image.index].memory_plan.reserved_peak_bytes = reservation.amount;
+              const auto large = std::lower_bound(group.large_items.begin(), group.large_items.end(), image.index,
+                  [](const auto& item, std::size_t index) { return item.file.index < index; });
+              const bool is_grid = large != group.large_items.end() && large->file.index == image.index;
+              if (is_grid) {
+                best_effort([&] {
+                  logger.info(large_image_log_text(*large));
+                  emit_progress(progress, BatchProgress{.kind = BatchEventKind::message,
+                      .completed = completed.load(), .total = progress_total,
+                      .large_image = *large, .text = large_image_action_text(*large)});
+                });
+              }
+              auto result = is_grid
+                  ? encode_large_mode_item(effective_cfg, logger, *large, file_resources,
+                      stop_token, resize_memory, cpu_budget)
+                  : NativeBackend{effective_cfg, logger, file_resources, resize_memory, cpu_budget}.encode(image, stop_token);
               const auto result_index = result.index;
               inherit_memory_diagnostics(result, results[result_index]);
               results[result_index] = std::move(result);
@@ -1267,6 +1381,8 @@ WorkExecutionResult encode_work_groups(
       break;
     }
   }
+  worker_capacity.fetch_sub(jobs - static_cast<int>(workers.size()));
+  cpu.set_runnable_hint(static_cast<std::size_t>(admission.runnable_count(worker_capacity.load())));
   workers.clear();
   execution.worker_failures = worker_failures.load();
   return execution;
@@ -1275,7 +1391,9 @@ WorkExecutionResult encode_work_groups(
 EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
                                     const BatchLargeImageItem& item,
                                     ResourcePlan resource_plan,
-                                    awj::compat::stop_token stop_token) {
+                                    awj::compat::stop_token stop_token,
+                                    std::function<bool(std::uint64_t)> memory_reservation,
+                                    NativeBackend::CpuBudgetCallback cpu_budget) {
   resource_plan = normalize_memory_policy_resources(cfg, resource_plan);
   const auto estimate = estimated_regular_memory(item.dimensions, cfg, item.file.bytes, true, nullptr,
       resource_memory_budget(resource_plan));
@@ -1328,7 +1446,8 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
       return failed;
     }
     large_cfg.avif_encoder = AvifEncoderMode::aom;
-    NativeBackend backend{large_cfg, logger, resource_plan};
+    NativeBackend backend{large_cfg, logger, resource_plan,
+        std::move(memory_reservation), std::move(cpu_budget)};
     auto result = backend.encode_avif_grid(item.file, *planned, stop_token);
     inherit_memory_diagnostics(result, failed);
     return result;
@@ -1344,201 +1463,6 @@ EncodeResult encode_large_mode_item(const AppConfig& cfg, FileLogger& logger,
   return failed;
 }
 
-WorkExecutionResult encode_large_work_groups(
-    const AppConfig& cfg, FileLogger& logger, const ResourcePlan& resource_plan,
-    const std::vector<LargeWorkGroup>& work, const SourceRecyclePlan& recycle_plan,
-    std::size_t progress_total,
-    std::atomic<std::size_t>& completed, std::vector<EncodeResult>& results,
-    const ProgressCallback& progress, awj::compat::stop_token stop_token) {
-  WorkExecutionResult execution{};
-  if (work.empty()) {
-    return execution;
-  }
-
-  const int jobs =
-      std::max(1, std::min({resource_plan.file_parallelism,
-                            resource_plan.memory_file_parallelism,
-                            count_to_int_saturated(work.size())}));
-  std::atomic<int> worker_failures{0};
-  WorkMemoryAdmission admission{resource_plan.memory_limit_bytes, work};
-
-  std::vector<awj::compat::scoped_worker> workers;
-  try {
-    workers.reserve(static_cast<std::size_t>(jobs));
-  } catch (const std::bad_alloc&) {
-    worker_failures.fetch_add(1);
-    try {
-      const auto text =
-          awj::compat::format("[WARN] 大图工作线程列表内存不足，需要 {} 个线程槽。", jobs);
-      report_worker_warning_noexcept(logger, progress, completed.load(),
-                                     progress_total, text, text);
-    } catch (...) {
-      report_worker_warning_noexcept(
-          logger, progress, completed.load(), progress_total,
-          "large worker list allocation failed",
-          "[WARN] 大图工作线程列表内存不足。");
-    }
-    execution.worker_failures = worker_failures.load();
-    return execution;
-  } catch (const std::length_error&) {
-    worker_failures.fetch_add(1);
-    constexpr std::string_view text = "[WARN] 大图工作线程列表数量超过运行时限制。";
-    report_worker_warning_noexcept(logger, progress, completed.load(),
-                                   progress_total, text, text);
-    execution.worker_failures = worker_failures.load();
-    return execution;
-  }
-
-  for (const int worker_index : std::views::iota(0, jobs)) {
-    try {
-      workers.emplace_back([&, policy = encoding_defaults::current_memory_policy()] {
-        const encoding_defaults::ScopedMemoryPolicy memory_scope{policy};
-        WicFallbackComApartment com{cfg.allow_wic_fallback};
-        try {
-          std::optional<AppConfig> worker_cfg;
-          if (cfg.allow_wic_fallback && !com.usable()) {
-            worker_cfg.emplace(cfg);
-            worker_cfg->allow_wic_fallback = false;
-            try {
-              const auto text = awj::compat::format(
-                  "[WARN] 大图工作线程 WIC fallback COM 初始化失败，已禁用该线程的 "
-                  "WIC fallback: 0x{:08X}",
-                  static_cast<unsigned int>(com.init()));
-              report_worker_warning_noexcept(logger, progress, completed.load(),
-                                             progress_total, text, text);
-            } catch (...) {
-              report_worker_warning_noexcept(
-                  logger, progress, completed.load(), progress_total,
-                  "large worker WIC fallback COM initialization failed",
-                  "[WARN] 大图工作线程 WIC fallback COM 初始化失败，已禁用该线程的 "
-                  "WIC fallback。");
-            }
-          }
-          const auto& effective_cfg = worker_cfg ? *worker_cfg : cfg;
-          while (true) {
-            if (stop_token.stop_requested()) {
-              break;
-            }
-
-            const auto ticket = admission.acquire(stop_token);
-            if (!ticket) break;
-            const auto& group = work[ticket->index];
-            MemoryAdmissionGuard reservation{admission, ticket->bytes};
-            if (stop_token.stop_requested()) {
-              break;
-            }
-            if (group.items.size() > 1 &&
-                cfg.collision_mode == CollisionMode::overwrite) {
-              best_effort([&] {
-                emit_progress(
-                    progress,
-                    BatchProgress{.kind = BatchEventKind::warning,
-                                  .completed = completed.load(),
-                                  .total = progress_total,
-                                  .text = awj::compat::format(
-                                      "[WARN] 大图输出重名: {} 个输入将依次覆盖 {}",
-                                      group.items.size(),
-                                      display_path_for_user(output_path_for(
-                                          cfg, group.items.back().file)))});
-              });
-            }
-
-            for (const auto& item : group.items) {
-              if (stop_token.stop_requested()) {
-                break;
-              }
-              emit_item_started_noexcept(cfg, item.file, completed.load(),
-                                         progress_total, progress);
-              best_effort([&] {
-                logger.info(large_image_log_text(item));
-                emit_progress(
-                    progress,
-                    BatchProgress{.kind = BatchEventKind::message,
-                                  .completed = completed.load(),
-                                  .total = progress_total,
-                                  .large_image = item,
-                                  .text = large_image_action_text(item)});
-              });
-              auto file_resources = resource_plan;
-              file_resources.memory_reservation_bytes = ticket->bytes;
-              results[item.file.index].memory_plan.reserved_peak_bytes = ticket->bytes;
-              auto result = encode_large_mode_item(
-                  effective_cfg, logger, item, file_resources, stop_token);
-              const auto result_index = result.index;
-              inherit_memory_diagnostics(result, results[result_index]);
-              results[result_index] = std::move(result);
-              // Recycle before item_finished, never in the end-of-batch sweep.
-              recycle_source_noexcept(cfg, recycle_plan, results[result_index], logger,
-                  progress, completed.load(), progress_total, stop_token);
-              log_item_failure_noexcept(logger, results[result_index]);
-              const auto done = completed.fetch_add(1) + 1;
-              try {
-                BatchProgress event{
-                    .kind = BatchEventKind::item_finished,
-                    .completed = done,
-                    .total = progress_total,
-                    .result = results[result_index],
-                    .text = format_result_line(results[result_index])};
-                emit_progress(progress, event);
-              } catch (...) {
-                report_worker_warning_noexcept(
-                    logger, progress, done, progress_total,
-                    "large item progress reporting failed",
-                    "[WARN] 大图单项进度报告生成失败，结果已记录。");
-              }
-            }
-          }
-        } catch (const std::exception&) {
-          worker_failures.fetch_add(1);
-          report_worker_warning_noexcept(
-              logger, progress, completed.load(), progress_total,
-              "large worker failed",
-              "[WARN] 大图工作线程异常，已停止该线程。");
-        } catch (...) {
-          worker_failures.fetch_add(1);
-          report_worker_warning_noexcept(
-              logger, progress, completed.load(), progress_total,
-              "large worker failed: unknown exception",
-              "[WARN] 大图工作线程异常，已停止该线程: 未知异常");
-        }
-      });
-    } catch (const std::bad_alloc&) {
-      worker_failures.fetch_add(1);
-      try {
-        const auto text = awj::compat::format(
-            "[WARN] 创建大图工作线程失败，线程状态内存不足，已继续等待已启动线程: "
-            "{}/{}",
-            worker_index, jobs);
-        report_worker_warning_noexcept(logger, progress, completed.load(),
-                                       progress_total, text, text);
-      } catch (...) {
-        report_worker_warning_noexcept(
-            logger, progress, completed.load(), progress_total,
-            "large worker thread creation allocation failed",
-            "[WARN] 创建大图工作线程失败，线程状态内存不足，已继续等待已启动线程。");
-      }
-      break;
-    } catch (const std::system_error&) {
-      worker_failures.fetch_add(1);
-      report_worker_warning_noexcept(
-          logger, progress, completed.load(), progress_total,
-          "large worker thread creation failed",
-          "[WARN] 创建大图工作线程失败，已继续等待已启动线程。");
-      break;
-    } catch (const std::exception&) {
-      worker_failures.fetch_add(1);
-      report_worker_warning_noexcept(
-          logger, progress, completed.load(), progress_total,
-          "large worker thread creation failed",
-          "[WARN] 创建大图工作线程失败，已继续等待已启动线程。");
-      break;
-    }
-  }
-
-  workers.clear();
-  execution.worker_failures = worker_failures.load();
-  return execution;
-}
 
 void set_result_message_noexcept(EncodeResult& result,
                                  std::string_view message) noexcept {
@@ -1588,6 +1512,15 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     awj::compat::stop_token stop_token = {},
     std::span<const std::filesystem::path> input_paths = {}) {
   try {
+    const auto canceled_preflight = [&](std::size_t total) {
+      const BatchSummary summary{.canceled_count = pipeline_detail::count_to_int_saturated(total),
+                                 .canceled = true, .exit_code = 130};
+      emit_progress(progress, BatchProgress{.kind = BatchEventKind::summary,
+          .total = total, .summary = summary, .text = "已取消，未启动后续分析或编码。"});
+      return summary;
+    };
+    if (stop_token.stop_requested())
+      return canceled_preflight(cfg.studio_large_action.empty() ? input_paths.size() : 1);
     cfg.write_log = cfg.write_summary = cfg.write_log || cfg.write_summary;
     if (auto frozen = freeze_operation_memory_policy(cfg); !frozen)
       return awj::compat::unexpected{frozen.error()};
@@ -1607,10 +1540,17 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       if (cfg.output_format != OutputFormat::avif) {
         return awj::compat::unexpected{"Studio 大图 worker 仅支持 AVIF 输出。"};
       }
+      const auto memory_status = cfg.unlock_memory_limit || cfg.memory_limit_bytes != 0
+          ? MemoryStatus{} : current_memory_status();
+      const auto resolved_memory_limit = checked_effective_memory_limit(cfg, memory_status);
+      if (!resolved_memory_limit) return awj::compat::unexpected{resolved_memory_limit.error()};
+      const auto configured_memory_limit = *resolved_memory_limit;
       auto dimensions = probe_image_dimensions_for_path(
           cfg.input_path,
-          DecoderRegistryOptions{.allow_wic_fallback = cfg.allow_wic_fallback});
+          DecoderRegistryOptions{.allow_wic_fallback = cfg.allow_wic_fallback,
+              .stop_token = stop_token, .probe_memory_reservation_bytes = configured_memory_limit});
       if (!dimensions) {
+        if (stop_token.stop_requested()) return canceled_preflight(1);
         return awj::compat::unexpected{dimensions.error()};
       }
       std::error_code file_ec;
@@ -1622,8 +1562,11 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       }
       const bool grid_action = cfg.studio_large_action == L"grid";
       if (grid_action) {
-        auto animated = input_uses_animation_reader(cfg.input_path);
-        if (!animated) return awj::compat::unexpected{animated.error()};
+        auto animated = input_uses_animation_reader(cfg.input_path, stop_token);
+        if (!animated) {
+          if (stop_token.stop_requested()) return canceled_preflight(1);
+          return awj::compat::unexpected{animated.error()};
+        }
         if (*animated) return awj::compat::unexpected{"保留动画时不能使用静态 Grid。"};
       }
       auto decision = classify_large_image(*dimensions, grid_action);
@@ -1636,18 +1579,19 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
           .dimensions = *dimensions,
           .decision = std::move(decision)};
       std::vector<ImageFile> single_file{item.file};
-      if (auto resolved = resolve_batch_output_paths(cfg, single_file); !resolved)
+      if (auto resolved = resolve_batch_output_paths(cfg, single_file, stop_token); !resolved) {
+        if (stop_token.stop_requested()) return canceled_preflight(1);
         return awj::compat::unexpected{resolved.error()};
+      }
       item.file = single_file.front();
-      auto recycle_plan = pipeline_detail::make_source_recycle_plan(cfg, single_file);
-      if (!recycle_plan) return awj::compat::unexpected{recycle_plan.error()};
+      auto recycle_plan = pipeline_detail::make_source_recycle_plan(cfg, single_file, stop_token);
+      if (!recycle_plan) {
+        if (stop_token.stop_requested()) return canceled_preflight(1);
+        return awj::compat::unexpected{recycle_plan.error()};
+      }
       const auto output_dir = output_dir_for(cfg);
       FileLogger logger{output_dir, cfg.write_log};
-      const auto memory_status = cfg.unlock_memory_limit || cfg.memory_limit_bytes != 0
-          ? MemoryStatus{} : current_memory_status();
-      const auto resolved_memory_limit = checked_effective_memory_limit(cfg, memory_status);
-      if (!resolved_memory_limit) return awj::compat::unexpected{resolved_memory_limit.error()};
-      const auto configured_memory_limit = *resolved_memory_limit;
+      if (stop_token.stop_requested()) return canceled_preflight(1);
       pipeline_detail::best_effort([&] {
         emit_progress(progress,
                       BatchProgress{.kind = BatchEventKind::message,
@@ -1718,28 +1662,34 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
 
     std::vector<ImageFile> files;
     if (!cfg.studio_queue_manifest.empty()) {
-      auto manifest = read_studio_queue_manifest(cfg.studio_queue_manifest);
+      auto manifest = read_studio_queue_manifest(cfg.studio_queue_manifest, stop_token);
       if (!manifest) {
+        if (stop_token.stop_requested()) return canceled_preflight(0);
         return awj::compat::unexpected{manifest.error()};
       }
       if (auto valid = pipeline_detail::validate_manifest_paths_for_config(
-              cfg, manifest->files);
+              cfg, manifest->files, stop_token);
           !valid) {
+        if (stop_token.stop_requested()) return canceled_preflight(manifest->files.size());
         return awj::compat::unexpected{valid.error()};
       }
       files = std::move(manifest->files);
     } else {
-      if (auto scanned = input_paths.empty() ? scan_images(cfg, files)
-                                             : scan_images(cfg, input_paths, files);
+      if (auto scanned = input_paths.empty() ? scan_images(cfg, files, stop_token)
+                                             : scan_images(cfg, input_paths, files, stop_token);
           !scanned) {
+        if (stop_token.stop_requested()) return canceled_preflight(files.size());
         return awj::compat::unexpected{scanned.error()};
       }
     }
+    if (stop_token.stop_requested()) return canceled_preflight(files.size());
 
-    // Snapshot before classification and all user progress callbacks. The same
-    // immutable plan protects ordinary and deferred Grid workers.
-    auto recycle_plan = pipeline_detail::make_source_recycle_plan(cfg, files);
-    if (!recycle_plan) return awj::compat::unexpected{recycle_plan.error()};
+    // 统一快照保护所有任务；普通图与 Grid 使用相同输入依赖与回收契约。
+    auto recycle_plan = pipeline_detail::make_source_recycle_plan(cfg, files, stop_token);
+    if (!recycle_plan) {
+      if (stop_token.stop_requested()) return canceled_preflight(files.size());
+      return awj::compat::unexpected{recycle_plan.error()};
+    }
     FileLogger logger{output_dir, cfg.write_log};
     logger.info("native backend enabled");
     if (cfg.write_log && !logger.enabled()) {
@@ -1786,63 +1736,40 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     const auto resolved_memory_limit = checked_effective_memory_limit(cfg, memory_status);
     if (!resolved_memory_limit) return awj::compat::unexpected{resolved_memory_limit.error()};
     const auto configured_memory_limit = *resolved_memory_limit;
-    auto classified = pipeline_detail::classify_work_for_avif(cfg, files, configured_memory_limit);
+    const auto probe_started = std::chrono::steady_clock::now();
+    auto classified = pipeline_detail::classify_work_for_avif(cfg, files, configured_memory_limit, stop_token);
     if (!classified) {
+      if (stop_token.stop_requested()) return canceled_preflight(files.size());
       return awj::compat::unexpected{classified.error()};
     }
+    if (stop_token.stop_requested()) return canceled_preflight(files.size());
+    pipeline_detail::best_effort([&] {
+      const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - probe_started).count();
+      const auto text = awj::compat::format("尺寸与内存分析完成：{} 个文件，计算线程预算 {}，耗时 {:.3f}s。",
+          files.size(), cfg.max_jobs, seconds);
+      logger.info(text);
+      emit_progress(progress, BatchProgress{.kind = BatchEventKind::message,
+          .total = files.size(), .text = text});
+    });
     if (auto memory_filter = pipeline_detail::reject_over_memory_budget(
             *classified, configured_memory_limit, cfg);
         !memory_filter) {
       return awj::compat::unexpected{memory_filter.error()};
     }
-    auto ordinary_work =
-        pipeline_detail::build_work_groups(cfg, classified->ordinary);
-    if (!ordinary_work) {
-      return awj::compat::unexpected{ordinary_work.error()};
-    }
-    auto large_work =
-        pipeline_detail::build_large_work_groups(cfg, classified->large_mode, configured_memory_limit);
-    if (!large_work) {
-      return awj::compat::unexpected{large_work.error()};
-    }
-    // 并发度按「典型」单图占用规划（中位数），而不是队列最大值：最大值会让
-    // 一张大图把整批压成串行。真正吃内存的组由 encode_work_groups 的运行时
-    // 内存准入单独限制，不会同时进入。
-    const auto ordinary_estimated_bytes_per_file =
-        pipeline_detail::typical_decoded_bytes_per_file(classified->ordinary);
+    if (stop_token.stop_requested()) return canceled_preflight(files.size());
+    auto work = pipeline_detail::build_work_groups(cfg, classified->ordinary,
+        classified->large_mode, configured_memory_limit);
+    if (!work) return awj::compat::unexpected{work.error()};
+    const auto typical_bytes = classified->ordinary.empty()
+        ? pipeline_detail::largest_large_mode_working_set(classified->large_mode, cfg, configured_memory_limit)
+        : pipeline_detail::typical_decoded_bytes_per_file(classified->ordinary);
     const auto resource_plan = plan_resources(ResourcePlanRequest{
         .automatic_thread_budget = cfg.max_jobs,
-        .file_count = pipeline_detail::count_to_int_saturated(
-            std::max<std::size_t>(1, ordinary_work->size())),
+        .file_count = pipeline_detail::count_to_int_saturated(std::max<std::size_t>(1, work->size())),
         .memory_limit_bytes = configured_memory_limit,
-        .estimated_bytes_per_file = ordinary_estimated_bytes_per_file});
-    const auto large_largest_working_set =
-        pipeline_detail::largest_large_mode_working_set(classified->large_mode, cfg, configured_memory_limit);
-    const auto large_base_resource_plan = plan_resources(ResourcePlanRequest{
-        .automatic_thread_budget = cfg.max_jobs,
-        .file_count = pipeline_detail::count_to_int_saturated(
-            std::max<std::size_t>(1, large_work->size())),
-        .memory_limit_bytes = configured_memory_limit,
-        .estimated_bytes_per_file = large_largest_working_set});
-    const auto large_resource_plan = plan_large_mode_resources(
-        large_base_resource_plan,
-        pipeline_detail::count_to_int_saturated(std::max<std::size_t>(
-            1, large_work->size())),
-        large_largest_working_set);
-    const int ordinary_jobs =
-        ordinary_work->empty()
-            ? 0
-            : std::max(1, std::min({resource_plan.file_parallelism,
-                                    resource_plan.memory_file_parallelism,
-                                    pipeline_detail::count_to_int_saturated(
-                                        ordinary_work->size())}));
-    const int large_jobs =
-        large_work->empty()
-            ? 0
-            : std::max(1, std::min({large_resource_plan.file_parallelism,
-                                    large_resource_plan.memory_file_parallelism,
-                                    pipeline_detail::count_to_int_saturated(
-                                        large_work->size())}));
+        .estimated_bytes_per_file = typical_bytes});
+    const int worker_slots = std::min(resource_plan.global_thread_budget,
+        pipeline_detail::count_to_int_saturated(work->size()));
     pipeline_detail::best_effort([&] {
       emit_progress(
           progress,
@@ -1851,14 +1778,12 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
               .total = files.size(),
               .text = awj::compat::format(
                   "共 {} 个文件；普通 {}，内存超限 {}，Grid "
-                  "{}。普通并发 {}，Grid 并发 {}，编码器线程/文件 "
-                  "{}/{}，内存限制 {}。",
+                  "{}。共享任务槽位 {}，全局计算线程预算 {}，"
+                  "按阶段与实际内存动态分配，内存限制 {}。",
                   files.size(), classified->ordinary.size(),
                   classified->memory_rejected.size(),
-                  classified->large_mode.size(), ordinary_jobs,
-                  large_jobs,
-                  resource_plan.encoder_threads_per_file,
-                  large_resource_plan.encoder_threads_per_file,
+                  classified->large_mode.size(), worker_slots,
+                  resource_plan.global_thread_budget,
                   resource_plan.memory_limit_bytes == 0
                       ? std::string{"未限制"}
                       : format_size(resource_plan.memory_limit_bytes))});
@@ -1912,10 +1837,11 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
     for (const auto& image : classified->memory_rejected) {
       auto& result = results[image.file.index];
       result.processed = true;
-      result.message =
-          awj::compat::format("估算工作集 {} 超过内存限制 {}，未启动编码。",
+      result.message = image.preflight_error.empty()
+          ? awj::compat::format("估算工作集 {} 超过内存限制 {}，未启动编码。",
                       format_size(image.estimated_bytes),
-                      format_size(configured_memory_limit));
+                      format_size(configured_memory_limit))
+          : image.preflight_error;
     }
 
     std::atomic<std::size_t> completed{0};
@@ -1940,30 +1866,10 @@ awj::compat::expected<BatchSummary, std::string> run_batch(
       }
     }
 
-    const auto ordinary_execution = pipeline_detail::encode_work_groups(
-        cfg, logger, resource_plan, *ordinary_work, *recycle_plan, files.size(), completed,
+    const auto execution = pipeline_detail::encode_work_groups(
+        cfg, logger, resource_plan, *work, *recycle_plan, files.size(), completed,
         results, progress, stop_token);
-    worker_failures += ordinary_execution.worker_failures;
-
-    if (!stop_token.stop_requested() && !classified->large_mode.empty()) {
-      pipeline_detail::best_effort([&] {
-        emit_progress(progress,
-                      BatchProgress{.kind = BatchEventKind::message,
-                                    .completed = completed.load(),
-                                    .total = files.size(),
-                                    .text = awj::compat::format(
-                                        "开始自动处理超大图：{} 个文件，并发 "
-                                        "{}，编码器线程/文件 {}，使用 AOM Grid。",
-                                        classified->large_mode.size(),
-                                        large_jobs,
-                                        large_resource_plan
-                                            .encoder_threads_per_file)});
-      });
-      const auto large_execution = pipeline_detail::encode_large_work_groups(
-          cfg, logger, large_resource_plan, *large_work, *recycle_plan, files.size(),
-          completed, results, progress, stop_token);
-      worker_failures += large_execution.worker_failures;
-    }
+    worker_failures += execution.worker_failures;
 
     const bool canceled = stop_token.stop_requested();
     pipeline_detail::mark_unstarted_results(results, canceled,

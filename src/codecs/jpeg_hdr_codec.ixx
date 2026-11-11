@@ -15,6 +15,8 @@ module;
 #include <stdexcept>
 #include <string>
 #include <vector>
+// 内存策略会引入 Windows 类型，须先于 JPEG 兼容头确定 INT32 定义。
+#include "../core/parallel_rows.h"
 #include <ultrahdr_api.h>
 #include <ultrahdr/ultrahdrcommon.h>
 #include <ultrahdr/gainmapmath.h>
@@ -32,6 +34,7 @@ import awj.hdr_tonemap;
 import awj.image;
 import awj.jpegli_codec;
 import awj.pixel_conversion;
+import awj.resource_planner;
 
 export namespace awj {
 
@@ -155,29 +158,34 @@ awj::compat::expected<ImageBuffer, std::string> source_sdr_base(
   auto pixels = hdr::hdr_detail::make_rgba_bytes(source.width, source.height, 1, "HDR JPEG source SDR");
   if (!pixels) return awj::compat::unexpected{pixels.error()};
   const bool already_srgb = same_primaries && transfer == 13;
-  for (std::size_t y = 0; y < source.height; ++y) {
-    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-    auto* row = pixels->data() + y * source.width * 4;
-    for (std::size_t x = 0; x < source.width; ++x) {
-      if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested())
-        return awj::compat::unexpected{"任务已取消。"};
-      const auto rgba = hdr::hdr_detail::read_source_rgba(*packed, {}, x, y);
-      std::array<float, 3> rgb{rgba[0], rgba[1], rgba[2]};
-      if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"HDR JPEG 的源 SDR 包含非有限 RGB。"};
-      if (!already_srgb) {
-        for (auto& value : rgb) value = to_linear(value);
-        if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"HDR JPEG 的源 SDR 线性化产生了非有限 RGB。"};
-        pl_matrix3x3_apply(&matrix, rgb.data());
-        if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"HDR JPEG 的源 SDR 原色转换产生了非有限 RGB。"};
-        for (auto& value : rgb) value = hdr::hdr_detail::srgb_encode(value);
-      }
-      for (std::size_t c = 0; c < 3; ++c) {
-        const auto sample = std::clamp(std::lround(std::clamp(rgb[c], 0.0F, 1.0F) * 255.0F), 0l, 255l);
-        row[x * 4 + c] = std::byte{static_cast<std::uint8_t>(sample)};
-      }
-      row[x * 4 + 3] = std::byte{255};
-    }
-  }
+  const auto options = hdr::hdr_detail::control_options(settings.resources, hdr_cost::add(
+      hdr::hdr_detail::source_storage_bytes(source), hdr_cost::add(
+          hdr::hdr_detail::source_storage_bytes(*packed), pixels->capacity())));
+  auto converted = parallel_rows_detail::for_each(source.height, source.width, options, stop,
+      [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+        auto* row = pixels->data() + y * source.width * 4;
+        for (std::size_t x = 0; x < source.width; ++x) {
+          if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested())
+            return awj::compat::unexpected{"任务已取消。"};
+          const auto rgba = hdr::hdr_detail::read_source_rgba(*packed, {}, x, y);
+          std::array<float, 3> rgb{rgba[0], rgba[1], rgba[2]};
+          if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"HDR JPEG 的源 SDR 包含非有限 RGB。"};
+          if (!already_srgb) {
+            for (auto& value : rgb) value = to_linear(value);
+            if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"HDR JPEG 的源 SDR 线性化产生了非有限 RGB。"};
+            pl_matrix3x3_apply(&matrix, rgb.data());
+            if (!hdr::hdr_detail::finite_rgb(rgb)) return awj::compat::unexpected{"HDR JPEG 的源 SDR 原色转换产生了非有限 RGB。"};
+            for (auto& value : rgb) value = hdr::hdr_detail::srgb_encode(value);
+          }
+          for (std::size_t c = 0; c < 3; ++c) {
+            const auto sample = std::clamp(std::lround(std::clamp(rgb[c], 0.0F, 1.0F) * 255.0F), 0l, 255l);
+            row[x * 4 + c] = std::byte{static_cast<std::uint8_t>(sample)};
+          }
+          row[x * 4 + 3] = std::byte{255};
+        }
+        return {};
+      });
+  if (!converted) return awj::compat::unexpected{converted.error()};
   ImageSourceInfo info{.pixel_format = PixelFormat::rgba, .bit_depth = 8,
       .color_primaries = 1, .transfer_characteristics = 13, .matrix_coefficients = 0,
       .color_range = 1, .has_hdr_metadata = false,
@@ -191,6 +199,68 @@ awj::compat::expected<ImageBuffer, std::string> source_sdr_base(
     if (block.kind == MetadataKind::exif) output->metadata.push_back(block);
   }
   return output;
+}
+
+struct CanonicalStats {
+  float component_peak{};
+  float y_peak{};
+};
+
+// Fill the caller-owned canonical intent once. No per-worker image copies;
+// fixed-block maxima cover both pre-quantized nits and the actual FP16 payload.
+awj::compat::expected<CanonicalStats, std::string> fill_canonical_pixels(
+    const ImageBuffer& image, const hdr::PreparedToneMap& prepared,
+    uhdr_raw_image_t& canonical, awj::compat::stop_token stop = {},
+    const ResourcePlan& resources = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+  if (!image.width || !image.height || image.width > SIZE_MAX / image.height ||
+      !hdr::hdr_detail::matches_source(prepared, image) ||
+      canonical.fmt != UHDR_IMG_FMT_64bppRGBAHalfFloat || !canonical.planes[0] ||
+      canonical.w != image.width || canonical.h != image.height || canonical.stride[0] < image.width ||
+      static_cast<std::size_t>(canonical.stride[0]) > SIZE_MAX / 8 / image.height) {
+    return awj::compat::unexpected{"HDR JPEG canonical 输出布局或 prepared context 无效。"};
+  }
+  const auto options = hdr::hdr_detail::control_options(resources, hdr_cost::add(
+      hdr::hdr_detail::source_storage_bytes(image),
+      hdr_cost::multiply(hdr_cost::multiply(canonical.stride[0], image.height), 8)));
+  return parallel_rows_detail::reduce<CanonicalStats>(image.width * image.height, options, stop,
+      [&](std::size_t first, std::size_t end, CanonicalStats& state) -> awj::compat::expected<void, std::string> {
+        for (auto position = first; position < end; ++position) {
+          if (position % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested())
+            return awj::compat::unexpected{"任务已取消。"};
+          const auto x = position % image.width, y = position / image.width;
+          auto* dst = static_cast<std::uint16_t*>(canonical.planes[0]) + y * static_cast<std::size_t>(canonical.stride[0]) * 4;
+          const auto rgba = hdr::hdr_detail::read_source_rgba(image, prepared.reader, x, y);
+          auto rgb = hdr::hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, prepared.transform);
+          if (!rgb) return awj::compat::unexpected{rgb.error()};
+          if (!std::isfinite(rgba[3])) return awj::compat::unexpected{"HDR JPEG canonical 输入包含非有限 alpha。"};
+          pl_matrix3x3_apply(&prepared.source_to_bt2020, rgb->data());
+          if (!hdr::hdr_detail::finite_rgb(*rgb)) return awj::compat::unexpected{"HDR JPEG canonical 色彩矩阵产生了非有限 RGB。"};
+          const auto y_nits = hdr::hdr_detail::luma_nits(*rgb, prepared.canonical_to_xyz);
+          if (!std::isfinite(y_nits)) return awj::compat::unexpected{"HDR JPEG canonical Y 产生了非有限值。"};
+          state.y_peak = std::max(state.y_peak, y_nits);
+          for (int c = 0; c < 3; ++c) {
+            const auto positive_nits = std::max((*rgb)[c], 0.0F);
+            const auto value = positive_nits / canonical_white_nits;
+            if (!std::isfinite(value) || value > 65'504.0F) {
+              return awj::compat::unexpected{"HDR JPEG canonical 亮度超出有限 FP16 范围（引擎最高支持 10000 nits）。"};
+            }
+            if (positive_nits > engine_peak_nits) {
+              return awj::compat::unexpected{"HDR JPEG 实际 canonical RGB 分量超过引擎支持的 10000 nits，拒绝裁剪高光。"};
+            }
+            const auto half = ultrahdr::floatToHalf(value);
+            const auto canonical_nits = hdr::hdr_detail::binary16_to_float(half) * canonical_white_nits;
+            if (!std::isfinite(canonical_nits)) return awj::compat::unexpected{"HDR JPEG canonical FP16 量化产生了非有限值。"};
+            state.component_peak = std::max({state.component_peak, positive_nits, canonical_nits});
+            dst[x * 4 + c] = half;
+          }
+          dst[x * 4 + 3] = ultrahdr::floatToHalf(1.0F);
+        }
+        return {};
+      }, [](CanonicalStats& total, const CanonicalStats& block) noexcept {
+        total.component_peak = std::max(total.component_peak, block.component_peak);
+        total.y_peak = std::max(total.y_peak, block.y_peak);
+      });
 }
 
 }  // namespace jpeg_hdr_detail
@@ -249,7 +319,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_hdr_jpeg(
     // limit == 0 means unlimited. Admission owns concurrency; do not divide the
     // global limit by file_parallelism and reject an already-admitted big file.
     if (estimated == UINT64_MAX || (limit && estimated > limit)) return awj::compat::unexpected{"HDR JPEG 工作集估算超出内存预算。"};
-    auto prepared = hdr::prepare_tone_map(image, stop);
+    auto prepared = hdr::prepare_tone_map(image, stop, settings.resources);
     if (!prepared) return awj::compat::unexpected{prepared.error()};
     auto base_settings = settings;
     // Freeze auto from the actual base source before normalization relabels it.
@@ -297,7 +367,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_hdr_jpeg(
     if (!base) return awj::compat::unexpected{base.error()};
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     JpegliImageDecoder decoder;
-    auto reference = decoder.decode_memory(base->encoded.bytes, "HDR JPEG base", {.copy_metadata_payloads = false});
+    auto reference = decoder.decode_memory(base->encoded.bytes, "HDR JPEG base", {.copy_metadata_payloads = false, .stop_token = stop});
     if (!reference) return awj::compat::unexpected{reference.error()};
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (auto valid = hdr::hdr_detail::validate_rgba(reference->image, "HDR JPEG base decode"); !valid) {
@@ -320,39 +390,12 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_hdr_jpeg(
       ultrahdr::uhdr_raw_image_ext_t canonical(UHDR_IMG_FMT_64bppRGBAHalfFloat,
           UHDR_CG_BT_2100, UHDR_CT_LINEAR, UHDR_CR_FULL_RANGE,
           static_cast<unsigned>(image.width), static_cast<unsigned>(image.height), 1);
-      for (std::size_t y = 0; y < image.height; ++y) {
-        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-        auto* dst = static_cast<std::uint16_t*>(canonical.planes[0]) + y * static_cast<std::size_t>(canonical.stride[0]) * 4;
-        for (std::size_t x = 0; x < image.width; ++x) {
-          if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-          const auto rgba = hdr::hdr_detail::read_source_rgba(image, prepared->reader, x, y);
-          auto rgb = hdr::hdr_detail::linear_nits({rgba[0], rgba[1], rgba[2]}, prepared->transform);
-          if (!rgb) return awj::compat::unexpected{rgb.error()};
-          pl_matrix3x3_apply(&prepared->source_to_bt2020, rgb->data());
-          if (!hdr::hdr_detail::finite_rgb(*rgb)) return awj::compat::unexpected{"HDR JPEG canonical 色彩矩阵产生了非有限 RGB。"};
-          const auto y_nits = hdr::hdr_detail::luma_nits(*rgb, prepared->canonical_to_xyz);
-          if (!std::isfinite(y_nits)) return awj::compat::unexpected{"HDR JPEG canonical Y 产生了非有限值。"};
-          canonical_y_peak = std::max(canonical_y_peak, y_nits);
-          for (int c = 0; c < 3; ++c) {
-            const auto positive_nits = std::max((*rgb)[c], 0.0F);
-            const auto value = positive_nits / jpeg_hdr_detail::canonical_white_nits;
-            if (!std::isfinite(value) || value > 65'504.0F) {
-              return awj::compat::unexpected{"HDR JPEG canonical 亮度超出有限 FP16 范围（引擎最高支持 10000 nits）。"};
-            }
-            if (positive_nits > jpeg_hdr_detail::engine_peak_nits) {
-              return awj::compat::unexpected{"HDR JPEG 实际 canonical RGB 分量超过引擎支持的 10000 nits，拒绝裁剪高光。"};
-            }
-            const auto half = ultrahdr::floatToHalf(value);
-            const auto canonical_nits = hdr::hdr_detail::binary16_to_float(half) * jpeg_hdr_detail::canonical_white_nits;
-            if (!std::isfinite(canonical_nits)) return awj::compat::unexpected{"HDR JPEG canonical FP16 量化产生了非有限值。"};
-            // Cover the actual FP16 intent consumed by the engine as well as
-            // the pre-quantized component, without a second full-image scan.
-            canonical_component_peak = std::max({canonical_component_peak, positive_nits, canonical_nits});
-            dst[x * 4 + c] = half;
-          }
-          dst[x * 4 + 3] = ultrahdr::floatToHalf(1.0F);
-        }
-      }
+      // Control/maxima fit in the admitted codec fixed allowance and are freed
+      // before the UltraHDR engine starts its own per-file workers.
+      auto canonical_stats = jpeg_hdr_detail::fill_canonical_pixels(image, *prepared, canonical, stop, settings.resources);
+      if (!canonical_stats) return awj::compat::unexpected{canonical_stats.error()};
+      canonical_component_peak = canonical_stats->component_peak;
+      canonical_y_peak = canonical_stats->y_peak;
       auto target = jpeg_hdr_detail::capacity_target_peak(canonical_component_peak);
       if (!target) return awj::compat::unexpected{target.error()};
       target_peak = *target;
@@ -392,15 +435,22 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_hdr_jpeg(
     const auto gain_range = map->range;
     auto pixels = hdr::hdr_detail::make_rgba_bytes(map->w, map->h, 1, "HDR JPEG Gain Map");
     if (!pixels) return awj::compat::unexpected{pixels.error()};
-    for (unsigned y = 0; y < map->h; ++y) {
-      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-      const auto* src = static_cast<const std::byte*>(map->planes[0]) + static_cast<std::size_t>(y) * map->stride[0] * 3;
-      auto* dst = pixels->data() + static_cast<std::size_t>(y) * map->w * 4;
-      for (unsigned x = 0; x < map->w; ++x) {
-        std::memcpy(dst + static_cast<std::size_t>(x) * 4, src + static_cast<std::size_t>(x) * 3, 3);
-        dst[static_cast<std::size_t>(x) * 4 + 3] = std::byte{255};
-      }
-    }
+    const auto copy_options = hdr::hdr_detail::control_options(settings.resources, hdr_cost::add(
+        source_bytes, hdr_cost::add(base->encoded.bytes.capacity(), hdr_cost::add(pixels->capacity(),
+            hdr_cost::multiply(hdr_cost::multiply(map->stride[0], map->h), 3)))));
+    auto copied = parallel_rows_detail::for_each(map->h, map->w, copy_options, stop,
+        [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+          const auto* src = static_cast<const std::byte*>(map->planes[0]) + y * map->stride[0] * 3;
+          auto* dst = pixels->data() + y * map->w * 4;
+          for (std::size_t x = 0; x < map->w; ++x) {
+            if (x % hdr_cost::gamut_block_pixels == 0 && stop.stop_requested())
+              return awj::compat::unexpected{"任务已取消。"};
+            std::memcpy(dst + x * 4, src + x * 3, 3);
+            dst[x * 4 + 3] = std::byte{255};
+          }
+          return {};
+        });
+    if (!copied) return awj::compat::unexpected{copied.error()};
     ImageBuffer gain{.width = map->w, .height = map->h, .pixel_format = PixelFormat::rgba,
         .planes = {{std::move(*pixels), static_cast<std::size_t>(map->w) * 4}}};
     map.reset();

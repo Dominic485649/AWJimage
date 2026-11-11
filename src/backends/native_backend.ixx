@@ -143,7 +143,7 @@ std::unique_ptr<ImageDecoder> decoder_for_output_format(OutputFormat format, int
     case OutputFormat::png:
       return std::make_unique<PngImageDecoder>();
     case OutputFormat::webp:
-      return std::make_unique<WebPImageDecoder>();
+      return std::make_unique<WebPImageDecoder>(clamped_decode_threads);
     case OutputFormat::jxl:
       return std::make_unique<JXLImageDecoder>(clamped_decode_threads);
     case OutputFormat::jpgli:
@@ -1843,11 +1843,15 @@ class NativeBackend final {
   };
 
  public:
+  // 同步阶段边界申请额度；0 归还额度，返回值为实际授权而非观测到的忙核数。
+  using CpuBudgetCallback = std::function<int(int)>;
+
   NativeBackend(const AppConfig& cfg, FileLogger& logger, ResourcePlan resources,
-                std::function<bool(std::uint64_t)> memory_reservation = {})
+                std::function<bool(std::uint64_t)> memory_reservation = {},
+                CpuBudgetCallback cpu_budget = {})
       : cfg_{cfg}, logger_{logger}, resources_{normalize_memory_policy_resources(cfg, resources)},
         reserve_memory_{cfg.unlock_memory_limit ? std::function<bool(std::uint64_t)>{} : std::move(memory_reservation)},
-        memory_policy_{operation_memory_policy(cfg)} {
+        cpu_budget_{std::move(cpu_budget)}, memory_policy_{operation_memory_policy(cfg)} {
     const auto checked = checked_memory_policy_resources(cfg, resources_);
     if (checked) resources_ = *checked;
     else resource_plan_error_ = checked.error();
@@ -1856,7 +1860,10 @@ class NativeBackend final {
 
   EncodeResult encode(const ImageFile& image,
                       awj::compat::stop_token stop_token = {}) const {
-    return encode_with_requested_file_times(image, EncodeOverrides{}, stop_token);
+    if (!cpu_budget_) return encode_with_requested_file_times(image, EncodeOverrides{}, stop_token);
+    // 阶段快照只属于本次同步操作，不修改可被其他调用方复用的 backend。
+    auto operation = *this;
+    return operation.encode_with_requested_file_times(image, EncodeOverrides{}, stop_token);
   }
 
   EncodeResult encode_avif_grid(const ImageFile& image,
@@ -1865,16 +1872,27 @@ class NativeBackend final {
     EncodeOverrides overrides{};
     overrides.avif_encoder = AvifEncoderMode::aom;
     overrides.avif_grid_plan = std::move(plan);
-    return encode_with_requested_file_times(image, std::move(overrides), stop_token);
+    if (!cpu_budget_) return encode_with_requested_file_times(image, std::move(overrides), stop_token);
+    auto operation = *this;
+    return operation.encode_with_requested_file_times(image, std::move(overrides), stop_token);
   }
 
   // 内存入口只复用参数决策和编码；不扫描文件、不初始化文件结果、不写出。
   awj::compat::expected<NativeEncodeResult, std::string> encode_memory(
       ImageDecodeResult decoded, awj::compat::stop_token stop_token = {}) const {
+    if (!cpu_budget_) return encode_memory_operation(std::move(decoded), stop_token);
+    auto operation = *this;
+    return operation.encode_memory_operation(std::move(decoded), stop_token);
+  }
+
+ private:
+  awj::compat::expected<NativeEncodeResult, std::string> encode_memory_operation(
+      ImageDecodeResult decoded, awj::compat::stop_token stop_token) const {
     if (!memory_policy_) return awj::compat::unexpected{memory_policy_.error()};
     if (resource_plan_error_) return awj::compat::unexpected{*resource_plan_error_};
     const encoding_defaults::ScopedMemoryPolicy memory_scope{*memory_policy_};
-    if (stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    if (stop_token.stop_requested() || refresh_cpu_budget() < 1)
+      return awj::compat::unexpected{"任务已取消。"};
     // 像素已经解码；decode/write 保持未知，不伪造为 0。
     EncodeResult memory_result{};
     {
@@ -2073,6 +2091,7 @@ class NativeBackend final {
     result.resize_seconds = 0.0;
     result.resize_workers = 0;
     result.encode_seconds = 0.0;  // Confirmed bitstream copy; no encoder was run.
+    if (!admit_output_cpu(result)) return result;
     auto copied = [&] {
       native_backend_detail::ScopedStageTimer timer{result.write_seconds};
       return native_backend_detail::copy_file_to_output(
@@ -2162,6 +2181,10 @@ class NativeBackend final {
     result.memory_budget_bytes = resources_.memory_limit_bytes;
     result.resize_seconds = 0.0;
     result.resize_workers = 0;
+    if (refresh_cpu_budget() < 1) {
+      cancel_if_requested(result, stop_token);
+      return result;
+    }
     auto settings = [&] {
       native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
       auto settings = native_backend_detail::settings_from_config(cfg_, resources_);
@@ -2192,6 +2215,7 @@ class NativeBackend final {
       return result;
     }
 
+    if (!admit_output_cpu(result)) return result;
     auto written = [&] {
       native_backend_detail::ScopedStageTimer timer{result.write_seconds};
       return native_backend_detail::write_output_bytes(
@@ -2227,7 +2251,7 @@ class NativeBackend final {
     auto decoded = decode_image_for_path(
         image.path,
         DecoderRegistryOptions{.allow_wic_fallback = cfg_.allow_wic_fallback,
-                               .decode_threads = resources_.encoder_threads_per_file,
+                               .decode_threads = per_file_thread_budget(resources_),
                                .stop_token = stop_token,
                                .native_pixels = !cfg_.visual_quality,
                                .gain_map_mode = gain_map_mode_for_output(cfg_.output_format, cfg_.jpeg_hdr),
@@ -2673,7 +2697,7 @@ class NativeBackend final {
     }
     if (cfg_.visual_quality) {
       auto output_decoder = native_backend_detail::decoder_for_output_format(
-          cfg_.output_format, effective_settings.resources.encoder_threads_per_file);
+          cfg_.output_format, per_file_thread_budget(effective_settings.resources));
       const auto candidate_path = output_path.parent_path() /
                                   (output_path.filename().wstring() + L".candidate");
 
@@ -2708,6 +2732,8 @@ class NativeBackend final {
                                              std::string avif_bit_depth_reason,
                                              EncodeStartedAt started,
                                              awj::compat::stop_token stop_token) const {
+    if (cpu_budget_) cpu_pinned_ = false;
+    if (!admit_output_cpu(result)) return result;
     auto written = [&] {
       native_backend_detail::ScopedStageTimer timer{result.write_seconds};
       return native_backend_detail::write_output_bytes(
@@ -2860,22 +2886,45 @@ class NativeBackend final {
         }
       }
 
+      if (refresh_cpu_budget() < 1) return failed("计算线程预约已取消。");
+
       if (cfg_.output_format == OutputFormat::avif || cfg_.output_format == OutputFormat::webp) {
         auto animation_failed = [&](std::string message) -> EncodeResult {
           if (!cancel_if_requested(result, stop_token)) mark_failed(result, std::move(message));
           return std::move(result);
         };
         result.decode_stage = "animation.probe";
-        const auto reader_budget = resource_memory_budget(resources_);
-        if (!reader_budget) return animation_failed("动画每文件内存预算不足。");
-        auto opened = [&] {
+        auto opened = [&]() -> awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> {
           native_backend_detail::ScopedStageTimer timer{result.decode_seconds};
-          return open_animation(image.path,
-              resources_.memory_limit_bytes ? reader_budget : 0, stop_token,
-              cfg_.output_format == OutputFormat::webp);
+          // 只有尚未进入逐帧解码的 open 可以重试。失败返回已销毁 reader/线程配置，
+          // 扩容始终非阻塞；降 CPU 后重新创建 reader，不令旧配置越过新额度。
+          constexpr int max_attempts = 2 * encoding_defaults::max_automatic_thread_budget + 2;
+          for (int attempt = 0; attempt < max_attempts; ++attempt) {
+            const auto reader_budget = resource_memory_budget(resources_);
+            if (!reader_budget) return awj::compat::unexpected{"动画每文件内存预算不足。"};
+            std::uint64_t required{};
+            auto candidate = open_animation(image.path,
+                resources_.memory_limit_bytes ? reader_budget : 0, stop_token,
+                cfg_.output_format == OutputFormat::webp, per_file_thread_budget(resources_), &required);
+            if (candidate || !required || stop_token.stop_requested()) return candidate;
+            if (required != UINT64_MAX && required > reader_budget && reserve_memory_ &&
+                required <= resources_.memory_limit_bytes && reserve_memory_(required)) {
+              resources_.memory_reservation_bytes = required;
+              result.memory_plan.reserved_peak_bytes = std::max(result.memory_plan.reserved_peak_bytes, required);
+              result.estimated_working_set_bytes = std::max(result.estimated_working_set_bytes, required);
+              continue;
+            }
+            const int current = per_file_thread_budget(resources_);
+            if (!cpu_budget_ || current <= 1) return candidate;
+            if (refresh_cpu_budget(current - 1) < 1)
+              return awj::compat::unexpected{"计算线程预约已取消，未启动动画解码。"};
+          }
+          return awj::compat::unexpected{"动画输入的工作集需求持续变化，已停止重试。"};
         }();
         if (!opened) return animation_failed(opened.error());
         if (*opened) {
+          // Reader/序列编码器会跨帧保留线程配置，整段同步生命周期固定已授权额度。
+          if (cpu_budget_) cpu_pinned_ = true;
           if (cfg_.avif_layers.enabled() && (*opened)->info().durations.size() > 1)
             return animation_failed("AVIF 渐进式仅支持静态图，不能与多帧动画组合。");
           if (cfg_.visual_quality && *cfg_.visual_quality < 100 && (*opened)->info().durations.size() > 1) {
@@ -2960,6 +3009,7 @@ class NativeBackend final {
       }
 
       if (cancel_if_requested(result, stop_token)) return result;
+      if (refresh_cpu_budget() < 1) return failed("计算线程预约已取消。");
 
       auto selected = [&] {
         native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
@@ -2975,6 +3025,7 @@ class NativeBackend final {
         return result;
       }
 
+      if (refresh_cpu_budget() < 1) return failed("计算线程预约已取消。");
       auto prepared = [&] {
         native_backend_detail::ScopedStageTimer timer{result.prepare_seconds};
         return prepare_encoding(image, decoded_input->decoded, std::move(overrides));
@@ -3042,26 +3093,51 @@ class NativeBackend final {
   }
 
  private:
+  bool admit_output_cpu(EncodeResult& result) const {
+    if (refresh_cpu_budget(1) > 0) return true;
+    mark_failed(result, "计算线程预约已取消，未写出输出。");
+    result.canceled = true;
+    return false;
+  }
+
   bool admit_encoding_memory(EncodeResult& result, const ImageDecodeResult& decoded,
                              NativeEncodeSettings& settings, std::uint64_t compressed,
                              std::uint64_t additional_resident_bytes = 0,
                              const ImageBuffer* visual_reference = nullptr) const {
     const bool limited = !cfg_.unlock_memory_limit && resources_.memory_limit_bytes != 0;
     const auto limit = limited ? (reserve_memory_ ? resources_.memory_limit_bytes : resource_memory_budget(resources_)) : 0;
-    // 参考物化后的再精化沿用已接受的每文件 ticket，不重取全局额度，也不再除文件并发。
+    if (refresh_cpu_budget() < 1) {
+      mark_failed(result, "计算线程预约已取消，未启动编码。");
+      result.canceled = true;
+      return false;
+    }
+    // 线程相关工作区与 CPU 份额一起精化；扩容失败只尝试降低份额，绝不持图等待内存。
     const auto cache_budget = limited ? resource_memory_budget(settings.resources) : UINT64_MAX;
-    const auto estimate = refined_regular_memory(decoded, settings, cfg_, compressed, cache_budget,
-        additional_resident_bytes, visual_reference);
+    ImageMemoryEstimate estimate{};
+    bool reserved = false;
+    bool exceeds_limit = false;
+    bool cpu_canceled = false;
+    for (;;) {
+      settings.resources.encoder_threads_per_file = per_file_thread_budget(resources_);
+      settings.resources.global_thread_budget = resources_.global_thread_budget;
+      settings.resources.file_parallelism = 1;
+      estimate = refined_regular_memory(decoded, settings, cfg_, compressed, cache_budget,
+          additional_resident_bytes, visual_reference);
+      exceeds_limit = estimate.bytes == UINT64_MAX || (limited && estimate.bytes > limit);
+      reserved = !exceeds_limit && (!reserve_memory_ || reserve_memory_(estimate.bytes));
+      const int current = per_file_thread_budget(resources_);
+      if (reserved || !cpu_budget_ || cpu_pinned_ || current == 1) break;
+      if (refresh_cpu_budget(current - 1) < 1) { cpu_canceled = true; break; }
+    }
     const auto previous_peak = result.memory_plan.reserved_peak_bytes;
     store_memory_estimate(result, estimate);
     result.memory_plan.reserved_peak_bytes = previous_peak;
-    if (estimate.bytes == UINT64_MAX || (limited && estimate.bytes > limit)) {
-      mark_failed(result, awj::compat::format("解码后精化预估工作集 {} 超过内存预算 {}，未启动编码。",
-          format_size(estimate.bytes), format_size(limit)));
-      return false;
-    }
-    if (reserve_memory_ && !reserve_memory_(estimate.bytes)) {
-      mark_failed(result, "解码后工作集预约不足，已释放当前图像；未持有像素阻塞等待其他任务。");
+    if (!reserved) {
+      mark_failed(result, cpu_canceled ? "计算线程预约已取消，未启动编码。" : exceeds_limit
+          ? awj::compat::format("解码后精化预估工作集 {} 超过内存预算 {}，未启动编码。",
+              format_size(estimate.bytes), format_size(limit))
+          : "解码后工作集预约不足，已释放当前图像；未持有像素阻塞等待其他任务。");
+      if (cpu_canceled) result.canceled = true;
       return false;
     }
     // 编码与候选搜索同步完成；result 和其预约 guard 均活到所有 codec 调用结束。
@@ -3087,10 +3163,24 @@ class NativeBackend final {
     });
     return true;
   }
+  int refresh_cpu_budget(int demand = -1) const {
+    if (!cpu_budget_ || cpu_pinned_) return per_file_thread_budget(resources_);
+    const int requested = demand < 0 ? resources_.global_thread_budget : demand;
+    const int granted = cpu_budget_(requested);
+    if (requested > 0 && granted > 0) {
+      resources_.encoder_threads_per_file = std::clamp(granted, 1,
+          std::max(1, std::min(requested, resources_.global_thread_budget)));
+      resources_.file_parallelism = 1;
+    }
+    return granted;
+  }
+
   const AppConfig& cfg_;
   FileLogger& logger_;
-  ResourcePlan resources_;
+  mutable ResourcePlan resources_;
   std::function<bool(std::uint64_t)> reserve_memory_;
+  CpuBudgetCallback cpu_budget_;
+  mutable bool cpu_pinned_{};
   const awj::compat::expected<encoding_defaults::MemoryPolicy, std::string> memory_policy_;
   std::optional<std::string> resource_plan_error_;
 };

@@ -28,6 +28,22 @@ export namespace awj {
 
 namespace decoder_common {
 
+inline thread_local std::uint64_t probe_file_read_limit = UINT64_MAX;
+
+// 仅约束本线程的预检整文件缓冲；嵌套作用域不能放宽外层额度。
+class ScopedProbeFileReadLimit {
+ public:
+  explicit ScopedProbeFileReadLimit(std::uint64_t limit) noexcept
+      : previous_{probe_file_read_limit} {
+    probe_file_read_limit = std::min(previous_, limit);
+  }
+  ~ScopedProbeFileReadLimit() { probe_file_read_limit = previous_; }
+  ScopedProbeFileReadLimit(const ScopedProbeFileReadLimit&) = delete;
+  ScopedProbeFileReadLimit& operator=(const ScopedProbeFileReadLimit&) = delete;
+ private:
+  std::uint64_t previous_;
+};
+
 std::wstring lower_extension(const fs::path& path) {
   auto ext = path.extension().wstring();
   awj::compat::ranges::transform(ext, ext.begin(),
@@ -110,6 +126,10 @@ awj::compat::expected<std::vector<std::byte>, std::string> read_file_bytes(
     if (file_size > encoding_defaults::effective_max_input_file_bytes()) {
       return awj::compat::unexpected{awj::compat::format(
           "{} 文件超过当前输入上限: {}", codec_name, display_path_for_user(path))};
+    }
+    if (file_size > probe_file_read_limit) {
+      return awj::compat::unexpected{awj::compat::format(
+          "尺寸探测工作集 {} 的整输入缓冲超过预检预约，未分配输入缓冲区。", codec_name)};
     }
     if (file_size > SIZE_MAX ||
         file_size > static_cast<std::uint64_t>(std::numeric_limits<std::streamsize>::max())) {

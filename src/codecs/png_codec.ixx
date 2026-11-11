@@ -46,6 +46,9 @@ export namespace awj {
 
 namespace png_detail {
 
+// 文件块、zlib 状态和颜色解析控制结构的固定余量，不包含压缩块和 ICC profile。
+inline constexpr std::uint64_t probe_fixed_workspace_bytes = 1024ull * 1024;
+
 awj::compat::expected<int, std::string> encoding_bit_depth(
     const ImageBuffer& image, const NativeEncodeSettings& settings) {
   if (settings.bit_depth) {
@@ -345,7 +348,7 @@ struct PngAnimationLayout {
 template <class Read, class Visit>
 awj::compat::expected<void, std::string> scan_png_chunks(std::uint64_t input_size,
     Read&& read, Visit&& visit, std::string_view source_name,
-    bool metadata_only, awj::compat::stop_token stop) {
+    bool metadata_only, awj::compat::stop_token stop, std::uint64_t probe_budget = 0) {
   if (input_size > encoding_defaults::effective_max_input_file_bytes())
     return awj::compat::unexpected{awj::compat::format("PNG 文件超过当前输入上限: {}", source_name)};
   if (input_size < 8) return awj::compat::unexpected{awj::compat::format("PNG 签名无效: {}", source_name)};
@@ -378,6 +381,9 @@ awj::compat::expected<void, std::string> scan_png_chunks(std::uint64_t input_siz
         return awj::compat::unexpected{"PNG ICC chunk 超过 当前运行时或格式上限。"};
       retained = size;
     }
+    if (probe_budget && (probe_budget < probe_fixed_workspace_bytes ||
+        retained > probe_budget - probe_fixed_workspace_bytes))
+      return awj::compat::unexpected{"尺寸探测工作集 PNG metadata 超过预检预约，未分配压缩块。"};
     prefix.resize(retained);
     auto crc = crc32_z(0, reinterpret_cast<const Bytef*>(tag.data()), tag.size());
     for (std::uint64_t consumed = 0; consumed < size;) {
@@ -399,6 +405,7 @@ awj::compat::expected<void, std::string> scan_png_chunks(std::uint64_t input_siz
       return awj::compat::unexpected{"PNG IEND 无效或缺少 IDAT。"};
     if (auto accepted = visit(type, std::span<const std::byte>{prefix}, size, pos + 8); !accepted)
       return awj::compat::unexpected{accepted.error()};
+    if (metadata_only && type == "iCCP") std::vector<std::byte>{}.swap(prefix);
     if (type == "IEND") return {};
     pos += size + 12ull;
   }
@@ -417,7 +424,8 @@ awj::compat::expected<void, std::string> visit_png_chunks(std::span<const std::b
 
 template <class Visit>
 awj::compat::expected<void, std::string> visit_png_file_chunks(const fs::path& path,
-    Visit&& visit, bool metadata_only = false, awj::compat::stop_token stop = {}) {
+    Visit&& visit, bool metadata_only = false, awj::compat::stop_token stop = {},
+    std::uint64_t probe_budget = 0) {
   std::ifstream input{path, std::ios::binary | std::ios::ate};
   if (!input) return awj::compat::unexpected{awj::compat::format("无法读取 PNG 文件: {}", display_path_for_user(path))};
   const auto end = input.tellg();
@@ -436,7 +444,7 @@ awj::compat::expected<void, std::string> visit_png_file_chunks(const fs::path& p
     position += count;
     return std::span<const std::byte>{buffer}.first(count);
   };
-  return scan_png_chunks(input_size, read, visit, display_path_for_user(path), metadata_only, stop);
+  return scan_png_chunks(input_size, read, visit, display_path_for_user(path), metadata_only, stop, probe_budget);
 }
 
 awj::compat::expected<bool, std::string> contains_animation_control_chunk(
@@ -900,13 +908,24 @@ ImageDynamicRangeHint dynamic_range_for_transfer(int transfer) noexcept {
 }
 
 awj::compat::expected<ImageDynamicRangeHint, std::string> inspect_icc_dynamic_range(
-    std::span<const std::byte> payload) {
+    std::span<const std::byte> payload, std::uint64_t probe_budget = 0,
+    awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   if (payload.size() < 3) return ImageDynamicRangeHint::unknown;
   const auto name_end = awj::compat::ranges::find(payload, std::byte{0});
   const auto name_size = static_cast<std::size_t>(name_end - payload.begin());
   if (!name_size || name_size > 79 || payload.size() < name_size + 3 ||
       payload[name_size + 1] != std::byte{0}) return ImageDynamicRangeHint::unknown;
   const auto compressed = payload.subspan(name_size + 2);
+  const auto metadata_limit = std::min<std::uint64_t>(encoding_defaults::effective_codec_metadata_max_bytes(),
+      std::numeric_limits<cmsUInt32Number>::max());
+  auto profile_limit = metadata_limit;
+  if (probe_budget) {
+    if (probe_budget < probe_fixed_workspace_bytes || payload.size() > probe_budget - probe_fixed_workspace_bytes)
+      return awj::compat::unexpected{"尺寸探测工作集 PNG ICC 压缩块超过预检预约。"};
+    // 同时容纳压缩块、vector 增长时的旧/新存储及 LCMS 的 profile 副本。
+    profile_limit = std::min(profile_limit, (probe_budget - probe_fixed_workspace_bytes - payload.size()) / 3);
+  }
   z_stream stream{};
   stream.next_in = reinterpret_cast<Bytef*>(const_cast<std::byte*>(compressed.data()));
   stream.avail_in = static_cast<uInt>(compressed.size());
@@ -915,14 +934,20 @@ awj::compat::expected<ImageDynamicRangeHint, std::string> inspect_icc_dynamic_ra
   std::vector<std::byte> profile;
   std::array<std::byte, 4096> block{};
   for (;;) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     stream.next_out = reinterpret_cast<Bytef*>(block.data());
     stream.avail_out = static_cast<uInt>(block.size());
     const auto status = inflate(&stream, Z_NO_FLUSH);
     const auto count = block.size() - stream.avail_out;
-    if (!encoding_defaults::byte_sum_fits(profile.size(), count,
-        std::min<std::uint64_t>(encoding_defaults::effective_codec_metadata_max_bytes(),
-                                std::numeric_limits<cmsUInt32Number>::max())))
+    if (!encoding_defaults::byte_sum_fits(profile.size(), count, metadata_limit))
       return awj::compat::unexpected{"PNG ICC profile 超过 当前运行时或格式上限。"};
+    if (!encoding_defaults::byte_sum_fits(profile.size(), count, profile_limit))
+      return awj::compat::unexpected{"尺寸探测工作集 PNG ICC 解压缓冲超过预检预约，未扩展 profile。"};
+    if (probe_budget && profile.size() + count > profile.capacity()) {
+      const auto next_capacity = std::min<std::uint64_t>(profile_limit,
+          std::max<std::uint64_t>(profile.size() + count, static_cast<std::uint64_t>(profile.capacity()) * 2));
+      profile.reserve(static_cast<std::size_t>(next_capacity));
+    }
     profile.insert(profile.end(), block.begin(), block.begin() + count);
     if (status == Z_STREAM_END) {
       if (stream.avail_in) return ImageDynamicRangeHint::unknown;
@@ -943,7 +968,8 @@ awj::compat::expected<ImageDynamicRangeHint, std::string> inspect_icc_dynamic_ra
   return ImageDynamicRangeHint::unknown;
 }
 
-awj::compat::expected<ImageDimensions, std::string> probe_png_dimensions(const fs::path& path) {
+awj::compat::expected<ImageDimensions, std::string> probe_png_dimensions(const fs::path& path,
+    std::uint64_t probe_budget = 0, awj::compat::stop_token stop = {}) {
   PngAnimationLayout layout;
   int bit_depth{}, color_type{};
   bool transparency{}, has_cicp{}, has_icc{}, has_srgb{}, has_content_light{};
@@ -970,7 +996,7 @@ awj::compat::expected<ImageDimensions, std::string> probe_png_dimensions(const f
     } else if (type == "iCCP") {
       if (has_icc) return awj::compat::unexpected{"PNG iCCP 重复。"};
       has_icc = true;
-      auto range = inspect_icc_dynamic_range(prefix);
+      auto range = inspect_icc_dynamic_range(prefix, probe_budget, stop);
       if (!range) return awj::compat::unexpected{range.error()};
       icc_range = *range;
     } else if (type == "sRGB") {
@@ -985,7 +1011,7 @@ awj::compat::expected<ImageDimensions, std::string> probe_png_dimensions(const f
       has_content_light = true;
     }
     return {};
-  }, true);
+  }, true, stop, probe_budget);
   if (!scanned) return awj::compat::unexpected{scanned.error()};
   auto dimensions = decoder_common::make_image_dimensions_checked(layout.width, layout.height, "PNG");
   if (!dimensions) return awj::compat::unexpected{dimensions.error()};
@@ -1020,8 +1046,13 @@ class PngImageDecoder final : public ImageDecoder {
 
   awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
       const fs::path& path) const override {
+    return probe_dimensions(path, 0);
+  }
+
+  awj::compat::expected<ImageDimensions, std::string> probe_dimensions(
+      const fs::path& path, std::uint64_t probe_budget, awj::compat::stop_token stop = {}) const {
     try {
-      return png_detail::probe_png_dimensions(path);
+      return png_detail::probe_png_dimensions(path, probe_budget, stop);
     } catch (const std::bad_alloc&) {
       return awj::compat::unexpected{"PNG 尺寸探测内存不足。"};
     } catch (const std::length_error&) {

@@ -199,7 +199,9 @@ bool safe_manifest_relative_path(const fs::path& path) {
 }
 
 awj::compat::expected<void, std::string> validate_manifest_paths_for_config(
-    const AppConfig& cfg, std::span<const ImageFile> files) {
+    const AppConfig& cfg, std::span<const ImageFile> files,
+    awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   std::error_code ec;
   const auto output_root = fs::weakly_canonical(output_dir_for(cfg), ec);
   if (ec || output_root.empty()) {
@@ -209,6 +211,7 @@ awj::compat::expected<void, std::string> validate_manifest_paths_for_config(
   std::unordered_set<PathText> input_keys;
   input_keys.reserve(files.size());
   for (const auto& file : files) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     const auto input = fs::weakly_canonical(file.path, ec);
     if (ec || input.empty()) {
       return awj::compat::unexpected{"Studio 队列 manifest 输入路径无效。"};
@@ -219,6 +222,7 @@ awj::compat::expected<void, std::string> validate_manifest_paths_for_config(
       normalized_lower_path_key(fs::path{output_extension_for(cfg)});
 
   for (const auto& file : files) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (!file.path.is_absolute() ||
         !safe_manifest_relative_path(file.relative_dir)) {
       return awj::compat::unexpected{"Studio 队列 manifest 输入或相对路径无效。"};
@@ -338,8 +342,9 @@ awj::compat::expected<void, std::string> write_studio_queue_manifest(
 }
 
 awj::compat::expected<StudioQueueManifest, std::string> read_studio_queue_manifest(
-    const fs::path& path) {
+    const fs::path& path, awj::compat::stop_token stop = {}) {
   try {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     std::error_code ec;
     const auto manifest_bytes = fs::file_size(path, ec);
     if (ec ||
@@ -373,6 +378,7 @@ awj::compat::expected<StudioQueueManifest, std::string> read_studio_queue_manife
 
     StudioQueueManifest manifest;
     for (std::uint64_t index = 0; index < file_count; ++index) {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       std::uint64_t stored_index = 0;
       std::uint64_t bytes = 0;
       std::uint32_t flags = 0;
@@ -386,6 +392,7 @@ awj::compat::expected<StudioQueueManifest, std::string> read_studio_queue_manife
       }
       std::array<std::string, 11> fields;
       for (auto& field : fields) {
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         auto read = pipeline_detail::manifest_read_text(input);
         if (!read) {
           return awj::compat::unexpected{read.error()};

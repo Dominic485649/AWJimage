@@ -209,16 +209,20 @@ Bytes jpeg(unsigned value, unsigned width = 16, unsigned height = 12,
 void ok(uhdr_error_info_t error) {
   require(error.error_code == UHDR_CODEC_OK, error.has_detail ? error.detail : "ISO fixture engine failed");
 }
-Bytes package_iso(Bytes base, Bytes gain) {
+uhdr_gainmap_metadata_t iso_metadata(float capacity) {
+  uhdr_gainmap_metadata_t metadata{};
+  for (int c = 0; c < 3; ++c) { metadata.min_content_boost[c] = 1; metadata.max_content_boost[c] = capacity; metadata.gamma[c] = 1; }
+  metadata.hdr_capacity_min = 1; metadata.hdr_capacity_max = capacity; metadata.use_base_cg = 1;
+  return metadata;
+}
+Bytes package_iso(Bytes base, Bytes gain, float capacity = 4) {
   std::unique_ptr<uhdr_codec_private_t, decltype(&uhdr_release_encoder)> encoder(uhdr_create_encoder(), uhdr_release_encoder);
   require(bool(encoder), "Cannot allocate ISO fixture encoder");
   uhdr_compressed_image_t primary{.data = base.data(), .data_sz = base.size(), .capacity = base.size(),
       .cg = UHDR_CG_BT_709, .ct = UHDR_CT_SRGB, .range = UHDR_CR_FULL_RANGE};
   uhdr_compressed_image_t auxiliary{.data = gain.data(), .data_sz = gain.size(), .capacity = gain.size(),
       .cg = UHDR_CG_BT_709, .ct = UHDR_CT_UNSPECIFIED, .range = UHDR_CR_FULL_RANGE};
-  uhdr_gainmap_metadata_t metadata{};
-  for (int c = 0; c < 3; ++c) { metadata.min_content_boost[c] = 1; metadata.max_content_boost[c] = 4; metadata.gamma[c] = 1; }
-  metadata.hdr_capacity_min = 1; metadata.hdr_capacity_max = 4; metadata.use_base_cg = 1;
+  auto metadata = iso_metadata(capacity);
   ok(uhdr_enc_set_compressed_image(encoder.get(), &primary, UHDR_BASE_IMG));
   ok(uhdr_enc_set_gainmap_image(encoder.get(), &auxiliary, &metadata)); ok(uhdr_encode(encoder.get()));
   auto* encoded = uhdr_get_encoded_stream(encoder.get());
@@ -390,6 +394,62 @@ void jpeg_matrix(const Sandbox& sandbox) {
   append(fake, Bytes{std::byte{255},std::byte{218},std::byte{0},std::byte{2},std::byte{255},std::byte{0},std::byte{226}});
   append(fake, text("urn:iso:std:iso:ts:21496:-1")); append(fake, Bytes{std::byte{255},std::byte{217}});
   require(!awj::gain_map_detail::jpeg_gain_map_markers(fake).iso, "Entropy bytes were parsed as an APP segment");
+}
+
+void jpeg_probe_budget_contract(const Sandbox& sandbox) {
+  using Mode = awj::GainMapDecodeMode;
+  // 锁定编码器要求 max > min >= 1，直接验证该拒绝契约；不虚构可接受的
+  // capacity=1 JPEG，也不声称有效码流已覆盖防御性的 capacity=1 重开分支。
+  {
+    auto gain = jpeg(200, 4, 3);
+    std::unique_ptr<uhdr_codec_private_t, decltype(&uhdr_release_encoder)> encoder(uhdr_create_encoder(), uhdr_release_encoder);
+    require(bool(encoder), "Cannot allocate capacity-boundary fixture encoder");
+    uhdr_compressed_image_t auxiliary{.data = gain.data(), .data_sz = gain.size(), .capacity = gain.size(),
+        .cg = UHDR_CG_BT_709, .ct = UHDR_CT_UNSPECIFIED, .range = UHDR_CR_FULL_RANGE};
+    auto metadata = iso_metadata(1.0f);
+    const auto rejected = uhdr_enc_set_gainmap_image(encoder.get(), &auxiliary, &metadata);
+    require(rejected.error_code == UHDR_CODEC_INVALID_PARAM && rejected.has_detail &&
+        std::string_view{rejected.detail}.find("hdr capacity max") != std::string_view::npos,
+        "Pinned encoder capacity=1 rejection contract changed; review valid boundary fixtures");
+    std::fprintf(stderr, "capacity=1: encoder rejected equal capacity endpoints; valid-stream probe/reopen branch not covered.\n");
+  }
+  for (const float capacity : {2.0f, 4.0f}) {
+    const auto bytes = package_iso(jpeg(128), jpeg(200, 4, 3), capacity);
+    const auto path = sandbox.save(capacity == 2.0f ? "capacity-two.jpg" : "capacity-four.jpg", bytes);
+    const auto reservation = awj::dimension_probe_working_set_bytes(path, bytes.size());
+    for (const bool fallback : {false, true}) {
+      const auto insufficient = awj::probe_image_dimensions_for_path(path,
+          {.allow_wic_fallback = fallback, .probe_memory_reservation_bytes = reservation - 1});
+      require(!insufficient && insufficient.error().starts_with("尺寸探测工作集 "),
+          "Valid Gain Map bypassed an insufficient probe reservation");
+      const auto dimensions = take(awj::probe_image_dimensions_for_path(path,
+          {.allow_wic_fallback = fallback, .probe_memory_reservation_bytes = reservation}));
+      require(dimensions.width == 16 && dimensions.height == 12 && dimensions.source_has_gain_map &&
+          dimensions.source_bit_depth == 16 && dimensions.source_dynamic_range == awj::ImageDynamicRangeHint::hdr &&
+          dimensions.gain_map_width == 4 && dimensions.gain_map_height == 3,
+          "Valid Gain Map probe lost geometry or HDR metadata at the exact reservation");
+    }
+    for (const auto mode : {Mode::hdr_only, Mode::sdr_only, Mode::preserve_both}) {
+      auto probed = awj::gain_map_detail::probe_jpeg(bytes, {}, mode);
+      if (!probed) throw std::runtime_error(probed.error());
+      require(bool(*probed) && (**probed).decoder && (**probed).dimensions.source_has_gain_map &&
+          (**probed).mode == mode && (**probed).hdr_headroom_log2 == std::log2(capacity) &&
+          bool((**probed).sdr_decoder) == (mode == Mode::preserve_both),
+          "Gain Map probe lost the live decoder, selected mode or secondary decoder");
+      // 消费同一预检描述符，确认保留的 decoder 确实可用，双呈现模式仍能重建两个端点。
+      auto decoded = take(awj::gain_map_detail::decode_probed_jpeg(std::move(probed), {}, 1));
+      require(bool(decoded) && decoded->image.width == 16 && decoded->image.height == 12 &&
+          decoded->image.bit_depth == (mode == Mode::sdr_only ? 8 : 16) &&
+          bool(decoded->gain_map_alternative) == (mode == Mode::preserve_both),
+          "Valid probe descriptor could not decode the selected rendition(s)");
+      if (decoded->gain_map_alternative) {
+        const auto& alternative = *decoded->gain_map_alternative;
+        require(alternative.image.width == 16 && alternative.image.height == 12 && alternative.image.bit_depth == 8 &&
+            alternative.main_hdr_headroom_log2 == std::log2(capacity) && alternative.alternate_hdr_headroom_log2 == 0,
+            "Paired JPEG decoder lost the SDR endpoint or headroom");
+      }
+    }
+  }
 }
 
 // Test-only BMFF fixture construction: reuse a pinned HEVC payload, clone its
@@ -893,12 +953,17 @@ int main(int argc, char** argv) {
     }
     const bool icc_only = argc == 2 && std::string_view{argv[1]} == "--icc-only";
     const bool grid_only = argc == 2 && std::string_view{argv[1]} == "--grid-12-4-only";
-    if (argc != 1 && !icc_only && !grid_only) {
-      std::fprintf(stderr, "用法：awj_iso_gain_map_tests [--icc-only | --grid-12-4-only | --export-icc-fixture <全新目录> | --validate-icc-metadata <独立ICC>]\n");
+    const bool jpeg_probe_only = argc == 2 && std::string_view{argv[1]} == "--jpeg-probe-budget-only";
+    if (argc != 1 && !icc_only && !grid_only && !jpeg_probe_only) {
+      std::fprintf(stderr, "用法：awj_iso_gain_map_tests [--icc-only | --grid-12-4-only | --jpeg-probe-budget-only | --export-icc-fixture <全新目录> | --validate-icc-metadata <独立ICC>]\n");
       return 2;
     }
     const Sandbox sandbox;
     const auto stage = [](const char* name) { std::fprintf(stderr, "ISO 验证阶段：%s\n", name); std::fflush(stderr); };
+    if (jpeg_probe_only) {
+      stage("jpeg-probe-budget"); jpeg_probe_budget_contract(sandbox);
+      return 0;
+    }
     if (grid_only) {
       stage("heif-12-plus-4-grid"); grid12_fixture::contract(sandbox);
       return 0;

@@ -56,7 +56,7 @@ Windows 使用 `AWJ.com`；Linux 将下列命令中的程序名换为 `./AWJ`。
 .\AWJ.com --list-presets
 ```
 
-`--threads auto` 按允许的逻辑 CPU 数预留桌面余量；`--threads N` 使用 N 的总编码线程预算（1–128），不扣除预留。文件并发与每图编码线程在该预算内分配，并受内存预算约束。`--cpu-affinity` 使用从 0 开始的逻辑 CPU 编号，只能缩小进程当前允许集合；Windows 编号位于当前处理器组。
+`--threads auto` 按允许的逻辑 CPU 数预留桌面余量；`--threads N` 使用 N 的总计算线程预算（1–128），不扣除预留。文件并发与每图处理共享最终生效的预算 T，并受内存预算约束。批处理在解码、缩放／转换和编码的安全阶段重新分配整数余数及队列尾部空闲额度；普通图与 AVIF Grid 共用准入，不改变优先级。已进入同步编解码器的调用不会中途扩容；JPEGli/libpng 的单图串行路径、WebP 的内部线程开关、I/O 和有限内存仍可能使实测忙核数低于 T，线程配置数字不等于实际 CPU 利用率。`--cpu-affinity` 使用从 0 开始的逻辑 CPU 编号，只能缩小进程当前允许集合；Windows 编号位于当前处理器组。
 
 AVIF 静态图可通过 `--avif-progressive` 使用自动两层渐进，或在 CLI 配置 2～4 层的分辨率与质量；默认关闭，暂不增加 UI 控件。详见 [渐进式与分层参数](docs/avif-progressive.md)。
 

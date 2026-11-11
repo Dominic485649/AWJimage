@@ -1,6 +1,7 @@
 #include "../src/compat/stdlib_compat.h"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -26,6 +27,7 @@ import awj.hdr_tonemap;
 import awj.image;
 import awj.jpeg_codec;
 import awj.jpeg_hdr_codec;
+import awj.resource_planner;
 
 namespace {
 
@@ -245,9 +247,86 @@ int check_existing_sdr_pair(awj::NativeEncodeSettings settings) {
   return 0;
 }
 
+int check_threaded_canonical() {
+  const awj::ResourcePlan serial{.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1};
+  const awj::ResourcePlan parallel{.file_parallelism = 2, .encoder_threads_per_file = 7, .global_thread_budget = 8};
+  auto image = fixture(1000, {1, 1, 1}, 257, 257);
+  image.alpha_mode = awj::AlphaMode::straight;
+  for (std::size_t y = 0; y < image.height; ++y) for (std::size_t x = 0; x < image.width; ++x)
+    for (std::size_t c = 0; c < 4; ++c) {
+      const float value = c == 3 ? static_cast<float>((x + y) % 3) * 0.5F :
+          static_cast<float>(static_cast<int>((x * 7 + y * 13 + c * 11) % 79) - 3) * 0.125F;
+      const auto half = ultrahdr::floatToHalf(value);
+      std::memcpy(image.planes[0].bytes.data() + y * image.planes[0].stride + (x * 4 + c) * 2, &half, 2);
+    }
+  auto prepared = awj::hdr::prepare_tone_map(image, {}, parallel);
+  if (!prepared) return fail(prepared.error());
+  ultrahdr::uhdr_raw_image_ext_t a(UHDR_IMG_FMT_64bppRGBAHalfFloat, UHDR_CG_BT_2100,
+      UHDR_CT_LINEAR, UHDR_CR_FULL_RANGE, 257, 257, 1);
+  ultrahdr::uhdr_raw_image_ext_t b(UHDR_IMG_FMT_64bppRGBAHalfFloat, UHDR_CG_BT_2100,
+      UHDR_CT_LINEAR, UHDR_CR_FULL_RANGE, 257, 257, 1);
+  auto first = awj::jpeg_hdr_detail::fill_canonical_pixels(image, *prepared, a, {}, serial);
+  auto second = awj::jpeg_hdr_detail::fill_canonical_pixels(image, *prepared, b, {}, parallel);
+  if (!first || !second || first->component_peak != second->component_peak || first->y_peak != second->y_peak)
+    return fail("Threaded canonical HDR JPEG changed raw/FP16 component or CIE Y peaks.");
+  float expected_peak{};
+  for (std::size_t y = 0; y < image.height; ++y) {
+    const auto* ra = static_cast<const std::uint16_t*>(a.planes[0]) + y * static_cast<std::size_t>(a.stride[0]) * 4;
+    const auto* rb = static_cast<const std::uint16_t*>(b.planes[0]) + y * static_cast<std::size_t>(b.stride[0]) * 4;
+    if (std::memcmp(ra, rb, image.width * 8)) return fail("Threaded canonical changed FP16 samples at a block/odd row edge.");
+    for (std::size_t x = 0; x < image.width; ++x) for (std::size_t c = 0; c < 4; ++c) {
+      std::uint16_t sample{};
+      std::memcpy(&sample, image.planes[0].bytes.data() + y * image.planes[0].stride + (x * 4 + c) * 2, 2);
+      const float nits = std::max(half_reference(sample) * 1000.0F, 0.0F);
+      const auto expected = ultrahdr::floatToHalf(c == 3 ? 1.0F : nits / 203.0F);
+      if (ra[x * 4 + c] != expected) return fail("Canonical FP16/opaque-alpha semantics differ from the scalar formula.");
+      if (c < 3) expected_peak = std::max({expected_peak, nits, half_reference(expected) * 203.0F});
+    }
+  }
+  if (first->component_peak != expected_peak) return fail("Threaded canonical capacity missed pre-quantized or FP16 peaks.");
+  auto tight = parallel; tight.memory_limit_bytes = image.planes[0].bytes.size() + image.width * image.height * 8;
+  tight.memory_reservation_bytes = tight.memory_limit_bytes;
+  auto bounded = awj::jpeg_hdr_detail::fill_canonical_pixels(image, *prepared, b, {}, tight);
+  if (!bounded || bounded->component_peak != first->component_peak || bounded->y_peak != first->y_peak)
+    return fail("Canonical control-memory fallback changed the final capacity.");
+
+  awj::NativeEncodeSettings settings; settings.resources = serial;
+  auto alternative = independent_sdr(257, 257);
+  alternative.image.source_info->color_primaries = 12;
+  alternative.image.source_info->transfer_characteristics = 1;
+  auto sdr_serial = awj::jpeg_hdr_detail::source_sdr_base(alternative.image, settings, {});
+  settings.resources = parallel;
+  auto sdr_parallel = awj::jpeg_hdr_detail::source_sdr_base(alternative.image, settings, {});
+  if (!sdr_serial || !sdr_parallel || sdr_serial->planes[0].bytes != sdr_parallel->planes[0].bytes)
+    return fail("Threaded source-SDR CICP normalization changed JPEG base samples.");
+
+  awj::compat::stop_source during;
+  struct Progress {
+    const awj::ImageBuffer* image;
+    awj::compat::stop_source* stop;
+    mutable std::atomic<unsigned> entered{}, completed{}, active{};
+  } progress{&image, &during};
+  prepared->reader = {.context = &progress,
+      .read = [](const void* context, std::size_t x, std::size_t y) noexcept {
+        const auto& state = *static_cast<const Progress*>(context);
+        state.active.fetch_add(1); state.entered.fetch_add(1);
+        const auto rgba = awj::hdr::hdr_detail::read_source_rgba(*state.image, {}, x, y);
+        state.stop->request_stop(); state.completed.fetch_add(1); state.active.fetch_sub(1);
+        return rgba;
+      }};
+  auto stopped = awj::jpeg_hdr_detail::fill_canonical_pixels(image, *prepared, b, during.get_token(), parallel);
+  if (stopped || !progress.entered.load() || progress.active.load() || progress.entered.load() != progress.completed.load())
+    return fail("Canonical conversion returned before canceled borrowed-reader workers joined.");
+  if (awj::jpeg_hdr_detail::fill_canonical_pixels(image, *prepared, b, during.get_token(), parallel) ||
+      awj::jpeg_hdr_detail::source_sdr_base(alternative.image, settings, during.get_token()))
+    return fail("Canonical/source-SDR pre-cancellation was ignored.");
+  return 0;
+}
+
 }  // namespace
 
 int main() {
+  if (const int result = check_threaded_canonical()) return result;
   awj::NativeEncodeSettings settings;
   settings.output_format = awj::OutputFormat::jpgli;
   settings.quality = 90;

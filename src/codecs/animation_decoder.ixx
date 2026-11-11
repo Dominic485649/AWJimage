@@ -1,5 +1,6 @@
 module;
 #include "../compat/stdlib_compat.h"
+#include "../core/hdr_cost.h"
 
 #include <algorithm>
 #include <array>
@@ -479,17 +480,21 @@ struct WebpReader final : AnimationReader {
   AnimationInfo description;
   ImageBuffer current;
   std::uint64_t budget{};
+  int decode_threads{1};
+  std::uint64_t decode_thread_workspace{};
   std::size_t index{};
   int last_timestamp{};
   const AnimationInfo& info() const noexcept override { return description; }
   const ImageBuffer& frame() const noexcept override { return current; }
   std::uint64_t memory_usage_bytes() const noexcept override {
-    std::uint64_t size = bytes.capacity() + static_cast<std::uint64_t>(description.width) * description.height * 20 +
-        description.durations.capacity() * sizeof(FrameDuration);
-    for (const auto& block : current.metadata) size += block.bytes.capacity();
+    auto size = hdr_cost::add(decode_thread_workspace,
+        hdr_cost::add(bytes.capacity(), static_cast<std::uint64_t>(description.width) * description.height * 20));
+    size = hdr_cost::add(size, hdr_cost::multiply(description.durations.capacity(), sizeof(FrameDuration)));
+    for (const auto& block : current.metadata) size = hdr_cost::add(size, block.bytes.capacity());
     return size;
   }
-  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop = {}) {
+  awj::compat::expected<void, std::string> open(awj::compat::stop_token stop = {},
+      std::uint64_t* required_bytes = nullptr) {
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     WebPBitstreamFeatures features{};
     if (WebPGetFeatures(reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size(), &features) != VP8_STATUS_OK ||
@@ -499,11 +504,18 @@ struct WebpReader final : AnimationReader {
     if (!stride) return awj::compat::unexpected{stride.error()};
     auto raw_bytes = decoder_common::checked_image_bytes(*stride, static_cast<std::size_t>(features.height), "WebP 动画");
     if (!raw_bytes) return awj::compat::unexpected{raw_bytes.error()};
-    if (!fits_working_set(bytes.capacity(), *raw_bytes, 16, budget))
+    decode_thread_workspace = webp_detail::decode_thread_workspace_bytes(
+        decode_threads, static_cast<std::size_t>(features.width));
+    const auto initial_required = hdr_cost::add(hdr_cost::add(bytes.capacity(), decode_thread_workspace),
+        hdr_cost::multiply(*raw_bytes, 16));
+    if (initial_required == UINT64_MAX || exceeds_budget(initial_required, budget)) {
+      if (required_bytes) *required_bytes = initial_required;
       return awj::compat::unexpected{"WebP 动画工作区超出内存预算。"};
+    }
     WebPAnimDecoderOptions options{};
     if (!WebPAnimDecoderOptionsInit(&options)) return awj::compat::unexpected{"初始化 WebP 动画失败。"};
-    options.color_mode = MODE_RGBA; options.use_threads = 0;
+    options.color_mode = MODE_RGBA;
+    webp_detail::apply_decode_thread_budget(options, decode_threads);
     const WebPData data{reinterpret_cast<const std::uint8_t*>(bytes.data()), bytes.size()};
     decoder.reset(WebPAnimDecoderNew(&data, &options));
     WebPAnimInfo info{};
@@ -528,10 +540,14 @@ struct WebpReader final : AnimationReader {
     current.pixel_format = PixelFormat::rgba; current.alpha_mode = AlphaMode::straight;
     current.source_info = ImageSourceInfo{.pixel_format = PixelFormat::rgba, .bit_depth = 8};
     if (auto metadata = webp_detail::copy_metadata(current, bytes); !metadata) return metadata;
-    auto owned = bytes.capacity() + description.durations.capacity() * sizeof(FrameDuration);
-    for (const auto& block : current.metadata) owned += block.bytes.capacity();
-    if (!fits_working_set(owned, *raw_bytes, 16, budget))
+    auto owned = hdr_cost::add(decode_thread_workspace,
+        bytes.capacity() + description.durations.capacity() * sizeof(FrameDuration));
+    for (const auto& block : current.metadata) owned = hdr_cost::add(owned, block.bytes.capacity());
+    const auto required = hdr_cost::add(owned, hdr_cost::multiply(*raw_bytes, 16));
+    if (required == UINT64_MAX || exceeds_budget(required, budget)) {
+      if (required_bytes) *required_bytes = required;
       return awj::compat::unexpected{"WebP 动画 metadata/工作区超出内存预算。"};
+    }
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     auto pixels = decoder_common::make_byte_buffer(*raw_bytes, "WebP 动画");
     if (!pixels) return awj::compat::unexpected{pixels.error()};
@@ -573,29 +589,43 @@ awj::compat::expected<bool, std::string> input_uses_animation_reader(
 }
 
 // budget == 0 disables only working-set admission, not input/buffer safety limits.
+// decode_threads 是此文件已解析的 CPU 份额，不再次解析 auto；帧依赖保持串行。
+// required_bytes 仅在工作集预算拒绝时返回当前已知需求，继续解析可进一步精化。
+// 调用方须先销毁失败 reader，再非阻塞扩容预约或降低线程后重开，不能复用旧配置。
 awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_animation(
-    const fs::path& path, std::uint64_t budget, awj::compat::stop_token stop = {}, bool prefer_animation = false) {
+    const fs::path& path, std::uint64_t budget, awj::compat::stop_token stop = {},
+    bool prefer_animation = false, int decode_threads = 1,
+    std::uint64_t* required_bytes = nullptr) {
+  if (required_bytes) *required_bytes = 0;
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   auto animated = input_uses_animation_reader(path, stop, prefer_animation);
   if (!animated) return awj::compat::unexpected{animated.error()};
   if (!*animated) return std::unique_ptr<AnimationReader>{};
   const auto extension = decoder_common::lower_extension(path);
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-  if (extension == L".avif" || extension == L".avifs") return open_avif_animation(path, budget, stop);
+  if (extension == L".avif" || extension == L".avifs")
+    return open_avif_animation(path, budget, stop, decode_threads, required_bytes);
   std::error_code size_error;
   const auto file_size = fs::file_size(path, size_error);
   if (size_error) return awj::compat::unexpected{"无法读取动画输入大小。"};
   if (file_size > encoding_defaults::effective_max_input_file_bytes())
     return awj::compat::unexpected{"动画压缩输入超过当前运行时上限。"};
-  if (animation_detail::exceeds_budget(file_size, budget)) return awj::compat::unexpected{"动画压缩输入超出内存预算。"};
+  if (animation_detail::exceeds_budget(file_size, budget)) {
+    if (required_bytes) *required_bytes = file_size;
+    return awj::compat::unexpected{"动画压缩输入超出内存预算。"};
+  }
   auto bytes = decoder_common::read_file_bytes(path, "动画");
   if (!bytes) return awj::compat::unexpected{bytes.error()};
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-  if (animation_detail::exceeds_budget(bytes->capacity(), budget)) return awj::compat::unexpected{"动画压缩输入超出内存预算。"};
+  if (animation_detail::exceeds_budget(bytes->capacity(), budget)) {
+    if (required_bytes) *required_bytes = bytes->capacity();
+    return awj::compat::unexpected{"动画压缩输入超出内存预算。"};
+  }
   if (extension == L".webp") {
     auto reader = std::make_unique<animation_detail::WebpReader>();
     reader->bytes = std::move(*bytes); reader->budget = budget;
-    auto opened = reader->open(stop);
+    reader->decode_threads = std::clamp(decode_threads, 1, encoding_defaults::max_automatic_thread_budget);
+    auto opened = reader->open(stop, required_bytes);
     if (!opened) return awj::compat::unexpected{opened.error()};
     return std::unique_ptr<AnimationReader>{std::move(reader)};
   }

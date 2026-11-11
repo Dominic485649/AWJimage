@@ -727,13 +727,15 @@ JpegGainMapMarkers jpeg_gain_map_markers(std::span<const std::byte> bytes) {
 
 // Ordinary JPEGs only need their short pre-SOS header inspected. MPF is a
 // candidate, not proof: stereo/burst JPEGs may contain no gain map.
-bool jpeg_may_contain_gain_map(const fs::path& path) {
+bool jpeg_may_contain_gain_map(const fs::path& path, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return false;
   std::ifstream input(path, std::ios::binary);
   auto read_byte = [&]() { return input.get(); };
   if (read_byte() != 0xff || read_byte() != 0xd8) return false;
   std::vector<std::byte> segment;
   gain_map_detail::JpegGainMapMarkers found;
   for (;;) {
+    if (stop.stop_requested()) return false;
     if (read_byte() != 0xff) return false;
     int marker;
     do { marker = read_byte(); } while (marker == 0xff);
@@ -1180,8 +1182,10 @@ awj::compat::expected<std::optional<ProbedJpeg>, std::string> probe_jpeg(
     return awj::compat::unexpected{"Gain Map: ISO 21496-1: 缺少有效 HDR capacity。"};
   const float hdr_headroom = std::log2(metadata->hdr_capacity_max);
   // capacity=1 的全 SDR 边界不伪装成线性 HDR，也不制造同端点的双呈现。
-  if (hdr_headroom == 0 && mode != GainMapDecodeMode::sdr_only)
+  if (hdr_headroom == 0 && mode != GainMapDecodeMode::sdr_only) {
+    decoder->reset();
     return probe_jpeg(bytes, stop, GainMapDecodeMode::sdr_only);
+  }
   auto dimensions = decoder_common::make_image_dimensions_checked(
       uhdr_dec_get_image_width(decoder->get()), uhdr_dec_get_image_height(decoder->get()), "ISO 21496-1");
   if (!dimensions) return awj::compat::unexpected{dimensions.error()};
@@ -1206,7 +1210,11 @@ awj::compat::expected<std::optional<ProbedJpeg>, std::string> probe_jpeg(
     const fs::path& path, awj::compat::stop_token stop,
     GainMapDecodeMode mode = GainMapDecodeMode::hdr_only) {
   // 使用 JPEG 签名，不能靠改后缀绕过 Gain Map 的终止错误。
-  if (!jpeg_may_contain_gain_map(path)) return std::optional<ProbedJpeg>{};
+  if (!jpeg_may_contain_gain_map(path, stop)) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+    return std::optional<ProbedJpeg>{};
+  }
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   auto bytes = decoder_common::read_file_bytes(path, "ISO 21496-1");
   if (!bytes) return awj::compat::unexpected{bytes.error()};
   return probe_jpeg(std::span<const std::byte>{*bytes}, stop, mode);

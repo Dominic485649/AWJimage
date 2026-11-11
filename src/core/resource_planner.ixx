@@ -203,7 +203,7 @@ ResourcePlan plan_resources(ResourcePlanRequest request) noexcept {
 
 ResourcePlan plan_grid_encode_resources(ResourcePlan base,
                                                int tile_count) noexcept {
-  const int budget = std::max(1, std::min(base.encoder_threads_per_file, base.global_thread_budget));
+  const int budget = per_file_thread_budget(base);
   const int tiles = std::max(1, tile_count);
   const int tile_parallelism = std::min(tiles, budget);
   const int per_tile_threads = budget / tile_parallelism;

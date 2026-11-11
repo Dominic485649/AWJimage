@@ -43,6 +43,7 @@ import awj.image;
 import awj.hdr_tonemap;
 import awj.pixel_conversion;
 import awj.large_image_plan;
+import awj.resource_planner;
 
 export namespace awj {
 
@@ -74,6 +75,27 @@ struct WebPAnimDecoderDeleter {
     }
   }
 };
+
+// libwebp exposes a boolean capability, not an N-worker configuration.
+// Dependent animation frames are still decoded/composited sequentially.
+void apply_decode_thread_budget(WebPDecoderOptions& options, int thread_budget) noexcept {
+  options.use_threads = thread_budget > 1 ? 1 : 0;
+}
+
+void apply_decode_thread_budget(WebPAnimDecoderOptions& options, int thread_budget) noexcept {
+  options.use_threads = thread_budget > 1 ? 1 : 0;
+}
+
+std::uint64_t decode_thread_workspace_bytes(int thread_budget, std::size_t width) noexcept {
+  if (thread_budget <= 1) return 0;
+  // libwebp 1.6 VP8 may keep one background row worker, extra macroblock data
+  // and row caches. The boolean does not authorize N workers: 2 and 128 reserve
+  // the same increment. Keep an 8 MiB stack allowance plus 4 KiB per rounded
+  // macroblock column (scratch/cache headroom), even if a small/lossless frame
+  // does not actually start that worker. This estimate is not an RSS hard cap.
+  const auto columns = static_cast<std::uint64_t>(width / 16) + (width % 16 != 0);
+  return hdr_cost::add(8ull * 1024 * 1024, hdr_cost::multiply(columns, 4096));
+}
 
 struct WebPVectorWriter {
   std::vector<std::byte> bytes;
@@ -444,6 +466,9 @@ awj::compat::expected<std::vector<std::byte>, std::string> mux_metadata(
 
 class WebPImageDecoder final : public ImageDecoder {
  public:
+  explicit WebPImageDecoder(int decode_threads = 1) noexcept
+      : decode_threads_{std::clamp(decode_threads, 1, encoding_defaults::max_automatic_thread_budget)} {}
+
   [[nodiscard]] std::string_view id() const noexcept override { return "libwebp"; }
 
   [[nodiscard]] bool can_decode(const fs::path& path) const override {
@@ -493,7 +518,7 @@ class WebPImageDecoder final : public ImageDecoder {
       std::string_view source_name,
       DecodeOptions options = {}) const override {
     return decode_bytes(bytes, source_name,
-                        options.copy_metadata_payloads.value_or(false), options.native_pixels);
+                        options.copy_metadata_payloads.value_or(false), options.native_pixels, options.stop_token);
   }
 
   awj::compat::expected<ImageDecodeResult, std::string> decode(
@@ -504,11 +529,13 @@ class WebPImageDecoder final : public ImageDecoder {
   awj::compat::expected<ImageDecodeResult, std::string> decode(
       const fs::path& path, DecodeOptions options) const override {
     try {
+      if (options.stop_token.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       auto bytes = webp_detail::read_file_bytes(path);
       if (!bytes) {
         return awj::compat::unexpected{bytes.error()};
       }
-      return decode_bytes(*bytes, display_path_for_user(path), true, options.native_pixels);
+      return decode_bytes(*bytes, display_path_for_user(path),
+          options.copy_metadata_payloads.value_or(true), options.native_pixels, options.stop_token);
     } catch (const std::bad_alloc&) {
       return awj::compat::unexpected{"WebP 解码内存不足。"};
     } catch (const std::length_error&) {
@@ -519,11 +546,12 @@ class WebPImageDecoder final : public ImageDecoder {
   }
 
  private:
-  static awj::compat::expected<ImageDecodeResult, std::string> decode_bytes(
+  awj::compat::expected<ImageDecodeResult, std::string> decode_bytes(
       std::span<const std::byte> bytes,
       std::string_view source_name,
-      bool copy_metadata_payloads, bool native_pixels = false) {
+      bool copy_metadata_payloads, bool native_pixels = false, awj::compat::stop_token stop = {}) const {
     try {
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       if (bytes.empty()) {
         return awj::compat::unexpected{awj::compat::format("WebP 输入为空: {}", source_name)};
       }
@@ -553,6 +581,7 @@ class WebPImageDecoder final : public ImageDecoder {
         }
         WebPDecoderConfig config{};
         if (!WebPInitDecoderConfig(&config)) return awj::compat::unexpected{"WebP decoder 配置失败。"};
+        webp_detail::apply_decode_thread_budget(config.options, decode_threads_);
         config.output.colorspace = features.has_alpha ? MODE_YUVA : MODE_YUV;
         config.output.is_external_memory = 1;
         auto& yuv = config.output.u.YUVA;
@@ -568,6 +597,7 @@ class WebPImageDecoder final : public ImageDecoder {
         const auto result = WebPDecode(data, bytes.size(), &config);
         WebPFreeDecBuffer(&config.output);
         if (result != VP8_STATUS_OK) return awj::compat::unexpected{"WebP 原生 YUV 解码失败。"};
+        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
         if (copy_metadata_payloads) {
           if (auto copied = webp_detail::copy_metadata(image, bytes); !copied) return awj::compat::unexpected{copied.error()};
         }
@@ -598,7 +628,7 @@ class WebPImageDecoder final : public ImageDecoder {
           return awj::compat::unexpected{"初始化 WebP 动画首帧 decoder 失败。"};
         }
         options.color_mode = MODE_RGBA;
-        options.use_threads = 1;
+        webp_detail::apply_decode_thread_budget(options, decode_threads_);
         const WebPData encoded{.bytes = data, .size = bytes.size()};
         std::unique_ptr<WebPAnimDecoder, webp_detail::WebPAnimDecoderDeleter>
             decoder{WebPAnimDecoderNew(&encoded, &options)};
@@ -610,11 +640,25 @@ class WebPImageDecoder final : public ImageDecoder {
         }
         awj::compat::ranges::copy_n(reinterpret_cast<const std::byte*>(frame),
                             plane.bytes.size(), plane.bytes.begin());
-      } else if (WebPDecodeRGBAInto(data, bytes.size(), output, plane.bytes.size(),
-                                    static_cast<int>(*stride)) == nullptr) {
-        return awj::compat::unexpected{awj::compat::format("WebP 解码失败: {}", source_name)};
+      } else {
+        WebPDecoderConfig config{};
+        if (!WebPInitDecoderConfig(&config)) return awj::compat::unexpected{"WebP decoder 配置失败。"};
+        webp_detail::apply_decode_thread_budget(config.options, decode_threads_);
+        config.output.colorspace = MODE_RGBA;
+        config.output.is_external_memory = 1;
+        auto& rgba = config.output.u.RGBA;
+        rgba.rgba = output;
+        rgba.stride = static_cast<int>(*stride);
+        rgba.size = plane.bytes.size();
+        const auto result = WebPDecode(data, bytes.size(), &config);
+        WebPFreeDecBuffer(&config.output);
+        if (result != VP8_STATUS_OK)
+          return awj::compat::unexpected{awj::compat::format("WebP 解码失败: {}", source_name)};
       }
 
+      // libwebp's synchronous API has no stop-token hook. Observe cancellation
+      // at its owned-buffer boundary, after all codec workers have joined.
+      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
       ImageBuffer image{.width = static_cast<std::size_t>(width),
                         .height = static_cast<std::size_t>(height),
                         .pixel_format = PixelFormat::rgba,
@@ -634,6 +678,8 @@ class WebPImageDecoder final : public ImageDecoder {
       return awj::compat::unexpected{"WebP 解码数据超过运行时限制。"};
     }
   }
+
+  int decode_threads_{1};
 };
 
 class WebPImageEncoder final : public ImageEncoder {
@@ -709,7 +755,9 @@ class WebPImageEncoder final : public ImageEncoder {
       config.lossless = lossless ? 1 : 0;
       config.method = method;
       config.alpha_quality = 100;
-      config.thread_level = settings.resources.encoder_threads_per_file > 1 ? 1 : 0;
+      const int thread_budget = std::clamp(per_file_thread_budget(settings.resources),
+          1, encoding_defaults::max_automatic_thread_budget);
+      config.thread_level = thread_budget > 1 ? 1 : 0;
       if (WebPValidateConfig(&config) == 0) {
         return awj::compat::unexpected{"WebP config 参数无效。"};
       }
@@ -803,7 +851,8 @@ class WebPImageEncoder final : public ImageEncoder {
         diagnostics.color_reason = "写入解释所选 SDR 呈现所需的 ICC；strip 仅移除可选元数据";
       }
       diagnostics.speed_mapping = speed_mapping;
-      diagnostics.encoder_threads = settings.resources.encoder_threads_per_file;
+      // Legacy field: configured per-file budget, not observed libwebp workers.
+      diagnostics.encoder_threads = thread_budget;
       diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
       return NativeEncodeResult{.encoded = std::move(encoded),
                                 .diagnostics = std::move(diagnostics),
@@ -846,7 +895,9 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_webp_animation(
     config.lossless = lossless ? 1 : 0;
     config.quality = static_cast<float>(std::clamp(settings.quality, 1, 100));
     config.method = speed.codec_value; config.alpha_quality = 100;
-    config.thread_level = settings.resources.encoder_threads_per_file > 1 ? 1 : 0;
+    const int thread_budget = std::clamp(per_file_thread_budget(settings.resources),
+        1, encoding_defaults::max_automatic_thread_budget);
+    config.thread_level = thread_budget > 1 ? 1 : 0;
     if (!WebPValidateConfig(&config)) return awj::compat::unexpected{"动画 WebP 编码参数无效。"};
     auto applied = settings;
     applied.source_has_alpha_channel = true; applied.encoder_supports_alpha = true;
@@ -963,7 +1014,8 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_webp_animation(
     auto diagnostics = diagnostics_from_settings(applied);
     diagnostics.encoder_id = "libwebp"; diagnostics.integration_mode = "libwebp-sequence";
     diagnostics.applied_bit_depth = 8; diagnostics.speed_mapping = speed;
-    diagnostics.encoder_threads = settings.resources.encoder_threads_per_file;
+    // Legacy field: configured per-file budget, not observed libwebp workers.
+    diagnostics.encoder_threads = thread_budget;
     diagnostics.memory_budget_bytes = settings.resources.memory_limit_bytes;
     return NativeEncodeResult{.encoded = {.bytes = std::move(*bytes), .codec_name = "libwebp-sequence"},
         .diagnostics = std::move(diagnostics), .final_quality = settings.quality,

@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.6 - 2026-11-12
+
+### Changelog interface
+
+- Render headings, lists, emphasis, code and links natively instead of displaying Markdown markers as plain text.
+- Show only the latest 10 versions on the changelog page, with consistent language fallback and Windows/Linux presentation. Retain the complete history.
+
+### Thread utilization and batch processing
+
+- Add bounded parallel dimension and memory analysis, with cancellation propagated through scanning, hashing and preflight checks.
+- Reallocate thread shares at safe decode, resize, preparation and encode boundaries, reclaiming integer remainders and idle tail capacity while retaining the auto reserve policy and explicit thread budget.
+- Share CPU and memory admission between ordinary images and AVIF Grid tasks, removing whole-batch type barriers while retaining input order for conflicting outputs.
+- Improve budget-aware parallelism in pixel conversion, HDR processing and visual-quality analysis, pass resolved shares to WebP/AVIF animation decoding, and redistribute threads across Grid tail waves.
+
+### Bug fixes
+
+- Refine reservations for whole-input probing, PNG ICC inflation and animation thread workspaces. Retry safely, reduce concurrency or reject work when reservations cannot be obtained.
+- Prevent later Grid-wave thread startup failures from re-encoding cells that have already completed.
+
 ## 1.3.5 - 2026-11-11
 
 ### Feature enhancements and performance improvements

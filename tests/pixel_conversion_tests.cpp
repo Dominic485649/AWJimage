@@ -645,9 +645,99 @@ int check_cached_native_resizes() {
   return 0;
 }
 
+awj::ImageBuffer threaded_pixel_fixture(int depth, awj::AlphaMode alpha) {
+  constexpr std::size_t width = 259, height = 257;
+  const auto maximum = (1u << depth) - 1;
+  const auto sample_bytes = depth > 8 ? 2u : 1u;
+  awj::ImageBuffer image{.width = width, .height = height, .pixel_format = awj::PixelFormat::rgba,
+      .alpha_mode = alpha, .bit_depth = depth,
+      .source_info = awj::ImageSourceInfo{.pixel_format = awj::PixelFormat::rgba, .bit_depth = depth,
+          .color_primaries = 1, .transfer_characteristics = 13, .matrix_coefficients = 0, .color_range = 1},
+      // Force the owned Reader path, including mirrored odd 420/422 edges.
+      .geometry = awj::ImageGeometry{.stored_width = width, .stored_height = height,
+          .crop_width = width, .crop_height = height, .mirror_axis = 1}};
+  awj::ImagePlane plane{.stride = width * 4 * sample_bytes + 16};
+  plane.bytes.resize(plane.stride * height, std::byte{0xa5});
+  for (std::size_t y = 0; y < height; ++y) for (std::size_t x = 0; x < width; ++x) {
+    const auto a = alpha == awj::AlphaMode::none ? maximum : static_cast<unsigned>((x * 97 + y * 13) & maximum);
+    for (std::size_t c = 0; c < 4; ++c) {
+      auto value = c == 3 ? a : static_cast<unsigned>((x * 31 + y * 67 + c * 41) & maximum);
+      if (c < 3 && alpha == awj::AlphaMode::premultiplied)
+        value = static_cast<unsigned>(static_cast<std::uint64_t>(value) * a / maximum);
+      auto* dst = plane.bytes.data() + y * plane.stride + (x * 4 + c) * sample_bytes;
+      const auto encoded = static_cast<std::uint16_t>(value);
+      if (sample_bytes == 1) *dst = std::byte{static_cast<unsigned char>(encoded)};
+      else std::memcpy(dst, &encoded, 2);
+    }
+  }
+  image.planes.push_back(std::move(plane));
+  return image;
+}
+
+int check_threaded_pixel_conversion() {
+  const awj::ResourcePlan serial{.file_parallelism = 1, .encoder_threads_per_file = 1, .global_thread_budget = 1};
+  const awj::ResourcePlan parallel{.file_parallelism = 2, .encoder_threads_per_file = 7, .global_thread_budget = 8};
+  constexpr std::array depths{8, 10, 12, 16};
+  constexpr std::array formats{awj::PixelFormat::yuv420, awj::PixelFormat::yuv422, awj::PixelFormat::yuv444};
+  awj::compat::stop_source canceled; canceled.request_stop();
+  for (std::size_t d = 0; d < depths.size(); ++d) {
+    const auto depth = depths[d];
+    const auto target_depth = depths[(d + 1) % depths.size()];
+    for (const auto alpha : {awj::AlphaMode::none, awj::AlphaMode::straight, awj::AlphaMode::premultiplied}) {
+      const auto source = threaded_pixel_fixture(depth, alpha);
+      for (const auto format : formats) {
+        const awj::PixelConversionRequest request{.format = format, .bit_depth = depth,
+            .matrix_coefficients = 6, .color_range = 1};
+        auto expected = awj::convert_image_pixels(source, request, {}, serial);
+        auto converted = awj::convert_image_pixels(source, request, {}, parallel);
+        if (!expected || !converted || !same_planes(*expected, *converted) ||
+            expected->alpha_mode != converted->alpha_mode || converted->geometry)
+          return fail("Threaded RGB/YUV conversion changed alpha, geometry or odd chroma edges.");
+        auto view = awj::yuv_plane_view(*expected);
+        if (!view) return fail("Cannot build the native YUV copy fixture.");
+        auto serial_copy = awj::copy_yuv_pixels(*view, {}, serial);
+        auto threaded_copy = awj::copy_yuv_pixels(*view, {}, parallel);
+        if (!serial_copy || !threaded_copy || !same_planes(*expected, *serial_copy) ||
+            !same_planes(*serial_copy, *threaded_copy) ||
+            awj::copy_yuv_pixels(*view, canceled.get_token(), parallel))
+          return fail("Threaded native YUV/alpha copy changed planes or ignored cancellation.");
+        // Native YUV fast path, and the explicit chroma-location Reader path.
+        for (const int location : {1, 2}) {
+          converted->source_info->chroma_location = location;
+          for (const bool preserve : {false, true}) {
+            const awj::PixelConversionRequest rgb{.format = awj::PixelFormat::rgba,
+                .bit_depth = target_depth, .preserve_alpha = preserve};
+            auto a = awj::convert_image_pixels(*converted, rgb, {}, serial);
+            auto b = awj::convert_image_pixels(*converted, rgb, {}, parallel);
+            if (!a || !b || !same_planes(*a, *b) || a->alpha_mode != b->alpha_mode)
+              return fail("Threaded YUV -> RGB changed 8/10/12/16-bit, alpha or chroma siting.");
+          }
+        }
+        for (const auto target_format : formats) for (const int range : {0, 1}) {
+          const awj::PixelConversionRequest yuv{.format = target_format, .bit_depth = target_depth,
+              .matrix_coefficients = 6, .color_range = range};
+          auto a = awj::convert_image_pixels(*converted, yuv, {}, serial);
+          auto b = awj::convert_image_pixels(*converted, yuv, {}, parallel);
+          if (!a || !b || !same_planes(*a, *b))
+            return fail("Threaded YUV resampling/range/depth conversion changed planar samples.");
+        }
+        auto tight = parallel;
+        tight.memory_limit_bytes = awj::pixel_detail::resident_image_bytes(source) + awj::pixel_detail::resident_image_bytes(*expected);
+        tight.memory_reservation_bytes = tight.memory_limit_bytes;
+        auto bounded = awj::convert_image_pixels(source, request, {}, tight);
+        if (!bounded || !same_planes(*expected, *bounded)) return fail("Pixel control-memory fallback changed output.");
+        if (awj::convert_image_pixels(source, request, canceled.get_token(), parallel))
+          return fail("Threaded pixel conversion ignored cancellation.");
+      }
+    }
+  }
+  return 0;
+}
+
 } // namespace
 
 int main() {
+  if (const auto result = check_threaded_pixel_conversion()) return result;
   if (const auto result = check_cached_native_resizes()) return result;
   if (const auto result = check_requested_color_conversion()) return result;
   if (const auto result = check_hlg_and_tone_color_boundaries()) return result;

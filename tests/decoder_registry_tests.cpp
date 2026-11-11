@@ -33,6 +33,13 @@ int main(int argc, char** argv) {
       return fail("HEIC high-bit-depth RGBA samples were not expanded to the pipeline range.");
     }
   }
+  constexpr std::uint64_t mib = 1024ull * 1024;
+  if (awj::dimension_probe_working_set_bytes("sample.png", 100 * mib) != 408 * mib ||
+      awj::dimension_probe_working_set_bytes("sample.heic", 10 * mib) != 48 * mib ||
+      awj::dimension_probe_working_set_bytes("sample.bmp", 10 * mib) != 48 * mib ||
+      awj::dimension_probe_working_set_bytes("sample.jpeg", 10 * mib) != 48 * mib ||
+      awj::dimension_probe_working_set_bytes("sample.heif", UINT64_MAX) != UINT64_MAX)
+    return fail("Dimension probe reservations lost whole-input/copy bounds or overflow safety.");
   awj::HeifImageDecoder heif_decoder;
   for (int i = 1; i < argc; ++i) {
     auto decoded = heif_decoder.decode(std::filesystem::path{argv[i]});

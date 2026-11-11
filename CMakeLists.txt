@@ -571,6 +571,12 @@ FetchContent_Declare(libavif
     UPDATE_DISCONNECTED TRUE
     ${AWJ_LIBAVIF_PATCH_COMMAND})
 FetchContent_MakeAvailable(libavif)
+# 本地锁定源码覆盖不会执行 FetchContent 的 PATCH_COMMAND，仍需验证并迁移幂等补丁。
+if(AWJ_PATCH_LIBAVIF_PARALLEL_GRID)
+    execute_process(COMMAND ${CMAKE_COMMAND} "-DSOURCE_DIR=${libavif_SOURCE_DIR}"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_parallel_grid.cmake"
+        COMMAND_ERROR_IS_FATAL ANY)
+endif()
 execute_process(COMMAND ${CMAKE_COMMAND} -DSOURCE_DIR=${libavif_SOURCE_DIR}
     -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_libavif_animation_budget.cmake"
     RESULT_VARIABLE AWJ_AVIF_ANIMATION_PATCH_RESULT)
@@ -1176,6 +1182,16 @@ if(BUILD_TESTING)
     avif_enable_common_options(awj_work_memory_admission_tests)
     target_link_libraries(awj_work_memory_admission_tests PRIVATE awj_base)
     add_test(NAME work_memory_admission_core COMMAND awj_work_memory_admission_tests)
+
+    add_executable(awj_work_cpu_admission_tests tests/work_cpu_admission_tests.cpp)
+    avif_enable_common_options(awj_work_cpu_admission_tests)
+    if(NOT WIN32)
+        target_link_libraries(awj_work_cpu_admission_tests PRIVATE Threads::Threads)
+    endif()
+    awj_set_runtime_directory(awj_work_cpu_admission_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME work_cpu_admission_core COMMAND awj_work_cpu_admission_tests)
+    set_tests_properties(work_cpu_admission_core PROPERTIES TIMEOUT 90)
+
     add_executable(awj_image_memory_plan_tests tests/image_memory_plan_tests.cpp)
     avif_enable_common_options(awj_image_memory_plan_tests)
     target_link_libraries(awj_image_memory_plan_tests PRIVATE awj_native_backend)
@@ -1373,6 +1389,24 @@ if(BUILD_TESTING)
     add_test(NAME resize_admission_core COMMAND awj_resize_admission_tests)
     set_tests_properties(resize_admission_core PROPERTIES TIMEOUT 180)
 
+    add_executable(awj_stage_cpu_budget_tests tests/stage_cpu_budget_tests.cpp)
+    avif_enable_common_options(awj_stage_cpu_budget_tests)
+    target_link_libraries(awj_stage_cpu_budget_tests PRIVATE awj_native_backend)
+    target_compile_definitions(awj_stage_cpu_budget_tests PRIVATE
+        AWJ_TEST_RESULTS_ROOT="${CMAKE_CURRENT_BINARY_DIR}/results")
+    awj_set_runtime_directory(awj_stage_cpu_budget_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME stage_cpu_budget_core COMMAND awj_stage_cpu_budget_tests)
+    set_tests_properties(stage_cpu_budget_core PROPERTIES TIMEOUT 120)
+
+    add_executable(awj_probe_memory_budget_tests tests/probe_memory_budget_tests.cpp)
+    avif_enable_common_options(awj_probe_memory_budget_tests)
+    target_link_libraries(awj_probe_memory_budget_tests PRIVATE awj_core ZLIB::ZLIB)
+    target_compile_definitions(awj_probe_memory_budget_tests PRIVATE
+        AWJ_TEST_RESULTS_ROOT="${CMAKE_CURRENT_BINARY_DIR}/results")
+    awj_set_runtime_directory(awj_probe_memory_budget_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/tests")
+    add_test(NAME probe_memory_budget_core COMMAND awj_probe_memory_budget_tests)
+    set_tests_properties(probe_memory_budget_core PROPERTIES TIMEOUT 120)
+
     add_executable(awj_memory_cancel_tests tests/memory_cancel_tests.cpp)
     avif_enable_common_options(awj_memory_cancel_tests)
     target_link_libraries(awj_memory_cancel_tests PRIVATE awj_native_visual_search awj_native_codecs awj_raw_image_io)
@@ -1441,7 +1475,8 @@ if(BUILD_TESTING)
     # Queue regression inputs must stay in this build, even when executable
     # delivery paths are configured elsewhere (including a versioned bin/).
     foreach(queue_test_target IN ITEMS awj_config_defaults_tests awj_process_tests
-            awj_native_pipeline_tests awj_pipeline_security_tests)
+            awj_native_pipeline_tests awj_pipeline_security_tests awj_decoder_registry_tests
+            awj_png_codec_tests)
         if(TARGET ${queue_test_target})
             target_compile_definitions(${queue_test_target} PRIVATE
                 AWJ_TEST_RESULTS_ROOT="${CMAKE_CURRENT_BINARY_DIR}/results")
@@ -1450,6 +1485,22 @@ if(BUILD_TESTING)
 
     add_test(NAME visual_quality_core COMMAND awj_visual_quality_tests)
     add_test(NAME animation_decoder_core COMMAND awj_animation_decoder_tests)
+    add_test(NAME animation_thread_budget COMMAND awj_animation_decoder_tests --thread-budget-only
+        "${CMAKE_CURRENT_BINARY_DIR}/results/thread-budget/animation")
+    add_test(NAME avif_thread_budget COMMAND awj_avif_aom_codec_tests --thread-budget-only
+        "${CMAKE_CURRENT_BINARY_DIR}/results/thread-budget/avif")
+    add_test(NAME webp_thread_budget COMMAND awj_webp_codec_tests --thread-budget-only
+        "${CMAKE_CURRENT_BINARY_DIR}/results/thread-budget/webp")
+    add_test(NAME grid_wave_budget COMMAND "${CMAKE_COMMAND}"
+        "-DLIBAVIF_SOURCE_DIR=${libavif_SOURCE_DIR}"
+        "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/results/grid-wave-budget"
+        "-DC_COMPILER=${CMAKE_C_COMPILER}"
+        "-DPROBE_GENERATOR=${CMAKE_GENERATOR}"
+        "-DMAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+        "-DPROBE_CONFIG=$<CONFIG>"
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/grid_wave_budget_tests.cmake")
+    set_tests_properties(animation_thread_budget avif_thread_budget webp_thread_budget grid_wave_budget
+        PROPERTIES TIMEOUT 240 LABELS "thread-budget")
     add_test(NAME update_model_core COMMAND awj_update_model_tests)
     add_test(NAME update_manifest_security COMMAND awj_update_manifest_tests)
     add_test(NAME update_archive_security COMMAND awj_update_archive_tests)
@@ -1485,6 +1536,8 @@ if(BUILD_TESTING)
     add_test(NAME avif_hybrid_core COMMAND awj_avif_hybrid_tests "${CMAKE_CURRENT_BINARY_DIR}/hybrid-results")
     set_tests_properties(avif_hybrid_core PROPERTIES TIMEOUT 120)
     add_test(NAME iso_gain_map_core COMMAND awj_iso_gain_map_tests)
+    add_test(NAME jpeg_probe_budget_core COMMAND awj_iso_gain_map_tests --jpeg-probe-budget-only)
+    set_tests_properties(jpeg_probe_budget_core PROPERTIES TIMEOUT 120)
     add_test(NAME heif_grid_12_4 COMMAND awj_iso_gain_map_tests --grid-12-4-only)
     add_test(NAME ultrahdr_iso_patch_contract COMMAND "${CMAKE_COMMAND}"
         "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/ultrahdr-iso-patch-test"
@@ -1886,7 +1939,9 @@ if(BUILD_TESTING)
         SLINT_FEATURE_EXPERIMENTAL=1
         AWJ_UI_VERSION="${PROJECT_VERSION}"
         AWJ_UI_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
-    target_link_libraries(awj_ui_smoke_tests PRIVATE Slint::Slint)
+    target_link_libraries(awj_ui_smoke_tests PRIVATE Slint::Slint awj_update)
+    target_include_directories(awj_ui_smoke_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
+    add_dependencies(awj_ui_smoke_tests awj_changelog_data)
     if(TARGET slint_cpp)
         add_dependencies(awj_ui_smoke_tests slint_cpp)
     endif()
@@ -1917,6 +1972,8 @@ if(BUILD_TESTING)
         "-DWINIT_SOURCE_ARCHIVE=${AWJ_WINIT_TEST_ARCHIVE}"
         "-DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/winit-dpi-patch-test"
         -P "${CMAKE_CURRENT_SOURCE_DIR}/tests/winit_dpi_patch_tests.cmake")
+    add_test(NAME ui_changelog_markdown COMMAND awj_ui_smoke_tests --changelog-only)
+    set_tests_properties(ui_changelog_markdown PROPERTIES TIMEOUT 120)
     add_test(NAME ui_memory_budget_unlock COMMAND awj_ui_smoke_tests --memory-budget-unlock)
     set_tests_properties(ui_memory_budget_unlock PROPERTIES TIMEOUT 120)
     add_test(NAME ui_parameter_hints COMMAND awj_ui_smoke_tests --parameter-hints)

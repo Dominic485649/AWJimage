@@ -171,17 +171,18 @@ int batch_cpu_quota(const std::filesystem::path& root) {
   if (!bytes || !write_bytes(input / "left.png", *bytes) || !write_bytes(input / "right.png", *bytes))
     return fail(bytes ? "Cannot write CPU-quota fixtures." : bytes.error());
   auto cfg = png_config(input, root / "cpu-quota-output");
-  cfg.max_jobs = 5; // 两文件同时处理时，每文件为 floor(5 / 2) = 2 线程，不是 5。
+  cfg.max_jobs = 5; // 动态份额分配余数，尾部可借用空闲额度；总额守恒由 CPU admission 定向测试证明。
   std::atomic_size_t finished{}, invalid{};
   auto batch = awj::run_batch(cfg, [&](const awj::BatchProgress& event) {
     if (event.kind != awj::BatchEventKind::item_finished) return;
     const auto& result = event.result;
-    if (!result.ok || result.resize_workers != 2 || result.memory_plan.reserved_peak_bytes > cfg.memory_limit_bytes)
+    if (!result.ok || result.resize_workers < 1 || result.resize_workers > cfg.max_jobs ||
+        result.memory_plan.reserved_peak_bytes > cfg.memory_limit_bytes)
       invalid.fetch_add(1);
     finished.fetch_add(1);
   });
   if (!batch || batch->ok_count != 2 || finished.load() != 2 || invalid.load())
-    return fail(batch ? "Actual parallel batch geometry escaped its original global/files CPU quota." : batch.error());
+    return fail(batch ? "Dynamic batch geometry escaped the selected CPU/memory budgets or lost an item." : batch.error());
   return 0;
 }
 

@@ -47,6 +47,7 @@ class WorkMemoryAdmission {
     --it;
     Ticket ticket{it->second, limit_ ? it->first : 0};
     reserved_ += ticket.bytes;
+    ++active_;
     pending_.erase(it);
     cv_.notify_all();
     return ticket;
@@ -65,15 +66,33 @@ class WorkMemoryAdmission {
     return true;
   }
 
+  // 给阶段 CPU 计划一个有界的可运行组数快照，不预占 CPU 或额外内存。
+  int runnable_count(int capacity) {
+    std::lock_guard lock{mutex_};
+    const auto cap = static_cast<std::size_t>(std::max(1, capacity));
+    std::size_t count = std::min(active_, cap);
+    if (!limit_) return static_cast<int>(std::min(cap, count + std::min(pending_.size(), cap - count)));
+    auto available = limit_ - reserved_;
+    for (const auto& [bytes, index] : pending_) {
+      (void)index;
+      if (count == cap || bytes > available) break;
+      available -= bytes;
+      ++count;
+    }
+    return static_cast<int>(count);
+  }
+
   void release(std::uint64_t bytes) noexcept {
     std::lock_guard lock{mutex_};
     reserved_ -= bytes;
+    --active_;
     cv_.notify_all();
   }
 
  private:
   std::uint64_t limit_{};
   std::uint64_t reserved_{};
+  std::size_t active_{};
   std::multimap<std::uint64_t, std::size_t> pending_{};
   std::mutex mutex_{};
   std::condition_variable_any cv_{};

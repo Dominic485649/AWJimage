@@ -31,6 +31,13 @@ export struct LargeImageRow {
     grid-available: bool,
 }
 
+export struct ChangelogBlockRow {
+    kind: int,
+    text: styled-text,
+    plain-text: string,
+    font-family: string,
+}
+
 export struct UpdateHistoryRow {
     version: string,
     channel: string,
@@ -38,6 +45,8 @@ export struct UpdateHistoryRow {
     release-url: string,
     changelog-zh-cn: string,
     changelog-en: string,
+    blocks-zh-cn: [ChangelogBlockRow],
+    blocks-en: [ChangelogBlockRow],
 }
 
 export struct ComboOption {

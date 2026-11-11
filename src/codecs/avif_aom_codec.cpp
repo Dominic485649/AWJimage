@@ -461,6 +461,19 @@ int codec_thread_count(int requested_threads) noexcept {
                     encoding_defaults::max_automatic_thread_budget);
 }
 
+std::uint64_t sequence_decode_fixed_bytes(int decode_threads, bool has_alpha) noexcept {
+  const auto threads = codec_thread_count(decode_threads);
+  // Pinned libavif/dav1d uses max_frame_delay=1 but allocates n_threads task
+  // contexts and (when threaded) 1 MiB stacks independently of image size.
+  // Color and alpha own separate persistent codec pools. Reserve 2 MiB per
+  // requested slot/pool for stack, task scratch and allocator/TLS headroom, on
+  // top of the shared regular fixed cost. This is admission/residency planning,
+  // not a measured worker count, allocator limit or an RSS hard bound.
+  const auto pools = has_alpha ? 2ull : 1ull;
+  return hdr_cost::add(regular_memory_fixed_bytes(threads),
+      hdr_cost::multiply(hdr_cost::multiply(static_cast<std::uint64_t>(threads), pools), 2ull * 1024 * 1024));
+}
+
 awj::compat::expected<void, std::string> validate_optional_int_range(std::optional<int> value,
                                                              int min_value,
                                                              int max_value,
@@ -888,6 +901,8 @@ awj::compat::expected<AvifImage, std::string> prepare_grid_tile(
   if (!rgb) {
     return awj::compat::unexpected{rgb.error()};
   }
+  // Each concurrently prepared cell owns one slot, with no nested RGB workers.
+  rgb->rgb.maxThreads = 1;
   if (auto stopped = stop_if_requested(stop_token); !stopped) {
     return awj::compat::unexpected{stopped.error()};
   }
@@ -910,13 +925,10 @@ int grid_tile_prepare_thread_count(std::size_t tile_count,
   if (tile_count <= 1) {
     return 1;
   }
-  const int hardware = static_cast<int>(std::max(1u, std::thread::hardware_concurrency()));
-  const int budget = std::max(1, resources.global_thread_budget);
-  const int file_parallelism = std::max(1, resources.file_parallelism);
-  const int limit = std::min({budget, file_parallelism, hardware,
-                              static_cast<int>(std::min<std::size_t>(
-                                  tile_count, static_cast<std::size_t>(std::numeric_limits<int>::max())))});
-  return std::max(1, limit);
+  // resources describes concurrent files, not cells. Split only this file's
+  // normalized share; auto/explicit-N resolution belongs to the caller.
+  const int budget = codec_thread_count(per_file_thread_budget(resources));
+  return static_cast<int>(std::min<std::size_t>(tile_count, static_cast<std::size_t>(budget)));
 }
 
 awj::compat::expected<void, std::string> prepare_grid_tiles_serial(
@@ -1445,10 +1457,6 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
     if (tile_count == 0 || tile_count > std::numeric_limits<std::size_t>::max()) {
       return awj::compat::unexpected{"AVIF grid tile 数量过大。"};
     }
-    const auto grid_resources = plan_grid_encode_resources(
-        settings.resources,
-        static_cast<int>(std::min<std::uint64_t>(
-            tile_count, static_cast<std::uint64_t>(std::numeric_limits<int>::max()))));
     encoder->maxThreads = total_encoder_threads;
 
     std::vector<avif_aom_detail::AvifImage> tile_storage;
@@ -1474,7 +1482,7 @@ awj::compat::expected<NativeEncodeResult, std::string> encode_with_current_setti
         .gain_map = gain_map.get()};
     const int tile_prepare_threads =
         avif_aom_detail::grid_tile_prepare_thread_count(tile_storage.size(),
-                                                        grid_resources);
+                                                        settings.resources);
     auto prepared_tiles = avif_aom_detail::prepare_grid_tiles_parallel(
         tile_context, tile_storage, tile_views, tile_prepare_threads, stop_token);
     if (!prepared_tiles) {
@@ -2047,7 +2055,10 @@ class AvifImageDecoder final : public ImageDecoder {
       DecodeDiagnostics* diagnostics = nullptr, awj::compat::stop_token stop = {}) {
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     if (native_pixels && !image.gainMap) {
-      auto native = copy_yuv_pixels(image);
+      const int threads = avif_aom_detail::codec_thread_count(decode_threads);
+      const ResourcePlan resources{.file_parallelism = 1,
+          .encoder_threads_per_file = threads, .global_thread_budget = threads};
+      auto native = copy_yuv_pixels(image, stop, resources);
       if (!native) return awj::compat::unexpected{native.error()};
       native->source_info->content_light = avif_aom_detail::content_light_from_avif(image);
       native->source_info->has_hdr_metadata = avif_aom_detail::has_hdr_metadata(image);
@@ -2094,7 +2105,7 @@ class AvifImageDecoder final : public ImageDecoder {
     avifRGBImageSetDefaults(&rgb, &image);
     rgb.format = AVIF_RGB_FORMAT_RGBA;
     rgb.depth = output_bit_depth;
-    rgb.maxThreads = decode_threads;
+    rgb.maxThreads = avif_aom_detail::codec_thread_count(decode_threads);
     rgb.pixels = reinterpret_cast<std::uint8_t*>(plane.bytes.data());
     rgb.rowBytes = row_bytes_u32;
     rgb.alphaPremultiplied = AVIF_FALSE;
@@ -2342,12 +2353,24 @@ class AvifAnimationReader final : public AnimationReader {
   AnimationInfo description;
   ImageBuffer current;
   std::uint64_t budget{};
+  int decode_threads{1};
+  std::uint64_t fixed_workspace_bytes{};
+  std::uint64_t surface_reservation_bytes{};
   std::size_t index{};
   const AnimationInfo& info() const noexcept override { return description; }
   const ImageBuffer& frame() const noexcept override { return current; }
   std::uint64_t memory_usage_bytes() const noexcept override {
-    // Codec reference surfaces plus conversion workspace, conservatively reserved.
-    return static_cast<std::uint64_t>(description.width) * description.height * 48;
+    // Keep the encoded/padded canvas reservation even after display cropping.
+    // The exact same thread/pool fixed cost is used by open() admission.
+    auto bytes = hdr_cost::add(fixed_workspace_bytes, surface_reservation_bytes);
+    bytes = hdr_cost::add(bytes, io ? io->buffer.capacity() : 0);
+    bytes = hdr_cost::add(bytes, hdr_cost::multiply(description.durations.capacity(), sizeof(FrameDuration)));
+    if (decoder && decoder->image) {
+      const auto& image = *decoder->image;
+      bytes = hdr_cost::add(bytes, hdr_cost::add(image.icc.size, hdr_cost::add(image.exif.size, image.xmp.size)));
+    }
+    for (const auto& block : current.metadata) bytes = hdr_cost::add(bytes, block.bytes.capacity());
+    return bytes;
   }
   awj::compat::expected<bool, std::string> next(awj::compat::stop_token stop) override {
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
@@ -2356,7 +2379,9 @@ class AvifAnimationReader final : public AnimationReader {
     const auto result = avifDecoderNextImage(decoder.get());
     if (result != AVIF_RESULT_OK) return awj::compat::unexpected{avif_aom_detail::avif_decode_error(result, decoder.get())};
     if (decoder->image->gainMap) return awj::compat::unexpected{"Gain Map: ISO 21496-1 AVIF: 暂不支持序列逐帧增益图。"};
-    auto frame = AvifImageDecoder::finish_decoded_image(*decoder->image, "AVIF animation", 1, true, "libavif-sequence", false);
+    auto frame = AvifImageDecoder::finish_decoded_image(
+        *decoder->image, "AVIF animation", decode_threads, true, "libavif-sequence", false,
+        false, GainMapDecodeMode::hdr_only, nullptr, stop);
     if (!frame) return awj::compat::unexpected{frame.error()};
     current = std::move(frame->image);
     const auto& image = *decoder->image;
@@ -2381,7 +2406,9 @@ class AvifAnimationReader final : public AnimationReader {
 };
 
 awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_avif_animation(
-    const std::filesystem::path& path, std::uint64_t budget, awj::compat::stop_token stop) {
+    const std::filesystem::path& path, std::uint64_t budget, awj::compat::stop_token stop,
+    int decode_threads, std::uint64_t* required_bytes) {
+  if (required_bytes) *required_bytes = 0;
   if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   auto reader = std::make_unique<AvifAnimationReader>();
   auto io = avif_aom_detail::make_avif_file_io(path);
@@ -2389,22 +2416,41 @@ awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_avif_a
   reader->io = std::move(*io); reader->budget = budget;
   if (!reader->decoder) return awj::compat::unexpected{"无法创建 AVIF 动画解码器。"};
   avif_aom_detail::configure_decoder(*reader->decoder, true);
-  reader->decoder->maxThreads = 1;
+  reader->decode_threads = avif_aom_detail::codec_thread_count(decode_threads);
+  reader->decoder->maxThreads = reader->decode_threads;
   avifDecoderSetIO(reader->decoder.get(), &reader->io->io);
   if (auto parsed = avif_aom_detail::parse_primary_preferred(*reader->decoder); !parsed)
     return awj::compat::unexpected{parsed.error()};
   if (!reader->decoder->imageSequenceTrackPresent || reader->decoder->requestedSource != AVIF_DECODER_SOURCE_TRACKS)
     return std::unique_ptr<AnimationReader>{};
+  if (!reader->decoder->image) return awj::compat::unexpected{"动画 AVIF 缺少图像信息。"};
   auto& info = reader->description;
   info.width = reader->decoder->image->width; info.height = reader->decoder->image->height;
-  if (!info.width || !info.height || (budget && info.width > budget / 80 / info.height))
-    return awj::compat::unexpected{"动画 AVIF 解码工作区超出内存预算。"};
+  if (!info.width || !info.height)
+    return awj::compat::unexpected{"动画 AVIF 画布尺寸无效。"};
   if (reader->decoder->imageCount <= 0 || reader->decoder->imageCount > 100000)
     return awj::compat::unexpected{"动画 AVIF 帧数超过限制。"};
+  const auto padded_pixels = hdr_cost::padded_pixels(info.width, info.height, 128);
+  reader->fixed_workspace_bytes = avif_aom_detail::sequence_decode_fixed_bytes(
+      reader->decode_threads, reader->decoder->alphaPresent != AVIF_FALSE);
+  reader->surface_reservation_bytes = hdr_cost::multiply(padded_pixels, 48);
+  const auto& image = *reader->decoder->image;
+  const auto metadata_copy = hdr_cost::add(image.icc.size, hdr_cost::add(image.exif.size, image.xmp.size));
+  const auto temporary_workspace = hdr_cost::add(hdr_cost::multiply(padded_pixels, 32), metadata_copy);
+  const auto timing_bytes = hdr_cost::multiply(static_cast<std::uint64_t>(reader->decoder->imageCount), sizeof(FrameDuration));
+  auto required = hdr_cost::add(reader->memory_usage_bytes(), hdr_cost::add(temporary_workspace, timing_bytes));
+  // Only the original zero means unlimited. Compare a complete saturated sum;
+  // a finite exhausted remainder must never be passed as another zero budget.
+  if (required == UINT64_MAX || (budget && required > budget)) {
+    if (required_bytes) *required_bytes = required;
+    return awj::compat::unexpected{"动画 AVIF 解码线程/帧工作区超出内存预算。"};
+  }
+  info.durations.reserve(static_cast<std::size_t>(reader->decoder->imageCount));
   info.decoder_id = "libavif-sequence";
   info.repetitions = reader->decoder->repetitionCount;
   if (info.repetitions == AVIF_REPETITION_COUNT_UNKNOWN) info.repetitions = 0;
   for (int i = 0; i < reader->decoder->imageCount; ++i) {
+    if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     avifImageTiming timing{};
     if (avifDecoderNthImageTiming(reader->decoder.get(), i, &timing) != AVIF_RESULT_OK || !timing.timescale || !timing.durationInTimescales)
       return awj::compat::unexpected{"动画 AVIF 帧时长无效。"};
@@ -2413,6 +2459,12 @@ awj::compat::expected<std::unique_ptr<AnimationReader>, std::string> open_avif_a
     if (numerator > UINT32_MAX || denominator > UINT32_MAX) return awj::compat::unexpected{"动画 AVIF 帧时长精度超出支持范围。"};
     info.durations.push_back({static_cast<std::uint32_t>(numerator), static_cast<std::uint32_t>(denominator)});
   }
+  required = hdr_cost::add(reader->memory_usage_bytes(), temporary_workspace);
+  if (required == UINT64_MAX || (budget && required > budget)) {
+    if (required_bytes) *required_bytes = required;
+    return awj::compat::unexpected{"动画 AVIF 帧索引/线程工作区超出内存预算。"};
+  }
+  if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
   return std::unique_ptr<AnimationReader>{std::move(reader)};
 }
 

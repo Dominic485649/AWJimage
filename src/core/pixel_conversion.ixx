@@ -22,6 +22,7 @@ module;
 #include <avif/internal.h>
 #include <libplacebo/colorspace.h>
 #include "hdr_cost.h"
+#include "parallel_rows.h"
 
 export module awj.pixel_conversion;
 
@@ -94,6 +95,15 @@ std::uint64_t geometry_resident_bytes(const ImageBuffer& image, std::uint64_t ou
 
 int geometry_worker_budget(const ResourcePlan& resources) noexcept {
   return per_file_thread_budget(resources);
+}
+
+parallel_rows_detail::RunOptions row_options(const ResourcePlan& resources,
+                                             std::uint64_t resident) noexcept {
+  auto limit = resource_memory_budget(resources);
+  if (resources.memory_reservation_bytes) limit = std::min(limit, resources.memory_reservation_bytes);
+  if (encoding_defaults::memory_limits_unlocked()) limit = UINT64_MAX;
+  return {.worker_budget = per_file_thread_budget(resources),
+      .scratch_limit_bytes = resident < limit ? limit - resident : 0};
 }
 
 avifPixelFormat avif_format(PixelFormat format) noexcept {
@@ -574,7 +584,8 @@ awj::compat::expected<avifImage, std::string> yuv_plane_view(const ImageBuffer& 
   return view;
 }
 
-awj::compat::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage& source, awj::compat::stop_token stop = {}) {
+awj::compat::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage& source,
+    awj::compat::stop_token stop = {}, const ResourcePlan& resources = {}) {
   try {
     if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
     PixelFormat format = source.yuvFormat == AVIF_PIXEL_FORMAT_YUV444 ? PixelFormat::yuv444
@@ -588,6 +599,12 @@ awj::compat::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage&
             .transfer_characteristics = static_cast<int>(source.transferCharacteristics),
             .matrix_coefficients = static_cast<int>(source.matrixCoefficients), .color_range = source.yuvRange == AVIF_RANGE_FULL ? 1 : 0}};
     output.planes.resize(source.alphaPlane ? 4 : 3);
+    std::uint64_t source_bytes{};
+    for (std::size_t c = 0; c < output.planes.size(); ++c) {
+      if (format == PixelFormat::gray && (c == 1 || c == 2)) continue;
+      source_bytes = hdr_cost::add(source_bytes, hdr_cost::multiply(
+          c == 3 ? source.alphaRowBytes : source.yuvRowBytes[c], pixel_detail::plane_size(output, c)[1]));
+    }
     for (std::size_t c = 0; c < output.planes.size(); ++c) {
       if (format == PixelFormat::gray && (c == 1 || c == 2)) continue;
       const auto size = pixel_detail::plane_size(output, c);
@@ -599,10 +616,14 @@ awj::compat::expected<ImageBuffer, std::string> copy_yuv_pixels(const avifImage&
       if (!bytes) return awj::compat::unexpected{bytes.error()};
       auto storage = decoder_common::make_byte_buffer(*bytes, "native YUV");
       if (!storage) return awj::compat::unexpected{storage.error()};
-      for (std::size_t y = 0; y < size[1]; ++y) {
-        if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-        std::memcpy(storage->data() + y * stride, data + y * source_stride, stride);
-      }
+      const auto options = pixel_detail::row_options(resources, hdr_cost::add(source_bytes,
+          hdr_cost::add(pixel_detail::resident_image_bytes(output), storage->capacity())));
+      auto copied = parallel_rows_detail::for_each(size[1], size[0], options, stop,
+          [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+            std::memcpy(storage->data() + y * stride, data + y * source_stride, stride);
+            return {};
+          });
+      if (!copied) return awj::compat::unexpected{copied.error()};
       output.planes[c] = ImagePlane{.bytes = std::move(*storage), .stride = stride};
     }
     if (auto valid = pixel_detail::validate(output); !valid) return awj::compat::unexpected{valid.error()};
@@ -671,7 +692,7 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
             .read = [](const void* context, std::size_t x, std::size_t y) noexcept {
               return (*static_cast<const pixel_detail::Reader*>(context))(x, y);
             }};
-        auto prepared = hdr::hdr_detail::prepare_tone_context(source, stop, pixels);
+        auto prepared = hdr::hdr_detail::prepare_tone_context(source, stop, pixels, tone_resources);
         if (!prepared) return awj::compat::unexpected{prepared.error()};
         auto mapped = hdr::tone_map_to_sdr_srgb(source, *prepared, depth, stop, tone_resources);
         if (!mapped) return awj::compat::unexpected{mapped.error()};
@@ -681,15 +702,19 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
         if (request.format == PixelFormat::rgba && request.bit_depth == depth && !remaining_color_conversion) {
           if (!request.preserve_alpha) {
             mapped->alpha_mode = AlphaMode::none;
-            for (std::size_t y = 0; y < mapped->height; ++y) {
-              if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-              auto* row = mapped->planes[0].bytes.data() + y * mapped->planes[0].stride;
-              for (std::size_t x = 0; x < mapped->width; ++x) {
-                if (x % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-                if (depth == 8) row[x * 4 + 3] = std::byte{255};
-                else hdr::hdr_detail::write_unorm16(row, x * 4 + 3, 1.0F);
-              }
-            }
+            const auto options = pixel_detail::row_options(resources, hdr_cost::add(
+                pixel_detail::resident_image_bytes(source), pixel_detail::resident_image_bytes(*mapped)));
+            auto opaque = parallel_rows_detail::for_each(mapped->height, mapped->width, options, stop,
+                [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+                  auto* row = mapped->planes[0].bytes.data() + y * mapped->planes[0].stride;
+                  for (std::size_t x = 0; x < mapped->width; ++x) {
+                    if (x % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+                    if (depth == 8) row[x * 4 + 3] = std::byte{255};
+                    else hdr::hdr_detail::write_unorm16(row, x * 4 + 3, 1.0F);
+                  }
+                  return {};
+                });
+            if (!opaque) return awj::compat::unexpected{opaque.error()};
           }
           mapped->source_info->color_range = request.color_range;
           return mapped;
@@ -734,6 +759,8 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
       if (!bytes) return awj::compat::unexpected{bytes.error()};
       output.planes[c] = ImagePlane{.bytes = std::move(*bytes), .stride = stride};
     }
+    const auto row_options = pixel_detail::row_options(resources, hdr_cost::add(
+        pixel_detail::resident_image_bytes(source), pixel_detail::resident_image_bytes(output)));
     const float maximum = static_cast<float>((1u << request.bit_depth) - 1);
     avifYUVColorSpaceInfo target{};
     if (yuv) {
@@ -753,6 +780,8 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
       rgb.alphaPremultiplied = source.alpha_mode == AlphaMode::premultiplied ? AVIF_TRUE : AVIF_FALSE;
       rgb.ignoreAlpha = output.alpha_mode == AlphaMode::none ? AVIF_TRUE : AVIF_FALSE;
       rgb.chromaDownsampling = AVIF_CHROMA_DOWNSAMPLING_AVERAGE;
+      // libavif documents maxThreads as YUV -> RGB only. RGB -> YUV ignores
+      // that field; keep this library path explicit rather than claiming it is parallel.
       const auto converted = avifImageRGBToYUV(&*view, &rgb);
       if (converted != AVIF_RESULT_OK) return awj::compat::unexpected{std::string{"RGB 转 YUV 失败: "} + avifResultToString(converted)};
       if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
@@ -770,6 +799,15 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
       rgb.rowBytes = static_cast<std::uint32_t>(output.planes[0].stride);
       rgb.alphaPremultiplied = AVIF_FALSE;
       rgb.ignoreAlpha = output.alpha_mode == AlphaMode::none ? AVIF_TRUE : AVIF_FALSE;
+      // maxThreads applies to this direction only. v1.4.2 uses at most eight
+      // tasks (caller included), and preserves serial 420 bilinear boundaries.
+      // Each generic task can allocate two depth-sized float LUTs. Charge all
+      // parallel tasks to existing headroom instead of counting descriptors only.
+      const auto per_task = parallel_rows_detail::worker_control_bytes +
+          2ull * (std::uint64_t{1} << source.bit_depth) * sizeof(float);
+      rgb.maxThreads = static_cast<int>(std::max<std::uint64_t>(1, std::min<std::uint64_t>(
+          {8, static_cast<std::uint64_t>(parallel_rows_detail::worker_count(source.height, source.width, row_options)),
+           row_options.scratch_limit_bytes / per_task})));
       const auto converted = avifImageYUVToRGB(&*view, &rgb);
       if (converted != AVIF_RESULT_OK) return awj::compat::unexpected{std::string{"YUV 转 RGB 失败: "} + avifResultToString(converted)};
       if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
@@ -782,32 +820,35 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
       for (std::size_t c = 0; c < output.planes.size(); ++c) {
         if (output.pixel_format == PixelFormat::gray && (c == 1 || c == 2)) continue;
         const auto size = pixel_detail::plane_size(output, c);
-        for (std::size_t y = 0; y < size[1]; ++y) {
-          if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-          for (std::size_t x = 0; x < size[0]; ++x) {
-            float value{};
-            if (c == 3) value = pixel_detail::sample(source, 3, x, y) /
-                static_cast<float>((1u << source.bit_depth) - 1) * maximum;
-            else if (c == 0) value = (pixel_detail::sample(source, 0, x, y) - reader.color.biasY) /
-                reader.color.rangeY * target.rangeY + target.biasY;
-            else {
-              if (source.pixel_format == PixelFormat::gray) value = reader.color.biasUV;
-              else if (source.pixel_format == output.pixel_format) value = pixel_detail::sample(source, c, x, y);
-              else {
-                std::size_t count{};
-                for (std::size_t py = y * factors[1]; py < std::min((y + 1) * factors[1], source.height); ++py)
-                  for (std::size_t px = x * factors[0]; px < std::min((x + 1) * factors[0], source.width); ++px) {
-                    value += pixel_detail::chroma(source, c, px, py); ++count;
+        auto converted = parallel_rows_detail::for_each(size[1], size[0], row_options, stop,
+            [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+              for (std::size_t x = 0; x < size[0]; ++x) {
+                if (x % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+                float value{};
+                if (c == 3) value = pixel_detail::sample(source, 3, x, y) /
+                    static_cast<float>((1u << source.bit_depth) - 1) * maximum;
+                else if (c == 0) value = (pixel_detail::sample(source, 0, x, y) - reader.color.biasY) /
+                    reader.color.rangeY * target.rangeY + target.biasY;
+                else {
+                  if (source.pixel_format == PixelFormat::gray) value = reader.color.biasUV;
+                  else if (source.pixel_format == output.pixel_format) value = pixel_detail::sample(source, c, x, y);
+                  else {
+                    std::size_t count{};
+                    for (std::size_t py = y * factors[1]; py < std::min((y + 1) * factors[1], source.height); ++py)
+                      for (std::size_t px = x * factors[0]; px < std::min((x + 1) * factors[0], source.width); ++px) {
+                        value += pixel_detail::chroma(source, c, px, py); ++count;
+                      }
+                    value /= static_cast<float>(count);
                   }
-                value /= static_cast<float>(count);
+                  const bool identity = request.matrix_coefficients == 0;
+                  value = (value - (identity ? 0 : reader.color.biasUV)) / reader.color.rangeUV *
+                      target.rangeUV + (identity ? 0 : target.biasUV);
+                }
+                pixel_detail::write_sample(output, c, x, y, value);
               }
-              const bool identity = request.matrix_coefficients == 0;
-              value = (value - (identity ? 0 : reader.color.biasUV)) / reader.color.rangeUV *
-                  target.rangeUV + (identity ? 0 : target.biasUV);
-            }
-            pixel_detail::write_sample(output, c, x, y, value);
-          }
-        }
+              return {};
+            });
+        if (!converted) return awj::compat::unexpected{converted.error()};
       }
       return output;
     }
@@ -822,38 +863,46 @@ awj::compat::expected<ImageBuffer, std::string> convert_image_pixels(
         source.bit_depth == request.bit_depth && source.alpha_mode != AlphaMode::premultiplied)
       output.significant_bits = source.significant_bits;
     const auto factors = yuv ? pixel_detail::subsampling(request.format) : std::array<std::size_t, 2>{1, 1};
-    for (std::size_t by = 0; by < source.height; by += factors[1]) {
-      if (stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
-      for (std::size_t bx = 0; bx < source.width; bx += factors[0]) {
-        float sum_u{}, sum_v{}; std::size_t count{};
-        for (std::size_t y = by; y < std::min(by + factors[1], source.height); ++y) {
-          for (std::size_t x = bx; x < std::min(bx + factors[0], source.width); ++x) {
-            auto rgba = (*mapping)(reader(x, y));
-            if (!rgba) return awj::compat::unexpected{rgba.error()};
-            if (!yuv) {
-              for (std::size_t c = 0; c < 4; ++c) {
-                const float value = c == 3 && output.alpha_mode == AlphaMode::none ? 1 : (*rgba)[c];
-                pixel_detail::write_sample(output, 0, x * 4 + c, y, value * maximum);
+    // A unit owns the entire chroma row and its 1/2 luma rows. Splitting an
+    // odd 420 edge between workers would race the shared U/V output samples.
+    const auto block_rows = source.height / factors[1] + (source.height % factors[1] != 0);
+    auto converted = parallel_rows_detail::for_each(block_rows,
+        source.width * factors[1], row_options, stop,
+        [&](std::size_t block_row) -> awj::compat::expected<void, std::string> {
+          const auto by = block_row * factors[1];
+          for (std::size_t bx = 0; bx < source.width; bx += factors[0]) {
+            if (bx % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"任务已取消。"};
+            float sum_u{}, sum_v{}; std::size_t count{};
+            for (std::size_t y = by; y < std::min(by + factors[1], source.height); ++y) {
+              for (std::size_t x = bx; x < std::min(bx + factors[0], source.width); ++x) {
+                auto rgba = (*mapping)(reader(x, y));
+                if (!rgba) return awj::compat::unexpected{rgba.error()};
+                if (!yuv) {
+                  for (std::size_t c = 0; c < 4; ++c) {
+                    const float value = c == 3 && output.alpha_mode == AlphaMode::none ? 1 : (*rgba)[c];
+                    pixel_detail::write_sample(output, 0, x * 4 + c, y, value * maximum);
+                  }
+                  continue;
+                }
+                const float r = std::clamp((*rgba)[0], 0.0F, 1.0F), g = std::clamp((*rgba)[1], 0.0F, 1.0F), b = std::clamp((*rgba)[2], 0.0F, 1.0F);
+                float luma{}, u{}, v{};
+                if (request.matrix_coefficients == 0) { luma = g; u = b; v = r; }
+                else if (request.matrix_coefficients == 8) { luma = (r + 2 * g + b) / 4; u = (-r + 2 * g - b) / 4; v = (r - b) / 2; }
+                else { luma = target.kr * r + target.kg * g + target.kb * b; u = (b - luma) / (2 * (1 - target.kb)); v = (r - luma) / (2 * (1 - target.kr)); }
+                pixel_detail::write_sample(output, 0, x, y, luma * target.rangeY + target.biasY);
+                sum_u += u; sum_v += v; ++count;
+                if (output.alpha_mode != AlphaMode::none) pixel_detail::write_sample(output, 3, x, y, (*rgba)[3] * maximum);
               }
-              continue;
             }
-            const float r = std::clamp((*rgba)[0], 0.0F, 1.0F), g = std::clamp((*rgba)[1], 0.0F, 1.0F), b = std::clamp((*rgba)[2], 0.0F, 1.0F);
-            float luma{}, u{}, v{};
-            if (request.matrix_coefficients == 0) { luma = g; u = b; v = r; }
-            else if (request.matrix_coefficients == 8) { luma = (r + 2 * g + b) / 4; u = (-r + 2 * g - b) / 4; v = (r - b) / 2; }
-            else { luma = target.kr * r + target.kg * g + target.kb * b; u = (b - luma) / (2 * (1 - target.kb)); v = (r - luma) / (2 * (1 - target.kr)); }
-            pixel_detail::write_sample(output, 0, x, y, luma * target.rangeY + target.biasY);
-            sum_u += u; sum_v += v; ++count;
-            if (output.alpha_mode != AlphaMode::none) pixel_detail::write_sample(output, 3, x, y, (*rgba)[3] * maximum);
+            if (yuv && request.format != PixelFormat::gray) {
+              const float bias = request.matrix_coefficients == 0 ? 0 : target.biasUV;
+              pixel_detail::write_sample(output, 1, bx / factors[0], by / factors[1], sum_u / count * target.rangeUV + bias);
+              pixel_detail::write_sample(output, 2, bx / factors[0], by / factors[1], sum_v / count * target.rangeUV + bias);
+            }
           }
-        }
-        if (yuv && request.format != PixelFormat::gray) {
-          const float bias = request.matrix_coefficients == 0 ? 0 : target.biasUV;
-          pixel_detail::write_sample(output, 1, bx / factors[0], by / factors[1], sum_u / count * target.rangeUV + bias);
-          pixel_detail::write_sample(output, 2, bx / factors[0], by / factors[1], sum_v / count * target.rangeUV + bias);
-        }
-      }
-    }
+          return {};
+        });
+    if (!converted) return awj::compat::unexpected{converted.error()};
     return output;
   } catch (const std::bad_alloc&) { return awj::compat::unexpected{"像素转换内存不足。"}; }
     catch (const std::length_error&) { return awj::compat::unexpected{"像素转换尺寸超过限制。"}; }

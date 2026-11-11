@@ -14,6 +14,7 @@ module;
 #include <string>
 #include <string_view>
 #include <vector>
+#include "parallel_rows.h"
 
 export module awj.native_visual_search;
 
@@ -22,6 +23,7 @@ import awj.config;
 import awj.core;
 import awj.encoding_defaults;
 import awj.image;
+import awj.resource_planner;
 import awj.visual_metrics;
 import awj.visual_quality;
 
@@ -70,6 +72,20 @@ void accumulate_visual_quality_timing(EncodeTimingDiagnostics& target,
 
 int midpoint_quality(int low, int high) noexcept {
   return low + (high - low) / 2;
+}
+
+VisualMetricExecution metric_execution(const ResourcePlan& resources, awj::compat::stop_token stop) noexcept {
+  const int workers = per_file_thread_budget(resources);
+  // image_memory_plan already includes regular_memory_fixed_bytes(workers) in
+  // the metric phase. Lend a bounded slice of that existing control allowance,
+  // not extra luma/pyramid storage or a new reservation outside the ticket.
+  auto control = static_cast<std::uint64_t>(std::min(workers, parallel_rows_detail::max_worker_budget)) *
+      parallel_rows_detail::worker_control_bytes + parallel_rows_detail::reduction_control_bytes;
+  if (!encoding_defaults::memory_limits_unlocked()) {
+    control = std::min(control, resource_memory_budget(resources));
+    if (resources.memory_reservation_bytes) control = std::min(control, resources.memory_reservation_bytes);
+  }
+  return {.thread_budget = workers, .stop = stop, .scratch_limit_bytes = control};
 }
 
 awj::compat::expected<std::size_t, std::string> checked_visual_quality_stride(
@@ -126,7 +142,8 @@ std::string_view rgb8_cache_context(OutputFormat format) noexcept {
 }
 
 awj::compat::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache(
-    const ImageBuffer& image, const NativeEncodeSettings& settings) {
+    const ImageBuffer& image, const NativeEncodeSettings& settings, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   if (!output_format_uses_rgb8_cache(settings.output_format) ||
       settings.applied_alpha == "kept") {
     return std::vector<std::byte>{};
@@ -173,27 +190,35 @@ awj::compat::expected<std::vector<std::byte>, std::string> make_rgb8_input_cache
   const auto* rgba_data =
       reinterpret_cast<const std::uint8_t*>(plane.read_bytes().data());
   auto* rgb_data = reinterpret_cast<std::uint8_t*>(rgb->data());
-  for (std::size_t y = 0; y < image.height; ++y) {
-    const auto* rgba_row = rgba_data + y * plane.stride;
-    auto* rgb_row = rgb_data + y * *rgb_stride;
-    for (std::size_t x = 0; x < image.width; ++x) {
-      rgb_row[x * 3] = rgba_row[x * 4];
-      rgb_row[x * 3 + 1] = rgba_row[x * 4 + 1];
-      rgb_row[x * 3 + 2] = rgba_row[x * 4 + 2];
-    }
-  }
+  const auto execution = metric_execution(settings.resources, stop);
+  const parallel_rows_detail::RunOptions options{.worker_budget = execution.thread_budget,
+      .scratch_limit_bytes = execution.scratch_limit_bytes};
+  auto converted = parallel_rows_detail::for_each(image.height, image.width, options, stop,
+      [&](std::size_t y) -> awj::compat::expected<void, std::string> {
+        const auto* rgba_row = rgba_data + y * plane.stride;
+        auto* rgb_row = rgb_data + y * *rgb_stride;
+        for (std::size_t x = 0; x < image.width; ++x) {
+          if (x % 1024 == 0 && stop.stop_requested()) return awj::compat::unexpected{"visual_quality 搜索已取消。"};
+          rgb_row[x * 3] = rgba_row[x * 4];
+          rgb_row[x * 3 + 1] = rgba_row[x * 4 + 1];
+          rgb_row[x * 3 + 2] = rgba_row[x * 4 + 2];
+        }
+        return {};
+      });
+  if (!converted) return awj::compat::unexpected{converted.error()};
   return rgb;
 }
 
 awj::compat::expected<std::span<const std::byte>, std::string> make_rgb8_input_view(
     const ImageBuffer& image, const NativeEncodeSettings& settings,
-    std::vector<std::byte>& cache) {
+    std::vector<std::byte>& cache, awj::compat::stop_token stop = {}) {
+  if (stop.stop_requested()) return awj::compat::unexpected{"visual_quality 搜索已取消。"};
   if (!output_format_uses_rgb8_cache(settings.output_format) ||
       settings.applied_alpha == "kept") {
     return std::span<const std::byte>{};
   }
   if (cache.empty()) {
-    auto prepared = make_rgb8_input_cache(image, settings);
+    auto prepared = make_rgb8_input_cache(image, settings, stop);
     if (!prepared) {
       return awj::compat::unexpected{prepared.error()};
     }
@@ -277,6 +302,7 @@ evaluate_visual_quality_candidate(
     const ImageDecoder& decoder, NativeEncodeSettings settings, int quality,
     const fs::path& candidate_path,
     awj::compat::stop_token stop_token = {}) {
+  const auto execution = native_visual_search_detail::metric_execution(settings.resources, stop_token);
   auto timing = native_visual_search_detail::make_visual_quality_timing();
   timing.visual_quality_candidate_count = 1;
   settings.quality = quality;
@@ -301,7 +327,7 @@ evaluate_visual_quality_candidate(
   const auto candidate_name = path_to_utf8(candidate_path.filename());
   auto decoded = decoder.decode_memory(
       std::span<const std::byte>{encoded->encoded.bytes}, candidate_name,
-      DecodeOptions{.copy_metadata_payloads = false});
+      DecodeOptions{.copy_metadata_payloads = false, .stop_token = stop_token});
   timing.visual_quality_candidate_decode_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
   if (!decoded) {
@@ -313,7 +339,7 @@ evaluate_visual_quality_candidate(
 
   started = native_visual_search_detail::Clock::now();
   auto candidate_luma =
-      make_luma_image(decoded->image, std::move(cpu_workspace.candidate_luma));
+      make_luma_image(decoded->image, std::move(cpu_workspace.candidate_luma), execution);
   decoded->image = ImageBuffer{};
   timing.visual_quality_luma_seconds +=
       native_visual_search_detail::elapsed_seconds(started);
@@ -331,7 +357,7 @@ evaluate_visual_quality_candidate(
         return awj::compat::unexpected{"visual_quality 搜索已取消。"};
       }
       const auto luma_started = native_visual_search_detail::Clock::now();
-      auto luma = make_luma_image(reference_image);
+      auto luma = make_luma_image(reference_image, {}, execution);
       timing.visual_quality_luma_seconds +=
           native_visual_search_detail::elapsed_seconds(luma_started);
       if (!luma) {
@@ -372,7 +398,7 @@ evaluate_visual_quality_candidate(
     }
     started = native_visual_search_detail::Clock::now();
     return record_gmsd_metric(
-        compute_gmsd(**current_reference_luma, *candidate_luma), started);
+        compute_gmsd(**current_reference_luma, *candidate_luma, execution), started);
   }();
   if (!gmsd) {
     return awj::compat::unexpected{gmsd.error()};
@@ -388,7 +414,7 @@ evaluate_visual_quality_candidate(
   auto ms_ssim = [&]() -> awj::compat::expected<double, std::string> {
     started = native_visual_search_detail::Clock::now();
     return record_ms_ssim_metric(
-        compute_ms_ssim_cached(**current_reference_luma, *candidate_luma, cpu_workspace), started);
+        compute_ms_ssim_cached(**current_reference_luma, *candidate_luma, cpu_workspace, execution), started);
   }();
   if (!ms_ssim) {
     return awj::compat::unexpected{ms_ssim.error()};
@@ -552,7 +578,7 @@ encode_with_native_visual_quality_search(const ImageBuffer& reference_image,
     }
     auto candidate_settings = settings;
     auto rgb8_input = native_visual_search_detail::make_rgb8_input_view(
-        reference_image, candidate_settings, rgb8_input_cache);
+        reference_image, candidate_settings, rgb8_input_cache, stop_token);
     if (!rgb8_input) {
       return awj::compat::unexpected{rgb8_input.error()};
     }

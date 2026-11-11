@@ -1,5 +1,8 @@
 #include "../src/compat/stdlib_compat.h"
+#include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <cmath>
@@ -399,6 +402,232 @@ int verify_avif_matrix(const awj::EncodedImage& encoded, int expected_matrix) {
   return 0;
 }
 
+int verify_thread_budget_policy() {
+  for (const int threads : {1, 2, 8}) {
+    if (awj::avif_aom_detail::codec_thread_count(threads) != threads)
+      return fail("AVIF changed the resolved auto/explicit thread budget.");
+    const awj::ResourcePlan single{.file_parallelism = 1,
+        .encoder_threads_per_file = threads, .global_thread_budget = threads};
+    for (const std::size_t cells : {std::size_t{0}, std::size_t{1}, std::size_t{3}, std::size_t{9}}) {
+      const int expected = cells < 1 ? 1 : cells < static_cast<std::size_t>(threads) ? static_cast<int>(cells) : threads;
+      if (awj::avif_aom_detail::grid_tile_prepare_thread_count(cells, single) != expected)
+        return fail("Grid preparation did not use the file's normalized CPU share.");
+    }
+    // An inconsistent direct caller must not let preparation bypass the
+    // concurrent-file split merely because encoder_threads_per_file is larger.
+    const awj::ResourcePlan shared{.file_parallelism = 2,
+        .encoder_threads_per_file = threads, .global_thread_budget = threads};
+    const int share = threads / 2 < 1 ? 1 : threads / 2;
+    if (awj::avif_aom_detail::grid_tile_prepare_thread_count(9, shared) != share)
+      return fail("Grid preparation oversubscribed concurrent files.");
+  }
+  if (awj::avif_aom_detail::codec_thread_count(0) != 1 ||
+      awj::avif_aom_detail::codec_thread_count(-2) != 1 ||
+      awj::avif_aom_detail::codec_thread_count(129) != 128 ||
+      awj::avif_aom_detail::grid_tile_prepare_thread_count(4,
+          awj::ResourcePlan{.file_parallelism = 2, .encoder_threads_per_file = 4, .global_thread_budget = 4}) != 2 ||
+      awj::avif_aom_detail::grid_tile_prepare_thread_count(std::numeric_limits<std::size_t>::max(),
+          awj::ResourcePlan{.encoder_threads_per_file = 256, .global_thread_budget = 256}) != 128)
+    return fail("AVIF lower/upper thread limits or Grid preparation normalization changed.");
+  return 0;
+}
+
+awj::compat::expected<std::vector<std::byte>, std::string> make_budget_sequence(
+    std::uint32_t width, std::uint32_t height, int depth, avifPixelFormat format, bool alpha) {
+  std::unique_ptr<avifEncoder, decltype(&avifEncoderDestroy)> encoder{avifEncoderCreate(), avifEncoderDestroy};
+  if (!encoder) return awj::compat::unexpected{"AVIF budget fixture encoder allocation failed."};
+  encoder->codecChoice = AVIF_CODEC_CHOICE_AOM; encoder->maxThreads = 1;
+  encoder->speed = 10; encoder->quality = 80; encoder->qualityAlpha = 100;
+  encoder->timescale = 1000; encoder->repetitionCount = 2;
+  constexpr std::array<std::uint64_t, 3> durations{17, 43, 29};
+  const auto maximum = static_cast<std::uint16_t>((1u << depth) - 1);
+  for (std::size_t index = 0; index < durations.size(); ++index) {
+    std::unique_ptr<avifImage, decltype(&avifImageDestroy)> image{
+        avifImageCreate(width, height, static_cast<std::uint32_t>(depth), format), avifImageDestroy};
+    if (!image || avifImageAllocatePlanes(image.get(), alpha ? AVIF_PLANES_ALL : AVIF_PLANES_YUV) != AVIF_RESULT_OK)
+      return awj::compat::unexpected{"AVIF budget fixture plane allocation failed."};
+    image->colorPrimaries = AVIF_COLOR_PRIMARIES_BT709;
+    image->transferCharacteristics = AVIF_TRANSFER_CHARACTERISTICS_SRGB;
+    image->matrixCoefficients = AVIF_MATRIX_COEFFICIENTS_BT709;
+    image->yuvRange = AVIF_RANGE_FULL;
+    constexpr std::array<std::uint8_t, 9> xmp{'<','b','u','d','g','e','t','/','>'};
+    if (avifImageSetMetadataXMP(image.get(), xmp.data(), xmp.size()) != AVIF_RESULT_OK)
+      return awj::compat::unexpected{"AVIF budget fixture XMP allocation failed."};
+    for (int c = 0; c < (alpha ? 4 : 3); ++c) {
+      auto* plane = avifImagePlane(image.get(), c);
+      const auto stride = avifImagePlaneRowBytes(image.get(), c);
+      const auto plane_width = avifImagePlaneWidth(image.get(), c), plane_height = avifImagePlaneHeight(image.get(), c);
+      if (!plane || !plane_width || !plane_height) return awj::compat::unexpected{"AVIF budget fixture plane layout invalid."};
+      for (std::uint32_t y = 0; y < plane_height; ++y) for (std::uint32_t x = 0; x < plane_width; ++x) {
+        const auto value8 = c == 0 ? 32u + static_cast<unsigned>(index) * 64u + (x * 3 + y * 5) % 24u
+            : c < 3 ? 120u + (x + y + static_cast<unsigned>(c)) % 16u
+            : index == 0 ? 255u : index == 1 ? ((x / 8 + y / 4) % 3u) * 127u
+            : 64u + ((x + y) % 2u) * 128u;
+        const auto value = static_cast<std::uint16_t>((value8 * maximum + 127u) / 255u);
+        if (depth == 8) plane[y * stride + x] = static_cast<std::uint8_t>(value);
+        else std::memcpy(plane + y * stride + x * 2, &value, sizeof(value));
+      }
+    }
+    const auto result = avifEncoderAddImage(encoder.get(), image.get(), durations[index], AVIF_ADD_IMAGE_FLAG_NONE);
+    if (result != AVIF_RESULT_OK)
+      return awj::compat::unexpected{std::string{"AVIF budget sequence encoding failed: "} + avifResultToString(result)};
+  }
+  struct Data { avifRWData value = AVIF_DATA_EMPTY; ~Data() { avifRWDataFree(&value); } } output;
+  const auto result = avifEncoderFinish(encoder.get(), &output.value);
+  if (result != AVIF_RESULT_OK)
+    return awj::compat::unexpected{std::string{"AVIF budget sequence mux failed: "} + avifResultToString(result)};
+  const auto* begin = reinterpret_cast<const std::byte*>(output.value.data);
+  return std::vector<std::byte>{begin, begin + output.value.size};
+}
+
+bool same_budget_image(const awj::ImageBuffer& a, const awj::ImageBuffer& b) {
+  if (a.width != b.width || a.height != b.height || a.pixel_format != b.pixel_format ||
+      a.alpha_mode != b.alpha_mode || a.bit_depth != b.bit_depth || a.planes.size() != b.planes.size() ||
+      a.metadata.size() != b.metadata.size() || !a.source_info || !b.source_info) return false;
+  if (a.source_info->pixel_format != b.source_info->pixel_format || a.source_info->bit_depth != b.source_info->bit_depth ||
+      a.source_info->color_primaries != b.source_info->color_primaries ||
+      a.source_info->transfer_characteristics != b.source_info->transfer_characteristics ||
+      a.source_info->matrix_coefficients != b.source_info->matrix_coefficients ||
+      a.source_info->color_range != b.source_info->color_range ||
+      a.source_info->has_hdr_metadata != b.source_info->has_hdr_metadata) return false;
+  for (std::size_t c = 0; c < a.planes.size(); ++c)
+    if (a.planes[c].stride != b.planes[c].stride || a.planes[c].bytes != b.planes[c].bytes) return false;
+  for (std::size_t c = 0; c < a.metadata.size(); ++c)
+    if (a.metadata[c].kind != b.metadata[c].kind || a.metadata[c].bytes != b.metadata[c].bytes) return false;
+  return true;
+}
+
+int verify_large_sequence_budgets(const std::filesystem::path& test_root) {
+  struct Directory {
+    std::filesystem::path path; bool owned{};
+    ~Directory() { if (owned) { std::error_code ec; std::filesystem::remove_all(path, ec); } }
+  } scratch{test_root / ("avif-budget-" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+  std::filesystem::create_directories(test_root);
+  scratch.owned = std::filesystem::create_directory(scratch.path);
+  if (!scratch.owned) return fail("AVIF budget fixture directory already exists.");
+  const auto path = scratch.path / "sequence.avifs";
+  const auto write_fixture = [&](const std::vector<std::byte>& bytes) {
+    std::ofstream file(path, std::ios::binary);
+    file.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    return bool(file);
+  };
+  awj::compat::stop_source cancelled; cancelled.request_stop();
+  constexpr std::array durations{17u, 43u, 29u};
+  const std::vector<std::byte> expected_xmp{std::byte{'<'}, std::byte{'b'}, std::byte{'u'}, std::byte{'d'},
+      std::byte{'g'}, std::byte{'e'}, std::byte{'t'}, std::byte{'/'}, std::byte{'>'}};
+  for (const auto format : {AVIF_PIXEL_FORMAT_YUV420, AVIF_PIXEL_FORMAT_YUV422, AVIF_PIXEL_FORMAT_YUV444})
+    for (const int depth : {8, 10, 12}) {
+      auto bytes = make_budget_sequence(257, 129, depth, format, true);
+      if (!bytes) return fail(bytes.error());
+      if (!write_fixture(*bytes)) return fail("AVIF budget fixture write failed.");
+      const auto pixel_format = format == AVIF_PIXEL_FORMAT_YUV420 ? awj::PixelFormat::yuv420
+          : format == AVIF_PIXEL_FORMAT_YUV422 ? awj::PixelFormat::yuv422 : awj::PixelFormat::yuv444;
+      std::array<std::optional<awj::ImageBuffer>, 3> baseline;
+      std::optional<awj::ImageBuffer> native_baseline;
+      for (const int threads : {1, 2, 8}) {
+        // No automatic re-resolution: these are exactly the resolved per-file
+        // shares. Pixel identity is evidence of correctness, not worker count.
+        auto opened = awj::open_avif_animation(path, 128ull * 1024 * 1024, {}, threads);
+        if (!opened || !*opened) return fail(opened ? "AVIF budget reader missing." : opened.error());
+        auto& reader = **opened;
+        if (reader.info().width != 257 || reader.info().height != 129 || reader.info().durations.size() != 3 ||
+            reader.info().repetitions != 2 || reader.memory_usage_bytes() < awj::avif_aom_detail::sequence_decode_fixed_bytes(threads, true))
+          return fail("AVIF sequence dimensions/loop or fixed pool reservation changed.");
+        if (reader.next(cancelled.get_token()) || awj::open_avif_animation(path, 0, cancelled.get_token(), threads))
+          return fail("AVIF budget decoder ignored cancellation.");
+        for (std::size_t index = 0; index < durations.size(); ++index) {
+          const auto duration = reader.info().durations[index];
+          if (static_cast<std::uint64_t>(duration.numerator) * 1000 !=
+              static_cast<std::uint64_t>(durations[index]) * duration.denominator)
+            return fail("AVIF CPU share changed sequence timing.");
+          if (index == 1) {
+            const auto previous = reader.frame().planes[0].bytes;
+            if (reader.next(cancelled.get_token()) || reader.frame().planes[0].bytes != previous)
+              return fail("Cancelled AVIF next advanced or discarded the previous frame.");
+          }
+          const auto next = reader.next();
+          if (!next || !*next) return fail(next ? "AVIF budget sequence ended early." : next.error());
+          const auto& image = reader.frame();
+          if (image.width != 257 || image.height != 129 || image.pixel_format != awj::PixelFormat::rgba ||
+              image.bit_depth != (depth == 8 ? 8 : 16) || image.alpha_mode != awj::AlphaMode::straight ||
+              image.planes.size() != 1 || image.planes[0].stride != 257u * 4u * (depth == 8 ? 1u : 2u) ||
+              image.planes[0].bytes.size() != image.planes[0].stride * 129 ||
+              !image.source_info || image.source_info->pixel_format != pixel_format || image.source_info->bit_depth != depth ||
+              image.source_info->color_primaries != 1 || image.source_info->transfer_characteristics != 13 ||
+              image.source_info->matrix_coefficients != 1 || image.source_info->color_range != 1 ||
+              image.metadata.size() != 1 || image.metadata[0].kind != awj::MetadataKind::xmp ||
+              image.metadata[0].bytes != expected_xmp)
+            return fail("Odd AVIF sequence lost chroma/depth/alpha/CICP/XMP under a CPU share.");
+          const auto alpha_offset = static_cast<std::size_t>(image.bit_depth == 8 ? 3 : 6);
+          std::uint16_t alpha{};
+          if (image.bit_depth == 8) alpha = std::to_integer<std::uint8_t>(image.planes[0].bytes[alpha_offset]);
+          else std::memcpy(&alpha, image.planes[0].bytes.data() + alpha_offset, 2);
+          if ((index == 0 && alpha != (depth == 8 ? 255 : 65535)) || (index == 1 && alpha != 0) ||
+              (index == 2 && (alpha == 0 || alpha == (depth == 8 ? 255 : 65535))))
+            return fail("AVIF dependent frames lost ordered opaque/transparent/partial alpha.");
+          if (!baseline[index]) baseline[index] = image;
+          else if (!same_budget_image(*baseline[index], image))
+            return fail("AVIF 420/422/444 8/10/12-bit sequence samples or metadata depend on CPU budget.");
+        }
+        const auto end = reader.next(); if (!end || *end) return fail("AVIF budget sequence termination changed.");
+        opened->reset();
+        auto partial = awj::open_avif_animation(path, 0, {}, threads);
+        if (!partial || !*partial || !(*partial)->next().value_or(false)) return fail("AVIF partial lifecycle failed.");
+        partial->reset();
+        auto decoder = awj::make_avif_image_decoder(threads);
+        auto native = decoder->decode_memory(*bytes, "odd AVIF native copy", {.copy_metadata_payloads = true, .native_pixels = true});
+        if (!native || native->image.pixel_format != pixel_format || native->image.bit_depth != depth ||
+            native->image.planes.size() != 4) return fail(native ? "AVIF native YUV/alpha copy layout changed." : native.error());
+        for (std::size_t c = 0; c < 4; ++c) {
+          const auto width = (c == 1 || c == 2) && format != AVIF_PIXEL_FORMAT_YUV444 ? 129u : 257u;
+          const auto height = (c == 1 || c == 2) && format == AVIF_PIXEL_FORMAT_YUV420 ? 65u : 129u;
+          const auto stride = width * (depth > 8 ? 2u : 1u);
+          if (native->image.planes[c].stride != stride || native->image.planes[c].bytes.size() != stride * height)
+            return fail("Odd AVIF native copy rounded chroma planes incorrectly.");
+        }
+        if (!native_baseline) native_baseline = native->image;
+        else if (!same_budget_image(*native_baseline, native->image)) return fail("AVIF native YUV copy changed across CPU shares.");
+        if (decoder->decode_memory(*bytes, "cancelled native copy", {.native_pixels = true, .stop_token = cancelled.get_token()}))
+          return fail("AVIF native-copy cancellation was not propagated.");
+      }
+      if (baseline[0]->planes[0].bytes == baseline[1]->planes[0].bytes ||
+          baseline[1]->planes[0].bytes == baseline[2]->planes[0].bytes)
+        return fail("AVIF budget fixture did not contain distinct dependent frames.");
+    }
+
+  auto small = make_budget_sequence(64, 64, 8, AVIF_PIXEL_FORMAT_YUV420, false);
+  if (!small) return fail(small.error());
+  if (!write_fixture(*small)) return fail("Small AVIF budget fixture write failed.");
+  const auto fixed_one = awj::avif_aom_detail::sequence_decode_fixed_bytes(1, false);
+  const auto fixed_many = awj::avif_aom_detail::sequence_decode_fixed_bytes(128, false);
+  if (fixed_many <= fixed_one || awj::avif_aom_detail::sequence_decode_fixed_bytes(128, true) <= fixed_many ||
+      awj::avif_aom_detail::sequence_decode_fixed_bytes(0, false) != fixed_one)
+    return fail("AVIF thread/pool fixed working-set model did not normalize monotonically.");
+  for (const auto limit : {std::uint64_t{327680}, fixed_many}) {
+    std::uint64_t required{};
+    const auto rejected = awj::open_avif_animation(path, limit, {}, 128, &required);
+    if (rejected || rejected.error().find("内存预算") == std::string::npos || required <= limit || required == UINT64_MAX)
+      return fail("Small AVIF authorized 128 decoder slots without their fixed working set or lost the required reservation.");
+    auto retried = awj::open_avif_animation(path, required, {}, 128);
+    if (!retried || !*retried || !(*retried)->next().value_or(false))
+      return fail(retried ? "AVIF reader did not reopen after exact working-set admission." : retried.error());
+  }
+  auto one = awj::open_avif_animation(path, 0, {}, 1);
+  auto many = awj::open_avif_animation(path, 512ull * 1024 * 1024, {}, 128);
+  auto unlimited = awj::open_avif_animation(path, 0, {}, 128);
+  if (!one || !*one || !many || !*many || !unlimited || !*unlimited ||
+      (*many)->memory_usage_bytes() - (*one)->memory_usage_bytes() != fixed_many - fixed_one ||
+      (*unlimited)->memory_usage_bytes() != (*many)->memory_usage_bytes())
+    return fail("AVIF entry admission and retained reporting do not share the exact fixed thread cost or zero semantics.");
+  if (!(*one)->next().value_or(false) || !(*many)->next().value_or(false) ||
+      !same_budget_image((*one)->frame(), (*many)->frame()))
+    return fail("Sufficient-memory 128-slot AVIF decode did not match the serial result.");
+  if (awj::open_avif_animation(path, 0, cancelled.get_token(), 128) ||
+      (*many)->next(cancelled.get_token())) return fail("AVIF high-share/unlimited cancellation failed.");
+  one->reset(); many->reset(); unlimited->reset();
+  return 0;
+}
+
 int verify_animation_sequence() {
   const std::array<awj::FrameDuration, 3> long_delays{{{65535, 1}, {1, 65521}, {1, 65519}}};
   const auto scale = awj::animation_timescale(long_delays);
@@ -448,15 +677,34 @@ int verify_animation_sequence() {
     const auto path = std::filesystem::temp_directory_path() / "awj-sequence-reader.avifs";
     { std::ofstream file(path, std::ios::binary); file.write(reinterpret_cast<const char*>(encoded->encoded.bytes.data()), encoded->encoded.bytes.size()); }
     auto probe = awj::avif_has_sequence(path);
-    auto reader = awj::open_avif_animation(path, 64 * 1024 * 1024, {});
-    if (!probe || !*probe || !reader || !*reader || (*reader)->info().durations.size() != 4 || (*reader)->info().repetitions != repetitions)
-      return fail(reader ? "AVIF sequence reader lost timing or repetitions." : reader.error());
-    for (int index = 0; index < 4; ++index) {
-      auto next = (*reader)->next();
-      if (!next || !*next || (*reader)->frame().bit_depth != 16 || (*reader)->frame().source_info->bit_depth != 10)
-        return fail(next ? "AVIF sequence precision was lost." : next.error());
+    if (!probe || !*probe) return fail("AVIF sequence probe did not find the animation.");
+    std::array<std::vector<std::byte>, 4> baseline{};
+    for (const int threads : {1, 2, 8}) {
+      auto reader = awj::open_avif_animation(path, 64 * 1024 * 1024, {}, threads);
+      if (!reader || !*reader || (*reader)->info().durations.size() != 4 || (*reader)->info().repetitions != repetitions)
+        return fail(reader ? "AVIF sequence reader lost timing or repetitions." : reader.error());
+      awj::compat::stop_source stopped; stopped.request_stop();
+      if ((*reader)->next(stopped.get_token()) ||
+          awj::open_avif_animation(path, 64 * 1024 * 1024, stopped.get_token(), threads))
+        return fail("AVIF thread budget disabled animation cancellation.");
+      for (int index = 0; index < 4; ++index) {
+        const auto duration = (*reader)->info().durations[index];
+        const auto expected = frames.details.durations[index];
+        if (static_cast<std::uint64_t>(duration.numerator) * expected.denominator !=
+            static_cast<std::uint64_t>(expected.numerator) * duration.denominator)
+          return fail("AVIF thread budget changed VFR durations.");
+        auto next = (*reader)->next();
+        if (!next || !*next || (*reader)->frame().bit_depth != 16 || !(*reader)->frame().source_info ||
+            (*reader)->frame().source_info->bit_depth != 10 || (*reader)->frame().planes.empty())
+          return fail(next ? "AVIF sequence precision was lost." : next.error());
+        const auto& pixels = (*reader)->frame().planes.front().bytes;
+        if (baseline[index].empty()) baseline[index] = pixels;
+        else if (pixels != baseline[index]) return fail("AVIF thread budget changed ordered animation pixels/alpha.");
+      }
+      const auto end = (*reader)->next();
+      if (!end || *end) return fail("AVIF thread budget changed end-of-sequence semantics.");
     }
-    reader->reset(); std::filesystem::remove(path);
+    std::filesystem::remove(path);
   }
   for (auto tune : {awj::AvifAnimationTune::automatic, awj::AvifAnimationTune::ssim, awj::AvifAnimationTune::psnr}) {
     Frames frames; sequence_settings.quality = 70; sequence_settings.speed = 5;
@@ -565,7 +813,13 @@ int verify_gain_map_geometry_and_samples() {
   return 0;
 }
 
-int main() {
+int main(int argc, char** argv) {
+  if (const int rc = verify_thread_budget_policy(); rc != 0) return rc;
+  const bool budget_only = argc >= 2 && std::string_view{argv[1]} == "--thread-budget-only";
+  const auto test_root = budget_only && argc >= 3 ? std::filesystem::path{argv[2]}
+      : std::filesystem::current_path() / "results" / "codec-thread-budget";
+  if (const int rc = verify_large_sequence_budgets(test_root); rc != 0) return rc;
+  if (budget_only) return 0;
   if (const int rc = verify_iq_intra_tool_defaults(); rc != 0) return rc;
   if (const int rc = verify_gain_map_geometry_and_samples(); rc != 0) return rc;
   if (const int rc = verify_animation_sequence(); rc != 0) return rc;
@@ -864,7 +1118,7 @@ int main() {
   auto grid_encoded = aom->encode(make_grid_test_image(), grid_settings);
   if (!grid_encoded || grid_encoded->encoded.bytes.empty() ||
       grid_encoded->diagnostics.integration_mode != "libavif-grid" ||
-      grid_encoded->diagnostics.encoder_threads != 4) {
+      grid_encoded->diagnostics.encoder_threads != 2) {
     return fail(grid_encoded ? "AOM grid diagnostics invalid." : grid_encoded.error());
   }
 

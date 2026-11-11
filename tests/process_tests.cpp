@@ -1,3 +1,4 @@
+#include <array>
 #include <atomic>
 #include <barrier>
 #include <cstdio>
@@ -5,6 +6,7 @@
 #include <fstream>
 #include <iterator>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -90,6 +92,27 @@ int main() {
       return fail("A dangling symlink was treated as an available publication target.");
   }
   ec.clear();
+
+  {
+    std::stop_source stopped;
+    stopped.request_stop();
+    std::wstring hash;
+    if (awj::file_hash_token(destination, hash, stopped.get_token()) ||
+        awj::file_sha256_hex(destination, stopped.get_token()) ||
+        awj::file_sha256_token(destination, hash, stopped.get_token()))
+      return fail("A canceled hash request still read or returned input content.");
+    auto cfg = awj::default_app_config();
+    cfg.input_path = root / "does-not-exist";
+    cfg.output_dir = root / "canceled-output";
+    std::vector<awj::ImageFile> files;
+    const auto scanned = awj::scan_images(cfg, files, stopped.get_token());
+    if (scanned || scanned.error() != "任务已取消。" || !files.empty())
+      return fail("A pre-canceled scan accessed the input or returned partial files.");
+    const std::array<fs::path, 2> paths{destination, root / "also-missing"};
+    if (awj::scan_images(cfg, paths, files, stopped.get_token()) ||
+        awj::resolve_batch_output_paths(cfg, files, stopped.get_token()))
+      return fail("Multi-input scanning or output planning ignored cancellation.");
+  }
 
   awj::EncodeResult result{.index = 0, .processed = true, .ok = true};
   result.decode_stage = "heif.gain-map.render";

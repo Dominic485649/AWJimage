@@ -495,7 +495,9 @@ awj::compat::expected<ImageDecodeResult, std::string> decode_handle(const heif_i
       else { view.yuvPlanes[c] = const_cast<std::uint8_t*>(pixels); view.yuvRowBytes[c] = static_cast<std::uint32_t>(stride); }
     }
     view.alphaPremultiplied = premultiplied ? AVIF_TRUE : AVIF_FALSE;
-    auto image = copy_yuv_pixels(view, stop_token);
+    const ResourcePlan copy_resources{.file_parallelism = 1,
+        .encoder_threads_per_file = threads, .global_thread_budget = threads};
+    auto image = copy_yuv_pixels(view, stop_token, copy_resources);
     if (!image) return awj::compat::unexpected{image.error()};
     source_info.pixel_format = image->pixel_format; image->source_info = source_info;
     if (copy_metadata_payloads) {
