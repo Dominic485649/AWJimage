@@ -25,6 +25,10 @@
 - Link input and buffer protection to the memory-limit unlock switch while preserving manual limits. The unlocked state applies only to the current session, and default protection limits scale with physical memory.
 - Unify visual-quality description colors, clarify the **Unlimited** dimension hint, and streamline chroma-sampling guidance.
 
+#### Platform delivery
+
+- Starting with this release, the HMOS ARM64/API26 SDK uses formal cross-build release acceptance, retaining compilation, linking, export, license and archive checks. On-device loading and execution are not verified.
+
 ### Bug fixes
 
 - Correct resize work being included in decode timings and avoid double-counting nested animation-stage work for more accurate stage timings.

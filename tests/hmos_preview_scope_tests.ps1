@@ -1,9 +1,11 @@
-param([Parameter(Mandatory)][string]$OutputDirectory)
+param([Parameter(Mandatory)][string]$OutputDirectory, [string]$CMakePath = 'cmake')
 $ErrorActionPreference = 'Stop'
 $repo = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 $output = [IO.Path]::GetFullPath($OutputDirectory)
-$allowed = [IO.Path]::GetFullPath((Join-Path $repo 'build/release-1.3.3')) + [IO.Path]::DirectorySeparatorChar
-if (-not $output.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)) { throw '夹具目录必须位于本项目 1.3.3 构建根且全新。' }
+Import-Module (Join-Path $repo 'scripts/release-safety.psm1') -Force -DisableNameChecking
+$output = Assert-AwjBuildPath -RepositoryRoot $repo -Path $output
+$allowed = [IO.Path]::GetFullPath((Join-Path $repo 'build/release-contract-tests')) + [IO.Path]::DirectorySeparatorChar
+if (-not $output.StartsWith($allowed, [StringComparison]::OrdinalIgnoreCase) -or (Test-Path -LiteralPath $output)) { throw '夹具目录必须位于本项目 build/release-contract-tests 构建根且全新。' }
 New-Item -ItemType Directory -Path $output | Out-Null
 $tokens = $null; $errors = $null
 $ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $repo 'scripts/package-release.ps1'), [ref]$tokens, [ref]$errors)
@@ -14,7 +16,9 @@ if ($guards.Count -ne 1) { throw '预览版本边界必须唯一。' }
 # 只执行真实白名单边界，不运行打包主流程、签名或任何目标程序。
 $guard = [scriptblock]::Create($guards[0].Extent.Text)
 $records = @()
-$cases = @(@{version='1.3.1';allow=$true}, @{version='1.3.3';allow=$true}, @{version='1.3.2';allow=$false}, @{version='1.3.4';allow=$false})
+$cases = @(@{version='1.3.1';allow=$true}, @{version='1.3.3';allow=$true}, @{version='1.3.4';allow=$true},
+    @{version='1.3.0';allow=$false}, @{version='1.3.2';allow=$false}, @{version='1.3.5';allow=$false},
+    @{version='1.3.6';allow=$false}, @{version='1.10.0';allow=$false}, @{version='2.0.0';allow=$false})
 foreach ($case in $cases) {
   $Version = $case.version; $LocalCandidate = $false; $HmosSdkPreview = $true
   $accepted = $false; $errorText = ''
@@ -30,7 +34,7 @@ awj_sdk_require_hmos_preview_scope("@VERSION@" p)
   $probe = $probe.Replace('@INCLUDE@', (Join-Path $repo 'cmake/sdk-preview-profile.cmake').Replace('\','/')).Replace('@VERSION@',$Version)
   $probePath = Join-Path $output "scope-$Version.cmake"
   [IO.File]::WriteAllText($probePath, $probe, [Text.UTF8Encoding]::new($false))
-  $text = & cmake -P $probePath 2>&1
+  $text = & $CMakePath -P $probePath 2>&1
   $accepted = $LASTEXITCODE -eq 0
   $text | Set-Content -LiteralPath (Join-Path $output "cmake-$Version.log") -Encoding utf8
   if ($accepted -ne $case.allow -or (-not $accepted -and "$text" -notmatch '预览范围')) { throw "CMake 版本范围错误：$Version" }

@@ -46,10 +46,26 @@ if ($LocalCandidate) {
     throw '正式打包要求干净源码，SkipManifests 不能绕过；本地工作区须显式使用 LocalCandidate。'
 }
 $SourceFingerprint = Get-AwjSourceFingerprint -RepositoryRoot $Repo
-if (-not $Version) { $Version = (Get-Content -LiteralPath (Join-Path $Repo "VERSION") -Raw).Trim() }
-if ($Version -notmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
-    throw "VERSION 必须是 MAJOR.MINOR.PATCH。"
+
+function ConvertTo-AwjReleaseVersion([string]$Value) {
+    if ($Value -cnotmatch '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$') {
+        throw 'VERSION 必须是规范的 MAJOR.MINOR.PATCH，各段范围为 0..2147483647。'
+    }
+    foreach ($part in $Value.Split('.')) {
+        $number = 0
+        if (-not [Int32]::TryParse($part, [Globalization.NumberStyles]::None,
+                [Globalization.CultureInfo]::InvariantCulture, [ref]$number)) {
+            throw 'VERSION 必须是规范的 MAJOR.MINOR.PATCH，各段范围为 0..2147483647。'
+        }
+    }
+    return [version]$Value
 }
+
+$RepositoryVersion = (Get-Content -LiteralPath (Join-Path $Repo 'VERSION') -Raw).Trim()
+$null = ConvertTo-AwjReleaseVersion $RepositoryVersion
+if (-not $Version) { $Version = $RepositoryVersion }
+$null = ConvertTo-AwjReleaseVersion $Version
+if ($Version -cne $RepositoryVersion) { throw '打包版本必须与当前源码 VERSION 一致，不能通过版本参数选择其他验收政策。' }
 if (-not $PublishedAtUtc) { $PublishedAtUtc = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ") }
 if ($PublishedAtUtc -notmatch '^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$') {
     throw "-PublishedAtUtc 必须是 YYYY-MM-DDTHH:MM:SSZ。"
@@ -76,8 +92,194 @@ function Assert-File([string]$Path, [string]$Label) {
     return $Resolved
 }
 
+function Test-AwjHmosCrossBuildPolicy([string]$ReleaseVersion, [string]$TargetProfile) {
+    # profile 来自发行角色的可信映射，不由证据自报的 tier 选择政策。
+    $parsed = ConvertTo-AwjReleaseVersion $ReleaseVersion
+    if ($TargetProfile -cnotin @('windows-x64-msvc','linux-x64-clang23','hmos-arm64-api26-clang23') -and
+        -not ($ReleaseVersion -ceq '1.3.0' -and $TargetProfile -cin @('windows-x64-clang21','linux-x64-clang21'))) {
+        throw '未知 SDK profile，不能选择验收政策。'
+    }
+    return $parsed -ge [version]'1.3.5' -and $TargetProfile -ceq 'hmos-arm64-api26-clang23'
+}
+
+function Read-AwjReleaseJsonSnapshot([string]$Path) {
+    # 同一次有界读取同时用于摘要和语义解析，不能稍后为另一份文件内容补摘要。
+    $stream = [IO.FileStream]::new($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    try {
+        $length = $stream.Length
+        if ($length -le 0 -or $length -gt 1048576) { throw '发行 JSON 必须为有界、非空的普通文件。' }
+        $bytes = [byte[]]::new([int]$length)
+        $stream.ReadExactly($bytes, 0, $bytes.Length)
+        if ($stream.ReadByte() -ne -1) { throw '发行 JSON 在读取期间增长。' }
+    } finally { $stream.Dispose() }
+    $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($bytes)).ToLowerInvariant()
+    $text = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    if ($text.Length -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    $record = $text | ConvertFrom-Json -AsHashtable
+    return [pscustomobject]@{record=$record;sha256=$hash;size=[UInt64]$bytes.Length}
+}
+
+function Assert-AwjHmosNoRuntimeEvidence($Record) {
+    if ($Record -is [Collections.IDictionary]) {
+        foreach ($key in $Record.psbase.Keys) {
+            # 与 sdk-hmos-cross-build.cmake 的递归字段禁令一致。
+            if ($key -match '^(test_report|sdk_test_report|consumer_report|target_execution_report|target_loader_report)(_(sha256|path))?$|^(target_runner|runner|target_execution_evidence|sdk_test_log|consumer_log|loader_log)(_(sha256|path))?$|^(sdk_tests|installed_consumers|loader|compiled_source_verified|passed)$|(^|_)(exit_code|junit|run_summary|runtime_summary|execution_summary|loader_summary|execution_passed|loader_passed)$') {
+                # 按字段存在性拒绝；null、空串、数组或 OFF 同样不能伪装成“未提供”。
+                throw "HMOS 交叉构建不得携带运行验收字段：$key"
+            }
+            if ($key -match '^(target_execution|target_loader|execution)$' -and
+                ($Record[$key] -isnot [string] -or $Record[$key] -cne 'not-run')) {
+                throw 'HMOS 交叉构建必须如实标记目标执行和 loader 为 not-run。'
+            }
+            Assert-AwjHmosNoRuntimeEvidence $Record[$key]
+        }
+    } elseif ($Record -is [Array]) {
+        foreach ($entry in $Record) { Assert-AwjHmosNoRuntimeEvidence $entry }
+    }
+}
+
+function Assert-AwjHmosVerification($Record, [string[]]$PassedChecks) {
+    $fields = @($PassedChecks) + @('target_execution','target_loader')
+    Assert-AwjJsonFields $Record.verification $fields
+    if ($Record.verification.psbase.Count -ne $fields.Count) { throw 'HMOS 交叉构建验证字段必须准确覆盖当前证明阶段。' }
+    foreach ($check in $PassedChecks) {
+        if ($Record.verification[$check] -cne 'passed') { throw "HMOS 缺少阶段通过项：$check" }
+    }
+    if ($Record.verification.target_execution -cne 'not-run' -or $Record.verification.target_loader -cne 'not-run') {
+        throw 'HMOS 交叉构建不得冒充目标执行或 loader 已通过。'
+    }
+}
+
+function Assert-AwjHmosCrossBuildAttachments($Proof, [string]$ReceiptPath) {
+    $directory = Split-Path -Parent $ReceiptPath
+    $attachments = @()
+    $records = @{}
+    foreach ($spec in @(
+        @{name='hmos-build.json';kind='hmos-cross-build';field='cross_build_report_sha256'},
+        @{name='hmos-cross-link-consumers.json';kind='hmos-cross-link-consumers';field='cross_link_consumer_report_sha256'})) {
+        # 固定同目录普通附件；JSON 不得指定其他路径、命令或旧同名文件作为替代。
+        $path = Assert-File (Join-Path $directory $spec.name) 'HMOS 交叉构建附件'
+        $snapshot = Read-AwjReleaseJsonSnapshot $path
+        $hash = $snapshot.sha256
+        if ($hash -cne $Proof[$spec.field]) { throw 'HMOS 附件实际摘要与资产回执不匹配。' }
+        $record = $snapshot.record
+        Assert-AwjJsonFields $record @('kind','mode','status','validation_tier','target_execution','target_loader',
+            'version','git_head','source_fingerprint','library_sha256','profile','platform','target_triple')
+        if (-not (Test-AwjJsonUnsignedInteger $record.schema) -or $record.schema -ne 1 -or
+            $record.kind -cne $spec.kind -or $record.mode -cne 'formal' -or $record.status -cne 'cross-linked' -or
+            $record.validation_tier -cne 'cross-build' -or $record.target_execution -cne 'not-run' -or
+            $record.target_loader -cne 'not-run' -or -not (Test-AwjJsonUnsignedInteger $record.abi) -or $record.abi -ne 1) {
+            throw 'HMOS 附件种类、正式跨构建范围或未运行状态不匹配。'
+        }
+        foreach ($field in @('version','git_head','source_fingerprint','library_sha256','profile','platform','target_triple')) {
+            if ($record[$field] -cne $Proof[$field]) { throw "HMOS 附件并非同一源码和库：$field" }
+        }
+        if ($record.ContainsKey('source_dirty') -and ($record.source_dirty -isnot [bool] -or $record.source_dirty)) {
+            throw 'HMOS 附件不能绑定脏源码。'
+        }
+        Assert-AwjHmosNoRuntimeEvidence $record
+        $records[$spec.kind] = $record
+        $attachments += [pscustomobject]@{name=$spec.name;path=$path;sha256=$hash}
+    }
+    $build = $records['hmos-cross-build']
+    Assert-AwjJsonFields $build @('profile','platform','compiler_version','target_triple','native_sdk_version',
+        'libcxx_abi_namespace','runtime_linkage') @('source_dirty')
+    if ($build.source_dirty) { throw 'HMOS 构建附件必须来自干净源码。' }
+    foreach ($field in @('profile','platform','compiler_version','target_triple','native_sdk_version','libcxx_abi_namespace','runtime_linkage')) {
+        if ($build[$field] -cne $Proof[$field]) { throw "HMOS 构建附件目标身份不匹配：$field" }
+    }
+    foreach ($field in @('api','libcxx_version','libcxx_abi_version')) {
+        if (-not (Test-AwjJsonUnsignedInteger $build[$field]) -or $build[$field] -ne $Proof[$field]) {
+            throw "HMOS 构建附件 ABI 不匹配：$field"
+        }
+    }
+    Assert-AwjHmosVerification $build @('cross_build','test_programs_linked','compiler_identity','target_identity','native_inputs')
+    $programNames = @('awj_sdk_tests','awj_sdk_c_consumer','awj_sdk_encode_tests','awj_sdk_pixel_tests',
+        'awj_sdk_yuv_readonly_tests','awj_sdk_stdlib_tests','awj_sdk_worker_failure_tests')
+    if ($build.test_programs -isnot [Collections.IDictionary] -or $build.test_programs.psbase.Count -ne $programNames.Count) {
+        throw 'HMOS 构建附件必须绑定七个最终目标程序。'
+    }
+    foreach ($name in $programNames) {
+        $program = $build.test_programs[$name]
+        Assert-AwjJsonFields $program @('sha256','profile_sha256','link_map_sha256','link_inputs_sha256','role','execution')
+        foreach ($field in @('sha256','profile_sha256','link_map_sha256','link_inputs_sha256')) {
+            if ($program[$field] -cnotmatch '^[0-9a-f]{64}$') { throw 'HMOS 目标程序摘要无效。' }
+        }
+        $importsSdk = $name -cin @('awj_sdk_tests','awj_sdk_c_consumer','awj_sdk_encode_tests','awj_sdk_yuv_readonly_tests')
+        $expectedRole = if ($importsSdk) { 'sdk-consumer' } else { 'standalone-helper' }
+        if ($program.role -cne $expectedRole -or $program.execution -cne 'not-run') { throw 'HMOS 目标程序角色或未运行状态无效。' }
+        if ($importsSdk) {
+            Assert-AwjJsonFields $program @('sdk_library_sha256')
+            if ($program.sdk_library_sha256 -cne $Proof.library_sha256) { throw 'HMOS 目标程序没有绑定本次 SDK 库。' }
+        }
+    }
+    $consumers = $records['hmos-cross-link-consumers']
+    Assert-AwjJsonFields $consumers @('build_evidence_sha256')
+    if ($consumers.build_evidence_sha256 -cne $Proof.build_evidence_sha256 -or
+        $Proof.build_evidence_sha256 -cne $attachments[0].sha256) { throw 'HMOS 消费者附件没有绑定实际构建附件。' }
+    Assert-AwjHmosVerification $consumers @('installed_consumers_linked','sdk_library_binding')
+    if ($consumers.consumers -isnot [Collections.IDictionary] -or $consumers.consumers.psbase.Count -ne 3) {
+        throw 'HMOS 消费者附件必须恰好绑定三个安装消费者。'
+    }
+    foreach ($spec in @(
+        @{name='installed_c_consumer';standard='c99'},
+        @{name='installed_cxx_consumer';standard='c++11'},
+        @{name='installed_cxx17_consumer';standard='c++17'})) {
+        $consumer = $consumers.consumers[$spec.name]
+        Assert-AwjJsonFields $consumer @('standard','sha256','sdk_library_sha256')
+        if ($consumer.standard -cne $spec.standard -or $consumer.sha256 -cnotmatch '^[0-9a-f]{64}$' -or
+            $consumer.sdk_library_sha256 -cne $Proof.library_sha256) { throw 'HMOS 安装消费者语言或实际 SDK 库绑定无效。' }
+    }
+    return $attachments
+}
+
+function Get-AwjHmosReleaseScope([object[]]$AdditionalAssets) {
+    $hmos = @($AdditionalAssets | Where-Object { $_.role -cin @('sdk:hmos-arm64-api26','sdk-preview:hmos-arm64-api26') })
+    if (-not $hmos.Count) { return 'not-included' }
+    if ($hmos.Count -ne 1) { throw 'HMOS 发行范围重复。' }
+    return $hmos[0].validation_tier
+}
+
+function Get-AwjAdditionalAssetBindings([object[]]$AdditionalAssets) {
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($asset in $AdditionalAssets) {
+        $bindings = @(
+            [pscustomobject]@{relative=$asset.name;source=$asset.path;sha256=$asset.sha256;verification=$false}
+            [pscustomobject]@{relative="verification/$($asset.name).json";source=$asset.receipt;sha256=$asset.receipt_sha256;verification=$true}
+            foreach ($attachment in $asset.attachments) {
+                [pscustomobject]@{relative="verification/$($attachment.name)";source=$attachment.path;sha256=$attachment.sha256;verification=$true}
+            }
+        )
+        foreach ($binding in $bindings) {
+            if (-not $seen.Add($binding.relative)) { throw '附加资产或验证附件名称重复。' }
+            $binding
+        }
+    }
+}
+
+function Assert-AwjAdditionalAssetCopies([object[]]$AdditionalAssets, [string]$StageDirectory) {
+    foreach ($binding in @(Get-AwjAdditionalAssetBindings $AdditionalAssets)) {
+        $destination = Assert-File (Join-Path $StageDirectory $binding.relative) '封存附加资产或验证附件'
+        if ((Get-FileHash -LiteralPath $destination -Algorithm SHA256).Hash.ToLowerInvariant() -cne $binding.sha256) {
+            throw '附加资产、回执或 HMOS 附件在发行封存期间变化。'
+        }
+    }
+}
+
+function Copy-AwjAdditionalReleaseAssets([object[]]$AdditionalAssets, [string]$StageDirectory) {
+    $bindings = @(Get-AwjAdditionalAssetBindings $AdditionalAssets)
+    foreach ($binding in $bindings) {
+        $destination = Get-RepoPath (Join-Path $StageDirectory $binding.relative)
+        if (Test-Path -LiteralPath $destination) { throw '附加资产或验证附件目标必须全新。' }
+        Copy-Item -LiteralPath (Assert-File $binding.source '附加资产或验证附件') -Destination $destination
+    }
+    Assert-AwjAdditionalAssetCopies $AdditionalAssets $StageDirectory
+    foreach ($binding in $bindings) { if ($binding.verification) { $binding.relative } }
+}
+
 function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
-    $withHmos = [version]$Version -ge [version]'1.3.1'
+    $releaseVersion = ConvertTo-AwjReleaseVersion $Version
+    $withHmos = $releaseVersion -ge [version]'1.3.1'
     if ($HmosSdkPreview -and ($Version -cnotin @('1.3.1', '1.3.3', '1.3.4') -or $LocalCandidate)) {
         throw 'HMOS 预览范围仅明确授权用于 1.3.1、1.3.3、1.3.4 正式发行中的预览组件。'
     }
@@ -99,13 +301,17 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
     $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
     foreach ($path in $EvidencePaths) {
         $receipt = Assert-File $path '附加资产验收记录'
-        $proof = Get-Content -LiteralPath $receipt -Raw | ConvertFrom-Json -AsHashtable
+        $receiptSnapshot = Read-AwjReleaseJsonSnapshot $receipt
+        $proof = $receiptSnapshot.record
         Assert-AwjJsonFields $proof @('kind','mode','status','version','platform','git_head','source_fingerprint') @('source_dirty')
         $role = $proof.kind + ':' + $proof.platform
         if (-not $expected.ContainsKey($role) -or -not $seen.Add($role)) { throw '附加资产角色未知或重复。' }
         $isPreview = $role -ceq 'sdk-preview:hmos-arm64-api26'
+        $isHmosCrossBuild = $role -ceq 'sdk:hmos-arm64-api26' -and
+            (Test-AwjHmosCrossBuildPolicy $Version 'hmos-arm64-api26-clang23')
+        $attachments = @()
         $expectedMode = if ($isPreview) { 'preview' } else { 'formal' }
-        $expectedStatus = if ($isPreview) { 'cross-linked' } else { 'passed' }
+        $expectedStatus = if ($isPreview -or $isHmosCrossBuild) { 'cross-linked' } else { 'passed' }
         if (-not (Test-AwjJsonUnsignedInteger $proof.schema) -or $proof.schema -ne 1 -or
             $proof.mode -cne $expectedMode -or $proof.status -cne $expectedStatus -or $proof.source_dirty -ne $false -or
             $proof.version -cne $Version -or $proof.git_head -cne $GitHead -or $proof.source_fingerprint -cne $SourceFingerprint) {
@@ -138,6 +344,29 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
                 throw 'HMOS 预览不得冒充真实目标执行通过。'
             }
             @('cross_build','test_programs_linked','installed_consumers_linked','compiler_identity','target_identity','native_inputs','exports','archive_roundtrip','preview_notice')
+        } elseif ($isHmosCrossBuild) {
+            Assert-AwjJsonFields $proof @('profile','compiler_version','target_triple','validation_tier','target_execution','target_loader',
+                'native_sdk_version','libcxx_abi_namespace','runtime_linkage','library_sha256','build_evidence_sha256',
+                'cross_build_report_sha256','cross_link_consumer_report_sha256','validation_notice_sha256')
+            if ($proof.profile -cne 'hmos-arm64-api26-clang23' -or $proof.compiler_version -cnotmatch '^23\.[0-9]+\.[0-9]+$' -or
+                $proof.target_triple -cne 'aarch64-unknown-linux-ohos' -or $proof.validation_tier -cne 'cross-build' -or
+                $proof.target_execution -cne 'not-run' -or $proof.target_loader -cne 'not-run' -or
+                $proof.native_sdk_version -cne '26.0.0.105' -or $proof.libcxx_abi_namespace -cne '__n1' -or $proof.runtime_linkage -cne 'native-static' -or
+                -not (Test-AwjJsonUnsignedInteger $proof.api) -or $proof.api -ne 26 -or
+                -not (Test-AwjJsonUnsignedInteger $proof.libcxx_version) -or $proof.libcxx_version -ne 15004 -or
+                -not (Test-AwjJsonUnsignedInteger $proof.libcxx_abi_version) -or $proof.libcxx_abi_version -ne 1 -or
+                -not (Test-AwjJsonUnsignedInteger $proof.abi) -or $proof.abi -ne 1) {
+                throw 'HMOS 正式交叉构建范围、目标或未运行状态不匹配。'
+            }
+            foreach ($field in @('library_sha256','build_evidence_sha256','cross_build_report_sha256','cross_link_consumer_report_sha256','validation_notice_sha256')) {
+                if ($proof[$field] -cnotmatch '^[0-9a-f]{64}$') { throw 'HMOS 正式交叉构建摘要无效。' }
+            }
+            if ($proof.cross_build_report_sha256 -cne $proof.build_evidence_sha256) { throw 'HMOS 构建证明必须绑定同一实际附件。' }
+            Assert-AwjHmosNoRuntimeEvidence $proof
+            $hmosChecks = @('cross_build','test_programs_linked','installed_consumers_linked','compiler_identity','target_identity','native_inputs','exports','archive_roundtrip','validation_notice')
+            Assert-AwjHmosVerification $proof $hmosChecks
+            $attachments = @(Assert-AwjHmosCrossBuildAttachments $proof $receipt)
+            $hmosChecks
         } elseif ($proof.kind -ceq 'sdk') {
             Assert-AwjJsonFields $proof @('test_report_sha256','consumer_report_sha256')
             if ($proof.test_report_sha256 -notmatch '^[0-9a-f]{64}$' -or $proof.consumer_report_sha256 -notmatch '^[0-9a-f]{64}$') {
@@ -180,9 +409,9 @@ function Assert-AdditionalReleaseAssets([string[]]$EvidencePaths) {
             (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant() -cne $proof.archive.sha256) {
             throw '附加资产归档与验收记录不匹配。'
         }
-        [pscustomobject]@{name=$proof.archive.name; path=$archive; sha256=$proof.archive.sha256; receipt=$receipt;
-            validation_tier=$(if ($isPreview) { 'cross-build-preview' } elseif ($proof.kind -ceq 'sdk') { 'target-verified' } else { 'source' });
-            receipt_sha256=(Get-FileHash -LiteralPath $receipt -Algorithm SHA256).Hash.ToLowerInvariant()}
+        [pscustomobject]@{name=$proof.archive.name; role=$role; path=$archive; sha256=$proof.archive.sha256; receipt=$receipt;
+            validation_tier=$(if ($isPreview) { 'cross-build-preview' } elseif ($isHmosCrossBuild) { 'cross-build' } elseif ($proof.kind -ceq 'sdk') { 'target-verified' } else { 'source' });
+            attachments=$attachments; receipt_sha256=$receiptSnapshot.sha256}
     }
 }
 
@@ -604,18 +833,7 @@ foreach ($Name in @('AWJ', 'LICENSE', 'NOTICE.txt')) {
 Copy-Item -LiteralPath $WindowsEvidencePath -Destination (Join-Path $Verification 'windows-build.json')
 Copy-Item -LiteralPath $LinuxEvidencePath -Destination (Join-Path $Verification 'linux-build.json')
 Copy-Item -LiteralPath $VerificationReportPath -Destination (Join-Path $Verification 'tests.json')
-$AdditionalVerificationFiles = @(
-    foreach ($Asset in $AdditionalAssets) {
-        $ReceiptName = "verification/$($Asset.name).json"
-        Copy-Item -LiteralPath $Asset.path -Destination (Join-Path $Stage $Asset.name)
-        Copy-Item -LiteralPath $Asset.receipt -Destination (Join-Path $Stage $ReceiptName)
-        if ((Get-FileHash -LiteralPath (Join-Path $Stage $Asset.name) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Asset.sha256 -or
-            (Get-FileHash -LiteralPath (Join-Path $Stage $ReceiptName) -Algorithm SHA256).Hash.ToLowerInvariant() -cne $Asset.receipt_sha256) {
-            throw '附加资产在正式收口期间变化。'
-        }
-        $ReceiptName
-    }
-)
+$AdditionalVerificationFiles = @(Copy-AwjAdditionalReleaseAssets $AdditionalAssets $Stage)
 
 $WindowsSourceDirectory = Split-Path -Parent $WindowsExePath
 $WindowsLicensePath = Assert-File (Join-Path $WindowsSourceDirectory "LICENSE") "Windows LICENSE"
@@ -685,6 +903,8 @@ $HashLines = foreach ($Relative in $HashFiles) {
     "$Hash  $Relative"
 }
 Write-Utf8NoBom (Join-Path $Stage 'SHA256SUMS') (($HashLines -join "`n") + "`n")
+# 验收清单只能封存已验证的相同字节，不能把收口后被替换的附件重新算成新事实。
+Assert-AwjAdditionalAssetCopies $AdditionalAssets $Stage
 $Artifacts = foreach ($Relative in ($HashFiles + @('SHA256SUMS', '.awj-owned-stage.json', 'verification/windows-build.json', 'verification/linux-build.json', 'verification/tests.json') + $AdditionalVerificationFiles)) {
     $Path = Join-Path $Stage $Relative
     [ordered]@{path=$Relative; size=[UInt64](Get-Item -LiteralPath $Path).Length; sha256=(Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()}
@@ -692,7 +912,7 @@ $Artifacts = foreach ($Relative in ($HashFiles + @('SHA256SUMS', '.awj-owned-sta
 [ordered]@{
     schema=1; version=$Version; status='passed'; mode=$(if ($LocalCandidate) { 'local-candidate' } else { 'formal' })
     source_fingerprint=$SourceFingerprint; accepted_at=[DateTimeOffset]::UtcNow.ToString('o'); artifacts=@($Artifacts)
-    release_scope=@{desktop='formal';hmos_sdk=$(if ($HmosSdkPreview) { 'cross-build-preview' } elseif ([version]$Version -ge [version]'1.3.1') { 'target-verified' } else { 'not-included' })}
+    release_scope=@{desktop='formal';hmos_sdk=(Get-AwjHmosReleaseScope $AdditionalAssets)}
     additional_asset_scopes=@($AdditionalAssets | Select-Object name,validation_tier)
 } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath (Join-Path $Verification 'acceptance.json') -Encoding utf8
 $Destination = Publish-AwjVersionStage -RepositoryRoot $Repo -Version $Version -Stage $Stage -PreserveExisting:$PreserveVersionCandidates

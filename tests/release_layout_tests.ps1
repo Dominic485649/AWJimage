@@ -3,7 +3,7 @@ Set-StrictMode -Version Latest
 $Project = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 Import-Module (Join-Path $Project 'scripts/release-safety.psm1') -Force
 Import-Module (Join-Path $Project 'scripts/windows-msvc.psm1') -Force
-$Repo = Join-Path $Project "build/update-1.2.3-work/release-layout-tests-$([Guid]::NewGuid().ToString('N'))"
+$Repo = Assert-AwjBuildPath -RepositoryRoot $Project -Path (Join-Path $Project "build/release-contract-tests/release-layout-$([Guid]::NewGuid().ToString('N'))")
 foreach ($Name in @('cmake', 'build/windows', 'build/linux', 'bin/x64/Release')) {
     [void][IO.Directory]::CreateDirectory((Join-Path $Repo $Name))
 }
@@ -19,7 +19,7 @@ $Errors = $null
 $Ast = [Management.Automation.Language.Parser]::ParseFile((Join-Path $Project 'scripts/package-release.ps1'), [ref]$Tokens, [ref]$Errors)
 if ($Errors.Count) { throw '跨平台打包脚本语法错误。' }
 # 仅加载校验函数。不会执行完整打包、启动假二进制或访问签名密钥。
-foreach ($Name in @('Get-RepoPath', 'Assert-File', 'Assert-Directory', 'Get-NormalizedLockHash', 'Assert-BuildEvidence', 'Assert-VerificationReport', 'Assert-ArchiveMemberList', 'Assert-ExactPackage', 'Assert-AdditionalReleaseAssets')) {
+foreach ($Name in @('ConvertTo-AwjReleaseVersion', 'Test-AwjHmosCrossBuildPolicy', 'Read-AwjReleaseJsonSnapshot', 'Assert-AwjHmosNoRuntimeEvidence', 'Assert-AwjHmosVerification', 'Assert-AwjHmosCrossBuildAttachments', 'Get-AwjHmosReleaseScope', 'Get-RepoPath', 'Assert-File', 'Assert-Directory', 'Get-NormalizedLockHash', 'Assert-BuildEvidence', 'Assert-VerificationReport', 'Assert-ArchiveMemberList', 'Assert-ExactPackage', 'Assert-AdditionalReleaseAssets')) {
     $Node = $Ast.Find({ param($Node) $Node -is [Management.Automation.Language.FunctionDefinitionAst] -and $Node.Name -ceq $Name }, $true)
     if (-not $Node) { throw "缺少校验函数：$Name" }
     . ([scriptblock]::Create($Node.Extent.Text))

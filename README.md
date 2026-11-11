@@ -82,7 +82,9 @@ AVIF 静态图可通过 `--avif-progressive` 使用自动两层渐进，或在 C
 
 提供 Windows / Linux 动态 SDK，C / C++ 项目通过同一套 C 头接入。支持 CPU 图像帧、共享内存、可选 FFmpeg 帧桥接和 Windows D3D11 纹理，直接返回内存编码结果；附 CMake package、`awj-stream` 和集成示例。Windows SDK 使用 MSVC，Linux SDK 使用 Clang 23，提供 C99 / C++11 / C++17 消费示例。
 
-从同一 Release 下载 `AWJ_SDK_Win_x64.zip` 或 `AWJ_SDK_Linux_x64.tar.gz`。接入契约、复制诊断、色彩和平台要求见 [SDK 文档](docs/sdk.md)。
+另提供 HMOS ARM64/API26 的完整 CPU C ABI SDK。自 1.3.5 起，HMOS 按正式交叉构建验收发行，保留目标程序与消费者链接、导出、许可及归档校验；真机加载与执行未验证。
+
+从同一 Release 下载 `AWJ_SDK_Win_x64.zip`、`AWJ_SDK_Linux_x64.tar.gz` 或 `AWJ_SDK_HMOS_arm64_api26.tar.gz`。接入契约、复制诊断、色彩和平台要求见 [SDK 文档](docs/sdk.md)。
 
 ## 构建
 

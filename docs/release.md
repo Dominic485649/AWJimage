@@ -38,22 +38,38 @@
 
 正式 Windows／Linux 从同一干净源码提交构建，保留 AVX2／x86-64-v3、IPO/LTO、既定运行库和完整许可证。Linux 正式包要求匹配版本 tag；本地候选不能通过 `SkipManifests` 混入正式入口。
 
-正式 `scripts/package-release.ps1` 仍需渠道、递增 manifest sequence、受信密钥环、发布委派 key ID、公钥、仓库外 seed 与到期时间。验证签名及本地归档后，才由明确授权的发布步骤创建 tag／GitHub Release；上传后以本地最终产物哈希与已认证的平台附件清单、大小、状态及可用摘要核对，不下载已上传附件或匿名流式读取附件作验证，未执行的下载或匿名可访问性检查保持未执行。最后提交与实际资产匹配的更新清单及签名。
+正式 `scripts/package-release.ps1` 仍需渠道、递增 manifest sequence、受信密钥环、发布委派 key ID、公钥、仓库外 seed 与到期时间。最终源码稳定并完成相应验证后，先按用户授权创建精确本地版本 tag，供 SDK 与对应源码门禁绑定；tag 不因后续元数据提交而移动。验证签名及本地归档后，才由另行明确授权的发布步骤推送 tag／创建 GitHub Release；上传后以本地最终产物哈希与已认证的平台附件清单、大小、状态及可用摘要核对，不下载已上传附件或匿名流式读取附件作验证，未执行的下载或匿名可访问性检查保持未执行。最后提交与实际资产匹配的更新清单及签名。
 
 Windows 应用与 SDK 均使用真正的 MSVC `cl.exe`，不以 clang-cl 或 MSVC ABI 兼容替代。应用入口 `release.ps1 -Generator Ninja -BuildTests -SkipUpdateManifest` 自动定位 MSVC；默认 VS 2026 生成器同样保留。SDK 使用 `scripts/build-sdk.ps1`。两者启用完整 Release 优化、`/GL` 和最终 `/LTCG`；应用保持 AVX2，SDK 保留 x64 部署基线。更换编译器须隔离旧 Clang 的 BMI/对象/构建树；只复用身份和编译条件匹配的源码及依赖。正式入口继续要求干净 tag、静态运行库与实际 MSVC/优化证据。
 
 ### SDK 与对应源码（1.3.0 起）
 
-- 1.3.1 使用严格独立 profile：Windows SDK 为 `windows-x64-msvc`，Linux 为 `linux-x64-clang23`，HMOS 为 `hmos-arm64-api26-clang23`。各平台在原生 host 运行 `scripts/package-sdk-release.cmake`，显式提供 `TARGET_PROFILE`，并传入 `WORK_ROOT`、`INSTALL_DIRECTORY`、全新的 `OUTPUT_DIRECTORY`、实际 `BUILD_EVIDENCE` 和 CTest `TEST_REPORT`。Windows 的 `MSVC_DIRECTORY` 指定可信 cl.exe/link.exe 目录；`LLVM_DIRECTORY` 在 Windows 只提供 LLVM23 二进制检查工具，在 Linux/HMOS 同时提供 Clang23 编译器。仅 1.3.0 保留旧 Clang21 兼容 profile。
-- 构建记录必须包含同一干净 tag 的提交、源码指纹、编译器版本、完整 native codecs 状态、实际库 SHA-256 与对应 JUnit SHA-256。打包器在归档回解位置核对 C 导出，构建 C99/C++11/C++17 消费者并按目标执行，执行迁移后的 `awj-stream`，核对成员、符号链接与内容摘要。
+- 1.3.1 起使用严格独立 profile：Windows SDK 为 `windows-x64-msvc`，Linux 为 `linux-x64-clang23`，HMOS 为 `hmos-arm64-api26-clang23`。各平台在原生 host 运行 `scripts/package-sdk-release.cmake`，显式提供 `TARGET_PROFILE`，并传入 `WORK_ROOT`、`INSTALL_DIRECTORY`、全新的 `OUTPUT_DIRECTORY` 和实际 `BUILD_EVIDENCE`；Windows/Linux 另传真实 CTest `TEST_REPORT`，1.3.5 起的 HMOS 按下述跨构建契约传递实际构建与链接输入。Windows 的 `MSVC_DIRECTORY` 指定可信 cl.exe/link.exe 目录；`LLVM_DIRECTORY` 在 Windows 只提供 LLVM23 二进制检查工具，在 Linux/HMOS 同时提供 Clang23 编译器。仅 1.3.0 保留旧 Clang21 兼容 profile。
+- 构建记录必须绑定同一干净 tag 的提交、源码指纹、真实编译器与有效配置、完整 native codecs、实际库及对应报告摘要。Windows/Linux 在归档回解位置核对 C 导出，真实构建并运行 C99/C++11/C++17 消费者和迁移后的 `awj-stream`，真实 JUnit 的失败/跳过/缺项均拒绝；HMOS 按明确的跨构建验收层核对链接，不以桌面运行记录替代。
 - `scripts/package-source-release.ps1 -OutputDirectory <本项目build下的新目录>` 从正式提交生成对应源码归档，并校验版本及 SDK、构建脚本和许可成员。
 - 将 SDK 与源码的 `asset-evidence.json` 一起传入正式应用打包器的 `-AdditionalAssetEvidencePaths`。1.3.0 固定双平台 SDK 与源码三个角色；1.3.1 起固定 Windows/Linux/HMOS 三份 SDK 与源码四个角色，未知、重复、缺失及大小写变体均拒绝。统一生成七项资产、SHA256SUMS 与 acceptance.json，应用更新包的成员白名单不变。
+
+- 版本目录已有候选且路径被其他任务引用时，可显式传 `-PreserveVersionCandidates`：只向版本根投放全新正式成员，任何同名目标均拒绝，保留既有候选原路径；不删除、迁移或覆盖候选。
+
+#### HMOS 长期跨构建发行（1.3.5 起）
+
+2026-11-11 用户明确决定：后续 HMOS 发行不再以真机校验为前置条件。版本 ≥ 1.3.5 且精确 profile 为 `hmos-arm64-api26-clang23` 时，正式 SDK 入口自动选择 `cross-build`，不再逐版本申请预览白名单；Windows/Linux 仍为 `target-verified`。
+
+- 保留干净精确 tag、真实 Clang23/Native26、有效 Release/IPO 配置、原静态运行库、完整五编码器、七个实际目标可执行程序和三个归档回解消费者的交叉链接、精确 C 导出、完整许可、成员白名单及归档往返摘要。
+- 新 HMOS 角色保持 `sdk:hmos-arm64-api26`，回执使用 `mode=formal`、`status=cross-linked`、`validation_tier=cross-build`；目标执行和 loader 均明确为 `not-run`。`passed` 的构建/链接/归档检查不表示设备运行通过。
+- 真实构建入口产生 `hmos-build.json`，归档回解的三个消费者链接产生 `hmos-cross-link-consumers.json`。SDK-BUILD 与外部回执绑定两份普通附件、同一源码/库及其摘要；最终归档再次回解验证，不重写旧报告迁就输出。
+- 包内 `VALIDATION.txt` 中英说明验收范围。该路径不要求或接收伪装成目标运行通过的 JUnit、runner 或 loader 报告；不得用 host 结果冒充 HMOS。源、目标配置、Native/resource 输入和编译/链接过程仍须真实、可追溯。
+- 资产文件名、三个 SDK 与对应源码四角色、公开七项资产，以及签名、有效期、sequence、防回放和上传后非下载核验规则保持不变。
+
+#### HMOS 历史正式与预览规则（1.3.5 之前）
+
+以下保留历史批准范围原文；其设备运行前置条件和“其他版本不继承”只描述当时规则，不覆盖上述新长期政策。
+
 - HMOS 正式打包另提供 `TARGET_CMAKE_TOOLCHAIN_FILE`、`TARGET_NATIVE_SDK_DIRECTORY`、`TARGET_LINK_MAP`，在进程环境设置匹配的 `AWJ_OHOS_NATIVE_ROOT`、`AWJ_OHOS_RESOURCE_DIR`、`AWJ_OHOS_LLVM_ROOT`；仅从可信 CLI 路径调用 compiler/runner。`TARGET_RUNNER` 与 `TARGET_EXECUTION_EVIDENCE` 二选一，证据必须含真实目标 SDK 测试、三个安装消费者及 loader 原始记录，不接受宿主通过或单独的 passed 字段。
 - HMOS 使用无版本实际文件 `libawj_sdk.so`，仅 CPU C 头及完整五编码器；按能力检查，不强求桌面 SHM/stream。所有源、库、工具链、Native 静态运行库、link map 与目标报告均绑定摘要。缺少目标运行门禁时完成其他本地版本化交付，但不发布承诺三平台支持的正式版本。
 - **1.3.1 的明确范围例外（2026-11-01 用户批准）**：Windows/Linux 应用与 SDK 正式发布，HMOS SDK 作为交叉构建预览。预览使用独立的 `scripts/package-hmos-preview.cmake`，要求干净精确 tag、实际编译器、原始 Native 输入、最终库、七个目标程序、三个回解包消费者的交叉链接和包内 `PREVIEW.txt`。回执使用 `kind=sdk-preview`、`mode=preview`、`status=cross-linked`、`validation_tier=cross-build-preview`，目标执行与 loader 均为 `not-run`，不得携带 JUnit 或运行通过摘要。该版本总打包器仅在显式传 `-HmosSdkPreview` 时接收这一独立角色；未显式选择或未经另行授权的版本继续执行原正式 HMOS 门禁。文案、SDK-BUILD 和下载说明统一标明预览，其他来源、优化、归档、签名和防回放门禁不变。
 - **1.3.3 的明确范围例外（2026-11-07 用户批准）**：Windows/Linux 应用与 SDK 正式发布，HMOS ARM64/API26 SDK 作为交叉构建预览。使用相同的独立预览入口和 `-HmosSdkPreview` 显式选择，要求本版本干净精确 tag、真实 Clang 23 Release/IPO、Native 输入、最终库、七个目标程序及归档回解后三个消费者的交叉链接和导出审计。目标执行与 loader 均标记 `not-run`，不接收或伪造运行通过报告；其他版本不继承此例外。
 - **1.3.4 的明确范围例外（2026-11-07 用户批准）**：Windows/Linux 应用与 SDK 正式发布，HMOS ARM64/API26 SDK 为交叉构建预览。只为本版本增加显式白名单，沿用真实 Clang 23 Release/IPO、Native 输入、完整五编码器、七个目标程序与三个回解包消费者的交叉链接及导出审计。包内及双语 Release 说明均标记真机加载与执行未验证；不接收伪造的 JUnit/目标运行通过报告，其他版本的默认正式门禁不变。
-- 版本目录已有候选且路径被其他任务引用时，可显式传 `-PreserveVersionCandidates`：只向版本根投放全新正式成员，任何同名目标均拒绝，保留既有候选原路径；不删除、迁移或覆盖候选。
 
 ### main 与旧版更新入口
 

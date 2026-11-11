@@ -6,8 +6,10 @@ function Initialize-AwjMsvcToolchain {
     $PSNativeCommandUseErrorActionPreference = $false
     $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
     if (-not (Test-Path -LiteralPath $vswhere -PathType Leaf)) { throw '缺少 Windows C++ 工具链定位器。' }
-    $vs = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath).Trim()
-    if ($LASTEXITCODE -ne 0 -or -not $vs) { throw '没有找到 MSVC 工具链。' }
+    $located = @(& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath)
+    $locatorExit = $LASTEXITCODE
+    $vs = ($located -join "`n").Trim()
+    if ($locatorExit -ne 0 -or -not $vs) { throw '没有找到完整可用的 MSVC 工具链；请先完成 Visual Studio C++ 工具安装。' }
     $devcmd = Join-Path $vs 'Common7/Tools/VsDevCmd.bat'
     $env:PATH = (Split-Path $vswhere -Parent) + ';' + $env:PATH
     $environment = & $env:ComSpec /d /c "call `"$devcmd`" -no_logo -arch=amd64 -host_arch=amd64 >nul && set"
@@ -92,6 +94,9 @@ function Assert-AwjMsvcReleaseEvidence {
             throw 'MSVC Release 包含覆盖优化、静态运行库或浮点契约的参数。'
         }
         if ($MinimumCpu -and $target.minimum_cpu -cne $MinimumCpu) { throw 'MSVC 目标最低 CPU 与交付 profile 不一致。' }
+        if ($target.minimum_cpu -ceq 'x64' -and @($target.compile_flags | Where-Object { $_ -match '^[/-]arch:' }).Count) {
+            throw 'MSVC SDK x64 基线不得携带提高或改写最低指令集的架构参数。'
+        }
         if ($target.minimum_cpu -ceq 'AVX2' -and '/arch:AVX2' -cnotin $target.compile_flags) {
             throw 'MSVC 应用缺少实际 AVX2 参数。'
         }

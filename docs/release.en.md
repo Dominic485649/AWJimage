@@ -15,13 +15,27 @@ Local candidates use explicit `-LocalCandidate` / `--local-candidate` modes. `-S
 
 ## SDK and corresponding source (1.3.0+)
 
-Use the explicit `windows-x64-msvc`, `linux-x64-clang23` and `hmos-arm64-api26-clang23` profiles for 1.3.1 and later. Only 1.3.0 retains the historical Clang 21 profile. Install only the `AWJimageSDK` component. On each native host, run `scripts/package-sdk-release.cmake` with `TARGET_PROFILE`, `WORK_ROOT`, `INSTALL_DIRECTORY`, a new `OUTPUT_DIRECTORY`, actual `BUILD_EVIDENCE` and CTest `TEST_REPORT`. Windows provides `MSVC_DIRECTORY` for production compiler identity and `LLVM_DIRECTORY` only for binary inspection.
+Use the explicit `windows-x64-msvc`, `linux-x64-clang23` and `hmos-arm64-api26-clang23` profiles for 1.3.1 and later. Only 1.3.0 retains the historical Clang 21 profile. Install only the `AWJimageSDK` component. On each native host, run `scripts/package-sdk-release.cmake` with `TARGET_PROFILE`, `WORK_ROOT`, `INSTALL_DIRECTORY`, a new `OUTPUT_DIRECTORY` and actual `BUILD_EVIDENCE`. Windows/Linux also require a real CTest `TEST_REPORT`; HMOS 1.3.5+ supplies the actual build and link inputs required by the cross-build contract below. Windows provides `MSVC_DIRECTORY` for production compiler identity and `LLVM_DIRECTORY` only for binary inspection.
 
-The build record binds the clean tag, commit, normalized source fingerprint, compiler identity, native-codec configuration, actual library hash and JUnit hash. Packaging verifies the local archive round trip, links and exact C exports, then builds and runs installed C99/C++11/C++17 consumers and the relocated stream tool. Cross-linking alone is not target execution.
+Build records bind the same clean tag, commit, normalized source fingerprint, real compiler and effective configuration, native codecs, library and applicable report hashes. Windows/Linux packaging checks the local archive round trip and exact C exports, then builds and runs installed C99/C++11/C++17 consumers and the relocated stream tool. Failed, skipped or missing JUnit cases remain errors. HMOS uses its explicit linking-based validation tier; desktop execution records cannot stand in for it.
 
 `scripts/package-source-release.ps1 -OutputDirectory <new-project-build-directory>` archives the formal source commit and checks the version, SDK, build scripts and license members.
 
 Pass all generated `asset-evidence.json` files to the application packager using `-AdditionalAssetEvidencePaths`. Version 1.3.0 requires Windows/Linux SDKs and corresponding source; 1.3.1 and later require Windows/Linux/HMOS SDK roles and corresponding source. Unknown, duplicate or missing roles are rejected. The application archives, three SDK archives, source and SHA256SUMS form seven release assets; application-update member whitelists stay unchanged.
+
+### HMOS cross-build releases from 1.3.5
+
+On 2026-11-11 the user authorized future HMOS releases without on-device validation as a prerequisite. Version 1.3.5 and later, with the exact `hmos-arm64-api26-clang23` profile, automatically use `cross-build` acceptance in the formal SDK entry. No per-version preview exception is needed; Windows/Linux remain `target-verified`.
+
+- Preserve the clean exact tag, real Clang 23/Native 26 inputs and effective Release/IPO configuration, original static runtime, five codecs, seven actual target executables, three archive-extracted cross-linked consumers, exact C exports, full licenses, member whitelist and archive round-trip hashes.
+- The role remains `sdk:hmos-arm64-api26`, with `mode=formal`, `status=cross-linked` and `validation_tier=cross-build`. Target execution and loader are explicitly `not-run`. Passed build, link and archive checks do not claim device execution.
+- The build entry produces `hmos-build.json`; archive-extracted consumer linking produces `hmos-cross-link-consumers.json`. SDK-BUILD and the external receipt bind these ordinary-file attachments, their hashes and the same source/library. Re-extract and verify the final archive without rewriting earlier reports to match different output.
+- Package `VALIDATION.txt` explains the tier in both languages. This path does not require or accept JUnit, runner or loader reports pretending that target execution passed. Source, effective target configuration, Native/resource inputs and the actual compilation/linking process remain traceable.
+- The three SDKs and corresponding source retain their four roles. The seven public assets, signing, expiry, sequence, anti-replay and authenticated non-download upload verification remain unchanged.
+
+### Historical HMOS rules before 1.3.5
+
+The following preserves the historical acceptance and per-version exceptions. Its on-device prerequisites and statements that other versions do not inherit a preview describe those earlier versions, not the new policy above.
 
 Formal HMOS acceptance requires actual target SDK tests, three installed consumers and loader evidence bound to the source, library, Native SDK, link map and raw logs. Host tests, ordinary Linux QEMU and cross-linking do not substitute for that gate.
 

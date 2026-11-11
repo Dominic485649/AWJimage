@@ -1,4 +1,4 @@
-# AWJimage 1.3.4 C ABI SDK
+# AWJimage 1.3.5 C ABI SDK
 
 本 SDK 接收其他软件主动提交的图像帧，直接处理 CPU 内存、Windows D3D11 纹理、共享内存槽位或二进制帧流。它不附带录屏选择器、WGC capture session、视频播放器或完整 FFmpeg 解码器，也不能无侵入读取任意软件的私有内存。“任何软件”指能够按平台 C ABI 和资源所有权契约集成 SDK 的软件，不等于支持未知像素布局或任意地址。
 
@@ -16,7 +16,7 @@
 | 真实 WGC、物理 GPU HDR、跨设备共享 | 未验证；WARP 不替代这些结果 |
 | FFmpeg | 可选桥接，按精确 libavutil 头版本构建；Windows DLL 与 Linux `.so` 分别验证，不混用证据；未验证实际 D3D11 解码会话 |
 | Linux x86_64，WSL Clang 23 | 1.3.1 使用独立原生 Clang23 构建；保留匿名共享内存、FFmpeg、帧流与只读页适配，执行记录随包保存 |
-| HMOS ARM64/API26，WSL Clang23 + Native26.0.0.105 | 1.3.4 以交叉构建预览交付完整 CPU C ABI SDK；目标头与原始静态 libc++15004/ABI1/__n1 配对，真机加载与执行待验证；正式目标验证入口保持独立 |
+| HMOS ARM64/API26，WSL Clang23 + Native26.0.0.105 | 自 1.3.5 起以正式交叉构建验收发行完整 CPU C ABI SDK；目标头与原始静态 libc++15004/ABI1/__n1 配对，核对目标程序及消费者链接、导出与归档；真机加载与执行未验证 |
 
 1.3.0 已纳入固定的 1.2.6。开发主线采用 `main`，历史版本通过 tag 保留；旧 `master` 兼容入口已取消，不再维护双分支同步。正式包由同一干净源码提交构建，应用与 SDK 独立分发。
 
@@ -99,6 +99,14 @@ bash scripts/build-hmos-sdk.sh --work-root "$HOME/AWJimage" --native-sdk "$AWJ_O
 OHOS 私有兼容层使用固定 tl::expected 与 fmt，补齐实际使用的 expected、宽字符 UTC 格式化、有限 ranges 算法、共享轮询取消状态及 join 型 worker。桌面保留标准实现；错误赋值先拥有目标 string 类型，worker 的内存失败记录不二次分配，全部 join 后才翻译错误。私有依赖不安装为公共 C++ 接口，许可及固定源码摘要随源码保留。
 
 HMOS 安装仅提供 awj.h、真正的 libawj_sdk.so、CMake package、示例和许可；保持 C ABI v1，CPU 编码覆盖 PNG/JPEGli/WebP/AVIF/JXL。D3D11、桌面 SHM、GPU 指标、FFmpeg 桥接及流 CLI 在本 profile 关闭。ArkTS Node-API、PixelMap/NativeBuffer 和 HAP 收集加载另行验证，不能由 `.so` 链接成功推断。
+
+自 **1.3.5 起，HMOS 采用正式交叉构建发行**，不再把真机测试、目标消费者执行或 loader 运行作为发布前置条件。Windows/Linux 的实际运行验收保持不变。HMOS 仍须从同一干净精确 tag 真实构建，核对可信 Clang23、Native 输入与静态运行库、完整五编码器、七个目标程序、三个回解包消费者的交叉链接、精确 C 导出、完整许可和归档往返摘要。
+
+HMOS 回执使用 `kind=sdk`、`mode=formal`、`status=cross-linked`、`validation_tier=cross-build`；`target_execution`、`target_loader` 均为 `not-run`。包内 `VALIDATION.txt` 说明这一验收层级，构建证明和消费者链接报告分别绑定源码、实际库与链接产物。不能用宿主 JUnit 或伪造的目标运行通过字段代替交叉构建证据，也不能将此包描述成已通过真机验证。
+
+#### 1.3.5 之前的 HMOS 历史规则
+
+以下保留旧版范围说明；其中的真机前置门禁和逐版本预览例外只适用于当时版本，不覆盖上述 1.3.5 起的新政策。
 
 正式 HMOS 包要求真实华为目标或匹配官方运行环境的消费者、完整 SDK 测试及加载证据，并绑定本次库、源码、系统 build 和原始日志。Linux 宿主测试、普通 Linux QEMU 和交叉链接都不能替代；缺少目标执行证据时保留本地候选，阻止承诺正式目标支持的发布。
 

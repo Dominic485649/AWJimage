@@ -305,3 +305,13 @@ if(BUILD_TESTING)
     endif()
     add_custom_target(awj_sdk_validation DEPENDS ${AWJ_SDK_CHECK_TARGETS})
 endif()
+
+# 只保留 RECORD_MODE 一个入口；旧的混合接口不能静默产生另一套证明。
+if(DEFINED AWJ_HMOS_BUILD_MODE)
+    message(FATAL_ERROR "请移除 AWJ_HMOS_BUILD_MODE，使用 build-hmos-sdk.sh 的 RECORD_MODE 入口")
+endif()
+# 只在新的 HMOS 来源采集入口启用，不改桌面或历史预览的目标配置。
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND DEFINED AWJ_HMOS_RECORD_MODE)
+    include("${AWJ_SDK_SOURCE_ROOT}/cmake/sdk-hmos-cross-build.cmake")
+    awj_sdk_hmos_generate_build_manifest()
+endif()

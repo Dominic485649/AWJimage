@@ -8,10 +8,12 @@ if (Test-Path -LiteralPath $output) { throw '源码正式输出目录必须全�
 $version = ([IO.File]::ReadAllText((Join-Path $root 'VERSION'))).Trim()
 $head = (git -C $root rev-parse HEAD).Trim()
 if ($LASTEXITCODE) { throw '读取源码 HEAD 失败。' }
-$status = @(git -C $root status --porcelain=v1)
+$status = @(git -C $root status --porcelain=v1 --untracked-files=all)
 if ($LASTEXITCODE -or $status.Count) { throw '源码归档要求干净的正式提交。' }
 $tag = (git -C $root describe --exact-match --tags HEAD).Trim()
 if ($LASTEXITCODE -or $tag -cne $version) { throw '源码归档要求匹配 VERSION 的 tag。' }
+$tagCommit = (git -C $root rev-parse --verify "refs/tags/${version}^{commit}").Trim()
+if ($LASTEXITCODE -or $tagCommit -cne $head) { throw '源码版本 tag 未绑定当前提交。' }
 $fingerprint = Get-AwjSourceFingerprint -RepositoryRoot $root
 [void][IO.Directory]::CreateDirectory($output)
 $name = "AWJimage-$version-source.zip"
@@ -37,8 +39,11 @@ try {
     try { if ($reader.ReadToEnd().Trim() -cne $version) { throw '源码归档版本不匹配。' } }
     finally { $reader.Dispose() }
 } finally { $zip.Dispose() }
-if ((git -C $root rev-parse HEAD).Trim() -cne $head -or @(git -C $root status --porcelain=v1).Count -or
-    (Get-AwjSourceFingerprint -RepositoryRoot $root) -cne $fingerprint) { throw '源码在归档期间发生变化。' }
+$finalTagCommit = (git -C $root rev-parse --verify "refs/tags/${version}^{commit}").Trim()
+if ($LASTEXITCODE -or $finalTagCommit -cne $tagCommit -or
+    (git -C $root rev-parse HEAD).Trim() -cne $head -or
+    @(git -C $root status --porcelain=v1 --untracked-files=all).Count -or
+    (Get-AwjSourceFingerprint -RepositoryRoot $root) -cne $fingerprint) { throw '源码或版本 tag 在归档期间发生变化。' }
 [ordered]@{
     schema=1; kind='source'; mode='formal'; status='passed'; platform='source'; version=$version
     git_head=$head; source_dirty=$false; source_fingerprint=$fingerprint

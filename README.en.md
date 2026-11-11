@@ -82,7 +82,9 @@ The default collision policy is **Append number**: existing outputs produce `nam
 
 Windows / Linux dynamic SDKs provide one set of C headers for C / C++ integration. Submit CPU frames, shared-memory frames, optional FFmpeg frames or Windows D3D11 textures and receive encoded results in memory. Packages include CMake files, `awj-stream` and integration examples. Windows SDK builds use MSVC and Linux SDK builds use Clang 23, with C99 / C++11 / C++17 consumer examples.
 
-Download `AWJ_SDK_Win_x64.zip` or `AWJ_SDK_Linux_x64.tar.gz` from the same Release. See the [SDK documentation](docs/sdk.md) for integration, copy diagnostics, color and platform requirements.
+A complete CPU C ABI SDK is also provided for HMOS ARM64/API26. Starting with 1.3.5, HMOS uses formal cross-build release acceptance, retaining target-program and consumer linking, export, license and archive checks. On-device loading and execution are not verified.
+
+Download `AWJ_SDK_Win_x64.zip`, `AWJ_SDK_Linux_x64.tar.gz` or `AWJ_SDK_HMOS_arm64_api26.tar.gz` from the same Release. See the [SDK documentation](docs/sdk.md) for integration, copy diagnostics, color and platform requirements.
 
 ## Build
 

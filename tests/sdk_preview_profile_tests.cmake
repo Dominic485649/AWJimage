@@ -2,16 +2,7 @@ cmake_minimum_required(VERSION 3.30)
 # 仅为元数据/ELF 文本契约夹具，不是编译器、SDK 或设备运行证据。
 get_filename_component(repo "${CMAKE_CURRENT_LIST_DIR}/.." REALPATH)
 include("${repo}/cmake/sdk-preview-profile.cmake")
-if(NOT TEST_ROOT OR NOT IS_ABSOLUTE "${TEST_ROOT}")
-    message(FATAL_ERROR "指定本项目全新的 TEST_ROOT")
-endif()
-get_filename_component(parent "${TEST_ROOT}" DIRECTORY)
-get_filename_component(leaf "${TEST_ROOT}" NAME)
-file(REAL_PATH "${parent}" parent)
-file(REAL_PATH "${repo}/build/release-1.3.1/20261101" allowed)
-if(NOT parent STREQUAL allowed OR NOT leaf MATCHES "^preview-profile-tests-[A-Za-z0-9_.-]+$")
-    message(FATAL_ERROR "预览夹具根必须位于本轮项目验证目录")
-endif()
+awj_sdk_fixture_root("${TEST_ROOT}" preview-profile-tests TEST_ROOT)
 if(NOT CASE)
     if(EXISTS "${TEST_ROOT}")
         message(FATAL_ERROR "保留旧预览夹具，不覆盖")
@@ -20,7 +11,7 @@ if(NOT CASE)
     file(WRITE "${TEST_ROOT}/FIXTURE-ONLY.txt" "Synthetic metadata/ELF-text fixtures only; no SDK, compiler or device execution.\n")
     set(cases
         "positive-proof|PASS" "positive-program|PASS" "positive-helper-program|PASS"
-        "scope-version|预览范围" "scope-platform|预览范围"
+        "scope-version|预览范围" "scope-platform|预览范围" "scope-new-version|预览范围" "positive-historical-versions|PASS"
         "proof-mode|mode" "proof-status|status" "proof-kind|kind" "proof-tier|validation_tier"
         "proof-platform|platform" "proof-runtime|target_execution" "proof-loader|target_loader"
         "proof-junit|运行验收字段" "proof-consumer-report|运行验收字段" "proof-target-report|运行验收字段"
@@ -69,6 +60,12 @@ set(proof "{\"schema\":1,\"kind\":\"hmos-cross-build\",\"mode\":\"preview\",\"st
 set(binary "Format: elf64-littleaarch64\nArch: aarch64\nAddressSize: 64bit\nType: SharedObject (0x3)\nFLAGS_1 NOW PIE\nNeededLibraries [\nlibawj_sdk.so\nlibc.so\n]\n")
 if(CASE STREQUAL "scope-version")
     awj_sdk_require_hmos_preview_scope(1.3.2 p)
+elseif(CASE STREQUAL "scope-new-version")
+    awj_sdk_require_hmos_preview_scope(1.3.5 p)
+elseif(CASE STREQUAL "positive-historical-versions")
+    foreach(historical IN ITEMS 1.3.1 1.3.3 1.3.4)
+        awj_sdk_require_hmos_preview_scope("${historical}" p)
+    endforeach()
 elseif(CASE STREQUAL "scope-platform")
     awj_sdk_select_profile(1.3.1 linux-x64-clang23 Linux x86_64 p)
     awj_sdk_require_hmos_preview_scope(1.3.1 p)

@@ -3,17 +3,7 @@ cmake_minimum_required(VERSION 3.30)
 # explicitly synthetic; this is NOT a formal SDK, compiler, codec or device test.
 get_filename_component(repo "${CMAKE_CURRENT_LIST_DIR}/.." REALPATH)
 include("${repo}/cmake/sdk-release-profiles.cmake")
-if(NOT TEST_ROOT OR NOT IS_ABSOLUTE "${TEST_ROOT}")
-    message(FATAL_ERROR "指定全新的绝对 TEST_ROOT=build/release-1.3.1/20261101/profile-tests-*")
-endif()
-get_filename_component(parent "${TEST_ROOT}" DIRECTORY)
-get_filename_component(leaf "${TEST_ROOT}" NAME)
-file(REAL_PATH "${parent}" parent)
-file(REAL_PATH "${repo}/build/release-1.3.1/20261101" allowed_parent)
-if(NOT IS_DIRECTORY "${parent}" OR NOT parent STREQUAL allowed_parent OR NOT leaf MATCHES "^profile-tests-[A-Za-z0-9_.-]+$")
-    message(FATAL_ERROR "profile 测试根必须是本项目批准的隔离目录")
-endif()
-set(TEST_ROOT "${parent}/${leaf}")
+awj_sdk_fixture_root("${TEST_ROOT}" profile-tests TEST_ROOT)
 
 if(NOT CASE)
     if(EXISTS "${TEST_ROOT}")
@@ -23,6 +13,8 @@ if(NOT CASE)
     file(WRITE "${TEST_ROOT}/FIXTURE-ONLY.txt" "Synthetic profile/metadata contract fixtures only. No SDK release, codec build, native consumer execution, or device verification.\n")
     set(cases
         "positive-profiles|PASS"
+        "validation-tier-policy|PASS"
+        "desktop-report-required|证据文件不存在"
         "msvc-positive|PASS"
         "msvc-clang-banner|MSVC"
         "msvc-incomplete-banner|MSVC"
@@ -248,7 +240,26 @@ function(fixture_msvc_toolchain out)
     set(${out} "${toolchain}" PARENT_SCOPE)
 endfunction()
 
-if(CASE STREQUAL "positive-profiles")
+if(CASE STREQUAL "validation-tier-policy")
+    foreach(v IN ITEMS 1.3.4 1.3.5 1.3.6 1.10.0 2.0.0)
+        awj_sdk_select_profile("${v}" hmos-arm64-api26-clang23 Linux x86_64 h)
+        awj_sdk_select_profile("${v}" linux-x64-clang23 Linux x86_64 l)
+        awj_sdk_select_profile("${v}" windows-x64-msvc Windows AMD64 w)
+        if(v VERSION_LESS 1.3.5)
+            set(expected target-verified)
+        else()
+            set(expected cross-build)
+        endif()
+        if(NOT h_validation_tier STREQUAL expected OR NOT l_validation_tier STREQUAL "target-verified" OR
+            NOT w_validation_tier STREQUAL "target-verified")
+            message(FATAL_ERROR "正式 SDK 版本/profile 验收边界变化")
+        endif()
+    endforeach()
+elseif(CASE STREQUAL "desktop-report-required")
+    awj_sdk_select_profile(1.3.5 linux-x64-clang23 Linux x86_64 desktop)
+    awj_sdk_required_tests(desktop desktop_required)
+    awj_sdk_validate_junit("${case_root}/missing-runtime-report.xml" "${desktop_required}")
+elseif(CASE STREQUAL "positive-profiles")
     awj_sdk_select_profile(1.3.0 "" Windows AMD64 w)
     awj_sdk_select_profile(1.3.0 "" Linux x86_64 l)
     if(NOT w_legacy OR NOT l_legacy OR NOT l_major EQUAL 21)

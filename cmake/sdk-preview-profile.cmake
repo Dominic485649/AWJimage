@@ -1,5 +1,5 @@
 include_guard(GLOBAL)
-include("${CMAKE_CURRENT_LIST_DIR}/sdk-release-profiles.cmake")
+include("${CMAKE_CURRENT_LIST_DIR}/sdk-hmos-cross-build.cmake")
 
 # 此入口只实现用户分别明确批准的 1.3.1、1.3.3、1.3.4 HMOS 组件预览范围。
 # 原有正式 SDK 的 JUnit、目标运行与 loader 门禁保持不变。
@@ -11,11 +11,8 @@ function(awj_sdk_require_hmos_preview_scope version prefix)
 endfunction()
 
 function(awj_sdk_hmos_preview_program_names out)
-    set(${out}
-        awj_sdk_tests awj_sdk_c_consumer awj_sdk_encode_tests
-        awj_sdk_pixel_tests awj_sdk_yuv_readonly_tests
-        awj_sdk_stdlib_tests awj_sdk_worker_failure_tests
-        PARENT_SCOPE)
+    awj_sdk_hmos_program_names(names)
+    set(${out} "${names}" PARENT_SCOPE)
 endfunction()
 
 function(awj_sdk_validate_hmos_preview_proof proof prefix version head fingerprint library_hash compiler_version compiler_hash programs build_log_hash)
@@ -87,35 +84,5 @@ endfunction()
 # 七个目标程序包含独立兼容辅助测试；允许未导入 SDK 的辅助程序，
 # 但都必须是真实 AArch64 ELF 可执行映像及原 Native 运行库闭包。
 function(awj_sdk_check_hmos_preview_program_text text)
-    if(NOT text MATCHES "Format: elf64-littleaarch64[\r\n]" OR
-            NOT text MATCHES "Arch: aarch64[\r\n]" OR
-            NOT text MATCHES "AddressSize: 64bit" OR
-            NOT text MATCHES "Type: (SharedObject|Executable)")
-        message(FATAL_ERROR "预览测试程序不是目标 AArch64 ELF 可执行映像")
-    endif()
-    if(text MATCHES "Type: SharedObject" AND NOT text MATCHES "FLAGS_1[^\r\n]*PIE")
-        message(FATAL_ERROR "预览测试程序不是最终可执行 PIE 映像")
-    endif()
-    if(text MATCHES "RPATH|RUNPATH")
-        message(FATAL_ERROR "预览目标程序不得含宿主运行路径")
-    endif()
-    string(REGEX MATCH "NeededLibraries \\[([^]]*)\\]" needed "${text}")
-    if(needed STREQUAL "")
-        message(FATAL_ERROR "预览目标程序缺少真实动态依赖记录")
-    endif()
-    string(REPLACE "\n" ";" dependencies "${CMAKE_MATCH_1}")
-    set(has_libc FALSE)
-    foreach(dependency IN LISTS dependencies)
-        string(STRIP "${dependency}" dependency)
-        if(dependency STREQUAL "")
-            continue()
-        elseif(dependency STREQUAL "libc.so")
-            set(has_libc TRUE)
-        elseif(NOT dependency MATCHES "^(libawj_sdk|libm|libdl)\\.so$")
-            message(FATAL_ERROR "预览程序引入非 Native 运行库依赖：${dependency}")
-        endif()
-    endforeach()
-    if(NOT has_libc)
-        message(FATAL_ERROR "预览程序未绑定原 Native libc.so")
-    endif()
+    awj_sdk_check_hmos_program_text("${text}")
 endfunction()
