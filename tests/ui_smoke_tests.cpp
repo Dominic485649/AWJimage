@@ -1528,6 +1528,61 @@ int verify_manual_update(const slint::ComponentHandle<AwjStudio>& app) {
   return 0;
 }
 
+std::array<bool, 6> queue_session_switches(const slint::ComponentHandle<AwjStudio>& app) {
+  return {app->get_strip_metadata(), app->get_write_log(), app->get_delete_source(),
+      app->get_preserve_creation_time(), app->get_preserve_modification_time(), app->get_preserve_access_time()};
+}
+
+int verify_queue_session_switches(const slint::ComponentHandle<AwjStudio>& app) {
+  using Role = slint::language::AccessibleRole;
+  app->set_selected_page(1);
+  app->set_timestamp_ui_visible(true);
+  app->window().set_size(slint::LogicalSize({1440.0f, 827.0f}));
+  app->set_strip_metadata(false);
+  app->set_write_log(false);
+  app->set_delete_source(false);
+  app->set_preserve_creation_time(false);
+  app->set_preserve_modification_time(false);
+  app->set_preserve_access_time(false);
+  const std::array<std::string_view, 6> zh{"移除元数据", "写入运行日志", "删除源文件", "保留创建时间", "保留修改时间", "保留访问时间"};
+  const std::array<std::string_view, 6> en{"Strip metadata", "Write run log", "Delete source files", "Preserve creation time", "Preserve modification time", "Preserve access time"};
+  for (const int language : {0, 1}) {
+    slint::select_bundled_translation(language ? "en" : "");
+    app->set_language_index(language);
+    const auto& labels = language ? en : zh;
+    for (std::size_t i = 0; i < labels.size(); ++i) {
+      const auto checkbox = find_one(app, labels[i], Role::Checkbox);
+      if (!checkbox) return fail("会话开关缺失");
+      checkbox->invoke_accessible_default_action();
+      std::array<bool, 6> expected{};
+      expected[i] = true;
+      if (queue_session_switches(app) != expected) return fail("会话开关不能独立勾选");
+      app->set_running(true);
+      checkbox->invoke_accessible_default_action();
+      app->set_running(false);
+      if (queue_session_switches(app) != expected) return fail("运行时仍可修改会话开关");
+      checkbox->invoke_accessible_default_action();
+      if (queue_session_switches(app) != std::array<bool, 6>{}) return fail("会话开关不能取消");
+    }
+  }
+  app->set_strip_metadata(true);
+  app->set_write_log(true);
+  app->set_delete_source(true);
+  app->set_preserve_creation_time(true);
+  app->set_preserve_modification_time(true);
+  app->set_preserve_access_time(true);
+  const auto selected = queue_session_switches(app);
+  for (const int theme : {1, 2}) for (const int language : {0, 1}) {
+    app->set_theme_index(theme);
+    app->set_language_index(language);
+    slint::select_bundled_translation(language ? "en" : "");
+    if (queue_session_switches(app) != selected) return fail("切换主题或语言清空了会话开关");
+  }
+  if (queue_session_switches(AwjStudio::create()) != std::array<bool, 6>{})
+    return fail("新组件继承了上一会话的开关");
+  return 0;
+}
+
 int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
   using Role = slint::language::AccessibleRole;
   const std::array<std::string_view, 6> zh{"移除元数据", "写入运行日志", "删除源文件", "保留创建时间", "保留修改时间", "保留访问时间"};
@@ -2964,13 +3019,14 @@ int main(int argc, char** argv) {
     for (const float scale : {1.0f, 1.25f, 1.5f, 2.0f}) for (const int theme : {1, 2}) {
       auto app = AwjStudio::create();
       if (app->get_collision_index() != awj::studio::default_queue_collision_index ||
-          app->get_write_log() || app->get_delete_source())
-        return fail("queue UI defaults changed: numbering must be selected and recycling opt-in");
+          queue_session_switches(app) != std::array<bool, 6>{})
+        return fail("队列默认值错误：默认追加序号，六项会话开关默认关闭");
       app->set_theme_index(theme);
       app->window().window_handle().set_const_scale_factor(scale);
       slint::cbindgen_private::slint_testing_use_native_popup(&app->window().window_handle(), false);
       app->show();
       if (const int result = verify_queue_option_layout(app)) return result;
+      if (const int result = verify_queue_session_switches(app)) return result;
       if (const int result = verify_queue_collision_choices(app)) return result;
       if (const int result = verify_queue_pointer_dispatch(app)) return result;
       app->hide();

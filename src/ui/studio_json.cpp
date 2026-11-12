@@ -271,21 +271,12 @@ bool config_has_key(
   return values.contains(std::string{key});
 }
 
-std::expected<awj::studio::QueueRunOptions, std::string> config_queue_options(
+std::expected<awj::studio::QueueConfigOptions, std::string> config_queue_options(
     const std::unordered_map<std::string, JsonConfigValue>& values) {
   const auto collision = config_int(values, "collision_index", 0, 4);
   if (!collision && !collision.error().empty()) return std::unexpected{collision.error()};
-  const auto log = config_bool(values, "write_log");
-  if (!log && !log.error().empty()) return std::unexpected{log.error()};
-  const auto summary = config_bool(values, "write_summary");
-  if (!summary && !summary.error().empty()) return std::unexpected{summary.error()};
-  const auto recycle = config_bool(values, "delete_source");
-  if (!recycle && !recycle.error().empty()) return std::unexpected{recycle.error()};
   return awj::studio::queue_options_from_config(
-      collision ? std::optional{*collision} : std::nullopt,
-      log ? std::optional{*log} : std::nullopt,
-      summary ? std::optional{*summary} : std::nullopt,
-      recycle ? std::optional{*recycle} : std::nullopt);
+      collision ? std::optional{*collision} : std::nullopt);
 }
 
 }  // namespace awj::studio_json

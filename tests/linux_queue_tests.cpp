@@ -41,7 +41,7 @@ std::uint64_t encode_queue(AwjStudio& app, LinuxUiState& state, const fs::path& 
   test_check(files.size() == expected_count, "历史完成项错误进入本轮快照");
   for (std::size_t i = 0; i < files.size(); ++i)
     test_check(files[i].index == i, "本轮编码索引不连续");
-  const auto manifest = test_require(create_linux_queue_manifest(state.next_queue_run_id++, files));
+  const auto manifest = test_require(create_linux_queue_manifest(state.next_queue_run_id++, files, cfg));
   cfg.studio_queue_manifest = manifest;
   const auto generation = test_require(prepare_linux_queue_run(app, state, files));
   app.set_running(true);
@@ -67,6 +67,79 @@ std::uint64_t encode_queue(AwjStudio& app, LinuxUiState& state, const fs::path& 
   fs::remove(manifest, ec);
   return generation;
 }
+
+void queue_session_config_check() {
+  const auto executable = test_require(awj::executable_path());
+  const auto path = executable.parent_path() / "AWJ.jsonc";
+  test_check(executable.parent_path().parent_path().filename() == "linux-queue-contract" &&
+                 !fs::exists(path), "配置测试必须使用空的专属运行目录");
+  auto app = AwjStudio::create();
+  const auto switches = [&] {
+    return std::array{app->get_strip_metadata(), app->get_write_log(), app->get_delete_source(),
+        app->get_preserve_creation_time(), app->get_preserve_modification_time(), app->get_preserve_access_time()};
+  };
+  const std::array<bool, 6> off{};
+  test_check(switches() == off, "新会话六项开关未全部关闭");
+  nlohmann::ordered_json legacy{{"theme_index", 2}, {"language_index", 1}, {"collision_index", 3},
+      {"future_extension", "保留"}, {"last_verified_manifest_v2_sequence", 42},
+      {"update_manifest_v2_raw", "signed bytes"}, {"update_manifest_v2_signature", "signature"}};
+  // 生产配置的菜单数组固定为五种格式，不能用单项数组冒充有效输入。
+  LinuxUiState fixture;
+  fixture.menu_params[0].strip_metadata = true;
+  legacy["menu_params"] = nlohmann::ordered_json::array();
+  for (std::size_t i = 0; i < fixture.menu_params.size(); ++i)
+    legacy["menu_params"].push_back(linux_menu_params_json(fixture.menu_params[i], static_cast<int>(i)));
+  for (const auto key : awj::studio::queue_session_config_keys) legacy[std::string{key}] = true;
+  const auto write_fixture = [&](const nlohmann::ordered_json& document) {
+    test_check(atomic_write_linux_file(path, document.dump(2)).has_value(), "配置输入写入失败");
+  };
+  write_fixture(legacy);
+  LinuxUiState state;
+  load_linux_update_config(*app, state);
+  test_check(state.config_readable && switches() == off && app->get_theme_index() == 2 &&
+      app->get_language_index() == 1 && app->get_collision_index() == 3 && state.menu_params[0].strip_metadata,
+      "旧配置恢复了会话开关或丢失独立持久参数");
+  app->set_strip_metadata(true);
+  app->set_write_log(true);
+  app->set_delete_source(true);
+  app->set_preserve_creation_time(true);
+  app->set_preserve_modification_time(true);
+  app->set_preserve_access_time(true);
+  const auto selected = switches();
+  test_check(selected == std::array{true, true, true, true, true, true}, "会话开关不可选");
+  for (const auto key : awj::studio::queue_session_config_keys) legacy[std::string{key}] = "旧值";
+  write_fixture(legacy);
+  load_linux_update_config(*app, state);
+  test_check(state.config_readable && switches() == selected, "重载其他设置清空了会话开关");
+  test_check(persist_linux_update_config(*app, state).has_value() && switches() == selected,
+      "保存配置失败或修改了当前会话开关");
+  const auto read_config = [&] {
+    std::ifstream input{path, std::ios::binary};
+    test_check(static_cast<bool>(input), "配置输出不可读");
+    return std::string{std::istreambuf_iterator<char>{input}, {}};
+  };
+  const auto first = read_config();
+  const auto saved = nlohmann::ordered_json::parse(first);
+  for (const auto key : awj::studio::queue_session_config_keys)
+    test_check(!saved.contains(std::string{key}), "会话根键被回写配置");
+  test_check(saved.at("future_extension") == "保留" && saved.at("collision_index") == 3 &&
+      saved.at("menu_params")[0].at("strip_metadata") == true &&
+      saved.at("last_verified_manifest_v2_sequence") == 42 &&
+      saved.at("update_manifest_v2_raw") == "signed bytes" && saved.at("update_manifest_v2_signature") == "signature",
+      "保存丢失了未知扩展、菜单参数或更新器状态");
+  test_check(persist_linux_update_config(*app, state).has_value() && read_config() == first,
+      "配置保存不幂等");
+  auto restarted = AwjStudio::create();
+  LinuxUiState restarted_state;
+  load_linux_update_config(*restarted, restarted_state);
+  test_check(restarted_state.config_readable && !restarted->get_strip_metadata() && !restarted->get_write_log() &&
+      !restarted->get_delete_source() && !restarted->get_preserve_creation_time() &&
+      !restarted->get_preserve_modification_time() && !restarted->get_preserve_access_time() &&
+      restarted->get_collision_index() == 3 && restarted_state.menu_params[0].strip_metadata,
+      "新会话恢复了临时开关或丢失持久参数");
+  test_check(fs::remove(path), "测试专属配置未清理");
+  std::puts("Linux 生产配置六项会话开关加载/保存/重载/新会话回归通过");
+}
 }
 
 int main(int argc, char** argv) try {
@@ -76,6 +149,7 @@ int main(int argc, char** argv) try {
   fs::create_directories(root);
   for (const auto* name : {"A.png", "B.png", "C.png"}) fixture_png(root / name);
   slint::testing::init();
+  queue_session_config_check();
   auto app = AwjStudio::create();
   LinuxUiState state;
   state.task_rows = std::make_shared<slint::VectorModel<TaskRow>>();

@@ -1769,6 +1769,8 @@ if(BUILD_TESTING AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
         "${CMAKE_CURRENT_BINARY_DIR}/generated")
     target_link_libraries(awj_linux_queue_tests PRIVATE awj_core awj_update Slint::Slint)
     add_dependencies(awj_linux_queue_tests AWJ)
+    # 配置往返测试使用自己的 AWJ.jsonc，不能读写应用或其他测试的设置。
+    awj_set_runtime_directory(awj_linux_queue_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/linux-queue-contract")
     file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/queue-contract-temp")
     add_test(NAME linux_release_path_contract COMMAND bash "${CMAKE_CURRENT_SOURCE_DIR}/tests/linux_release_paths_tests.sh")
     add_test(NAME linux_queue_contract COMMAND awj_linux_queue_tests
@@ -1848,6 +1850,30 @@ if(BUILD_TESTING)
         awj_set_runtime_directory(awj_studio_state_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/studio-state-contract")
         add_test(NAME studio_state_contract COMMAND awj_studio_state_tests)
         set_tests_properties(studio_state_contract PROPERTIES TIMEOUT 30)
+        add_executable(awj_studio_config_io_tests
+            tests/studio_config_io_tests.cpp
+            src/ui/import_service.cpp
+            src/ui/file_drop_win32.cpp
+            src/ui/studio_fields.cpp
+            src/ui/studio_config.cpp
+            src/ui/studio_config_io.cpp
+            src/ui/studio_json.cpp
+            src/ui/studio_menu_params.cpp
+            src/ui/studio_parameter_page.cpp
+            src/ui/studio_shell_cli.cpp
+            "${CMAKE_CURRENT_BINARY_DIR}/slint_generated_awj_studio_1.cpp")
+        target_sources(awj_studio_config_io_tests PRIVATE
+            FILE_SET studio_config_io_modules TYPE CXX_MODULES FILES src/ui/studio_defaults.ixx)
+        avif_enable_common_options(awj_studio_config_io_tests)
+        target_compile_definitions(awj_studio_config_io_tests PRIVATE SLINT_FEATURE_EXPERIMENTAL=1)
+        target_include_directories(awj_studio_config_io_tests PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+        target_link_libraries(awj_studio_config_io_tests PRIVATE
+            awj_shared awj_shell_context_menu Slint::Slint psapi ole32 shell32 comdlg32 advapi32 user32 dwmapi imm32 uxtheme)
+        add_dependencies(awj_studio_config_io_tests AWJ)
+        awj_set_runtime_directory(awj_studio_config_io_tests "${AWJ_RUNTIME_OUTPUT_ROOT}/studio-config-io-contract")
+        add_test(NAME studio_config_io_contract COMMAND awj_studio_config_io_tests)
+        set_tests_properties(studio_config_io_contract PROPERTIES TIMEOUT 30
+            RESOURCE_LOCK awj_shell_registry)
         find_program(AWJ_PWSH_EXECUTABLE pwsh)
         if(AWJ_PWSH_EXECUTABLE)
             add_test(NAME package_manifest_contract COMMAND "${AWJ_PWSH_EXECUTABLE}"

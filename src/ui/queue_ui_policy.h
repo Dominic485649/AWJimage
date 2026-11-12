@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <filesystem>
 #include <optional>
 #include <string_view>
@@ -9,26 +10,29 @@ namespace awj::studio {
 // Keep the persisted 0..3 indices unchanged; numbering is the appended option.
 inline constexpr int default_queue_collision_index = 4;
 
-struct QueueRunOptions {
+// 持久配置不包含队列页六项会话开关，避免它们参与自动保存快照。
+struct QueueConfigOptions {
   int collision_index{default_queue_collision_index};
-  bool write_log{};
-  bool delete_source{};
 
-  bool operator==(const QueueRunOptions&) const = default;
+  bool operator==(const QueueConfigOptions&) const = default;
 };
 
-constexpr QueueRunOptions queue_options_from_config(
-    std::optional<int> collision_index = {},
-    std::optional<bool> write_log = {},
-    std::optional<bool> legacy_write_summary = {},
-    std::optional<bool> delete_source = {}) noexcept {
+constexpr QueueConfigOptions queue_options_from_config(
+    std::optional<int> collision_index = {}) noexcept {
   const int index = collision_index.value_or(default_queue_collision_index);
   return {.collision_index = index >= 0 && index <= 4
-                                 ? index : default_queue_collision_index,
-          .write_log = write_log.value_or(false) ||
-                       legacy_write_summary.value_or(false),
-          // Recycling is opt-in, never inferred from either legacy log flag.
-          .delete_source = delete_source.value_or(false)};
+                                 ? index : default_queue_collision_index};
+}
+
+// 只匹配 AWJ.jsonc 根键，不影响独立菜单或编码预设里的同名参数。
+inline constexpr std::array<std::string_view, 7> queue_session_config_keys{
+    "strip_metadata", "write_log", "write_summary", "delete_source",
+    "preserve_creation_time", "preserve_modification_time", "preserve_access_time"};
+
+constexpr bool is_queue_session_config_key(std::string_view key) noexcept {
+  for (const auto candidate : queue_session_config_keys)
+    if (key == candidate) return true;
+  return false;
 }
 
 constexpr std::wstring_view queue_collision_argument(int index) noexcept {

@@ -176,13 +176,8 @@ awj::compat::expected<void, std::string> write_studio_config_file(
              defaults.queue_preset_file);
   add_int("collision_index", current.queue_options.collision_index,
           defaults.queue_options.collision_index);
-  add_bool("write_log", current.queue_options.write_log,
-           defaults.queue_options.write_log);
-  add_bool("delete_source", current.queue_options.delete_source,
-           defaults.queue_options.delete_source);
-  // Retire the independent CSV switch, including an old true value. Otherwise
-  // unchecking the single log option would be undone by OR migration next time.
-  known.emplace("write_summary");
+  // 六项队列开关仅属于当前会话，旧根键也不能作为未知扩展透传回来。
+  for (const auto key : queue_session_config_keys) known.emplace(key);
 
   add_bool("allow_wic_fallback", current.allow_wic_fallback,
            defaults.allow_wic_fallback);

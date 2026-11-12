@@ -1,11 +1,16 @@
 # Changelog
 
-## 1.3.6 - 2026-11-12
+## 1.3.6 - 2026-11-13
 
 ### Changelog interface
 
 - Render headings, lists, emphasis, code and links natively instead of displaying Markdown markers as plain text.
 - Show only the latest 10 versions on the changelog page, with consistent language fallback and Windows/Linux presentation. Retain the complete history.
+
+### Encoding queue
+
+- Keep metadata removal, run logging, source deletion and the three timestamp-preservation switches session-only. Do not save or restore them through JSONC; all six start disabled on each launch.
+- Remove the repeated log and recycling note at the bottom of the queue while retaining the option descriptions.
 
 ### Thread utilization and batch processing
 

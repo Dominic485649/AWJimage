@@ -15,8 +15,7 @@ void check(bool ok, const char* message) {
 void options_check() {
   using namespace awj::studio;
   constexpr auto defaults = queue_options_from_config();
-  static_assert(defaults.collision_index == 4 && !defaults.write_log &&
-                !defaults.delete_source);
+  static_assert(defaults.collision_index == 4);
   constexpr std::array<std::wstring_view, 5> arguments{
       L"overwrite", L"skip", L"time", L"random", L"number"};
   for (int index = 0; index < static_cast<int>(arguments.size()); ++index) {
@@ -28,17 +27,12 @@ void options_check() {
   check(queue_collision_argument(-1) == L"number" &&
         queue_options_from_config(5).collision_index == 4,
         "unknown collision index did not use safe default");
-  for (const auto log : {std::optional<bool>{}, std::optional{false}, std::optional{true}}) {
-    for (const auto summary : {std::optional<bool>{}, std::optional{false}, std::optional{true}}) {
-      const auto migrated = queue_options_from_config({}, log, summary);
-      check(migrated.write_log == (log.value_or(false) || summary.value_or(false)) &&
-            !migrated.delete_source,
-            "legacy logging migration enabled recycling or lost a report flag");
-      check(queue_options_from_config({}, log, summary, false).delete_source == false &&
-            queue_options_from_config({}, log, summary, true).delete_source,
-            "explicit recycling choice was not independent of logging");
-    }
-  }
+  for (const auto key : {"strip_metadata", "write_log", "write_summary", "delete_source",
+                         "preserve_creation_time", "preserve_modification_time", "preserve_access_time"})
+    check(is_queue_session_config_key(key), "会话开关或旧日志别名未被退役");
+  for (const auto key : {"collision_index", "menu_avif_strip_metadata",
+                         "menu_strip_metadata", "future_extension", "write_log_extra"})
+    check(!is_queue_session_config_key(key), "会话键匹配误伤持久设置或扩展键");
 }
 
 void open_target_check() {
@@ -102,7 +96,7 @@ int main() try {
   open_target_check();
   pointer_reset_check();
   output_event_check();
-  std::puts("queue-ui-policy: defaults, legacy migration, open target, pointer reset and OUTPUT framing passed");
+  std::puts("queue-ui-policy: 持久默认值、会话根键、打开目标、指针重置与 OUTPUT 帧通过");
   return 0;
 } catch (const std::exception& error) {
   std::fprintf(stderr, "%s\n", error.what());

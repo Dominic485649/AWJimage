@@ -116,8 +116,8 @@ export component AwjStudio inherits Window {
     in-out property <int> ui-font-index: 0;
     in-out property <bool> system-dark-mode: false;
     in-out property <bool> strip-metadata: false;
-    // 格式是会话状态；预设仅按文件身份保存。日志/回收/碰撞策略独立保存，
-    // 不随编码预设选择改变，点击“开始转换”时统一快照。
+    // 六项开关与输出格式仅在当前会话生效；预设身份和重名策略独立保存。
+    // 它们不随编码预设选择改变，点击“开始转换”时统一取得运行快照。
     in-out property <int> queue-format-index: 0;
     in-out property <int> queue-preset-index: 0;
     in property <[ComboOption]> queue-preset-options: [{ text: @tr("内置默认"), enabled: true }];

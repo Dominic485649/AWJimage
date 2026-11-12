@@ -767,16 +767,7 @@ void load_linux_update_config(AwjStudio& app, LinuxUiState& state) {
   apply_int("theme_index", 0, 2, &AwjStudio::set_theme_index);
   apply_int("language_index", 0, 1, &AwjStudio::set_language_index);
   apply_int("collision_index", 0, 4, &AwjStudio::set_collision_index);
-  const auto optional_bool = [&](std::string_view key) -> std::optional<bool> {
-    const auto it = state.config_document.find(std::string{key});
-    if (it != state.config_document.end() && it->is_boolean()) return it->get<bool>();
-    return std::nullopt;
-  };
-  const auto queue_options = awj::studio::queue_options_from_config(
-      app.get_collision_index(), optional_bool("write_log"),
-      optional_bool("write_summary"), optional_bool("delete_source"));
-  app.set_write_log(queue_options.write_log);
-  app.set_delete_source(queue_options.delete_source);
+  // 六项会话开关不从配置恢复；重载其他设置也不改变当前会话选择。
   state.queue_preset_file = linux_config_string(state.config_document, "queue_preset_file");
   apply_bool("allow_wic_fallback", &AwjStudio::set_allow_wic_fallback);
   apply_bool("visual_quality_fallback", &AwjStudio::set_visual_quality_fallback);
@@ -846,8 +837,6 @@ awj::compat::expected<void, std::string> persist_linux_update_config(
     document["queue_preset_file"] = state.queue_preset_file;
   }
   document["collision_index"] = app.get_collision_index();
-  document["write_log"] = app.get_write_log();
-  document["delete_source"] = app.get_delete_source();
   document["allow_wic_fallback"] = app.get_allow_wic_fallback();
   document["visual_quality_fallback"] = app.get_visual_quality_fallback();
   document["menu_preset_description"] = state.menu_preset_description;
@@ -886,9 +875,12 @@ awj::compat::expected<void, std::string> persist_linux_update_config(
   constexpr std::array retired{"last_verified_manifest_sequence", "update_manifest_raw", "update_manifest_signature",
       "hide_update_changelog_after_exit", "show_update_changelog_after_update", "queue_preset_index", "queue_preset_name",
       "queue_format_index", "format_index", "quality_text", "input_path", "output_dir", "window_width", "window_height",
-      "visual_quality_gpu", "write_summary"};
+      "visual_quality_gpu"};
   for (const auto& [key, value] : state.config_document.items()) {
-    if (!document.contains(key) && awj::compat::ranges::find(retired, key) == retired.end()) document[key] = value;
+    if (!document.contains(key) &&
+        !awj::studio::is_queue_session_config_key(key) &&
+        awj::compat::ranges::find(retired, key) == retired.end())
+      document[key] = value;
   }
   auto bytes = document.dump(2);
   bytes.push_back('\n');

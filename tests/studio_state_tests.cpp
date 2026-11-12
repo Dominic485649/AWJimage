@@ -278,23 +278,26 @@ void queue_config_migration_check() {
     return awj::studio_json::config_queue_options(*values);
   };
   const auto defaults = parse("{}");
-  check(defaults && defaults->collision_index == 4 && !defaults->write_log &&
-        !defaults->delete_source, "queue defaults are not safe");
+  check(defaults && defaults->collision_index == 4, "队列持久配置默认值错误");
   for (const bool log : {false, true}) {
     for (const bool summary : {false, true}) {
       const auto options = parse(awj::compat::format(
           R"({{"write_log":{},"write_summary":{}}})", log, summary));
-      check(options && options->write_log == (log || summary) && !options->delete_source,
-            "legacy log flags changed recycling or lost OR migration");
+      check(options && *options == *defaults,
+            "旧日志或 CSV 开关影响了队列持久配置");
     }
   }
   for (int index = 0; index <= 4; ++index) {
     const auto options = parse(awj::compat::format(R"({{"collision_index":{}}})", index));
     check(options && options->collision_index == index, "old collision index was reinterpreted");
   }
-  for (const auto invalid : {R"({"collision_index":5})", R"({"write_log":1})",
-                             R"({"write_summary":"true"})", R"({"delete_source":1})"})
-    check(!parse(invalid), "invalid queue config was accepted");
+  for (const auto retired : {R"({"strip_metadata":true,"write_log":true,"write_summary":true,"delete_source":true,"preserve_creation_time":true,"preserve_modification_time":true,"preserve_access_time":true})",
+                             R"({"strip_metadata":1,"write_log":1,"write_summary":"true","delete_source":"true","preserve_creation_time":"true","preserve_modification_time":1,"preserve_access_time":false})"}) {
+    const auto options = parse(retired);
+    check(options && *options == *defaults, "会话根键或其旧类型值影响了持久配置读取");
+  }
+  for (const auto invalid : {R"({"collision_index":5})", R"({"collision_index":true})"})
+    check(!parse(invalid), "非法重名策略配置被接受");
 }
 
 void config_check() {
@@ -315,12 +318,12 @@ void config_check() {
   check(default_config && !default_config->contains("collision_index") &&
         !default_config->contains("write_log") && !default_config->contains("delete_source") &&
         awj::studio_json::config_queue_options(*default_config) ==
-            std::expected<QueueRunOptions, std::string>{defaults.queue_options},
+            std::expected<QueueConfigOptions, std::string>{defaults.queue_options},
         "default queue options were not safely omitted and restored");
   check(default_config && !default_config->contains("queue_preset_file"),
         "built-in queue preset should be omitted from the config file");
   current.queue_preset_file = "照片 测试.jsonc";
-  current.queue_options = {.collision_index = 0, .write_log = true, .delete_source = true};
+  current.queue_options = {.collision_index = 0};
   current.show_update_changelog = false;
   current.only_show_changelog_after_update = false;
   current.language_index = 1;
@@ -331,12 +334,13 @@ void config_check() {
   current.update_keyring_signature = "keyring signature";
   current.menu_preset_description = "menu preset regression description";
   current.menu_params[0].chroma_index = 4;
+  current.menu_params[0].strip_metadata = true;
   current.menu_params[0].size_limit_index = 2;
   current.menu_params[0].scale_percent_text = "200.5";
   current.menu_params[3].chroma_index = 4; // Removed JPG 400 from an old UI cache.
   {
     std::ofstream old(path);
-    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","visual_quality_gpu":true,"write_log":false,"write_summary":true,"delete_source":false,"collision_index":3,"future_extension":"保留"})";
+    old << R"({"last_verified_manifest_sequence":17,"update_manifest_raw":"old","update_manifest_signature":"old signature","hide_update_changelog_after_exit":false,"show_update_changelog_after_update":false,"queue_preset_index":7,"queue_preset_name":"old display name","queue_format_index":3,"format_index":2,"quality_text":"88","input_path":"old-input","output_dir":"old-output","visual_quality_gpu":true,"strip_metadata":true,"write_log":true,"write_summary":true,"delete_source":true,"preserve_creation_time":true,"preserve_modification_time":true,"preserve_access_time":true,"collision_index":3,"future_extension":"保留"})";
   }
   const auto legacy = awj::studio_json::parse_jsonc_config(read(path));
   check(legacy && awj::studio_json::config_string(*legacy, "queue_preset_file")
@@ -348,9 +352,12 @@ void config_check() {
   check(parsed && !parsed->contains("visual_quality_gpu"),
         "旧 GPU 配置键不应在保存时重新写入");
   const auto queue_options = awj::studio_json::config_queue_options(*parsed);
-  check(queue_options && *queue_options == current.queue_options &&
-        !parsed->contains("write_summary"),
-        "queue options did not round-trip canonically");
+  check(queue_options && *queue_options == current.queue_options,
+        "队列重名策略未正确往返");
+  for (const auto key : awj::studio::queue_session_config_keys)
+    check(!parsed->contains(std::string{key}), "会话开关或旧日志别名被回写配置");
+  check(parsed->at("menu_avif_strip_metadata").boolean,
+        "队列键退役误删了独立菜单移除元数据设置");
   check(parsed.has_value() && parsed->at("language_index").integer == 1 &&
         parsed->at("last_verified_manifest_v2_sequence").integer == 42 &&
         parsed->at("update_manifest_v2_raw").string == current.update_manifest_v2_raw &&
@@ -416,19 +423,15 @@ void config_check() {
         "returning to built-in retained its old identity or lost other config");
   check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
         "config rewrite was not idempotent");
-  auto reports_off = current;
-  reports_off.queue_options.write_log = false;
-  reports_off.queue_options.delete_source = false;
-  check(write_studio_config_file(reports_off, defaults).has_value(),
-        "cannot disable logging and recycling");
-  const auto disabled = awj::studio_json::parse_jsonc_config(read(path));
-  const auto disabled_options = disabled ? awj::studio_json::config_queue_options(*disabled)
-      : std::expected<QueueRunOptions, std::string>{std::unexpected{"invalid saved config"}};
-  check(disabled_options && !disabled_options->write_log && !disabled_options->delete_source &&
-        !disabled->contains("write_summary"),
-        "old CSV flag resurrected disabled logging or recycling");
+  auto numbered = current;
+  numbered.queue_options.collision_index = default_queue_collision_index;
+  check(write_studio_config_file(numbered, defaults).has_value(), "恢复默认重名策略失败");
+  const auto numbered_config = awj::studio_json::parse_jsonc_config(read(path));
+  check(numbered_config && !numbered_config->contains("collision_index") &&
+        numbered_config->at("future_extension").string == "保留",
+        "默认重名策略未省略或未知扩展被丢失");
   check(write_studio_config_file(current, defaults).has_value() && read(path) == first,
-        "restoring queue options changed unrelated configuration");
+        "恢复重名策略改变了无关配置");
   {
     auto locked = adopt_win32_handle(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ,
                                                nullptr, OPEN_EXISTING, 0, nullptr));
