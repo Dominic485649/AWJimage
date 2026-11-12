@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 23,
+  "sequence": 24,
   "key_id": "release-2026",
-  "issued_at": "2026-11-07T11:13:45Z",
-  "expires_at": "2027-02-05T11:13:45Z",
+  "issued_at": "2026-11-12T08:52:29Z",
+  "expires_at": "2027-02-10T08:52:29Z",
   "entries": [
     {
-      "version": "1.3.4",
+      "version": "1.3.5",
       "channel": "stable",
-      "published_at": "2026-11-07T11:13:45Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.4",
+      "published_at": "2026-11-12T08:52:29Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.5",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
-            "size": 13385898,
-            "sha256": "9e739cb84de463874623cdc34ad54fa05afe7ca3dd628669c9b84675312ff305"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
+            "size": 13412378,
+            "sha256": "1d90b1daf91ee35a6827689f2d55ebf70a2b918bf5fddffe563880ff2a9034f4"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
-              "size": 24668672,
-              "sha256": "cce402767f9d78d44bb63f7e57ebda8d5ed19954385e52f831a57c4ce5bbab0b"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
+              "size": 24690688,
+              "sha256": "e770c2f0fe912fc53df502d283a2222b5b647d155dac8eb9b9333dacfce93011"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
-              "size": 21021184,
-              "sha256": "0449c7f06c1fb541ea767d1d93f473d1c023317780c922ebf432ad0e89b6c219"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
+              "size": 21059072,
+              "sha256": "f206eaca541b4dee1a41e72f43204d5583f98ccee1296b2fbb556322b4ca3fd7"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
               "size": 177573,
-              "sha256": "c6f672d98532f433771a80455112109abe71d6c40b97981d3832203818467234"
+              "sha256": "8d1992e49e8e4aa9ac97614fa0e47052e49e7e1fef8a9a629a80c33b9b78a1cf"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
-            "size": 18619557,
-            "sha256": "1ef1fd562a5a4b0016c7a1f60a1f064aa94fd42d7e5af8dc9836948b33934578"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
+            "size": 18550258,
+            "sha256": "d145ca6a4651ff8fe2b988bbeb4c6fa44a4c4fd9313295ff0f518c19e4fed085"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
-              "size": 67006040,
-              "sha256": "615dcd8911e1302709b5724f9258b847f541d13b2aff622ac45807f7f7640c42"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
+              "size": 66676992,
+              "sha256": "1fdc01d6e651e8f2a2c418108eb47bd2aa7d0daa1050d66b2a85a60f1a4481a6"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.4/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
               "size": 175807,
-              "sha256": "c04eeef5c1df3dce05520e3b09d6bd0faa1be57d489d644f0c3388a86843ffbd"
+              "sha256": "ee5c252c8b69ee9b3f05163f8d27773a96cc72db0b8fdd6e238d2849eab255b9"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 更新内容\n\n- 改善 JXL 有损编码的色彩表现，修复高反差边缘出现的异常彩边。\n- JXL 自动位深按所选图像的有效精度选择 10/12/16-bit，16-bit 源保持 16-bit，并保留显式位深设置。\n\n### 平台交付\n\nWindows/Linux 应用与 SDK 正式交付；HMOS ARM64/API26 SDK 为交叉构建预览，真机加载与执行未验证，详见包内 PREVIEW.txt。",
-        "en": "### What's new\n\n- Improved color reproduction in lossy JXL output, fixing abnormal color fringes around high-contrast edges.\n- JXL now automatically selects 10/12/16-bit output from the selected image's effective precision, retaining 16-bit sources and honoring explicit bit-depth settings.\n\n### Platform delivery\n\nWindows/Linux applications and SDKs are delivered as formal releases. The HMOS ARM64/API26 SDK is a cross-build preview without on-device loading or execution validation; see PREVIEW.txt in the package."
+        "zh-CN": "### 功能增强与性能优化\n\n#### 缩放与阶段计时\n\n- 优化 Spline36 缩放，复用缓存并利用多线程，保持原有滤波算法与精度；内存受限时自动减少并发与缓存占用。\n- 编码队列与右键转换窗口分别显示解码、缩放、准备、编码和写出耗时，并单列实际缩放线程数；CSV 同步记录，取消或失败也保留已发生耗时。\n\n#### 编码队列\n\n- CSV 与运行日志共用一个开关，方便统一管理。\n- 输出重名时默认“追加序号”，使用 `(1)`、`(2)` 等后缀保留已有文件。\n- 新增默认关闭的“删除源文件”：仅在单个输出成功写入后，将对应源文件移入回收站；回收失败则保留源文件。\n- 双击队列图片，编码前打开源图，成功后打开实际输出。\n\n#### 视觉质量分析\n\n- 亮度、GMSD 与 MS-SSIM 分析统一使用 CPU，保留质量搜索及已有配置、预设兼容；界面继续支持图形加速与软件渲染。\n\n#### 内存控制与参数提示\n\n- 内存解除开关联动输入与缓冲保护，保留手动设置，解除状态仅在当前会话生效；默认保护阈值随物理内存容量调整。\n- 统一视觉质量说明配色，明确尺寸“无限制”提示，精简色度采样说明。\n\n#### 平台交付\n\n- HMOS ARM64/API26 SDK 自本版起按正式交叉构建验收发行，保留编译、链接、导出、许可和归档校验；真机加载与执行未验证。\n\n### 错误修复\n\n- 修正缩放耗时混入解码及动画阶段计时重复累计的问题，使各阶段耗时更准确。\n- 修正取消、失败重试后的计时状态更新，避免过期任务事件覆盖当前结果。\n- 修复 Windows 源文件回收路径处理，并完善部分缩放与多层任务的内存预算估算。",
+        "en": "### Feature enhancements and performance improvements\n\n#### Resizing and stage timings\n\n- Optimize Spline36 resizing with cache reuse and multithreading while preserving the original filter and precision. Automatically reduce concurrency and cache use when memory limits require it.\n- Show separate decode, resize, preparation, encode and write times in the encoding queue and context-menu conversion window, with actual resize worker counts listed separately. CSV records the same details, and elapsed times remain available when a task is canceled or fails.\n\n#### Encoding queue\n\n- Combine CSV and run-log controls into a single switch for easier log management.\n- Make **Append number** the default collision policy, preserving existing outputs with `(1)`, `(2)` and subsequent suffixes.\n- Add **Delete source files**, disabled by default. Move each source to the system trash only after its output has been successfully written; retain it if recycling fails.\n- Double-click queue images to open their sources before encoding and their actual outputs after success.\n\n#### Visual-quality analysis\n\n- Use the CPU for luma, GMSD and MS-SSIM analysis while retaining quality search and compatibility with existing configurations and presets. The interface continues to support hardware-accelerated and software rendering.\n\n#### Memory controls and parameter hints\n\n- Link input and buffer protection to the memory-limit unlock switch while preserving manual limits. The unlocked state applies only to the current session, and default protection limits scale with physical memory.\n- Unify visual-quality description colors, clarify the **Unlimited** dimension hint, and streamline chroma-sampling guidance.\n\n#### Platform delivery\n\n- Starting with this release, the HMOS ARM64/API26 SDK uses formal cross-build release acceptance, retaining compilation, linking, export, license and archive checks. On-device loading and execution are not verified.\n\n### Bug fixes\n\n- Correct resize work being included in decode timings and avoid double-counting nested animation-stage work for more accurate stage timings.\n- Correct timing-state updates after cancellation or failed-task retries, preventing stale task events from overwriting current results.\n- Fix source-file recycling path handling on Windows and refine memory estimates for certain resizing and multilayer tasks."
       }
     }
   ]
