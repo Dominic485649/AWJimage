@@ -408,13 +408,6 @@ export component QueuePage inherits VerticalLayout {
                     if root.timestamp-ui-visible: CheckBox { text: @tr("保留访问时间"); checked <=> root.preserve-access-time; enabled: !root.running; width: root.queue-option-width; }
                 }
 
-                Text {
-                    text: @tr("日志同时包含 CSV 报告；删除源文件仅在成功编码后移入回收站，不会永久删除。");
-                    color: root.text-muted;
-                    font-size: 12px;
-                    wrap: word-wrap;
-                }
-
                 HorizontalLayout {
                 spacing: root.page-gap;
                 SoftButton { dark-mode: root.dark-mode; text: root.running ? (root.force-terminate-supported ? @tr("强制终止") : @tr("停止任务")) : @tr("开始转换"); variant: root.running && root.force-terminate-supported ? "danger" : "action"; height: 42px; enabled: true; horizontal-stretch: 1; clicked => { root.start-conversion(); } }

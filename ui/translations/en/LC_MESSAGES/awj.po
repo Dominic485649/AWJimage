@@ -468,9 +468,6 @@ msgstr "Write both the run log and CSV report (log/summery.csv)."
 msgid "仅成功编码后立即移入回收站，不会永久删除；失败、取消或跳过时保留源文件。"
 msgstr "Move source files to the Recycle Bin immediately after successful encoding, never permanently delete them. Keep sources on failure, cancellation or skip."
 
-msgid "日志同时包含 CSV 报告；删除源文件仅在成功编码后移入回收站，不会永久删除。"
-msgstr "Logs include CSV. Sources go to the Recycle Bin only after encoding succeeds, never deleted permanently."
-
 msgid "强制终止"
 msgstr "Force stop"
 

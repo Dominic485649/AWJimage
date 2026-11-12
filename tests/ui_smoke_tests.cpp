@@ -1560,6 +1560,9 @@ int verify_queue_option_layout(const slint::ComponentHandle<AwjStudio>& app) {
       }
       if (find_one(app, language ? "Write CSV report" : "写入 CSV 报告", Role::Checkbox))
         return fail("independent CSV checkbox is still exposed");
+      if (find_one(app, "日志同时包含 CSV 报告；删除源文件仅在成功编码后移入回收站，不会永久删除。", Role::Text) ||
+          find_one(app, "Logs include CSV. Sources go to the Recycle Bin only after encoding succeeds, never deleted permanently.", Role::Text))
+        return fail("队列不应再显示已删除的日志和回收站说明行");
       const auto log = find_one(app, labels[1], Role::Checkbox);
       const auto recycle = find_one(app, labels[2], Role::Checkbox);
       app->set_write_log(false);
