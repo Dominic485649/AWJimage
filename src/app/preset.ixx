@@ -14,6 +14,7 @@ module;
 #endif
 
 #include <nlohmann/json.hpp>
+#include "preset_jsonc.h"
 
 #include <algorithm>
 #include <array>
@@ -70,6 +71,8 @@ struct UserPreset {
   int schema{user_preset_schema};
   std::string name{};
   std::string description{};
+  std::vector<std::string> cli_args_high_priority{};
+  std::vector<std::string> cli_args_low_priority{};
   std::array<PresetFormat, 5> formats{};
   std::filesystem::path source_path{};
   bool shell_menu{};
@@ -134,45 +137,6 @@ std::array<PresetFormat, 5> default_formats() {
   return formats;
 }
 
-std::string strip_jsonc_comments(std::string_view source) {
-  std::string out;
-  out.reserve(source.size());
-  bool quoted = false;
-  bool escaped = false;
-  for (std::size_t i = 0; i < source.size(); ++i) {
-    const char ch = source[i];
-    if (quoted) {
-      out.push_back(ch);
-      if (escaped) {
-        escaped = false;
-      } else if (ch == '\\') {
-        escaped = true;
-      } else if (ch == '"') {
-        quoted = false;
-      }
-      continue;
-    }
-    if (ch == '"') {
-      quoted = true;
-      out.push_back(ch);
-    } else if (ch == '/' && i + 1 < source.size() && source[i + 1] == '/') {
-      while (i < source.size() && source[i] != '\n') ++i;
-      if (i < source.size()) out.push_back('\n');
-    } else if (ch == '/' && i + 1 < source.size() && source[i + 1] == '*') {
-      i += 2;
-      while (i + 1 < source.size() &&
-             !(source[i] == '*' && source[i + 1] == '/')) {
-        out.push_back(source[i] == '\n' ? '\n' : ' ');
-        ++i;
-      }
-      if (i + 1 < source.size()) ++i;
-    } else {
-      out.push_back(ch);
-    }
-  }
-  return out;
-}
-
 awj::compat::expected<fs::path, std::string> running_executable_directory() {
 #ifdef _WIN32
   std::vector<wchar_t> buffer(MAX_PATH, L'\0');
@@ -218,7 +182,7 @@ std::string upper_ascii(std::string value) {
 }
 
 std::string utf8_from_wide_for_preset(std::wstring_view value) {
-  const auto utf8 = fs::path{std::wstring{value}}.u8string();
+  const auto utf8 = path_from_argument_text(value).u8string();
   return {reinterpret_cast<const char*>(utf8.data()), utf8.size()};
 }
 
@@ -534,14 +498,6 @@ Json size_limit_json(const ImageSizeLimit& limit) {
               {"scale_percent", percent ? Json(*percent) : Json(nullptr)}};
 }
 
-void overlay_known_keys(Json& destination, const Json& source) {
-  if (!destination.is_object()) destination = Json::object();
-  for (const auto& [key, value] : source.items()) {
-    if (value.is_object()) overlay_known_keys(destination[key], value);
-    else destination[key] = value;
-  }
-}
-
 Json format_json(const PresetFormat& value) {
   return Json{{"quality", value.quality},
               {"visual_quality", optional_int_json(value.visual_quality)},
@@ -563,6 +519,64 @@ Json format_json(const PresetFormat& value) {
               {"menu_close_on_finish", value.menu_close_on_finish},
               {"menu_install_avif_png_command", value.menu_install_avif_png_command},
               {"size_limit", size_limit_json(value.image_size_limit)}};
+}
+
+Json preset_json(const UserPreset& preset) {
+  Json document{{"schema", user_preset_schema},
+                {"name", preset.name},
+                {"description", preset.description},
+                {"shell_menu", preset.shell_menu},
+                {"cli_args_high_priority", preset.cli_args_high_priority},
+                {"cli_args_low_priority", preset.cli_args_low_priority},
+                {"formats", Json::object()}};
+  for (std::size_t i = 0; i < preset.formats.size(); ++i)
+    document["formats"][std::string{format_keys[i]}] = format_json(preset.formats[i]);
+  return document;
+}
+
+awj::compat::expected<std::vector<std::wstring>, std::string> cli_arguments(
+    const std::vector<std::string>& tokens, std::string_view key) {
+  constexpr std::size_t max_tokens = 256;
+  constexpr std::size_t max_token_bytes = 4096;
+  constexpr std::size_t max_total_bytes = 16 * 1024;
+  if (tokens.size() > max_tokens)
+    return awj::compat::unexpected{awj::compat::format("预设 {} 不能超过 256 个参数。", key)};
+  std::size_t total = 0;
+  std::vector<std::wstring> result;
+  result.reserve(tokens.size());
+  try {
+    for (const auto& token : tokens) {
+      if (token.size() > max_token_bytes || token.find('\0') != std::string::npos ||
+          token.size() > max_total_bytes - total)
+        return awj::compat::unexpected{awj::compat::format(
+            "预设 {} 单项最多 4096 字节、总计最多 16 KiB，且不能包含 NUL。", key)};
+      total += token.size();
+      // dump 严格校验程序创建的 UTF-8；文件输入已经过 JSON 解析校验。
+      (void)Json(token).dump();
+      const fs::path text{std::u8string_view{
+          reinterpret_cast<const char8_t*>(token.data()), token.size()}};
+#ifdef _WIN32
+      result.push_back(text.native());
+#else
+      const auto unicode = text.u32string();
+      result.emplace_back(unicode.begin(), unicode.end());
+#endif
+    }
+  } catch (const std::exception&) {
+    return awj::compat::unexpected{awj::compat::format("预设 {} 必须包含有效 UTF-8 字符串。", key)};
+  }
+  return result;
+}
+
+awj::compat::expected<void, std::string> load_cli_arguments(
+    const Json& document, std::string_view key, std::vector<std::string>& target) {
+  const auto it = document.find(std::string{key});
+  if (it == document.end()) return {};
+  if (!it->is_array() || it->size() > 256 ||
+      !std::all_of(it->begin(), it->end(), [](const auto& token) { return token.is_string(); }))
+    return awj::compat::unexpected{awj::compat::format("预设 {} 必须是最多 256 项的字符串数组。", key)};
+  target = it->get<std::vector<std::string>>();
+  return {};
 }
 
 awj::compat::expected<void, std::string> atomic_write(const fs::path& path,
@@ -613,20 +627,29 @@ awj::compat::expected<void, std::string> atomic_write(const fs::path& path,
   return {};
 }
 
-awj::compat::expected<Json, std::string> read_document(const fs::path& path) {
+awj::compat::expected<preset_jsonc::Document, std::string> read_source(
+    const fs::path& path, std::uintmax_t maximum = 2u * 1024u * 1024u) {
   try {
     std::error_code ec;
     const auto size = fs::file_size(path, ec);
-    if (ec || size > 2u * 1024u * 1024u) return awj::compat::unexpected{"文件不可读或超过 2 MiB 限制。"};
+    if (ec || size > maximum) return awj::compat::unexpected{"预设文件不可读或超过大小限制。"};
     std::ifstream input{path, std::ios::binary};
     if (!input) return awj::compat::unexpected{"无法读取预设文件。"};
     std::string raw(static_cast<std::size_t>(size), '\0');
     input.read(raw.data(), static_cast<std::streamsize>(raw.size()));
-    if (!input || input.peek() != std::char_traits<char>::eof()) return awj::compat::unexpected{"读取期间预设文件发生变化。"};
-    return Json::parse(strip_jsonc_comments(raw), nullptr, true, true);
+    if (!input || input.peek() != std::char_traits<char>::eof())
+      return awj::compat::unexpected{"读取期间预设文件发生变化。"};
+    return preset_jsonc::parse(std::move(raw));
   } catch (const std::exception& error) {
     return awj::compat::unexpected{awj::compat::format("预设 JSONC 无法解析：{}", error.what())};
   }
+}
+
+// 内部只读入口不触发迁移，避免保存/枚举/恢复过程中递归获取预设锁。
+awj::compat::expected<Json, std::string> read_document(const fs::path& path) {
+  auto source = read_source(path);
+  if (!source) return awj::compat::unexpected{source.error()};
+  return std::move(source->active);
 }
 
 class PresetLock {
@@ -681,7 +704,8 @@ awj::compat::expected<void, std::string> restore_operation(const fs::path& direc
     return awj::compat::unexpected{"预设恢复记录无效，未修改文件。"};
   }
   const auto file = path_from_utf8(journal["file"].get<std::string>());
-  if (file != file.filename() || file.extension() != ".jsonc" || file.empty()) {
+  if (file != file.filename() || file.empty() ||
+      (file.extension() != ".jsonc" && file.extension() != ".json")) {
     return awj::compat::unexpected{"预设恢复记录包含非法路径。"};
   }
   if (journal["before"].is_string()) return atomic_write(directory / file, journal["before"].get<std::string>());
@@ -769,12 +793,14 @@ awj::compat::expected<void, std::string> recover_user_preset_change(
   if (!std::filesystem::exists(path, ec)) return ec
       ? awj::compat::expected<void, std::string>{awj::compat::unexpected{ec.message()}}
       : awj::compat::expected<void, std::string>{};
-  auto journal = preset_detail::read_document(path);
-  if (!journal) return awj::compat::unexpected{journal.error()};
-  if (!journal->is_object() || journal->value("owner", "") != "AWJimage" ||
-      journal->value("schema", 0) != 1) return awj::compat::unexpected{"预设恢复记录无效。"};
-  if (!journal->value("committed", false)) {
-    if (auto restored = preset_detail::restore_operation(*directory, *journal); !restored) return restored;
+  // 原文在恢复记录的 JSON 字符串中可能膨胀到六倍，不能沿用普通预设大小上限。
+  auto source = preset_detail::read_source(path, 8u * preset_jsonc::max_file_bytes);
+  if (!source) return awj::compat::unexpected{source.error()};
+  const auto& journal = source->active;
+  if (!journal.is_object() || journal.value("owner", "") != "AWJimage" ||
+      journal.value("schema", 0) != 1) return awj::compat::unexpected{"预设恢复记录无效。"};
+  if (!journal.value("committed", false)) {
+    if (auto restored = preset_detail::restore_operation(*directory, journal); !restored) return restored;
   }
   if (synchronize) {
     if (auto synced = synchronize(); !synced) return synced;
@@ -824,8 +850,8 @@ PresetFormat preset_format_from_config(const AppConfig& config) {
 }
 
 AppConfig config_from_user_preset(const UserPreset& preset,
-                                  OutputFormat format) {
-  AppConfig config = default_app_config();
+                                  OutputFormat format,
+                                  AppConfig config = default_app_config()) {
   config.output_format = format;
   const auto& source = preset.formats[preset_detail::format_slot(format)];
   if (format == OutputFormat::png) {
@@ -867,6 +893,15 @@ awj::compat::expected<void, std::string> validate_user_preset(const UserPreset& 
   if (auto filename = preset_detail::safe_file_stem(preset.name); !filename) {
     return awj::compat::unexpected{filename.error()};
   }
+  for (const auto& [tokens, key] : std::array{
+           std::pair{&preset.cli_args_high_priority, std::string_view{"cli_args_high_priority"}},
+           std::pair{&preset.cli_args_low_priority, std::string_view{"cli_args_low_priority"}}}) {
+    auto args = preset_detail::cli_arguments(*tokens, key);
+    if (!args) return awj::compat::unexpected{args.error()};
+    auto syntax = parse_arguments_impl(*args, default_app_config(), true,
+        {.finalize = false, .conversion_only = true});
+    if (!syntax) return awj::compat::unexpected{awj::compat::format("预设 {}：{}", key, syntax.error())};
+  }
   for (std::size_t i = 0; i < preset.formats.size(); ++i) {
     auto config = config_from_user_preset(preset, preset_detail::format_from_slot(i));
     if (auto valid = validate_config(config); !valid) {
@@ -878,47 +913,63 @@ awj::compat::expected<void, std::string> validate_user_preset(const UserPreset& 
 }
 
 awj::compat::expected<UserPreset, std::string> load_user_preset_file(
-    const std::filesystem::path& path) {
+    const std::filesystem::path& path, bool migrate = true) {
   try {
-    std::error_code ec;
-    if (std::filesystem::file_size(path, ec) > 1024u * 1024u || ec) {
-      return awj::compat::unexpected{"预设文件超过 1 MiB 限制。"};
-    }
-    auto parsed = preset_detail::read_document(path);
-    if (!parsed) return awj::compat::unexpected{parsed.error()};
-    const auto& document = *parsed;
+    auto source = preset_detail::read_source(path, preset_jsonc::max_file_bytes);
+    if (!source) return awj::compat::unexpected{source.error()};
+    const auto& document = source->active;
     if (!document.is_object()) return awj::compat::unexpected{"预设根节点必须是对象。"};
-    if (!document.contains("schema") || !document.at("schema").is_number_integer() ||
-        document.at("schema").get<int>() != user_preset_schema) {
+    if (document.contains("schema") &&
+        (!document.at("schema").is_number_integer() ||
+         document.at("schema") != user_preset_schema))
       return awj::compat::unexpected{"预设 schema 必须为整数 1。"};
-    }
-    if (!document.contains("name") || !document.at("name").is_string()) {
+    if (document.contains("name") && !document.at("name").is_string())
       return awj::compat::unexpected{"预设 name 必须是字符串。"};
-    }
-    if (!document.contains("description") || !document.at("description").is_string()) {
+    if (document.contains("description") && !document.at("description").is_string())
       return awj::compat::unexpected{"预设 description 必须是字符串。"};
-    }
-    if (!document.contains("formats") || !document.at("formats").is_object()) {
+    if (document.contains("formats") && !document.at("formats").is_object())
       return awj::compat::unexpected{"预设 formats 必须是对象。"};
-    }
     UserPreset preset = default_user_preset();
-    preset.name = document.at("name").get<std::string>();
-    preset.description = document.at("description").get<std::string>();
+    preset.name = document.contains("name") ? document.at("name").get<std::string>()
+                                             : preset_detail::path_utf8(path.stem());
+    preset.description = document.value("description", std::string{});
     preset.source_path = path;
-    if (auto result = preset_detail::load_bool(document, "shell_menu", preset.shell_menu); !result) {
+    if (auto result = preset_detail::load_bool(document, "shell_menu", preset.shell_menu); !result)
       return awj::compat::unexpected{result.error()};
-    }
-    const auto& formats = document.at("formats");
-    for (std::size_t i = 0; i < preset.formats.size(); ++i) {
-      const auto key = std::string{preset_detail::format_keys[i]};
-      if (!formats.contains(key)) continue;
-      if (auto result = preset_detail::load_format(formats.at(key), preset.formats[i]);
-          !result) {
-        return awj::compat::unexpected{awj::compat::format("预设 {}：{}", key, result.error())};
+    if (auto result = preset_detail::load_cli_arguments(
+            document, "cli_args_high_priority", preset.cli_args_high_priority); !result)
+      return awj::compat::unexpected{result.error()};
+    if (auto result = preset_detail::load_cli_arguments(
+            document, "cli_args_low_priority", preset.cli_args_low_priority); !result)
+      return awj::compat::unexpected{result.error()};
+    if (document.contains("formats")) {
+      const auto& formats = document.at("formats");
+      for (std::size_t i = 0; i < preset.formats.size(); ++i) {
+        const auto key = std::string{preset_detail::format_keys[i]};
+        if (!formats.contains(key)) continue;
+        if (auto result = preset_detail::load_format(formats.at(key), preset.formats[i]); !result)
+          return awj::compat::unexpected{awj::compat::format("预设 {}：{}", key, result.error())};
       }
     }
-    if (auto valid = validate_user_preset(preset); !valid) {
+    if (auto valid = validate_user_preset(preset); !valid)
       return awj::compat::unexpected{valid.error()};
+    // 菜单同步在事务锁内只读取名称/标记，不能再次尝试迁移并获取同一把锁。
+    if (!migrate) return preset;
+    const auto content = preset_jsonc::serialize(preset_detail::preset_json(preset), &*source);
+    if (content != source->raw) {
+      if (path.extension() != ".jsonc" && path.extension() != ".json")
+        return awj::compat::unexpected{"自动迁移仅支持 .jsonc 或 .json 预设文件，原文件未修改。"};
+      std::error_code ec;
+      const auto absolute = std::filesystem::absolute(path, ec);
+      if (ec || std::filesystem::is_symlink(path, ec) || ec)
+        return awj::compat::unexpected{"无法自动迁移符号链接或不可访问的预设，原文件未修改。"};
+      preset_detail::PresetLock lock{absolute.parent_path()};
+      if (!lock.valid()) return awj::compat::unexpected{"另一进程正在修改预设，未自动迁移。"};
+      const auto latest = preset_detail::read_source(absolute, preset_jsonc::max_file_bytes);
+      if (!latest || latest->raw != source->raw)
+        return awj::compat::unexpected{"预设在迁移期间发生变化，请重新加载。"};
+      if (auto saved = preset_detail::change_file(absolute, content, {}); !saved)
+        return awj::compat::unexpected{"预设自动迁移失败：" + saved.error()};
     }
     return preset;
   } catch (const nlohmann::json::exception& error) {
@@ -928,7 +979,7 @@ awj::compat::expected<UserPreset, std::string> load_user_preset_file(
   }
 }
 
-awj::compat::expected<PresetCatalog, std::string> list_user_presets() {
+awj::compat::expected<PresetCatalog, std::string> list_user_presets(bool migrate = true) {
   auto directory = user_preset_directory();
   if (!directory) return awj::compat::unexpected{directory.error()};
   PresetCatalog catalog{};
@@ -942,15 +993,17 @@ awj::compat::expected<PresetCatalog, std::string> list_user_presets() {
     if (ec) return awj::compat::unexpected{"无法枚举预设目录：" + ec.message()};
     if (!entry.is_regular_file(ec) || ec || entry.path().extension() != ".jsonc") continue;
     auto document = preset_detail::read_document(entry.path());
-    if (document && document->is_object() && document->contains("name") && (*document)["name"].is_string()) {
+    const bool counted_name = document && document->is_object() &&
+        document->contains("name") && (*document)["name"].is_string();
+    if (counted_name)
       ++name_counts[preset_detail::upper_ascii((*document)["name"].get<std::string>())];
-    }
-    auto loaded = load_user_preset_file(entry.path());
+    auto loaded = load_user_preset_file(entry.path(), migrate);
     if (!loaded) {
       catalog.errors.push_back(awj::compat::format("{}：{}", preset_detail::path_utf8(entry.path().filename()),
                                            loaded.error()));
       continue;
     }
+    if (!counted_name) ++name_counts[preset_detail::upper_ascii(loaded->name)];
     catalog.presets.push_back(std::move(*loaded));
   }
   std::erase_if(catalog.presets, [&](const UserPreset& preset) {
@@ -985,22 +1038,47 @@ awj::compat::expected<UserPreset, std::string> find_user_preset(std::string_view
   return *it;
 }
 
+namespace preset_detail {
+
+awj::compat::expected<ParseResult, std::string> parse_cli_layer(
+    const std::vector<std::string>& tokens, std::string_view key, AppConfig base,
+    bool finalize = false, std::optional<bool> automatic_threads = {}) {
+  auto args = cli_arguments(tokens, key);
+  if (!args) return awj::compat::unexpected{args.error()};
+  auto parsed = parse_arguments_impl(*args, std::move(base), true,
+      {.finalize = finalize, .conversion_only = true, .override_inherited = true,
+       .automatic_threads = automatic_threads});
+  if (!parsed) return awj::compat::unexpected{awj::compat::format("预设 {}：{}", key, parsed.error())};
+  return parsed;
+}
+
+}  // namespace preset_detail
+
 awj::compat::expected<ParseResult, std::string> parse_arguments_with_user_preset(
     const std::vector<std::wstring>& args) {
-  auto parsed = parse_arguments(args);
-  if (!parsed || parsed->should_exit ||
-      (!parsed->preset_name && !parsed->preset_file)) {
-    return parsed;
-  }
-  if (parsed->preset_name && parsed->preset_file) {
+  // 第一遍只识别选项和预设入口，不用尚未加载的默认值做最终互斥校验。
+  auto parsed = parse_arguments_impl(args, default_app_config(), false, {.finalize = false});
+  if (!parsed || parsed->should_exit) return parsed;
+  if (!parsed->preset_name && !parsed->preset_file) return parse_arguments(args);
+  if (parsed->preset_name && parsed->preset_file)
     return awj::compat::unexpected{"--preset 与 --preset-file 不能同时使用。"};
-  }
   auto preset = parsed->preset_file
                     ? load_user_preset_file(*parsed->preset_file)
                     : find_user_preset(
                           preset_detail::utf8_from_wide_for_preset(*parsed->preset_name));
   if (!preset) return awj::compat::unexpected{preset.error()};
-  auto base = config_from_user_preset(*preset, parsed->config.output_format);
+  auto low = preset_detail::parse_cli_layer(preset->cli_args_low_priority,
+                                           "cli_args_low_priority", default_app_config());
+  if (!low) return awj::compat::unexpected{low.error()};
+  // formats 按最终输出格式选择，而不是按 --format 在命令行中的位置选择。
+  auto selection = parse_arguments_impl(args, low->config, true,
+      {.finalize = false, .override_inherited = true});
+  if (!selection) return awj::compat::unexpected{selection.error()};
+  auto high_selection = preset_detail::parse_cli_layer(preset->cli_args_high_priority,
+      "cli_args_high_priority", std::move(selection->config));
+  if (!high_selection) return awj::compat::unexpected{high_selection.error()};
+  auto base = config_from_user_preset(*preset, high_selection->config.output_format,
+                                     std::move(low->config));
 #ifdef _WIN32
   if (parsed->config.output_policy == OutputPolicy::shell) {
     const auto& menu = preset->formats[preset_detail::format_slot(base.output_format)];
@@ -1009,9 +1087,60 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_with_user_preset
     base.shell_close_on_finish = menu.menu_close_on_finish;
   }
 #endif
-  auto resolved = parse_arguments_with_preset_base(args, std::move(base));
+  auto resolved = parse_arguments_impl(args, std::move(base), true,
+      {.finalize = false, .override_inherited = true});
   if (!resolved) return awj::compat::unexpected{resolved.error()};
+  auto high = preset_detail::parse_cli_layer(preset->cli_args_high_priority,
+      "cli_args_high_priority", std::move(resolved->config), true, resolved->automatic_threads);
+  if (!high) return awj::compat::unexpected{high.error()};
+  resolved->config = std::move(high->config);
+  if (high->input_was_set) resolved->shell_inputs = std::move(high->shell_inputs);
+  resolved->automatic_threads = high->automatic_threads;
+  resolved->warnings.insert(resolved->warnings.begin(), low->warnings.begin(), low->warnings.end());
+  resolved->warnings.insert(resolved->warnings.end(), high->warnings.begin(), high->warnings.end());
   return resolved;
+}
+
+awj::compat::expected<AppConfig, std::string> resolve_user_preset_ui_config(
+    const UserPreset& preset, const AppConfig& ui) {
+  if (preset.cli_args_high_priority.empty() && preset.cli_args_low_priority.empty()) return ui;
+  auto low = preset_detail::parse_cli_layer(preset.cli_args_low_priority,
+      "cli_args_low_priority", default_app_config());
+  if (!low) return awj::compat::unexpected{low.error()};
+  auto selection = low->config;
+  selection.output_format = ui.output_format;
+  auto high_selection = preset_detail::parse_cli_layer(preset.cli_args_high_priority,
+      "cli_args_high_priority", std::move(selection));
+  if (!high_selection) return awj::compat::unexpected{high_selection.error()};
+  const auto format = high_selection->config.output_format;
+  auto visible = default_user_preset();
+  const auto slot = preset_detail::format_slot(format);
+  visible.formats[slot] = format == ui.output_format ? preset_format_from_config(ui)
+                                                    : preset.formats[slot];
+  auto base = config_from_user_preset(visible, format, std::move(low->config));
+  base.input_path = ui.input_path;
+  base.output_dir = ui.output_dir;
+  base.output_template = ui.output_template;
+  base.output_policy = ui.output_policy;
+  base.append_png_suffix = ui.append_png_suffix;
+  base.collision_mode = ui.collision_mode;
+  base.visual_quality_fallback = ui.visual_quality_fallback;
+  base.allow_wic_fallback = ui.allow_wic_fallback;
+  base.unlock_memory_limit = ui.unlock_memory_limit;
+  base.unlock_max_input_file_bytes = ui.unlock_max_input_file_bytes;
+  base.strip_metadata = ui.strip_metadata;
+  base.write_log = ui.write_log;
+  base.write_summary = ui.write_summary;
+  base.delete_source = ui.delete_source;
+  base.preserve_creation_time = ui.preserve_creation_time;
+  base.preserve_modification_time = ui.preserve_modification_time;
+  base.preserve_access_time = ui.preserve_access_time;
+  auto high = preset_detail::parse_cli_layer(preset.cli_args_high_priority,
+      "cli_args_high_priority", std::move(base), true);
+  if (!high) return awj::compat::unexpected{high.error()};
+  if (high->input_was_set && high->config.input_path != ui.input_path)
+    return awj::compat::unexpected{"预设 --input 不能替换已经建立的 UI 文件队列；请在 CLI 中使用此输入覆盖。"};
+  return std::move(high->config);
 }
 
 awj::compat::expected<std::filesystem::path, std::string> save_user_preset(
@@ -1059,22 +1188,20 @@ awj::compat::expected<std::filesystem::path, std::string> save_user_preset(
         (*document)["shell_menu"].get<bool>()) ++injected_count;
   }
   if (injected_count > 10) return awj::compat::unexpected{"最多同时注入 10 个预设，请先取消其他预设的注入。"};
-  auto document = preset_detail::Json::object();
+  std::optional<preset_jsonc::Document> original;
   if (overwrite) {
-    auto original = preset_detail::read_document(path);
-    if (!original || !original->is_object()) return awj::compat::unexpected{"无法保留原预设的扩展字段，未覆盖。"};
-    document = std::move(*original);
+    auto source = preset_detail::read_source(path, preset_jsonc::max_file_bytes);
+    if (!source || !source->active.is_object())
+      return awj::compat::unexpected{"无法保留原预设的注释与扩展字段，未覆盖。"};
+    original = std::move(*source);
   }
-  document["schema"] = user_preset_schema;
-  document["name"] = preset.name;
-  document["description"] = preset.description;
-  document["shell_menu"] = preset.shell_menu;
-  if (!document.contains("formats") || !document["formats"].is_object()) document["formats"] = preset_detail::Json::object();
-  for (std::size_t i = 0; i < preset.formats.size(); ++i) {
-    auto& format = document["formats"][std::string{preset_detail::format_keys[i]}];
-    preset_detail::overlay_known_keys(format, preset_detail::format_json(preset.formats[i]));
+  std::string content;
+  try {
+    content = preset_jsonc::serialize(preset_detail::preset_json(preset),
+                                    original ? &*original : nullptr);
+  } catch (const std::exception& error) {
+    return awj::compat::unexpected{awj::compat::format("无法保存预设：{}", error.what())};
   }
-  const auto content = document.dump(2) + "\n";
   if (auto saved = preset_detail::change_file(path, content, synchronize); !saved) {
     return awj::compat::unexpected{saved.error()};
   }
@@ -1098,7 +1225,7 @@ awj::compat::expected<void, std::string> delete_user_preset(
 }
 
 awj::compat::expected<std::vector<std::wstring>, std::string> injected_user_preset_names() {
-  auto catalog = list_user_presets();
+  auto catalog = list_user_presets(false);
   if (!catalog) return awj::compat::unexpected{catalog.error()};
   std::vector<std::wstring> names;
   for (const auto& preset : catalog->presets) {

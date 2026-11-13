@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.7 - 2026-11-13
+
+### User presets
+
+- Add high- and low-priority CLI arguments to preset JSONC files, allowing conversion options not exposed by the interface to override or supplement visible settings.
+- Automatically fill missing fields when loading older presets and retain extra fields as inactive comments. Editing and saving preserve comments and custom CLI arguments.
+
 ## 1.3.6 - 2026-11-13
 
 ### Changelog interface

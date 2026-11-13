@@ -56,34 +56,6 @@ std::wstring cli_output_format_arg(awj::OutputFormat format) {
   }
 }
 
-std::wstring cli_collision_arg(awj::CollisionMode mode) {
-  switch (mode) {
-    case awj::CollisionMode::skip:
-      return L"skip";
-    case awj::CollisionMode::suffix_time:
-      return L"time";
-    case awj::CollisionMode::suffix_random:
-      return L"random";
-    case awj::CollisionMode::suffix_number:
-      return L"number";
-    case awj::CollisionMode::overwrite:
-    default:
-      return L"overwrite";
-  }
-}
-
-std::wstring cli_chroma_arg(awj::ChromaMode mode) {
-  return awj::wide_from_utf8(awj::chroma_mode_name(mode));
-}
-
-std::wstring cli_avif_encoder_arg(awj::AvifEncoderMode mode) {
-  return awj::wide_from_utf8(awj::avif_encoder_mode_name(mode));
-}
-
-std::wstring cli_alpha_arg(awj::AlphaModePolicy policy) {
-  return awj::wide_from_utf8(awj::alpha_mode_policy_name(policy));
-}
-
 void push_cli_option(std::vector<std::wstring>& args, std::wstring option,
                      std::wstring value) {
   args.push_back(std::move(option));
@@ -95,132 +67,17 @@ void push_cli_option(std::vector<std::wstring>& args, std::wstring option,
   push_cli_option(args, std::move(option), value.native());
 }
 
-std::wstring bytes_argument(std::uint64_t bytes) {
-  return bytes == 0 ? std::wstring{L"auto"} : awj::compat::format(L"{}b", bytes);
-}
-
 std::vector<std::wstring> cli_arguments_from_config(
     const awj::AppConfig& cfg, std::wstring_view cancel_event_name) {
-  std::vector<std::wstring> args;
-  args.reserve(80);
-
-  push_cli_option(args, L"--input", cfg.input_path);
-  if (!cfg.output_dir.empty()) {
-    push_cli_option(args, L"--output", cfg.output_dir);
-  }
-  push_cli_option(args, L"--format", cli_output_format_arg(cfg.output_format));
-  push_cli_option(args, L"--template", cfg.output_template);
-  push_cli_option(args, L"--threads", std::to_wstring(cfg.max_jobs));
-  if (!cfg.cpu_affinity.empty()) {
-    std::wstring cpus;
-    for (const auto cpu : cfg.cpu_affinity) {
-      if (!cpus.empty()) cpus += L',';
-      cpus += std::to_wstring(cpu);
-    }
-    push_cli_option(args, L"--cpu-affinity", cpus);
-  }
-  push_cli_option(args, L"--memory-limit", bytes_argument(cfg.memory_limit_bytes));
-  args.push_back(cfg.unlock_memory_limit ? L"--unlock-memory-limit"
-                                         : L"--no-unlock-memory-limit");
-  push_cli_option(args, L"--image-size-limit", awj::wide_from_utf8(std::string{awj::image_size_mode_name(cfg.image_size_limit.mode)}));
-  if (awj::manual_image_size_mode(cfg.image_size_limit.mode)) {
-      if (cfg.image_size_limit.max_width) push_cli_option(args, L"--max-width", std::to_wstring(*cfg.image_size_limit.max_width));
-      if (cfg.image_size_limit.max_height) push_cli_option(args, L"--max-height", std::to_wstring(*cfg.image_size_limit.max_height));
-      if (cfg.image_size_limit.max_long_edge) push_cli_option(args, L"--max-long-edge", std::to_wstring(*cfg.image_size_limit.max_long_edge));
-      if (cfg.image_size_limit.max_short_edge) push_cli_option(args, L"--max-short-edge", std::to_wstring(*cfg.image_size_limit.max_short_edge));
-      if (cfg.image_size_limit.scale_percent) push_cli_option(args, L"--scale-percent", std::to_wstring(*cfg.image_size_limit.scale_percent));
-  }
-  push_cli_option(args, L"--timeout-encode",
-                  std::to_wstring(cfg.encode_timeout_minutes));
-  push_cli_option(args, L"--collision", cli_collision_arg(cfg.collision_mode));
-  push_cli_option(args, L"--studio-cancel-event",
-                  std::wstring{cancel_event_name});
-  if (!cfg.studio_queue_manifest.empty()) {
-    push_cli_option(args, L"--studio-queue-manifest",
-                    cfg.studio_queue_manifest);
-  }
-  if (!cfg.studio_large_action.empty()) {
+  auto args = awj::conversion_arguments_from_config(cfg);
+  push_cli_option(args, L"--studio-cancel-event", std::wstring{cancel_event_name});
+  if (!cfg.studio_queue_manifest.empty())
+    push_cli_option(args, L"--studio-queue-manifest", cfg.studio_queue_manifest);
+  if (!cfg.studio_large_action.empty())
     push_cli_option(args, L"--studio-large-action", cfg.studio_large_action);
-  }
-  args.push_back(cfg.unlock_memory_limit || cfg.unlock_max_input_file_bytes
-      ? L"--unlock-max-input-file-bytes" : L"--no-unlock-max-input-file-bytes");
-  if (cfg.runtime_memory_policy) {
+  if (cfg.runtime_memory_policy)
     push_cli_option(args, L"--studio-input-limit-bytes",
                     std::to_wstring(cfg.runtime_memory_policy->input_limit()));
-  }
-
-  if (cfg.visual_quality) {
-    push_cli_option(args, L"--visual-quality",
-                    std::to_wstring(*cfg.visual_quality));
-    args.push_back(cfg.visual_quality_fallback ? L"--visual-quality-fallback"
-                                               : L"--no-visual-quality-fallback");
-  } else {
-    push_cli_option(args, L"--quality", std::to_wstring(cfg.quality));
-  }
-
-  if (cfg.bit_depth) {
-    push_cli_option(args, L"--bit-depth", std::to_wstring(*cfg.bit_depth));
-  }
-  if (cfg.speed) {
-    push_cli_option(args, L"--speed", std::to_wstring(*cfg.speed));
-  }
-
-  args.push_back(cfg.allow_wic_fallback ? L"--allow-wic-fallback"
-                                        : L"--no-wic-fallback");
-  args.push_back(cfg.experimental_clamped_grid_padding
-                     ? L"--experimental-clamped-grid-padding"
-                     : L"--no-experimental-clamped-grid-padding");
-  args.push_back(cfg.strip_metadata ? L"--strip" : L"--keep-metadata");
-  // Emit one canonical option so legacy disagreement cannot be reversed by
-  // last-option-wins parsing in the child process.
-  args.push_back(cfg.write_log || cfg.write_summary ? L"--log" : L"--no-log");
-  args.push_back(cfg.delete_source ? L"--delete-source" : L"--no-delete-source");
-  if (cfg.preserve_creation_time) args.push_back(L"--preserve-creation-time");
-  if (cfg.preserve_modification_time) args.push_back(L"--preserve-modification-time");
-  if (cfg.preserve_access_time) args.push_back(L"--preserve-access-time");
-
-  if (cfg.output_format == awj::OutputFormat::avif) {
-    push_cli_option(args, L"--avif-encoder",
-                    cli_avif_encoder_arg(cfg.avif_encoder));
-    push_cli_option(args, L"--avif-color-representation",
-                    awj::wide_from_utf8(awj::avif_color_representation_name(
-                        cfg.avif_color_representation)));
-    push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
-    push_cli_option(args, L"--alpha", cli_alpha_arg(cfg.alpha_policy));
-  }
-  if (cfg.output_format == awj::OutputFormat::jxl && !cfg.jxl_jpeg_lossless) {
-    args.push_back(L"--no-jxl-jpeg-lossless");
-  }
-  if (cfg.output_format == awj::OutputFormat::jpgli) {
-    push_cli_option(args, L"--chroma", cli_chroma_arg(cfg.chroma_mode));
-    push_cli_option(args, L"--jpeg-progressive-level",
-                    std::to_wstring(cfg.jpegli_progressive_level));
-    args.push_back(cfg.jpegli_optimize_huffman
-                       ? L"--jpeg-optimize-huffman"
-                       : L"--no-jpeg-optimize-huffman");
-    if (cfg.jpegli_xyb) {
-      args.push_back(L"--jpeg-xyb");
-    }
-  }
-
-  if (cfg.color_primaries) {
-    push_cli_option(args, L"--color-primaries",
-                    std::to_wstring(*cfg.color_primaries));
-  }
-  if (cfg.transfer_characteristics) {
-    push_cli_option(args, L"--transfer-characteristics",
-                    std::to_wstring(*cfg.transfer_characteristics));
-  }
-  if (cfg.matrix_coefficients) {
-    push_cli_option(args, L"--matrix-coefficients",
-                    std::to_wstring(*cfg.matrix_coefficients));
-  }
-  if (cfg.color_range) {
-    push_cli_option(args, L"--color-range", std::to_wstring(*cfg.color_range));
-  }
-
-
-
   return args;
 }
 
@@ -486,7 +343,7 @@ awj::compat::expected<bool, std::string> collect_shell_launch_inputs(
 
 awj::compat::expected<std::vector<awj::shell_context_menu::PresetMenuSpec>, std::string>
 injected_preset_menu_specs() {
-  auto catalog = awj::list_user_presets();
+  auto catalog = awj::list_user_presets(false);
   if (!catalog) return awj::compat::unexpected{catalog.error()};
   std::vector<awj::shell_context_menu::PresetMenuSpec> specs;
   for (const auto& preset : catalog->presets) {

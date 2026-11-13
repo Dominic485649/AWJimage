@@ -2353,6 +2353,11 @@ awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
     config->append_png_suffix = queue_choice.append_png_suffix;
     config->unlock_memory_limit = app.get_unlock_memory_limit();
     config->unlock_max_input_file_bytes = config->unlock_memory_limit;
+    if (preset_index > 0) {
+      config = awj::resolve_user_preset_ui_config(
+          state.user_presets[static_cast<std::size_t>(preset_index - 1)], *config);
+      if (!config) return awj::compat::unexpected{config.error()};
+    }
     if (auto frozen = awj::freeze_operation_memory_policy(*config); !frozen)
       return awj::compat::unexpected{frozen.error()};
   }
@@ -3299,6 +3304,8 @@ int awj::studio::run_studio_ui() {
           if (edit_index > 1 && edit_index <= static_cast<int>(state->user_presets.size()) + 1) {
             const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 2)];
             preset->source_path = original.source_path;
+            preset->cli_args_high_priority = original.cli_args_high_priority;
+            preset->cli_args_low_priority = original.cli_args_low_priority;
             const auto original_ui = linux_parameter_params_from_user_preset(original);
             for (std::size_t i = 0; i < preset->formats.size(); ++i) {
               preset->formats[i].menu_strip_metadata = original.formats[i].menu_strip_metadata;
@@ -3637,7 +3644,11 @@ int awj::studio::run_studio_ui() {
               });
             };
             attach_linux_frame_progress(cfg, weak, rows, state, generation);
-            auto summary = awj::run_batch(cfg, progress, token);
+            // Linux affinity 只作用于本轮 worker 线程及其后代，不改变 UI 线程。
+            const auto affinity = awj::apply_cpu_affinity(cfg.cpu_affinity);
+            auto summary = affinity ? awj::run_batch(cfg, progress, token)
+                : awj::compat::expected<awj::BatchSummary, std::string>{
+                      awj::compat::unexpected{affinity.error()}};
             std::error_code cleanup_ec;
             fs::remove(manifest_path, cleanup_ec);
             slint::invoke_from_event_loop(
@@ -3736,7 +3747,11 @@ int awj::studio::run_studio_ui() {
             }
           });
         };
-        auto summary = awj::run_batch(cfg, progress, token);
+        // Linux affinity 只作用于本轮 worker 线程及其后代，不改变 UI 线程。
+        const auto affinity = awj::apply_cpu_affinity(cfg.cpu_affinity);
+        auto summary = affinity ? awj::run_batch(cfg, progress, token)
+            : awj::compat::expected<awj::BatchSummary, std::string>{
+                  awj::compat::unexpected{affinity.error()}};
         slint::invoke_from_event_loop([weak, state, generation, canceled = token.stop_requested(), summary = std::move(summary), index, action] {
           if (auto app = weak.lock()) {
             if (!finish_linux_queue_run(**app, *state, generation, canceled,
@@ -3834,7 +3849,11 @@ int awj::studio::run_studio_ui() {
           });
         };
         attach_linux_frame_progress(cfg, weak, rows, state, generation);
-        auto summary = awj::run_batch(cfg, progress, token);
+        // Linux affinity 只作用于本轮 worker 线程及其后代，不改变 UI 线程。
+        const auto affinity = awj::apply_cpu_affinity(cfg.cpu_affinity);
+        auto summary = affinity ? awj::run_batch(cfg, progress, token)
+            : awj::compat::expected<awj::BatchSummary, std::string>{
+                  awj::compat::unexpected{affinity.error()}};
         std::error_code cleanup_ec;
         fs::remove(manifest_path, cleanup_ec);
         slint::invoke_from_event_loop([weak, state, generation, canceled = token.stop_requested(), summary = std::move(summary)] {

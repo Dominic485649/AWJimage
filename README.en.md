@@ -2,7 +2,7 @@
 
 [中文](README.md)
 
-AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current development version: **1.3.5** (local candidate), including the application and C ABI SDK.
+AWJimage is a batch image converter for Windows and Linux, with a desktop interface and CLI. Current development version: **1.3.7** (local candidate), including the application and C ABI SDK.
 
 ## Formats
 
@@ -39,6 +39,28 @@ The queue shows source sizes and output sizes after successful conversion. Drag 
 Reimport completed images without clearing the queue. Entries not reimported retain their completed results; new and reimported entries become pending. Deduplicate normalized paths at the last valid import position without changing output-collision policies. Importing remains locked during encoding and cancellation cleanup.
 
 Settings are stored in `AWJ.jsonc` beside the application. User presets live in `preset/*.jsonc`. The queue initially uses the built-in defaults. Selecting a user preset stores its filename in `queue_preset_file` and restores that selection on the next launch. Selecting the built-in defaults clears the saved selection; deleted or invalid presets also fall back to the built-in defaults.
+
+### CLI arguments in presets
+
+Starting with 1.3.7, newly saved user presets always include these two keys before `formats`. Edit the JSONC file to use them. Built-in defaults are not stored as preset files and do not have this feature:
+
+```jsonc
+{
+  "schema": 1,
+  "name": "Custom encoding",
+  "description": "",
+  "shell_menu": false,
+  "cli_args_high_priority": ["--quality", "90"],
+  "cli_args_low_priority": ["--timeout-encode", "30"],
+  "formats": {}
+}
+```
+
+Each string is one CLI argument token. Separate options from values; a path or template containing spaces remains one string, without an executable name or shell quoting. Both keys default to `[]`. Priority, highest first: **`cli_args_high_priority` → current UI / explicit CLI arguments → visible settings in `formats` → `cli_args_low_priority` → application defaults**. This example forces quality 90 and supplies a 30-minute encoding timeout not exposed by the interface. Normal CLI format and mutual-exclusion rules still apply.
+
+Desktop queues on both platforms, CLI preset loading and saved user-preset context-menu conversion share this rule. Arguments affect execution without changing visible controls or `formats`; the high layer may explicitly override run logging, source recycling and other conversion switches. A high-priority `--input` cannot replace an existing UI file queue; use the CLI for that override. Presets do not run PowerShell, Bash or external programs, and cannot embed help, version, recursive preset selection or internal `--studio-*` controls. Each array accepts at most 256 tokens, with 4096 bytes per token and 16 KiB total.
+
+Valid older presets are migrated and written back on load: missing root fields, formats and format fields are filled; a missing name uses the filename; extra fields and their subtrees are preserved as `//` comments with their original paths. Existing comments remain inactive and are neither repeatedly wrapped nor re-enabled. JSONC accepts `//` and ordinary `/* ... */` comments, but not nested block comments. Invalid values, malformed files and migration write failures produce an error without overwriting the original file.
 
 ## CLI
 

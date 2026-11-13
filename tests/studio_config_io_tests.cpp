@@ -2,6 +2,9 @@
 #include "../src/ui/studio_config.h"
 #include "../src/ui/studio_config_io.h"
 #include "../src/ui/studio_json.h"
+#include "../src/ui/studio_presets.h"
+#include "../src/ui/studio_shell_cli.h"
+#include "../src/ui/studio_ui_util.h"
 #include <private/slint_tests_helpers.h>
 
 #include <array>
@@ -26,6 +29,45 @@ std::array<bool, 6> switches(const AwjStudio& app) {
   return {app.get_strip_metadata(), app.get_write_log(), app.get_delete_source(),
       app.get_preserve_creation_time(), app.get_preserve_modification_time(), app.get_preserve_access_time()};
 }
+void preset_priority_check() {
+  using namespace awj::studio;
+  auto app = AwjStudio::create();
+  UiState state;
+  initialize_ui_defaults(*app, state);
+  app->set_input_path(to_shared("C:\\preset-contract\\中文 输入.png"));
+  auto preset = awj::default_user_preset();
+  preset.name = "UI CLI contract";
+  preset.formats[0].quality = 65;
+  preset.cli_args_low_priority = {"--quality", "30", "--timeout-encode", "5", "--log", "--avif-progressive"};
+  preset.cli_args_high_priority = {"--quality", "90", "--timeout-encode", "9", "--append-png-suffix"};
+  state.user_presets.push_back(preset);
+  app->set_queue_preset_index(1);
+  auto cfg = config_from_ui(*app, state);
+  if (!cfg) throw std::runtime_error{cfg.error()};
+  check(cfg->quality == 90 && cfg->encode_timeout_minutes == 9 && cfg->append_png_suffix &&
+      cfg->avif_layers.automatic && !cfg->write_log && cfg->runtime_memory_policy.has_value() &&
+      state.user_presets[0].formats[0].quality == 65 && !app->get_write_log(),
+      "Windows 生产 UI 没有正确合并 CLI 优先级，或覆盖结果污染 UI/预设");
+  auto child = awj::parse_arguments(cli_arguments_from_config(*cfg, L"Local\\preset-contract"));
+  if (!child) throw std::runtime_error{child.error()};
+  check(child->config.quality == 90 && child->config.encode_timeout_minutes == 9 &&
+      child->config.avif_layers.automatic && child->config.append_png_suffix &&
+      child->config.input_path == cfg->input_path &&
+      child->config.studio_input_limit_bytes == cfg->runtime_memory_policy->input_limit(),
+      "Windows worker 参数序列化丢失预设 CLI-only 参数或运行时快照");
+  state.user_presets[0].cli_args_high_priority = {"--format", "png", "--no-avif-progressive"};
+  cfg = config_from_ui(*app, state);
+  check(cfg && cfg->output_format == awj::OutputFormat::png && cfg->quality == 100 &&
+      !cfg->speed && !cfg->avif_layers.enabled(), "Windows UI 跨格式覆盖残留了 AVIF 参数");
+  state.user_presets[0].cli_args_high_priority.clear();
+  cfg = config_from_ui(*app, state);
+  check(cfg && cfg->quality == 65 && cfg->encode_timeout_minutes == 5 && cfg->avif_layers.automatic &&
+      !cfg->append_png_suffix && !cfg->write_log, "Windows UI 没有覆盖低层可见选项或保留低层 CLI-only 选项");
+  app->set_queue_preset_index(0);
+  cfg = config_from_ui(*app, state);
+  check(cfg && cfg->quality == awj::default_quality_for(awj::OutputFormat::avif) &&
+      !cfg->avif_layers.enabled() && !cfg->append_png_suffix, "用户预设的隐藏命令泄漏到内置默认");
+}
 }
 
 int main() try {
@@ -35,6 +77,7 @@ int main() try {
   check(!path.empty() && path.parent_path().parent_path().filename() == "studio-config-io-contract" &&
       !fs::exists(path), "必须使用空的测试专属配置目录");
   slint::testing::init();
+  preset_priority_check();
   auto app = AwjStudio::create();
   UiState state;
   const std::array<bool, 6> off{};

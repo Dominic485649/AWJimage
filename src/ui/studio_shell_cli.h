@@ -21,7 +21,8 @@ namespace awj::studio {
 
 std::wstring queue_path_key(const std::filesystem::path& path);
 
-std::vector<std::wstring> cli_arguments_from_config(const awj::AppConfig& cfg);
+std::vector<std::wstring> cli_arguments_from_config(
+    const awj::AppConfig& cfg, std::wstring_view cancel_event_name = {});
 std::wstring command_line_from_args(std::span<const std::wstring> args);
 
 std::expected<std::filesystem::path, std::string> awj_exe_path_for_shell_menu();

@@ -823,6 +823,8 @@ int run_studio_ui(const wchar_t* health_event,
           if (edit_index > 1 && edit_index <= static_cast<int>(state->user_presets.size()) + 1) {
             const auto& original = state->user_presets[static_cast<std::size_t>(edit_index - 2)];
             preset->source_path = original.source_path;
+            preset->cli_args_high_priority = original.cli_args_high_priority;
+            preset->cli_args_low_priority = original.cli_args_low_priority;
             const auto original_ui = parameter_params_from_user_preset(original);
             for (std::size_t i = 0; i < preset->formats.size(); ++i) {
               if (active_parameter_params(*state)[i].memory_limit_text == original_ui[i].memory_limit_text)

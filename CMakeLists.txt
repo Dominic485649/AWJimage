@@ -1852,6 +1852,7 @@ if(BUILD_TESTING)
         set_tests_properties(studio_state_contract PROPERTIES TIMEOUT 30)
         add_executable(awj_studio_config_io_tests
             tests/studio_config_io_tests.cpp
+            src/ui/studio_presets.cpp
             src/ui/import_service.cpp
             src/ui/file_drop_win32.cpp
             src/ui/studio_fields.cpp

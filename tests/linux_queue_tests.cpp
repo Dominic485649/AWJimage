@@ -68,6 +68,47 @@ std::uint64_t encode_queue(AwjStudio& app, LinuxUiState& state, const fs::path& 
   return generation;
 }
 
+void preset_priority_check(const fs::path& root) {
+  auto app = AwjStudio::create();
+  LinuxUiState state;
+  for (int i = 0; i < 5; ++i) state.builtin_params[i] = default_linux_parameter_params(i);
+  apply_linux_parameter_params(*app, state.builtin_params.front(), 0);
+  app->set_input_path(to_shared(awj::path_to_utf8(root / "A.png")));
+  app->set_output_dir(to_shared(awj::path_to_utf8(root / "preset-output")));
+  auto preset = awj::default_user_preset();
+  preset.name = "Linux UI CLI contract";
+  preset.formats[0].quality = 65;
+  preset.cli_args_low_priority = {"--quality", "30", "--timeout-encode", "5", "--log", "--avif-progressive"};
+  preset.cli_args_high_priority = {"--quality", "90", "--timeout-encode", "9", "--append-png-suffix"};
+  state.user_presets.push_back(preset);
+  app->set_queue_preset_index(1);
+  auto cfg = test_require(config_from_ui(*app, state));
+  test_check(cfg.quality == 90 && cfg.encode_timeout_minutes == 9 && cfg.avif_layers.automatic &&
+      cfg.append_png_suffix && !cfg.write_log && cfg.runtime_memory_policy.has_value() &&
+      state.user_presets[0].formats[0].quality == 65 && !app->get_write_log(),
+      "Linux 生产 UI 分层不一致或污染可视参数");
+  auto summary = test_require(awj::run_batch(cfg));
+  test_check(summary.ok_count == 1 && !summary.failed_count, "Linux UI 最终预设配置真实转换失败");
+  std::size_t outputs = 0;
+  for (const auto& entry : fs::directory_iterator(cfg.output_dir)) {
+    if (entry.is_regular_file() && entry.path().filename().native().ends_with(".avif.png") && entry.file_size()) ++outputs;
+  }
+  test_check(outputs == 1, "Linux UI 的高优先级后缀参数没有作用于实际写出");
+  state.user_presets[0].cli_args_high_priority = {"--format", "png", "--no-avif-progressive"};
+  cfg = test_require(config_from_ui(*app, state));
+  test_check(cfg.output_format == awj::OutputFormat::png && cfg.quality == 100 && !cfg.speed &&
+      !cfg.avif_layers.enabled(), "Linux UI 跨格式覆盖残留了 AVIF 参数");
+  state.user_presets[0].cli_args_high_priority.clear();
+  cfg = test_require(config_from_ui(*app, state));
+  test_check(cfg.quality == 65 && cfg.encode_timeout_minutes == 5 && cfg.avif_layers.automatic &&
+      !cfg.append_png_suffix && !cfg.write_log, "Linux UI 没有覆盖低层可见选项或保留 CLI-only 选项");
+  app->set_queue_preset_index(0);
+  cfg = test_require(config_from_ui(*app, state));
+  test_check(cfg.quality == awj::default_quality_for(awj::OutputFormat::avif) &&
+      !cfg.avif_layers.enabled() && !cfg.append_png_suffix, "用户隐藏命令泄漏到 Linux 内置默认");
+  std::puts("Linux 生产 UI 预设优先级及真实渐进 AVIF 写出通过");
+}
+
 void queue_session_config_check() {
   const auto executable = test_require(awj::executable_path());
   const auto path = executable.parent_path() / "AWJ.jsonc";
@@ -149,6 +190,7 @@ int main(int argc, char** argv) try {
   fs::create_directories(root);
   for (const auto* name : {"A.png", "B.png", "C.png"}) fixture_png(root / name);
   slint::testing::init();
+  preset_priority_check(root);
   queue_session_config_check();
   auto app = AwjStudio::create();
   LinuxUiState state;

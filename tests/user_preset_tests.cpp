@@ -70,6 +70,207 @@ void queue_preset_identity_check() {
         "ambiguous basenames must not choose an arbitrary catalog entry");
 }
 
+std::string read_preset(const fs::path& path) {
+  std::ifstream input{path, std::ios::binary};
+  return {std::istreambuf_iterator<char>{input}, {}};
+}
+void write_preset(const fs::path& path, std::string_view text) {
+  std::ofstream output{path, std::ios::binary | std::ios::trunc};
+  output.write(text.data(), static_cast<std::streamsize>(text.size()));
+  check(static_cast<bool>(output), "无法写入测试预设");
+}
+
+void priority_and_migration_checks(const fs::path& directory) {
+  auto preset = awj::default_user_preset();
+  preset.name = "priority contract";
+  preset.formats[0].quality = 65;
+  preset.formats[1].quality = 55;
+  preset.source_path = require(awj::save_user_preset(preset, false));
+  const auto path = preset.source_path;
+  const auto locked_catalog_path = directory / "locked-catalog.jsonc";
+  const std::string locked_catalog = R"({"name":"legacy injected under lock","shell_menu":true,"formats":{}})";
+  write_preset(locked_catalog_path, locked_catalog);
+  require(awj::save_user_preset(preset, true, [&]() -> awj::compat::expected<void, std::string> {
+    auto names = awj::injected_user_preset_names();
+    if (!names) return awj::compat::unexpected{names.error()};
+    check(names->size() == 1 && names->front() == L"legacy injected under lock" &&
+          read_preset(locked_catalog_path) == locked_catalog,
+          "锁内菜单同步递归迁移预设，导致旧预设被排除或被改写");
+    return {};
+  }));
+  auto locked_preset = require(awj::load_user_preset_file(locked_catalog_path));
+  check(read_preset(locked_catalog_path) != locked_catalog, "锁外正常加载没有继续迁移旧预设");
+  require(awj::delete_user_preset(locked_preset));
+  const auto fallback_duplicate = directory / "fallback-duplicate.jsonc";
+  const auto declared_duplicate = directory / "declared-duplicate.jsonc";
+  write_preset(fallback_duplicate, "{}");
+  write_preset(declared_duplicate, R"({"name":"fallback-duplicate","formats":{}})");
+  const auto duplicate_catalog = require(awj::list_user_presets());
+  check(duplicate_catalog.presets.size() == 1 && duplicate_catalog.errors.size() == 2 &&
+        !awj::find_user_preset("fallback-duplicate"), "自动补齐的名称绕过了重复预设排除规则");
+  fs::remove(fallback_duplicate);
+  fs::remove(declared_duplicate);
+  const auto original = read_preset(path);
+  check(original.find("\"cli_args_high_priority\"") < original.find("\"cli_args_low_priority\"") &&
+        original.find("\"cli_args_low_priority\"") < original.find("\"formats\""),
+        "新建预设 CLI 键没有固定排在 formats 前面");
+  auto document = nlohmann::ordered_json::parse(original, nullptr, true, true);
+  check(document["cli_args_high_priority"] == nlohmann::ordered_json::array() &&
+        document["cli_args_low_priority"] == nlohmann::ordered_json::array(),
+        "新建预设没有写出两个空数组");
+  const auto cli = [&](std::vector<std::wstring> args = {}) {
+    args.insert(args.begin(), {L"--preset-file", path.wstring()});
+    return awj::parse_arguments_with_user_preset(args);
+  };
+  preset.cli_args_low_priority = {"--quality", "30", "--timeout-encode", "7", "--strip"};
+  preset.cli_args_high_priority = {"--quality", "90", "--timeout-encode", "11",
+      "--avif-progressive", "--avif-animation-tune", "psnr", "--avif-animation-keyframe", "12"};
+  require(awj::save_user_preset(preset, true));
+  auto resolved = require(cli({L"-q", L"80", L"--timeout-encode", L"9"}));
+  check(resolved.config.quality == 90 && resolved.config.encode_timeout_minutes == 11 &&
+        resolved.config.strip_metadata && resolved.config.avif_layers.automatic &&
+        resolved.config.avif_animation_tune == awj::AvifAnimationTune::psnr &&
+        resolved.config.avif_animation_keyframe == 12, "高优先级没有覆盖显式 CLI 或丢失 CLI-only 参数");
+  auto ui = awj::config_from_user_preset(preset, awj::OutputFormat::avif);
+  ui.quality = 80;
+  ui.input_path = fs::path{u8"中文 输入.png"};
+  ui.output_template = L"中文 {stem}";
+  auto effective = require(awj::resolve_user_preset_ui_config(preset, ui));
+  check(effective.quality == 90 && effective.encode_timeout_minutes == 11 &&
+        !effective.strip_metadata && effective.avif_layers.automatic &&
+        ui.quality == 80 && !ui.strip_metadata, "UI 分层不一致或覆盖结果污染了 UI 参数");
+  effective.color_primaries = 9;
+  effective.transfer_characteristics = 16;
+  effective.matrix_coefficients = 9;
+  effective.color_range = 1;
+  auto worker = require(awj::parse_arguments(awj::conversion_arguments_from_config(effective)));
+  check(worker.config.quality == effective.quality && worker.config.avif_layers.automatic &&
+        worker.config.input_path == effective.input_path && worker.config.output_template == ui.output_template &&
+        worker.config.encode_timeout_minutes == 11 && worker.config.avif_animation_keyframe == 12 &&
+        worker.config.avif_animation_tune == awj::AvifAnimationTune::psnr &&
+        worker.config.color_primaries == 9 && worker.config.transfer_characteristics == 16 &&
+        worker.config.matrix_coefficients == 9 && worker.config.color_range == 1,
+        "最终配置经 worker 参数序列化后丢失 CLI-only 选项或 Unicode");
+  preset.cli_args_high_priority.clear();
+  require(awj::save_user_preset(preset, true));
+  resolved = require(cli());
+  check(resolved.config.quality == 65 && resolved.config.encode_timeout_minutes == 7,
+        "formats 没有覆盖低层，或低层 CLI-only 参数未生效");
+  resolved = require(cli({L"--quality", L"80", L"--timeout-encode", L"9", L"--keep-metadata"}));
+  check(resolved.config.quality == 80 && resolved.config.encode_timeout_minutes == 9 &&
+        !resolved.config.strip_metadata, "显式 CLI 没有覆盖 formats 或低层参数");
+  effective = require(awj::resolve_user_preset_ui_config(preset, ui));
+  check(effective.quality == 80 && !effective.strip_metadata && effective.encode_timeout_minutes == 7,
+        "低层抢占 UI 可见值或 CLI-only 默认没有传入 UI 执行配置");
+  preset.cli_args_high_priority = {"--format", "webp"};
+  require(awj::save_user_preset(preset, true));
+  resolved = require(cli({L"--format", L"avif"}));
+  check(resolved.config.output_format == awj::OutputFormat::webp && resolved.config.quality == 55,
+        "没有按最终高优先级格式选择 formats");
+  effective = require(awj::resolve_user_preset_ui_config(preset, ui));
+  check(effective.output_format == awj::OutputFormat::webp && effective.quality == 55 &&
+        effective.bit_depth == 8, "UI 跨格式覆盖残留了原格式参数");
+  preset.cli_args_low_priority = {"--avif-layers", "2", "--avif-layer-scale", "1:1/2",
+      "--image-size-limit", "fixed", "--max-width", "512", "--cpu-affinity", "0-3"};
+  preset.cli_args_high_priority = {"--avif-layer-scale", "1:1/3", "--image-size-limit", "fixed",
+      "--scale-percent", "75.125", "--cpu-affinity", "0-1"};
+  require(awj::save_user_preset(preset, true));
+  resolved = require(cli({L"--avif-layer-quality", L"1:15", L"--threads", L"auto"}));
+  check(resolved.config.avif_layers.count == 2 && resolved.config.avif_layers.layers[0].scale == std::pair{1u, 3u} &&
+        resolved.config.avif_layers.layers[0].quality == 15 &&
+        resolved.config.image_size_limit.scale_percent == 75.125 && !resolved.config.image_size_limit.max_width &&
+        resolved.config.cpu_affinity == std::vector<unsigned>{0, 1} && resolved.config.max_jobs == 1,
+        "跨层尺寸/渐进层/affinity 覆盖被误判为重复，或线程 auto 丢失");
+  auto layer_roundtrip = require(awj::parse_arguments(awj::conversion_arguments_from_config(resolved.config)));
+  check(layer_roundtrip.config.avif_layers.layers[0].scale == std::pair{1u, 3u} &&
+        layer_roundtrip.config.image_size_limit.scale_percent == 75.125,
+        "手动渐进层或小数缩放经 worker 传递发生变化");
+  preset.cli_args_low_priority = {"--avif-progressive"};
+  preset.cli_args_high_priority = {"--no-avif-progressive"};
+  require(awj::save_user_preset(preset, true));
+  check(!require(cli()).config.avif_layers.enabled(), "高层无法关闭低层渐进设置");
+  for (const auto& invalid : std::vector<std::vector<std::string>>{
+           {"--max-width", "100", "--width", "200"}, {"--quality"}, {"--unknown-option"},
+           {"--preset", "recursive"}, {"--preset-file", "other.jsonc"}, {"--help"}, {"--version"},
+           {"--shell-convert"}, {"--studio-queue-manifest", "untrusted"},
+           {"--avif-layers", "2", "--avif-layer-scale", "1:1/2", "--avif-layer-size", "1:32x32"},
+           {"--cpu-affinity", "0", "--cpu-affinity", "1"}, {std::string(4097, 'x')},
+           {std::string{"--quality\0ignored", 17}}, std::vector<std::string>(257, "--strip")}) {
+    preset.cli_args_high_priority = invalid;
+    const auto before = read_preset(path);
+    check(!awj::save_user_preset(preset, true) && read_preset(path) == before,
+          "非法、超限或控制参数被保存，或失败时损坏原文件");
+  }
+  preset.cli_args_high_priority = {"--input", "other.png"};
+  check(!awj::resolve_user_preset_ui_config(preset, ui), "预设输入替换了已经建立的 UI 队列");
+  preset.cli_args_high_priority = {"--jpeg-hdr", "sdr"};
+  preset.cli_args_low_priority.clear();
+  require(awj::save_user_preset(preset, true));
+  auto jpeg = require(cli({L"--format", L"jpg"}));
+  auto jpeg_worker = require(awj::parse_arguments(awj::conversion_arguments_from_config(jpeg.config)));
+  check(jpeg.config.jpeg_hdr == awj::JpegHdrMode::sdr && jpeg_worker.config.jpeg_hdr == jpeg.config.jpeg_hdr,
+        "JPEG HDR CLI-only 参数未传递到 worker");
+  require(awj::delete_user_preset(preset));
+
+  const auto legacy = directory / "automatic migration.jsonc";
+  write_preset(legacy, R"jsonc(/* 保留原块注释 */
+{
+  // "cli_args_high_priority": ["--delete-source"]
+  "description": "https://example.test/a/*literal*/?x=//b",
+  "obsolete": {"future": [1, {"nested": true}], "cli_args_high_priority": ["--delete-source"]},
+  "formats": {
+    "avif": {"quality": 71, "future_option": {"x": "*/"}, "size_limit": {"mode": "none", "old": 42}},
+    "future_format": {"quality": 2}
+  }
+})jsonc");
+  auto migrated = require(awj::load_user_preset_file(legacy));
+  auto normalized = read_preset(legacy);
+  document = nlohmann::ordered_json::parse(normalized, nullptr, true, true);
+  check(migrated.name == "automatic migration" && migrated.formats[0].quality == 71 &&
+        migrated.cli_args_high_priority.empty() && !require(awj::resolve_user_preset_ui_config(migrated, ui)).delete_source &&
+        document["schema"] == 1 && document.contains("shell_menu") && document["formats"].size() == 5 &&
+        !document.contains("obsolete") && !document["formats"].contains("future_format") &&
+        !document["formats"]["avif"].contains("future_option") &&
+        !document["formats"]["avif"]["size_limit"].contains("old") &&
+        normalized.find("保留原块注释") != std::string::npos &&
+        normalized.find("兼容保留（不读取）：$[\"formats\"][\"avif\"][\"size_limit\"][\"old\"]") != std::string::npos &&
+        normalized.find("future_format") != std::string::npos &&
+        migrated.description == "https://example.test/a/*literal*/?x=//b",
+        "自动迁移未补齐缺项、注释多余字段，或误读取了注释/字符串");
+  (void)require(awj::load_user_preset_file(legacy));
+  check(read_preset(legacy) == normalized, "重复加载预设不幂等");
+  migrated.description = "UI 编辑后仍保留原注释";
+  require(awj::save_user_preset(migrated, true));
+  normalized = read_preset(legacy);
+  require(awj::save_user_preset(require(awj::load_user_preset_file(legacy)), true));
+  check(read_preset(legacy) == normalized && normalized.find("future_option") != std::string::npos &&
+        normalized.find("保留原块注释") != std::string::npos, "UI 保存丢失注释或重复包裹了注释");
+  require(awj::delete_user_preset(migrated));
+  for (const auto& invalid : std::vector<std::string>{
+           "{} /* 未闭合", "{\"formats\":[]}", "{\"schema\":2}", "{\"name\":null}",
+           "{\"cli_args_high_priority\":\"--strip\"}", "{\"cli_args_low_priority\":[1]}",
+           "{\"name\":\"one\",\"name\":\"two\"}",
+           "{\"formats\":{\"avif\":{\"quality\":1/**/2}}}",
+           "{} /* 外层 /* 内层 */ 外层 */",
+           "{\"unknown\":" + std::string(70, '[') + "0" + std::string(70, ']') + "}"}) {
+    write_preset(legacy, invalid);
+    check(!awj::load_user_preset_file(legacy) && read_preset(legacy) == invalid,
+          "无效 JSONC 在加载时被接受或覆盖");
+    fs::remove(legacy);
+  }
+  write_preset(legacy, "{}");
+  const auto obstructed = fs::path{legacy.string() + ".tmp"};
+  fs::create_directory(obstructed);
+  write_preset(obstructed / "keep", "仅本次测试的写回障碍");
+  check(!awj::load_user_preset_file(legacy) && read_preset(legacy) == "{}",
+        "迁移写回失败没有报告或损坏了原文");
+  fs::remove(obstructed / "keep");
+  fs::remove(obstructed);
+  require(awj::recover_user_preset_change());
+  check(read_preset(legacy) == "{}", "迁移失败恢复记录没有恢复原文");
+  fs::remove(legacy);
+}
+
 int main() try {
   queue_preset_identity_check();
   const auto directory = require(awj::user_preset_directory());
@@ -277,10 +478,10 @@ int main() try {
   require(awj::save_user_preset(migrated, true));
   const auto normalized = read(legacy_path);
   const auto document = nlohmann::json::parse(normalized, nullptr, true, true);
-  check(document["unknown"]["future"] == true && document["formats"]["avif"]["speed"] == 6 &&
-        document["formats"]["avif"]["bit_depth"] == 10 &&
+  check(!document.contains("unknown") && normalized.find("\"future\": true") != std::string::npos &&
+        document["formats"]["avif"]["speed"] == 6 && document["formats"]["avif"]["bit_depth"] == 10 &&
         document["formats"]["avif"]["visual_quality"].is_null(),
-        "旧预设迁移没有归一可选字段或保留未知字段");
+        "旧预设迁移没有归一可选字段或将未知字段保留为注释");
   require(awj::save_user_preset(require(awj::load_user_preset_file(legacy_path)), true));
   check(read(legacy_path) == normalized, "preset migration is not idempotent");
   require(awj::delete_user_preset(migrated));
@@ -306,8 +507,9 @@ int main() try {
     else check(!loaded, "explicit JPG 400 on disk was silently normalized instead of rejected");
     fs::remove(legacy_path);
   }
+  priority_and_migration_checks(directory);
   check(require(awj::list_user_presets()).presets.empty(), "deleted preset remains selectable");
-  std::puts("Preset uniqueness, self-edit, rename/delete rollback, shell resources and injection limits passed.");
+  std::puts("预设唯一性、回滚、CLI 优先级、worker 往返、JSONC 自动迁移与注释保留契约通过。");
   return 0;
 } catch (const std::exception& error) {
   std::fprintf(stderr, "%s\n", error.what());

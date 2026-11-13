@@ -430,19 +430,22 @@ awj::compat::expected<awj::AppConfig, std::string> config_from_ui(
   cfg.visual_quality_fallback = app.get_visual_quality_fallback();
   cfg.unlock_memory_limit = app.get_unlock_memory_limit();
   cfg.unlock_max_input_file_bytes = cfg.unlock_memory_limit;
-  if (auto frozen = awj::freeze_operation_memory_policy(cfg); !frozen)
-    return awj::compat::unexpected{frozen.error()};
   cfg.strip_metadata = app.get_strip_metadata();
   cfg.write_summary = cfg.write_log = app.get_write_log();
-  // Destructive queue actions are explicit UI choices, never preset side effects.
   cfg.delete_source = app.get_delete_source();
   cfg.preserve_creation_time = app.get_preserve_creation_time();
   cfg.preserve_modification_time = app.get_preserve_modification_time();
   cfg.preserve_access_time = app.get_preserve_access_time();
-
-  if (auto valid = awj::finalize_config_defaults(cfg, true, true); !valid) {
-    return awj::compat::unexpected{valid.error()};
+  if (preset_index > 0) {
+    auto resolved = awj::resolve_user_preset_ui_config(
+        state.user_presets[static_cast<std::size_t>(preset_index - 1)], cfg);
+    if (!resolved) return awj::compat::unexpected{resolved.error()};
+    cfg = std::move(*resolved);
   }
+  if (auto valid = awj::finalize_config_defaults(cfg, true, true); !valid)
+    return awj::compat::unexpected{valid.error()};
+  if (auto frozen = awj::freeze_operation_memory_policy(cfg); !frozen)
+    return awj::compat::unexpected{frozen.error()};
   return cfg;
 } catch (const std::bad_alloc&) {
   return awj::compat::unexpected{"Studio 配置解析内存不足。"};

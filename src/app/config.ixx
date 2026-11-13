@@ -575,6 +575,16 @@ struct ParseResult {
   std::optional<std::filesystem::path> preset_file{};
   std::vector<std::filesystem::path> shell_inputs{};
   std::vector<std::string> warnings{};
+  // 分层解析保留 auto 线程意图，较高层修改 affinity 后仍按最终 CPU 集合计算。
+  bool automatic_threads{};
+  bool input_was_set{};
+};
+
+struct ArgumentParsePolicy {
+  bool finalize{true};
+  bool conversion_only{};
+  bool override_inherited{};
+  std::optional<bool> automatic_threads{};
 };
 
 namespace config_detail {
@@ -1238,7 +1248,7 @@ std::string help_text() {
   --experimental-clamped-grid-padding 允许 AVIF grid 规划在无可整除方案时使用较小的右列和底行 cell，保持原始尺寸不变，默认开启；奇数输出尺寸或奇数 cell 尺寸与 420/422 色度仍不兼容，需要 --chroma 444
   --no-experimental-clamped-grid-padding 禁用 AVIF grid 较小边缘 cell；不可整除分割会报错
   -p, --preset <名称>         从程序同目录 preset/ 按 JSONC 内 name 加载用户预设；未指定使用当前内置默认
-  --preset-file <路径>        加载指定 JSONC 用户预设；显式 CLI 参数始终覆盖预设
+  --preset-file <路径>        加载并自动兼容 JSONC 预设；高优先级 CLI > 显式参数 > formats > 低优先级 CLI
   --list-presets              列出程序同目录 preset/ 中可用的用户预设及简介
   -t, --threads <auto|数量>   总线程预算；auto 按允许的逻辑 CPU 数预留桌面余量，显式数量不扣除预留（1-128）
   --cpu-affinity <编号列表>  限定逻辑 CPU，例如 0-3,6；编号从 0 开始，必须在进程允许集合内；Windows 使用当前处理器组
@@ -1339,11 +1349,16 @@ void print_help() {
 
 awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     const std::vector<std::wstring>& args, AppConfig cfg,
-    bool preset_base_active) {
-  // CLI 参数直接落到 AppConfig，确保命令行和 Slint UI 走同一套核心逻辑。
+    bool preset_base_active, ArgumentParsePolicy policy = {}) {
+  // 每层独立检查重复参数，完整配置只在最后一层校验。
   bool preset_was_set = preset_base_active;
   bool quality_was_set = false;
-  bool automatic_threads = !preset_base_active;
+  bool automatic_threads = policy.automatic_threads.value_or(!preset_base_active);
+  bool input_was_set = false;
+  bool affinity_was_set = false;
+  bool layer_count_was_set = false;
+  bool progressive_was_set = false;
+  AvifLayerConfig explicit_layers{};
   std::optional<int> explicit_threads;
   std::optional<std::wstring> preset_name;
   std::optional<std::filesystem::path> preset_file;
@@ -1354,6 +1369,18 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
   std::optional<ImageSizeLimitMode> explicit_size_mode;
   const auto accept_size_field = [&](std::size_t slot, double value) {
     if (explicit_size_fields[slot] && *explicit_size_fields[slot] != value) return false;
+    if (policy.override_inherited) {
+      if (slot == 0 && std::none_of(explicit_size_fields.begin() + 1,
+                                   explicit_size_fields.end(),
+                                   [](const auto& field) { return field.has_value(); })) {
+        cfg.image_size_limit.max_width.reset();
+        cfg.image_size_limit.max_height.reset();
+        cfg.image_size_limit.max_long_edge.reset();
+        cfg.image_size_limit.max_short_edge.reset();
+      } else if (slot != 0 && !explicit_size_fields[0]) {
+        cfg.image_size_limit.scale_percent.reset();
+      }
+    }
     explicit_size_fields[slot] = value;
     return true;
   };
@@ -1371,6 +1398,15 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
 
   for (std::size_t i = 0; i < args.size(); ++i) {
     const auto lower = config_detail::lower_copy(args[i]);
+    if (policy.conversion_only &&
+        (lower == L"-h" || lower == L"--help" || lower == L"--version" ||
+         lower == L"-p" || lower == L"--preset" || lower == L"--preset-file" ||
+         lower == L"--shell-convert" || lower == L"--output-policy" ||
+         lower.starts_with(L"--studio-"))) {
+      return awj::compat::unexpected{awj::compat::format(
+          "预设 CLI 只能包含转换参数，不能使用控制选项 {}。",
+          config_detail::narrow_ascii_for_diagnostics(args[i]))};
+    }
 
     if (lower == L"-h" || lower == L"--help") {
       print_help();
@@ -1383,6 +1419,13 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     }
 
     if (lower == L"--avif-progressive" || lower == L"--no-avif-progressive") {
+      if (policy.override_inherited && !progressive_was_set &&
+          !layer_count_was_set &&
+          std::none_of(explicit_layers.layers.begin(), explicit_layers.layers.end(),
+                       [](const auto& layer) { return layer.specified(); })) {
+        cfg.avif_layers = {};
+      }
+      progressive_was_set = true;
       cfg.avif_layers.automatic = lower == L"--avif-progressive";
       continue;
     }
@@ -1391,16 +1434,39 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!value) return awj::compat::unexpected{value.error()};
       const auto count = config_detail::parse_int_range(*value, 2, max_avif_layers, "avif-layers");
       if (!count) return awj::compat::unexpected{count.error()};
-      if (cfg.avif_layers.count) return awj::compat::unexpected{"渐进总层数不能重复指定。"};
+      if (layer_count_was_set || (!policy.override_inherited && cfg.avif_layers.count))
+        return awj::compat::unexpected{"渐进总层数不能重复指定。"};
+      if (policy.override_inherited && !progressive_was_set)
+        cfg.avif_layers.automatic = false;
+      layer_count_was_set = true;
       cfg.avif_layers.count = *count;
+      if (policy.override_inherited) {
+        for (int slot = *count; slot < max_avif_layers; ++slot) {
+          if (!explicit_layers.layers[slot].specified()) cfg.avif_layers.layers[slot] = {};
+        }
+      }
       continue;
     }
     if (lower == L"--avif-layer-size" || lower == L"--avif-layer-scale" ||
         lower == L"--avif-layer-quality" || lower == L"--avif-layer-alpha-quality") {
       const auto value = require_value(i, args[i]);
       if (!value) return awj::compat::unexpected{value.error()};
-      if (auto set = set_avif_layer_option(cfg.avif_layers, lower, *value); !set)
+      if (policy.override_inherited) {
+        if (auto set = set_avif_layer_option(explicit_layers, lower, *value); !set)
+          return awj::compat::unexpected{set.error()};
+        for (int slot = 0; slot < max_avif_layers; ++slot) {
+          const auto& source = explicit_layers.layers[slot];
+          auto& target = cfg.avif_layers.layers[slot];
+          if (source.size || source.scale) {
+            target.size = source.size;
+            target.scale = source.scale;
+          }
+          if (source.quality) target.quality = source.quality;
+          if (source.alpha_quality) target.alpha_quality = source.alpha_quality;
+        }
+      } else if (auto set = set_avif_layer_option(cfg.avif_layers, lower, *value); !set) {
         return awj::compat::unexpected{set.error()};
+      }
       continue;
     }
 
@@ -1429,6 +1495,7 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
         return awj::compat::unexpected{path.error()};
       }
       cfg.input_path = *path;
+      input_was_set = true;
       shell_inputs.push_back(*path);
       continue;
     }
@@ -1471,10 +1538,10 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!value) {
         return awj::compat::unexpected{value.error()};
       }
-      const auto policy = config_detail::lower_copy(*value);
-      if (policy == L"shell") {
+      const auto output_policy = config_detail::lower_copy(*value);
+      if (output_policy == L"shell") {
         cfg.output_policy = OutputPolicy::shell;
-      } else if (policy == L"normal") {
+      } else if (output_policy == L"normal") {
         cfg.output_policy = OutputPolicy::normal;
       } else {
         return awj::compat::unexpected{"output-policy 只支持 normal 或 shell。"};
@@ -1808,13 +1875,13 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       if (!value) {
         return awj::compat::unexpected{value.error()};
       }
-      const auto policy = config_detail::parse_alpha_policy(*value);
-      if (!policy) {
+      const auto alpha_policy = config_detail::parse_alpha_policy(*value);
+      if (!alpha_policy) {
         return awj::compat::unexpected{
             awj::compat::format("alpha 不支持: {}。可选值：force、auto、off。",
                         config_detail::narrow_ascii_for_diagnostics(*value))};
       }
-      cfg.alpha_policy = *policy;
+      cfg.alpha_policy = *alpha_policy;
       continue;
     }
 
@@ -1866,11 +1933,13 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
     }
 
     if (lower == L"--cpu-affinity") {
-      if (!cfg.cpu_affinity.empty()) return awj::compat::unexpected{"cpu-affinity 只能指定一次。"};
+      if (affinity_was_set || (!policy.override_inherited && !cfg.cpu_affinity.empty()))
+        return awj::compat::unexpected{"cpu-affinity 只能指定一次。"};
       const auto value = require_value(i, args[i]);
       if (!value) return awj::compat::unexpected{value.error()};
       auto cpus = config_detail::parse_cpu_affinity(*value);
       if (!cpus) return awj::compat::unexpected{cpus.error()};
+      affinity_was_set = true;
       cfg.cpu_affinity = std::move(*cpus);
       continue;
     }
@@ -2152,8 +2221,9 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
       continue;
     }
 
-    if (!args[i].empty() && args[i].front() != L'-') {
+    if (!policy.conversion_only && !args[i].empty() && args[i].front() != L'-') {
       positional_args.push_back(args[i]);
+      input_was_set = true;
       continue;
     }
 
@@ -2174,10 +2244,9 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
         config_detail::narrow_ascii_for_diagnostics(positional_args.front()))};
   }
 
-  if (auto valid =
-          finalize_config_defaults(cfg, quality_was_set, preset_was_set);
-      !valid) {
-    return awj::compat::unexpected{valid.error()};
+  if (policy.finalize) {
+    if (auto valid = finalize_config_defaults(cfg, quality_was_set, preset_was_set);
+        !valid) return awj::compat::unexpected{valid.error()};
   }
 
   std::vector<std::filesystem::path> unique_shell_inputs;
@@ -2205,7 +2274,9 @@ awj::compat::expected<ParseResult, std::string> parse_arguments_impl(
                      .preset_name = std::move(preset_name),
                      .preset_file = std::move(preset_file),
                      .shell_inputs = std::move(unique_shell_inputs),
-                     .warnings = std::move(warnings)};
+                     .warnings = std::move(warnings),
+                     .automatic_threads = automatic_threads,
+                     .input_was_set = input_was_set};
 }
 
 awj::compat::expected<ParseResult, std::string> parse_arguments(
@@ -2216,6 +2287,117 @@ awj::compat::expected<ParseResult, std::string> parse_arguments(
 awj::compat::expected<ParseResult, std::string> parse_arguments_with_preset_base(
     const std::vector<std::wstring>& args, AppConfig base) {
   return parse_arguments_impl(args, std::move(base), true);
+}
+
+// 传输已经解析的最终配置，不再次加载预设；供 worker 与契约测试共用。
+std::vector<std::wstring> conversion_arguments_from_config(const AppConfig& cfg) {
+  std::vector<std::wstring> args;
+  args.reserve(120);
+  const auto push = [&](std::wstring key, std::wstring value) {
+    args.push_back(std::move(key));
+    args.push_back(std::move(value));
+  };
+  const auto ascii = [](std::string_view text) { return std::wstring{text.begin(), text.end()}; };
+  const auto path_text = [](const std::filesystem::path& path) {
+#ifdef _WIN32
+    return path.native();
+#else
+    return argument_text_from_native(path.native());
+#endif
+  };
+  const auto optional = [&](std::wstring key, const auto& value) {
+    if (value) push(std::move(key), awj::compat::format(L"{}", *value));
+  };
+  push(L"--input", path_text(cfg.input_path));
+  if (!cfg.output_dir.empty()) push(L"--output", path_text(cfg.output_dir));
+  const auto format = cfg.output_format == OutputFormat::png ? L"png"
+      : cfg.output_format == OutputFormat::webp ? L"webp"
+      : cfg.output_format == OutputFormat::jxl ? L"jxl"
+      : cfg.output_format == OutputFormat::jpgli ? L"jpg" : L"avif";
+  push(L"--format", format);
+  push(L"--template", cfg.output_template);
+  push(L"--threads", std::to_wstring(cfg.max_jobs));
+  if (!cfg.cpu_affinity.empty()) {
+    std::wstring cpus;
+    for (const auto cpu : cfg.cpu_affinity) {
+      if (!cpus.empty()) cpus += L',';
+      cpus += std::to_wstring(cpu);
+    }
+    push(L"--cpu-affinity", std::move(cpus));
+  }
+  push(L"--memory-limit", cfg.memory_limit_bytes == 0 ? L"auto"
+      : awj::compat::format(L"{}b", cfg.memory_limit_bytes));
+  args.push_back(cfg.unlock_memory_limit ? L"--unlock-memory-limit" : L"--no-unlock-memory-limit");
+  args.push_back(cfg.unlock_max_input_file_bytes ? L"--unlock-max-input-file-bytes"
+                                                : L"--no-unlock-max-input-file-bytes");
+  push(L"--image-size-limit", ascii(image_size_mode_name(cfg.image_size_limit.mode)));
+  if (manual_image_size_mode(cfg.image_size_limit.mode)) {
+    optional(L"--max-width", cfg.image_size_limit.max_width);
+    optional(L"--max-height", cfg.image_size_limit.max_height);
+    optional(L"--max-long-edge", cfg.image_size_limit.max_long_edge);
+    optional(L"--max-short-edge", cfg.image_size_limit.max_short_edge);
+    optional(L"--scale-percent", cfg.image_size_limit.scale_percent);
+  }
+  push(L"--timeout-encode", std::to_wstring(cfg.encode_timeout_minutes));
+  const auto collision = cfg.collision_mode == CollisionMode::skip ? L"skip"
+      : cfg.collision_mode == CollisionMode::suffix_time ? L"time"
+      : cfg.collision_mode == CollisionMode::suffix_random ? L"random"
+      : cfg.collision_mode == CollisionMode::overwrite ? L"overwrite" : L"number";
+  push(L"--collision", collision);
+  push(L"--quality", std::to_wstring(cfg.quality));
+  optional(L"--visual-quality", cfg.visual_quality);
+  args.push_back(cfg.visual_quality_fallback ? L"--visual-quality-fallback"
+                                            : L"--no-visual-quality-fallback");
+  optional(L"--bit-depth", cfg.bit_depth);
+  optional(L"--speed", cfg.speed);
+  args.push_back(cfg.allow_wic_fallback ? L"--allow-wic-fallback" : L"--no-wic-fallback");
+  args.push_back(cfg.experimental_clamped_grid_padding ? L"--experimental-clamped-grid-padding"
+                                                      : L"--no-experimental-clamped-grid-padding");
+  args.push_back(cfg.strip_metadata ? L"--strip" : L"--keep-metadata");
+  args.push_back(cfg.write_log || cfg.write_summary ? L"--log" : L"--no-log");
+  args.push_back(cfg.delete_source ? L"--delete-source" : L"--no-delete-source");
+#ifdef _WIN32
+  if (cfg.preserve_creation_time) args.push_back(L"--preserve-creation-time");
+  if (cfg.preserve_modification_time) args.push_back(L"--preserve-modification-time");
+  if (cfg.preserve_access_time) args.push_back(L"--preserve-access-time");
+#endif
+  args.push_back(cfg.append_png_suffix ? L"--append-png-suffix" : L"--no-append-png-suffix");
+  if (cfg.output_policy == OutputPolicy::shell) args.push_back(L"--shell-convert");
+  args.push_back(cfg.shell_close_on_finish ? L"--close-on-finish" : L"--no-close-on-finish");
+  if (cfg.output_format == OutputFormat::avif) {
+    push(L"--avif-encoder", ascii(avif_encoder_mode_name(cfg.avif_encoder)));
+    push(L"--avif-color-representation", ascii(avif_color_representation_name(cfg.avif_color_representation)));
+    push(L"--chroma", ascii(chroma_mode_name(cfg.chroma_mode)));
+    push(L"--alpha", ascii(alpha_mode_policy_name(cfg.alpha_policy)));
+    push(L"--avif-animation-tune", std::wstring{avif_animation_tune_name(cfg.avif_animation_tune)});
+    push(L"--avif-animation-keyframe", std::to_wstring(cfg.avif_animation_keyframe));
+    if (cfg.avif_layers.automatic) args.push_back(L"--avif-progressive");
+    optional(L"--avif-layers", cfg.avif_layers.count);
+    for (int slot = 0; slot < max_avif_layers; ++slot) {
+      const auto& layer = cfg.avif_layers.layers[slot];
+      if (layer.size) push(L"--avif-layer-size", awj::compat::format(L"{}:{}x{}",
+          slot + 1, layer.size->first, layer.size->second));
+      if (layer.scale) push(L"--avif-layer-scale", awj::compat::format(L"{}:{}/{}",
+          slot + 1, layer.scale->first, layer.scale->second));
+      if (layer.quality) push(L"--avif-layer-quality", awj::compat::format(L"{}:{}", slot + 1, *layer.quality));
+      if (layer.alpha_quality) push(L"--avif-layer-alpha-quality", awj::compat::format(L"{}:{}", slot + 1, *layer.alpha_quality));
+    }
+  }
+  if (cfg.output_format == OutputFormat::jxl)
+    args.push_back(cfg.jxl_jpeg_lossless ? L"--jxl-jpeg-lossless" : L"--no-jxl-jpeg-lossless");
+  if (cfg.output_format == OutputFormat::jpgli) {
+    push(L"--chroma", ascii(chroma_mode_name(cfg.chroma_mode)));
+    push(L"--jpeg-progressive-level", std::to_wstring(cfg.jpegli_progressive_level));
+    args.push_back(cfg.jpegli_optimize_huffman ? L"--jpeg-optimize-huffman" : L"--no-jpeg-optimize-huffman");
+    args.push_back(cfg.jpegli_xyb ? L"--jpeg-xyb" : L"--no-jpeg-xyb");
+    push(L"--jpeg-hdr", cfg.jpeg_hdr == JpegHdrMode::sdr ? L"sdr"
+        : cfg.jpeg_hdr == JpegHdrMode::hdr ? L"hdr" : L"auto");
+  }
+  optional(L"--color-primaries", cfg.color_primaries);
+  optional(L"--transfer-characteristics", cfg.transfer_characteristics);
+  optional(L"--matrix-coefficients", cfg.matrix_coefficients);
+  optional(L"--color-range", cfg.color_range);
+  return args;
 }
 
 }  // namespace awj
