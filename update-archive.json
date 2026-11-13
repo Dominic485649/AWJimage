@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 25,
+  "sequence": 26,
   "key_id": "release-2026",
-  "issued_at": "2026-11-13T03:50:03Z",
-  "expires_at": "2027-02-11T03:50:03Z",
+  "issued_at": "2026-11-13T11:02:45Z",
+  "expires_at": "2027-02-11T11:02:45Z",
   "entries": [
     {
-      "version": "1.3.6",
+      "version": "1.3.7",
       "channel": "stable",
-      "published_at": "2026-11-13T03:50:03Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.6",
+      "published_at": "2026-11-13T11:02:45Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.7",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
-            "size": 13448032,
-            "sha256": "634cefda8f680713142e0829cec10a863b6eaba02d15b6bb9ff8521990c576c5"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Win.7z",
+            "size": 13483643,
+            "sha256": "f8ad1b6734e4242a3ad432847fecdb42adac5ec5c0f3fed1de95b5fbeb039a50"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
-              "size": 24784896,
-              "sha256": "5e5d31b53403a22de26c5281ac672d9f6659b7ed22428aeb55841f29ef4b2ec3"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Win.7z",
+              "size": 24865792,
+              "sha256": "4679ffd5483ab6e61286eb5c7a1a96e96d0cdf1c5545b24b8f030203f4ef5b87"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
-              "size": 21127680,
-              "sha256": "636011cfbf49eaabc1823849c9643905936b3e7abeaeea0fb6fc002d36393872"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Win.7z",
+              "size": 21156864,
+              "sha256": "10c8439ed5e3740032b469b6cf73995c3613da77071649b2dc58ff82684e9dce"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Win.7z",
               "size": 177573,
-              "sha256": "fdb1961921254d7fd858e6d7f1c9e42f6e91e490cbc71daed90c3f5b9b1b4bca"
+              "sha256": "53c8fa9ecacf25136524d99866fba7b685af2270f3e630ecf1b13931170f85be"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
-            "size": 18612344,
-            "sha256": "25dca3664bf814e112c538ab8ae30580f15778254581bab631bf28e2a6175ac6"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Linux.7z",
+            "size": 18625234,
+            "sha256": "fc69b86bb3a6eec4fa378380051a0c91c5ca8ecc082ccdb109071b4abb407dd8"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
-              "size": 66912288,
-              "sha256": "99739b9dab412a4ef1aef598d6f0f5a21536019fbbebafc2783b58bfacf3253e"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Linux.7z",
+              "size": 66958880,
+              "sha256": "82c5f81e1d1368ab5842221d7f6264f094408ee4b0d9110d918c75da82ce5357"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.7/AWJ_Linux.7z",
               "size": 175807,
-              "sha256": "2d480d7f7e89c058c7a39650e198859407c40b47a0edff55229c8ee4bd7ec376"
+              "sha256": "125ea7a888317299ac7eccc793fcb42d96d11cb86e9e08f91c28cac6d2015bbc"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 更新日志界面\n\n- 原生渲染标题、列表、强调、代码和链接，更新说明不再直接显示 Markdown 标记。\n- 更新日志页仅展示最近 10 个版本，统一中英文回退与 Windows/Linux 展示规则；完整历史仍保留。\n\n### 编码队列\n\n- 移除元数据、写入运行日志、删除源文件及三项保留时间开关仅在当前会话生效，不再写入或从 JSONC 恢复；每次启动均默认关闭。\n- 精简队列底部重复的日志与回收站提示，保留选项说明。\n\n### 线程利用与批处理\n\n- 尺寸与内存分析支持有界并行和取消，扫描、哈希及预检更及时响应停止请求。\n- 在解码、缩放、准备和编码的安全边界动态分配线程额度，回收整数余数与队列尾部空闲份额，保持 auto 预留和手动线程预算。\n- 普通图与 AVIF Grid 共用 CPU 和内存准入，混合队列无需等待整批类型切换，重名输出继续按原顺序处理。\n- 改善像素转换、HDR 处理和视觉质量分析的预算内并行，贯通 WebP/AVIF 动画解码额度，并优化 Grid 尾波线程分配。\n\n### 错误修复\n\n- 完善预检整输入读取、PNG ICC 解压及动画线程工作区的内存预约；预约不足时安全重试、降低并发或明确拒绝。\n- 修复 Grid 后续波次线程启动失败时可能重复编码已完成格的问题。",
-        "en": "### Changelog interface\n\n- Render headings, lists, emphasis, code and links natively instead of displaying Markdown markers as plain text.\n- Show only the latest 10 versions on the changelog page, with consistent language fallback and Windows/Linux presentation. Retain the complete history.\n\n### Encoding queue\n\n- Keep metadata removal, run logging, source deletion and the three timestamp-preservation switches session-only. Do not save or restore them through JSONC; all six start disabled on each launch.\n- Remove the repeated log and recycling note at the bottom of the queue while retaining the option descriptions.\n\n### Thread utilization and batch processing\n\n- Add bounded parallel dimension and memory analysis, with cancellation propagated through scanning, hashing and preflight checks.\n- Reallocate thread shares at safe decode, resize, preparation and encode boundaries, reclaiming integer remainders and idle tail capacity while retaining the auto reserve policy and explicit thread budget.\n- Share CPU and memory admission between ordinary images and AVIF Grid tasks, removing whole-batch type barriers while retaining input order for conflicting outputs.\n- Improve budget-aware parallelism in pixel conversion, HDR processing and visual-quality analysis, pass resolved shares to WebP/AVIF animation decoding, and redistribute threads across Grid tail waves.\n\n### Bug fixes\n\n- Refine reservations for whole-input probing, PNG ICC inflation and animation thread workspaces. Retry safely, reduce concurrency or reject work when reservations cannot be obtained.\n- Prevent later Grid-wave thread startup failures from re-encoding cells that have already completed."
+        "zh-CN": "### 用户预设\n\n- 新增高、低两层 CLI 参数，可在预设 JSONC 中使用界面尚未展示的转换选项，并按指定优先级覆盖或补充界面参数。\n- 加载旧预设时自动补齐缺项，将多余字段保留为不参与读取的注释；编辑保存继续保留注释和自定义 CLI 参数。",
+        "en": "### User presets\n\n- Add high- and low-priority CLI arguments to preset JSONC files, allowing conversion options not exposed by the interface to override or supplement visible settings.\n- Automatically fill missing fields when loading older presets and retain extra fields as inactive comments. Editing and saving preserve comments and custom CLI arguments."
       }
     }
   ]
