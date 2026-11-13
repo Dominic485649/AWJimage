@@ -1,82 +1,82 @@
 {
   "schema": 2,
-  "sequence": 24,
+  "sequence": 25,
   "key_id": "release-2026",
-  "issued_at": "2026-11-12T08:52:29Z",
-  "expires_at": "2027-02-10T08:52:29Z",
+  "issued_at": "2026-11-13T03:50:03Z",
+  "expires_at": "2027-02-11T03:50:03Z",
   "entries": [
     {
-      "version": "1.3.5",
+      "version": "1.3.6",
       "channel": "stable",
-      "published_at": "2026-11-12T08:52:29Z",
-      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.5",
+      "published_at": "2026-11-13T03:50:03Z",
+      "release_url": "https://github.com/Dominic485649/AWJimage/releases/tag/1.3.6",
       "minimum_updater_version": "1.0.13",
       "revoked": false,
       "assets": {
         "windows_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
-            "size": 13412378,
-            "sha256": "1d90b1daf91ee35a6827689f2d55ebf70a2b918bf5fddffe563880ff2a9034f4"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
+            "size": 13448032,
+            "sha256": "634cefda8f680713142e0829cec10a863b6eaba02d15b6bb9ff8521990c576c5"
           },
           "members": [
             {
               "path": "AWJ.com",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
-              "size": 24690688,
-              "sha256": "e770c2f0fe912fc53df502d283a2222b5b647d155dac8eb9b9333dacfce93011"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
+              "size": 24784896,
+              "sha256": "5e5d31b53403a22de26c5281ac672d9f6659b7ed22428aeb55841f29ef4b2ec3"
             },
             {
               "path": "AWJ.exe",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
-              "size": 21059072,
-              "sha256": "f206eaca541b4dee1a41e72f43204d5583f98ccee1296b2fbb556322b4ca3fd7"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
+              "size": 21127680,
+              "sha256": "636011cfbf49eaabc1823849c9643905936b3e7abeaeea0fb6fc002d36393872"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Win.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Win.7z",
               "size": 177573,
-              "sha256": "8d1992e49e8e4aa9ac97614fa0e47052e49e7e1fef8a9a629a80c33b9b78a1cf"
+              "sha256": "fdb1961921254d7fd858e6d7f1c9e42f6e91e490cbc71daed90c3f5b9b1b4bca"
             }
           ]
         },
         "linux_x64_archive": {
           "archive": {
-            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
-            "size": 18550258,
-            "sha256": "d145ca6a4651ff8fe2b988bbeb4c6fa44a4c4fd9313295ff0f518c19e4fed085"
+            "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
+            "size": 18612344,
+            "sha256": "25dca3664bf814e112c538ab8ae30580f15778254581bab631bf28e2a6175ac6"
           },
           "members": [
             {
               "path": "AWJ",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
-              "size": 66676992,
-              "sha256": "1fdc01d6e651e8f2a2c418108eb47bd2aa7d0daa1050d66b2a85a60f1a4481a6"
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
+              "size": 66912288,
+              "sha256": "99739b9dab412a4ef1aef598d6f0f5a21536019fbbebafc2783b58bfacf3253e"
             },
             {
               "path": "LICENSE",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
               "size": 35184,
               "sha256": "6f1e622c82a380075843bb084a7ec3b1f1d12a4a02526d75e78b0924a860aa75"
             },
             {
               "path": "NOTICE.txt",
-              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.5/AWJ_Linux.7z",
+              "url": "https://github.com/Dominic485649/AWJimage/releases/download/1.3.6/AWJ_Linux.7z",
               "size": 175807,
-              "sha256": "ee5c252c8b69ee9b3f05163f8d27773a96cc72db0b8fdd6e238d2849eab255b9"
+              "sha256": "2d480d7f7e89c058c7a39650e198859407c40b47a0edff55229c8ee4bd7ec376"
             }
           ]
         }
       },
       "changelog": {
-        "zh-CN": "### 功能增强与性能优化\n\n#### 缩放与阶段计时\n\n- 优化 Spline36 缩放，复用缓存并利用多线程，保持原有滤波算法与精度；内存受限时自动减少并发与缓存占用。\n- 编码队列与右键转换窗口分别显示解码、缩放、准备、编码和写出耗时，并单列实际缩放线程数；CSV 同步记录，取消或失败也保留已发生耗时。\n\n#### 编码队列\n\n- CSV 与运行日志共用一个开关，方便统一管理。\n- 输出重名时默认“追加序号”，使用 `(1)`、`(2)` 等后缀保留已有文件。\n- 新增默认关闭的“删除源文件”：仅在单个输出成功写入后，将对应源文件移入回收站；回收失败则保留源文件。\n- 双击队列图片，编码前打开源图，成功后打开实际输出。\n\n#### 视觉质量分析\n\n- 亮度、GMSD 与 MS-SSIM 分析统一使用 CPU，保留质量搜索及已有配置、预设兼容；界面继续支持图形加速与软件渲染。\n\n#### 内存控制与参数提示\n\n- 内存解除开关联动输入与缓冲保护，保留手动设置，解除状态仅在当前会话生效；默认保护阈值随物理内存容量调整。\n- 统一视觉质量说明配色，明确尺寸“无限制”提示，精简色度采样说明。\n\n#### 平台交付\n\n- HMOS ARM64/API26 SDK 自本版起按正式交叉构建验收发行，保留编译、链接、导出、许可和归档校验；真机加载与执行未验证。\n\n### 错误修复\n\n- 修正缩放耗时混入解码及动画阶段计时重复累计的问题，使各阶段耗时更准确。\n- 修正取消、失败重试后的计时状态更新，避免过期任务事件覆盖当前结果。\n- 修复 Windows 源文件回收路径处理，并完善部分缩放与多层任务的内存预算估算。",
-        "en": "### Feature enhancements and performance improvements\n\n#### Resizing and stage timings\n\n- Optimize Spline36 resizing with cache reuse and multithreading while preserving the original filter and precision. Automatically reduce concurrency and cache use when memory limits require it.\n- Show separate decode, resize, preparation, encode and write times in the encoding queue and context-menu conversion window, with actual resize worker counts listed separately. CSV records the same details, and elapsed times remain available when a task is canceled or fails.\n\n#### Encoding queue\n\n- Combine CSV and run-log controls into a single switch for easier log management.\n- Make **Append number** the default collision policy, preserving existing outputs with `(1)`, `(2)` and subsequent suffixes.\n- Add **Delete source files**, disabled by default. Move each source to the system trash only after its output has been successfully written; retain it if recycling fails.\n- Double-click queue images to open their sources before encoding and their actual outputs after success.\n\n#### Visual-quality analysis\n\n- Use the CPU for luma, GMSD and MS-SSIM analysis while retaining quality search and compatibility with existing configurations and presets. The interface continues to support hardware-accelerated and software rendering.\n\n#### Memory controls and parameter hints\n\n- Link input and buffer protection to the memory-limit unlock switch while preserving manual limits. The unlocked state applies only to the current session, and default protection limits scale with physical memory.\n- Unify visual-quality description colors, clarify the **Unlimited** dimension hint, and streamline chroma-sampling guidance.\n\n#### Platform delivery\n\n- Starting with this release, the HMOS ARM64/API26 SDK uses formal cross-build release acceptance, retaining compilation, linking, export, license and archive checks. On-device loading and execution are not verified.\n\n### Bug fixes\n\n- Correct resize work being included in decode timings and avoid double-counting nested animation-stage work for more accurate stage timings.\n- Correct timing-state updates after cancellation or failed-task retries, preventing stale task events from overwriting current results.\n- Fix source-file recycling path handling on Windows and refine memory estimates for certain resizing and multilayer tasks."
+        "zh-CN": "### 更新日志界面\n\n- 原生渲染标题、列表、强调、代码和链接，更新说明不再直接显示 Markdown 标记。\n- 更新日志页仅展示最近 10 个版本，统一中英文回退与 Windows/Linux 展示规则；完整历史仍保留。\n\n### 编码队列\n\n- 移除元数据、写入运行日志、删除源文件及三项保留时间开关仅在当前会话生效，不再写入或从 JSONC 恢复；每次启动均默认关闭。\n- 精简队列底部重复的日志与回收站提示，保留选项说明。\n\n### 线程利用与批处理\n\n- 尺寸与内存分析支持有界并行和取消，扫描、哈希及预检更及时响应停止请求。\n- 在解码、缩放、准备和编码的安全边界动态分配线程额度，回收整数余数与队列尾部空闲份额，保持 auto 预留和手动线程预算。\n- 普通图与 AVIF Grid 共用 CPU 和内存准入，混合队列无需等待整批类型切换，重名输出继续按原顺序处理。\n- 改善像素转换、HDR 处理和视觉质量分析的预算内并行，贯通 WebP/AVIF 动画解码额度，并优化 Grid 尾波线程分配。\n\n### 错误修复\n\n- 完善预检整输入读取、PNG ICC 解压及动画线程工作区的内存预约；预约不足时安全重试、降低并发或明确拒绝。\n- 修复 Grid 后续波次线程启动失败时可能重复编码已完成格的问题。",
+        "en": "### Changelog interface\n\n- Render headings, lists, emphasis, code and links natively instead of displaying Markdown markers as plain text.\n- Show only the latest 10 versions on the changelog page, with consistent language fallback and Windows/Linux presentation. Retain the complete history.\n\n### Encoding queue\n\n- Keep metadata removal, run logging, source deletion and the three timestamp-preservation switches session-only. Do not save or restore them through JSONC; all six start disabled on each launch.\n- Remove the repeated log and recycling note at the bottom of the queue while retaining the option descriptions.\n\n### Thread utilization and batch processing\n\n- Add bounded parallel dimension and memory analysis, with cancellation propagated through scanning, hashing and preflight checks.\n- Reallocate thread shares at safe decode, resize, preparation and encode boundaries, reclaiming integer remainders and idle tail capacity while retaining the auto reserve policy and explicit thread budget.\n- Share CPU and memory admission between ordinary images and AVIF Grid tasks, removing whole-batch type barriers while retaining input order for conflicting outputs.\n- Improve budget-aware parallelism in pixel conversion, HDR processing and visual-quality analysis, pass resolved shares to WebP/AVIF animation decoding, and redistribute threads across Grid tail waves.\n\n### Bug fixes\n\n- Refine reservations for whole-input probing, PNG ICC inflation and animation thread workspaces. Retry safely, reduce concurrency or reject work when reservations cannot be obtained.\n- Prevent later Grid-wave thread startup failures from re-encoding cells that have already completed."
       }
     }
   ]
